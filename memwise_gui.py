@@ -751,11 +751,27 @@ class MemWiseGUI:
                 # 标记新守护周期 — 下次 _log 自动清屏
                 self._new_cycle = True
 
-                # 每周期全量清理（无视 agg 阈值，系统级 + 进程级 + 试探同步进行）
-                self.cleaner.clean_deep_standby()
-                self.cleaner.clean_modified_pages()
-                self.cleaner.clear_file_cache()
-                l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner)
+                # 根据当前清理模式执行对应操作（ComboBox 切换后即时生效）
+                mode = self.mode_var.get()
+                agg = self.judger.update_pressure(m['pct'])
+                if mode == "quick":
+                    if agg > 0.1:
+                        self.cleaner._layer1_system(min(agg, 0.3))
+                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner)
+                elif mode == "deep":
+                    self.cleaner._layer1_system(agg)
+                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner)
+                    self.cleaner._layer3_deep(snaps, self.learner, agg)
+                elif mode == "full":
+                    self.cleaner._layer1_system(max(agg, 0.7))
+                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner)
+                    time.sleep(3)
+                    self.cleaner.clean_standby()
+                    self.cleaner._layer3_deep(snaps, self.learner, agg)
+                    self.cleaner.clean_standby_low()
+                else:  # normal 或 fallback
+                    self.cleaner._layer1_system(agg)
+                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner)
                 s = self.cleaner.summary()
                 self.learner.save(STATE_FILE)
                 trimmed = [(snap, ok, freed, reason) for snap, ok, freed, reason in l2_results if ok]
