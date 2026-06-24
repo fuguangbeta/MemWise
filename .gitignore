@@ -1,11 +1,13 @@
 # Runtime
 memwise_state.json
 config.local.yaml
+/config.yaml
 
-# Build artifacts (excluded from version control for release reproducibility)
+# Build artifacts
 build/
 dist/
 MemWise.spec
+/MemWise.exe
 
 # PyInstaller intermediate (spec is regenerated)
 *.spec
