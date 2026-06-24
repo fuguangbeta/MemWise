@@ -60,11 +60,12 @@ class PidController:
 
 
 class PareJudger:
-    """PARES 判定器 — PID + Thompson 联合决策"""
+    """PARES 判定器 — PID + Thompson 联合决策 + 游戏模式激进阈值"""
 
     def __init__(self, learner, config):
         self.learner = learner
         self.cfg = config
+        self.game_mode = False
         self.pid = PidController(
             kp=config.get("kp", DEFAULT_KP),
             ki=config.get("ki", DEFAULT_KI),
@@ -79,16 +80,13 @@ class PareJudger:
 
     def update_pressure(self, mem_usage_pct):
         """根据内存压力更新 PID，返回当前 aggressiveness"""
-        if mem_usage_pct < 30:
-            # 内存非常充裕，降低积分作用防过冲
-            self.pid._integral *= 0.95
         self.aggressiveness = self.pid.update(mem_usage_pct)
         return self.aggressiveness
 
     # ── 决策 ──
 
     def can_trim(self, snap):
-        """联合决策: PID × Thompson × 安全规则"""
+        """联合决策: PID × Thompson × 安全规则 (游戏模式下阈值更激进)"""
         name = snap.name.lower()
 
         # 安全规则 (不变)
@@ -99,12 +97,25 @@ class PareJudger:
         if name in never or snap.pid in never:
             return False, "用户黑名单"
 
+        is_fg = getattr(snap, "fg", False)
+
+        # ── 游戏模式激进阈值 ──
+        if self.game_mode and not is_fg:
+            # 非前台进程：CPU 阈值放宽、概率门槛降低
+            cpu_threshold = 2.0
+            joint_threshold = 0.15
+            agg_threshold_fg = 0.8  # 前台保护收紧（游戏在前台更不易被清）
+        else:
+            cpu_threshold = 1.0
+            joint_threshold = 0.25
+            agg_threshold_fg = 0.6
+
         # foreground → 仅在高压时清理
-        if getattr(snap, "fg", False):
-            if self.aggressiveness < 0.6:
+        if is_fg:
+            if self.aggressiveness < agg_threshold_fg:
                 return False, "前台窗口"
 
-        if snap.cpu >= 1.0 and self.aggressiveness < 0.8:
+        if snap.cpu >= cpu_threshold and self.aggressiveness < 0.8:
             return False, f"CPU活跃({snap.cpu:.1f}%)"
 
         if snap.ws < 10 << 20:  # 10MB 以下不碰
@@ -120,7 +131,7 @@ class PareJudger:
         theta = self.learner.thompson_score(name)
         # 联合概率: aggressiveness × theta
         joint = theta * (0.5 + 0.5 * self.aggressiveness)
-        if joint < 0.25:
+        if joint < joint_threshold:
             return False, f"联合概率不足({joint:.2f})"
 
         # ── 泄漏检测: 泄漏进程跳过冷却，高频尝试 ──
@@ -149,7 +160,7 @@ class PareJudger:
     # ── 冷却管理 ──
 
     def mark_trimmed(self, name, freed=0, ws_before=0):
-        """自适应冷却: 释放得多 = 冷却短"""
+        """自适应冷却: 释放得多 = 冷却短 (游戏模式下减半)"""
         name = name.lower()
         if ws_before > 0 and freed > 0:
             ratio = freed / ws_before
@@ -157,6 +168,9 @@ class PareJudger:
             cd = max(30, int(1800 * (1 - min(ratio, 0.8))))
         else:
             cd = 90  # 中位冷却
+        # 游戏模式下冷却减半，更快回访后台进程
+        if self.game_mode:
+            cd = max(15, cd // 2)
         self.cooldown[name] = time.time() + cd
 
     def mark_failed(self, name, fail_count=1):

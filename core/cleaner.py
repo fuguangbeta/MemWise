@@ -6,13 +6,58 @@ Layer 3: 深度聚合 (高压力时重复执行)
 """
 import time
 from . import winapi
+from .learner import SYSTEM_CORE
 
+# ── 常见游戏进程名单（自动检测用）──
+GAME_PROCESSES = {
+    # Valve / Source
+    "cs2.exe", "csgo.exe", "dota2.exe", "tf2.exe", "left4dead2.exe",
+    "hl2.exe", "portal2.exe", "teamfortress2.exe",
+    # Riot
+    "valorant.exe", "league of legends.exe", "lol.exe", "leagueclient.exe",
+    # Blizzard
+    "wow.exe", "world of warcraft.exe", "overwatch.exe", "hearthstone.exe",
+    "diablo3.exe", "diablo4.exe", "diablo ii.exe", "d2r.exe",
+    "starcraft.exe", "sc2.exe", "heroes of the storm.exe",
+    # Epic / Unreal
+    "rocketleague.exe", "fortnite.exe", "fortniteclient.exe",
+    # EA
+    "bf1.exe", "bf2042.exe", "battlefield.exe", "fifa.exe",
+    "fc24.exe", "fc25.exe", "madden.exe", "sims4.exe",
+    # Ubisoft
+    "forhonor.exe", "rainbowsix.exe", "r6.exe", "ghostrecon.exe",
+    "far cry.exe", "farcry6.exe", "assassins creed.exe", "ac.exe",
+    # Rockstar
+    "gta5.exe", "gtav.exe", "rdr2.exe", "launcher.exe",
+    # Bethesda
+    "skyrim.exe", "skyrimse.exe", "fallout4.exe", "starfield.exe",
+    # FromSoftware
+    "eldenring.exe", "sekiro.exe", "dark souls.exe", "ds.exe",
+    # CD Projekt
+    "cyberpunk2077.exe", "witcher3.exe", "w3.exe",
+    # Other AAA / popular
+    "minecraft.exe", "javaw.exe",  # MC launcher
+    "monsterhunterworld.exe", "mhw.exe",
+    "streetfighter6.exe", "sf6.exe", "tekken8.exe",
+    "cod.exe", "call of duty.exe", "warzone.exe",
+    "apex_legends.exe", "apex legends.exe",
+    "destiny2.exe", "pathofexile.exe", "poe.exe",
+    "guild wars 2.exe", "gw2.exe", "finalfantasyxiv.exe", "ffxiv.exe",
+    "lost ark.exe", "lostaek.exe",
+    "honkai3rd.exe", "honkai impact 3rd.exe",
+    "genshinimpact.exe", "genshin impact.exe",
+    "star rail.exe", "hkrpg.exe",
+    "zzz.exe", "zenless zone zero.exe",
+    "eurotrucks2.exe", "ats.exe",
+}
 
 class PareCleaner:
-    """PARES 清理器 — 3 层引擎"""
+    """PARES 清理器 — 3 层引擎 + 游戏模式 + 内存优先级"""
 
     def __init__(self, judger):
         self.judger = judger
+        self.game_mode = False
+        self._low_pri_pids = set()  # 已设低内存优先级的 PID，避免重复 API 调用
         self.stats = {
             "standby": 0, "modified": 0, "filecache": 0,
             "combine": 0, "ws_trim": 0, "probe": 0,
@@ -60,22 +105,27 @@ class PareCleaner:
             self.stats["combine"] += 1
         return ok
 
-    def _layer1_system(self, aggressiveness):
-        """系统级清理 — 根据 aggressiveness 选择执行哪些操作"""
+    def _layer1_system(self, aggressiveness, ops_filter=None):
+        """
+        系统级清理 — 根据 aggressiveness + ops_filter 选择执行哪些操作
+        ops_filter: None = 全部, 集合如 {"standby","modified","filecache"}
+        """
         ops = []
+        has_sb = ops_filter is None or "standby" in ops_filter
+        has_mp = ops_filter is None or "modified" in ops_filter
+        has_fc = ops_filter is None or "filecache" in ops_filter
 
-        # 内存压力越高，清理越多（阈值下调，更积极）
-        if aggressiveness > 0.05:
+        if has_sb and aggressiveness > 0.05:
             ops.append(("standby_low", self.clean_standby_low))
-        if aggressiveness > 0.2:
+        if has_sb and aggressiveness > 0.2:
             ops.append(("standby", self.clean_standby))
-        if aggressiveness > 0.25:
+        if has_sb and aggressiveness > 0.25:
             ops.append(("deep_standby", self.clean_deep_standby))
-        if aggressiveness > 0.3:
+        if has_mp and aggressiveness > 0.3:
             ops.append(("modified", self.clean_modified_pages))
-        if aggressiveness > 0.5:
+        if has_sb and aggressiveness > 0.5:
             ops.append(("combine", self.clean_combine_lists))
-        if aggressiveness > 0.5:
+        if has_fc and aggressiveness > 0.5:
             ops.append(("filecache", self.clear_file_cache))
 
         results = {}
@@ -86,12 +136,15 @@ class PareCleaner:
     # ── Layer 2: 进程级清理 ──
 
     def _probe_process(self, snap, learner):
-        """微型试探 — 对不确定进程做轻量测试 (1s 等待)"""
+        """微型试探 — 对不确定进程做轻量测试 (双次清理, 1s 等待)"""
         pid, name = snap.pid, snap.name
         ws_before = snap.ws
         if not winapi.empty_ws(pid):
             return False, 0, 0
-        time.sleep(1)
+        # 二次清理：间隔 300ms 再清一次，捕获进程主动释放的页
+        time.sleep(0.3)
+        winapi.empty_ws(pid)
+        time.sleep(0.7)
         mem = winapi.get_process_memory(pid)
         if mem is None:
             learner.record_probe_result(name, True)
@@ -112,14 +165,17 @@ class PareCleaner:
         return ok, freed, pf_delta
 
     def _trim_process(self, snap, learner):
-        """完整清理一个进程 (3s 等待 + 反馈验证)"""
+        """完整清理一个进程 (双次清理, 3s 等待 + 反馈验证)"""
         pid, name = snap.pid, snap.name
         ws_before = snap.ws
         self.judger.record_pf_before(pid, snap.pf)
         if not winapi.empty_ws(pid):
             self.stats["skipped"] += 1
             return False, 0, 0, "API失败"
-        time.sleep(3)
+        # 二次清理：间隔 300ms 再清一次，捕获进程主动释放的页
+        time.sleep(0.3)
+        winapi.empty_ws(pid)
+        time.sleep(2.7)
         mem = winapi.get_process_memory(pid)
         if mem is None:
             learner.record_clean_result(name, True)
@@ -142,8 +198,28 @@ class PareCleaner:
             self.stats["failed_feedback"] += 1
             return False, freed, pf_delta, "PF超标"
 
+    def _get_user_game_procs(self):
+        """合并内置游戏名单 + 用户自定义的游戏进程"""
+        extra = set()
+        for n in self.judger.cfg.get("game_processes", []):
+            extra.add(n.lower())
+        return GAME_PROCESSES | extra
+
+    def _is_user_game_running(self, snaps):
+        """检测游戏运行（内置名单 + 用户自定义）"""
+        all_games = self._get_user_game_procs()
+        return any(s.name.lower() in all_games for s in snaps)
+
+    # 每 tick 最多清理的进程数，防止串行 sleep 堆积超时
+    MAX_TRIM = 30
+
     def _layer2_process(self, snaps, learner):
-        """进程级清理 — Thompson + ROI 选进程"""
+        """进程级清理 — 游戏检测 + Thompson/ROI 选进程 + 内存优先级"""
+        # ── 检测游戏模式 ──
+        game_on = self._is_user_game_running(snaps)
+        self.game_mode = game_on
+        self.judger.game_mode = game_on
+
         candidates = []
         probe_list = []
 
@@ -159,13 +235,30 @@ class PareCleaner:
             else:
                 self.stats["skipped"] += 1
 
+        # ── 游戏模式下：将非游戏后台进程内存优先级设低 ──
+        if game_on:
+            all_games = self._get_user_game_procs()
+            for s in snaps:
+                if s.pid in self._low_pri_pids:
+                    continue
+                name = s.name.lower()
+                if (name not in all_games and name not in SYSTEM_CORE
+                        and name not in self.judger.cfg.get("never", [])):
+                    if winapi.set_memory_priority(s.pid, 0):
+                        self._low_pri_pids.add(s.pid)
+            # 清除已退出的 PID
+            alive = {s.pid for s in snaps}
+            self._low_pri_pids &= alive
+
         # 先执行 Probe (微型试探)
         probe_results = []
         for s in probe_list[:10]:  # 每轮最多 10 个 probe
             ok, freed, pf_delta = self._probe_process(s, learner)
             probe_results.append((s, ok, freed))
 
-        # 再执行完整清理
+        # 再执行完整清理 — 按 Thompson θ 排序，有限额，防止串行 sleep 堆积
+        candidates.sort(key=lambda s: -learner.thompson_score(s.name))
+        candidates = candidates[:self.MAX_TRIM]
         results = []
         for s in candidates:
             ok, freed, pf_delta, reason = self._trim_process(s, learner)
@@ -175,19 +268,19 @@ class PareCleaner:
 
     # ── Layer 3: 深度聚合 ──
 
-    def _layer3_deep(self, snaps, learner, aggressiveness):
+    def _layer3_deep(self, snaps, learner, aggressiveness, ops_filter=None):
         """
         深度模式 — 高压力时重复执行
         第一次: layer1 + layer2
         第二次 (if high pressure): sleep 5s → layer1 again + layer2 again
         """
-        if aggressiveness < 0.6:
-            return  # 压力不够，不做深度
+        if aggressiveness < 0.6 or (ops_filter is not None and "ws" not in ops_filter):
+            return  # 压力不够或禁用了 WS 清理
 
         time.sleep(5)
 
         # 系统级再来一遍
-        self._layer1_system(aggressiveness)
+        self._layer1_system(aggressiveness, ops_filter)
 
         # 进程级再来一遍 (只选高 ROI 的)
         for s in snaps:
@@ -206,71 +299,45 @@ class PareCleaner:
             normal = layer1(mild) + layer2(full)
             deep   = layer1(aggressive) + layer2 + layer3
             full   = layer1(all) + layer2 + layer3 + extra standby
+
+        operations: 可选列表，限制允许的清理操作，如 ["ws","standby","modified","filecache"]
         """
-        # 1. 获取当前 aggressiveness
         mem = winapi.get_memory_status()
         agg = self.judger.update_pressure(mem["pct"]) if mem else 0.5
+        ops_filter = set(operations) if operations else None
+        run_ws = ops_filter is None or "ws" in ops_filter
 
         if mode == "quick":
-            # Quick: 系统低负载清理 + Probe 试探
             if agg > 0.1:
-                self._layer1_system(min(agg, 0.3))
-            l2_results, probe_results = self._layer2_process(snaps, learner)
-            return {
-                "mode": mode,
-                "aggressiveness": agg,
-                "layer2": l2_results,
-                "probe": probe_results,
-            }
+                self._layer1_system(min(agg, 0.3), ops_filter)
+            l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
 
         elif mode == "normal":
-            # Normal: layer1(中等) + layer2(完整)
-            self._layer1_system(agg)
-            l2_results, probe_results = self._layer2_process(snaps, learner)
-            return {
-                "mode": mode,
-                "aggressiveness": agg,
-                "layer2": l2_results,
-                "probe": probe_results,
-            }
+            self._layer1_system(agg, ops_filter)
+            l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
 
         elif mode == "deep":
-            # Deep: layer1 + layer2 + layer3(深度)
-            self._layer1_system(agg)
-            l2_results, probe_results = self._layer2_process(snaps, learner)
-            self._layer3_deep(snaps, learner, agg)
-            return {
-                "mode": mode,
-                "aggressiveness": agg,
-                "layer2": l2_results,
-                "probe": probe_results,
-            }
+            self._layer1_system(agg, ops_filter)
+            l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            self._layer3_deep(snaps, learner, agg, ops_filter)
+            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
 
         elif mode == "full":
-            # Full: layer1(全开) + layer2 + 额外 standby + layer3
-            self._layer1_system(max(agg, 0.7))
-            l2_results, probe_results = self._layer2_process(snaps, learner)
-            time.sleep(3)
-            self.clean_standby()
-            self._layer3_deep(snaps, learner, agg)
-            # 第一遍完成后再做一轮 standby
-            self.clean_standby_low()
-            return {
-                "mode": mode,
-                "aggressiveness": agg,
-                "layer2": l2_results,
-                "probe": probe_results,
-            }
+            self._layer1_system(max(agg, 0.7), ops_filter)
+            l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            if ops_filter is None or "standby" in ops_filter:
+                time.sleep(3)
+                self.clean_standby()
+                self._layer3_deep(snaps, learner, agg, ops_filter)
+                self.clean_standby_low()
+            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
 
         else:
-            # Fallback
-            self._layer1_system(agg)
-            l2_results, probe_results = self._layer2_process(snaps, learner)
-            return {
-                "mode": mode,
-                "aggressiveness": agg,
-                "layer2": l2_results,
-                "probe": probe_results,
+            self._layer1_system(agg, ops_filter)
+            l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results,
             }
 
     def trim_batch(self, snaps, learner):

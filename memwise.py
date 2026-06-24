@@ -1,55 +1,23 @@
 """
-MemWise v1.0 PARES —— 智能内存看护
+MemWise v1.1 PARES —— 智能内存看护
 进阶算法: Thompson Sampling + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
 
-import os, sys, time, json
-
-try:
-    import yaml as _yaml
-    _HAVE_YAML = True
-except ImportError:
-    _HAVE_YAML = False
+import os, sys, time
 
 from core.learner import PareLearner as Learner
 from core.judger import PareJudger as Judger
 from core.cleaner import PareCleaner as Cleaner
 from core.sniffer import Sniffer
 from core import winapi
+from core.config import load as _load_cfg
 
 SEP = "─" * 50
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 STATE_PATH = os.path.join(BASE_DIR, "memwise_state.json")
 
-DEFAULT_CFG = {
-    "kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60,
-    "interval": 30, "never": [],
-    "daemon_trim_every_ticks": 3,
-    "clean_mode": "normal", "auto_start": False,
-    "scheduled_clean": None, "hotkey": "ctrl+shift+m",
-}
-
-def load_config():
-    cfg = DEFAULT_CFG.copy()
-    if not os.path.isfile(CONFIG_PATH): return cfg
-    try:
-        if _HAVE_YAML:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                user = _yaml.safe_load(f) or {}
-        else:
-            cfg_path = CONFIG_PATH.replace(".yaml", ".json")
-            if os.path.isfile(cfg_path):
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    user = json.load(f)
-            else:
-                return cfg
-        cfg.update(user)
-    except: pass
-    return cfg
-
-CFG = load_config()
+CFG = _load_cfg()
 
 def _gb(b): return b / (1 << 30)
 def _mb(b): return b / (1 << 20)
@@ -156,8 +124,29 @@ def cmd_daemon(args):
             if not m: time.sleep(interval); continue
             snaps = sniffer.snapshot(); learner.feed(snaps)
             agg = judger.update_pressure(m["pct"])
-            if agg > 0.3: cleaner.clean_standby()
-            if tick % trim_every == 0 and agg > 0.2: cleaner.trim_batch(snaps, learner)
+            ops = CFG.get("clean_operations")
+            ops_filter = set(ops) if ops else None
+            run_ws = ops_filter is None or "ws" in ops_filter
+            # 与 GUI daemon 一致：按 mode 执行完整分层清理
+            if mode == "quick":
+                if agg > 0.1:
+                    cleaner._layer1_system(min(agg, 0.3), ops_filter)
+                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
+            elif mode == "deep":
+                cleaner._layer1_system(agg, ops_filter)
+                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
+                cleaner._layer3_deep(snaps, learner, agg, ops_filter)
+            elif mode == "full":
+                cleaner._layer1_system(max(agg, 0.7), ops_filter)
+                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
+                if ops_filter is None or "standby" in ops_filter:
+                    time.sleep(3)
+                    cleaner.clean_standby()
+                    cleaner._layer3_deep(snaps, learner, agg, ops_filter)
+                    cleaner.clean_standby_low()
+            else:  # normal / fallback
+                cleaner._layer1_system(agg, ops_filter)
+                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
             if scheduled:
                 try:
                     sh, sm = map(int, scheduled.split(":"))
@@ -181,6 +170,7 @@ def cmd_daemon(args):
 
 def cmd_reset(_):
     print("恢复出厂设置...")
+    from core.config import CONFIG_PATH
     for p in [STATE_PATH, CONFIG_PATH]:
         if os.path.isfile(p):
             bak = p + ".bak"
@@ -253,7 +243,7 @@ def cmd_profile(args):
 
 def main():
     if len(sys.argv) < 2:
-        print("MemWise v1.0 PARES —— 智能内存看护")
+        print("MemWise v1.1 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
         print("  status                    内存状态")
         print("  learn [分钟]              学习进程行为 (默认10分钟)")

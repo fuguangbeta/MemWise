@@ -3,6 +3,7 @@ import ctypes, ctypes.wintypes as w, time
 TH32CS_SNAPPROCESS = 2
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_SET_QUOTA = 0x0100
+PROCESS_SET_INFORMATION = 0x0200
 PROCESS_VM_READ = 0x0010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
@@ -25,6 +26,9 @@ class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
         ("QuotaPagedPoolUsage", ctypes.c_size_t),("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
         ("QuotaNonPagedPoolUsage", ctypes.c_size_t),("PagefileUsage", ctypes.c_size_t),
         ("PeakPagefileUsage", ctypes.c_size_t),("PrivateUsage", ctypes.c_size_t)]
+
+class PROCESS_MEMORY_PRIORITY_INFORMATION(ctypes.Structure):
+    _fields_ = [("MemoryPriority", w.ULONG)]
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", w.DWORD),("dwHighDateTime", w.DWORD)]
@@ -62,6 +66,7 @@ GetWindowThreadProcessId = u32.GetWindowThreadProcessId; GetWindowThreadProcessI
 SetWindowLongPtrW = u32.SetWindowLongPtrW; SetWindowLongPtrW.argtypes=[w.HANDLE, w.INT, ctypes.c_void_p]; SetWindowLongPtrW.restype=ctypes.c_void_p
 CallWindowProcW = u32.CallWindowProcW; CallWindowProcW.argtypes=[ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p]; CallWindowProcW.restype=ctypes.c_void_p
 SetSystemFileCacheSize = k32.SetSystemFileCacheSize; SetSystemFileCacheSize.argtypes=[ctypes.c_size_t,ctypes.c_size_t,w.DWORD]; SetSystemFileCacheSize.restype=w.BOOL
+SetProcessInformation = k32.SetProcessInformation; SetProcessInformation.argtypes=[w.HANDLE,w.DWORD,ctypes.c_void_p,w.DWORD]; SetProcessInformation.restype=w.BOOL
 RegisterHotKey = u32.RegisterHotKey; RegisterHotKey.argtypes=[w.HANDLE,w.INT,w.UINT,w.UINT]; RegisterHotKey.restype=w.BOOL
 UnregisterHotKey = u32.UnregisterHotKey; UnregisterHotKey.argtypes=[w.HANDLE,w.INT]; UnregisterHotKey.restype=w.BOOL
 GetLastInputInfo = u32.GetLastInputInfo; GetLastInputInfo.argtypes=[ctypes.c_void_p]; GetLastInputInfo.restype=w.BOOL
@@ -130,6 +135,21 @@ def empty_ws(pid):
     if not h: return False
     try: return bool(EmptyWorkingSet(h))
     finally: CloseHandle(h)
+
+
+def set_memory_priority(pid, level=0):
+    """设置进程内存优先级 (0=最低, 4=正常)。
+    低优先级进程的页面在内存紧张时会被系统优先压缩/回收。
+    纯内存管理提示，不影响进程调度，零副作用。"""
+    h = OpenProcess(PROCESS_SET_INFORMATION, False, pid)
+    if not h:
+        return False
+    try:
+        info = PROCESS_MEMORY_PRIORITY_INFORMATION(level)
+        ok = SetProcessInformation(h, 0x13, ctypes.byref(info), ctypes.sizeof(info))
+        return bool(ok)
+    finally:
+        CloseHandle(h)
 
 def _try_enable_privilege(name):
     """尝试启用指定权限，成功返回 True"""
@@ -210,10 +230,17 @@ LoadImageW = u32.LoadImageW
 LoadImageW.argtypes = [w.HANDLE, w.LPCWSTR, w.UINT, w.INT, w.INT, w.UINT]
 LoadImageW.restype = w.HANDLE
 
+# 模块级缓存 NtSetSystemInformation 方法检测结果
+_EMPTY_STANDBY_METHOD = None  # None=未检测, True=new, False=old
+
 def empty_standby():
     """清空 Standby List — 自动检测使用正确方法，零影响"""
-    if _try_empty_standby_new():
-        return True
+    global _EMPTY_STANDBY_METHOD
+    if _EMPTY_STANDBY_METHOD is None:
+        _EMPTY_STANDBY_METHOD = _try_empty_standby_new()
+    if _EMPTY_STANDBY_METHOD:
+        info = w.ULONG(1)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
     return _try_empty_standby_old()
 
 # --- 管理员权限检测 ---
@@ -359,7 +386,7 @@ def _com_vtbl_call(iface_ptr, vtbl_idx, restype, argtypes, *args):
     return func(iface_ptr, *args)
 
 _ole32 = ctypes.windll.ole32
-_ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+_COM_INITIALIZED = False  # 标记 COM 是否已初始化
 
 # IShellLinkW vtbl indices: QueryInterface=0, AddRef=1, Release=2,
 # GetPath=3, GetIDList=4, SetIDList=5, GetDescription=6, SetDescription=7,
@@ -372,6 +399,10 @@ _ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
 
 def set_auto_start(name, target_path, arguments="", work_dir=""):
     """通过 IShellLink 创建启动文件夹快捷方式（纯 Win32 API，无脚本引擎）"""
+    global _COM_INITIALIZED
+    if not _COM_INITIALIZED:
+        _ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+        _COM_INITIALIZED = True
     try:
         import os
         startup = os.path.join(os.environ['APPDATA'],

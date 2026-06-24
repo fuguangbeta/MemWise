@@ -24,7 +24,7 @@ SYSTEM_CORE = {
 
 class Profile:
     """进程画像 — 每个进程一个"""
-    __slots__ = ("name", "alpha", "beta", "ws_deque",
+    __slots__ = ("name", "alpha", "beta", "_theta_cache", "_theta_dirty", "ws_deque",
                  "gain_ewma", "cost_ewma", "vol_ewma",
                  "ws_ewma_mu", "ws_ewma_sigma",
                  "last_ok", "ok_cnt", "fail_cnt",
@@ -38,6 +38,8 @@ class Profile:
         # Thompson Sampling — Beta(α, β) (先验偏向可清理)
         self.alpha = 2
         self.beta = 1
+        self._theta_cache = None   # Thompson θ 缓存，同一 tick 内复用
+        self._theta_dirty = True
         # 趋势窗口 (WS 用于回归)
         self.ws_deque = deque(maxlen=WINDOW)
         # EWMA 时间序列
@@ -127,6 +129,7 @@ class Profile:
             self.fail_cnt += 1
             self.ok_cnt = 0
             self.beta += 1
+        self._theta_dirty = True
 
     def record_probe(self, ok):
         """记录微型试探结果"""
@@ -136,6 +139,7 @@ class Profile:
         else:
             self.probe_fail += 1
             self.beta += 1
+        self._theta_dirty = True
 
     @property
     def total_samples(self):
@@ -143,8 +147,11 @@ class Profile:
 
     @property
     def thompson_theta(self):
-        """Thompson Sampling: 从 Beta(α, β) 采样"""
-        return random.betavariate(self.alpha, self.beta)
+        """Thompson Sampling: 从 Beta(α, β) 采样，同一 tick 内缓存复用"""
+        if self._theta_dirty or self._theta_cache is None:
+            self._theta_cache = random.betavariate(self.alpha, self.beta)
+            self._theta_dirty = False
+        return self._theta_cache
 
     @property
     def roi(self):
@@ -195,6 +202,8 @@ class Profile:
         p = cls(d["name"])
         p.alpha = d.get("alpha", 1)
         p.beta = d.get("beta", 1)
+        p._theta_cache = None
+        p._theta_dirty = True
         p.ws_deque = deque(d.get("ws", []), maxlen=WINDOW)
         p.gain_ewma = d.get("gain_ewma", 0.0)
         p.cost_ewma = d.get("cost_ewma", 0.0)
@@ -287,10 +296,16 @@ class PareLearner:
 
     def save(self, path):
         try:
+            now = time.time()
+            # 过滤：30天以上没见过且样本<10的低价值画像，避免 state.json 无限膨胀
+            filtered = {
+                k: v for k, v in self.profiles.items()
+                if now - v.last_seen < 86400 * 30 or v.total_samples >= 10
+            }
             data = {
                 "version": 3,
-                "saved_at": time.time(),
-                "profiles": {k: v.to_dict() for k, v in self.profiles.items()},
+                "saved_at": now,
+                "profiles": {k: v.to_dict() for k, v in filtered.items()},
             }
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:

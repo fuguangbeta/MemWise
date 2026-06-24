@@ -1,4 +1,4 @@
-# MemWise v1.0 — 智能内存看护
+# MemWise v1.1 — 智能内存看护
 
 Windows 内存整理工具。不杀进程、不挂起线程、不改优先级、不注入、不联网。纯 ctypes Win32 API，零外部依赖。
 
