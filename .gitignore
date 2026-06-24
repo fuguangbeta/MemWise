@@ -7,10 +7,6 @@ config.local.yaml
 build/
 dist/
 MemWise.spec
-/MemWise.exe
-
-# PyInstaller intermediate (spec is regenerated)
-*.spec
 
 # Python
 __pycache__/
