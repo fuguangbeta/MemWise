@@ -1,0 +1,30 @@
+# Runtime
+memwise_state.json
+config.local.yaml
+
+# Build artifacts (excluded from version control for release reproducibility)
+build/
+dist/
+MemWise.spec
+
+# PyInstaller intermediate (spec is regenerated)
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
