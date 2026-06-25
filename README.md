@@ -1,4 +1,4 @@
-# MemWise v1.1 — 智能内存看护
+# MemWise v1.2 — 智能内存看护
 
 Windows 内存整理工具。不杀进程、不挂起线程、不注入、不联网。纯 ctypes Win32 API，零外部依赖。
 
@@ -130,6 +130,26 @@ Thompson Sampling Beta(α, β)，α=2, β=1 先验：
 
 ---
 
+## v1.1 → v1.2 升级指南
+
+### 下载
+从 [GitHub Releases](https://github.com/fuguangbeta/MemWise/releases) 下载最新的 `MemWise.exe`，替换旧版本即可。
+
+### 完整更新日志
+详见 [CHANGELOG.md](CHANGELOG.md)，涵盖全部版本历史。
+
+### v1.2 亮点
+
+| 类别 | 改进项 |
+|------|--------|
+| 🔧 **修复** | 16 项 Bug 修复，含 2 个 P0 关键修复 |
+| 🧠 **学习系统** | 置信度标准差、Beta 衰减、自适应学习率、probe 权重更新 |
+| ⚡ **算法** | 复合评分排序、自适应清理轮数、Standby 频率门控、配置热加载 |
+| 🎮 **游戏** | 全屏窗口检测、扩充 30+ 游戏、进程排行榜 + 手动终止 |
+| 🚀 **自启动** | 静默最小化、立即守护、无闪烁 |
+
+---
+
 ## 快速开始
 
 ```bash
@@ -191,7 +211,7 @@ pyinstaller --onefile --noconsole --name MemWise --add-data "core;core" memwise_
 
 | 操作 | 原因 |
 |------|------|
-| 不杀进程 | 核心代码无 TerminateProcess |
+| 不自动杀进程 | 手动终止需用户确认（进程排行榜→点击→确认弹窗） |
 | 不挂起线程 | 核心代码无 SuspendThread |
 | 不注入 DLL | 无 CreateRemoteThread / LoadLibrary |
 | 不改注册表 | 开机自启用快捷方式 + Scheduled Task |
