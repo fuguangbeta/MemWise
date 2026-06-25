@@ -18,17 +18,17 @@ Windows 内存整理工具。不杀进程、不挂起线程、不注入、不联
 
 **游戏模式** — 运行中自动检测游戏进程（80+ 内置游戏名单 + 用户自定义）。游戏运行时，自动将非游戏后台进程内存优先级降至最低，Windows 优先回收其内存。同时清理判定阈值更激进（CPU 2%/联合概率 0.15），让游戏体验更流畅。
 
-**守护模式** — 后台持续运行，每 30 秒采集进程快照 → PID 控制器计算压力 → Thompson Sampling 评分 → 按当前模式（quick/normal/deep/full）自动执行完整分层清理。运行中可随时切换模式即时生效。
+**守护模式** — 后台持续运行，每 30 秒采集进程快照 → PID 控制器计算压力 → 复合评分排序 → 按当前模式（quick/normal/deep/full）自动执行 3 层完整清理（系统级 L1 + 进程级 L2 + 深度 L3）。运行中可随时切换模式即时生效。
 
 **双界面** — tkinter GUI（实时内存条/柱状图/操作日志）+ CLI（status/learn/optimize/daemon/profile）。
 
-**系统托盘** — 关闭窗口自动最小化到托盘。右键菜单可恢复窗口或退出。图标颜色四档指示内存压力：钢蓝（空闲）、绿（<60%）、黄（60-74%）、橙（75-89%）、红（≥90%）。
+**系统托盘** — 关闭窗口自动最小化到托盘。右键菜单可恢复窗口或退出。图标颜色五档指示内存压力：钢蓝（空闲）、绿（<60%）、黄（60-74%）、橙（75-89%）、红（≥90%）。守护模式下图标颜色实时同步运行状态。
 
 **全局热键** — Ctrl+Shift+M 一键调出窗口并执行优化。
 
 **开机自启** — 两种模式：普通启动文件夹快捷方式 / 管理员 Scheduled Task。
 
-**启动选项** — 可配置启动时自动开启守护、启动后自动最小化到托盘。
+**启动选项** — 可配置启动时自动开启守护、启动后自动最小化到托盘。自启动时自动传入 `--minimized` 参数实现静默后台运行（窗口创建即隐藏、无闪烁、立即守护）。
 
 **设置面板** — 独立开关每种清理操作（EmptyWorkingSet / Standby / Modified Page / 文件缓存），支持定时清理、清理模式选择（quick/normal/deep/full）。
 
@@ -224,11 +224,13 @@ pyinstaller --onefile --noconsole --name MemWise --add-data "core;core" memwise_
 | 不联网 | 无 socket / requests / urllib |
 | 不读用户文件 | 不扫描文档/照片等个人文件 |
 
-### 只做
+### 主要技术栈
 
-1. **EmptyWorkingSet** — 让进程把闲置物理页换出到 pagefile
-2. **EmptyStandbyList** — 回收文件缓存占用的空闲页
-3. **写 memwise_state.json** — 存储学习数据，下次启动继续
+1. **EmptyWorkingSet** — 让进程把闲置物理页换出到 pagefile（智能多轮，2-4 次）
+2. **EmptyStandbyList** — 回收文件缓存占用的空闲页（频率门控，可用内存 > 25% 跳过）
+3. **MemoryPriority + EcoQoS** — 非前台进程按 θ 分三层设内存优先级 + 节能标记，Windows 优先回收
+4. **复合评分排序** — `θ × (0.5 + 0.3 × 置信度 + 0.2 × ROI)` 排序候选进程
+5. **写 memwise_state.json** — 存储学习数据，下次启动继续
 
 ---
 
@@ -236,16 +238,16 @@ pyinstaller --onefile --noconsole --name MemWise --add-data "core;core" memwise_
 
 ```
 memwise/
-├── memwise_gui.py          GUI 入口 (tkinter, 911 行)
+├── memwise_gui.py          GUI 入口 (tkinter, 1210 行)
 ├── memwise.py              CLI 入口 (277 行)
 ├── MemWise.spec            PyInstaller 构建规范
 ├── core/
-│   ├── winapi.py           Win32 API 纯 ctypes 绑定 (742 行)
-│   ├── learner.py          Thompson Sampling + EWMA 学习引擎 (335 行)
-│   ├── judger.py           PID 控制器 + 9 层安全判定 (209 行)
-│   ├── cleaner.py          3 层清理编排 (294 行)
+│   ├── winapi.py           Win32 API 纯 ctypes 绑定 (840 行，含全屏检测/终止进程)
+│   ├── learner.py          Thompson Sampling + 复合评分 + 上下文增强学习引擎 (430 行)
+│   ├── judger.py           PID 控制器 + 9 层安全判定 + 冷却管理 (260 行)
+│   ├── cleaner.py          3 层清理编排 + 自适应轮数 + 游戏全屏检测 (460 行)
 │   ├── sniffer.py          进程快照采集 (48 行)
-│   └── config.py           统一配置加载/保存模块 (51 行)
+│   └── config.py           统一配置加载/保存 + 状态路径 (75 行)
 ├── config/config.yaml      配置文件
 ├── assets/memwise.ico      应用图标
 ├── dist/MemWise.exe        打包好的单文件 exe（自行打包或从 Release 下载）
