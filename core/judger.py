@@ -4,6 +4,9 @@ PARES Judger — PID 压力控制器 + Thompson Sampling 联合判定
 import time
 from .learner import SYSTEM_CORE
 
+def _mb(b):
+    return b / (1 << 20)
+
 # PID 默认参数
 DEFAULT_KP = 0.8    # 比例系数 — 响应当前压力 (更积极)
 DEFAULT_KI = 0.10   # 积分系数 — 消除稳态误差
@@ -75,6 +78,9 @@ class PareJudger:
         self.aggressiveness = 0.0
         self.cooldown = {}
         self.pf_before = {}
+        self._post_clean_ws = {}  # 进程清理后的 WS 基线
+        self._post_clean_time = {}  # 基线设置时间戳（30分钟过期）
+        self._probe_last_time = {}  # 进程上次 probe 时间（150s 间隔）
 
     # ── PID ──
 
@@ -121,11 +127,29 @@ class PareJudger:
         if snap.ws < 10 << 20:  # 10MB 以下不碰
             return False, "工作集太小"
 
-        # ── 逐进程冷却 ──
+        # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──
         now = time.time()
+        baseline = self._post_clean_ws.get(name, 0)
+        bl_time = self._post_clean_time.get(name, 0)
+        if baseline > 0:
+            # 基线超过30分钟 → 过期，允许重新清理
+            if now - bl_time > 1800:
+                pass
+            else:
+                # 动态阈值：小进程需更多相对增长，大进程少一些
+                if baseline < 200 << 20:
+                    threshold = 1.3
+                elif baseline < 500 << 20:
+                    threshold = 1.2
+                else:
+                    threshold = 1.15
+                min_delta = 20 << 20  # 至少20MB
+                if snap.ws < baseline * threshold or snap.ws - baseline < min_delta:
+                    return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline * threshold)})"
+        # ── 失败冷却检查（仅 mark_failed 设置的）──
         cd = self.cooldown.get(name, 0)
         if now < cd:
-            return False, f"冷却中({int(cd-now)}s)"
+            return False, f"失败冷却中({int(cd-now)}s)"
 
         # ── Thompson Sampling ──
         theta = self.learner.thompson_score(name)
@@ -146,32 +170,40 @@ class PareJudger:
         return True, f"θ={theta:.2f} agg={self.aggressiveness:.2f}"
 
     def can_probe(self, snap):
-        """是否可以对进程执行微型试探"""
+        """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""
         name = snap.name.lower()
         if name in SYSTEM_CORE:
             return False
-        if snap.ws < 30 << 20:
+        if snap.ws < 50 << 20:  # 50MB 以下不 probe
             return False
-        p = self.learner.get_profile(name)
-        if p and p.confidence > 0.6:
-            return False  # 已经有足够数据了
+        # 前台进程不 probe，避免干扰
+        if getattr(snap, "fg", False):
+            return False
+        # θ 过低且有足够样本时跳过探测
+        theta = self.learner.thompson_score(name)
+        profile = self.learner.get_profile(name)
+        if profile and profile.total_samples >= 5 and theta < 0.2:
+            return False
+        # 每个进程最多每 150s probe 一次
+        last = self._probe_last_time.get(name, 0)
+        if time.time() - last < 150:
+            return False
         return True
 
     # ── 冷却管理 ──
 
-    def mark_trimmed(self, name, freed=0, ws_before=0):
-        """自适应冷却: 释放得多 = 冷却短 (游戏模式下减半)"""
+    def mark_trimmed(self, name, freed=0, ws_before=0, pf_delta=0, ws_after=0):
+        """记录 WS 基线 — 替代旧冷却。不设时间锁，下次 tick 靠数据判断是否值得再清。
+        ws_after=0 时（进程已退出）不记录基线"""
         name = name.lower()
-        if ws_before > 0 and freed > 0:
-            ratio = freed / ws_before
-            # 释放比例越高，冷却越短（上限减半，更快回访）
-            cd = max(30, int(1800 * (1 - min(ratio, 0.8))))
-        else:
-            cd = 90  # 中位冷却
-        # 游戏模式下冷却减半，更快回访后台进程
-        if self.game_mode:
-            cd = max(15, cd // 2)
-        self.cooldown[name] = time.time() + cd
+        now = time.time()
+        # 清理后 WS 基线 + 时间戳
+        if ws_after > 0:
+            self._post_clean_ws[name] = ws_after
+            self._post_clean_time[name] = now
+        elif name in self._post_clean_ws:
+            del self._post_clean_ws[name]
+            self._post_clean_time.pop(name, None)
 
     def mark_failed(self, name, fail_count=1):
         """失败冷却: 失败次数越多，冷却越长"""
@@ -180,8 +212,8 @@ class PareJudger:
         self.cooldown[name] = time.time() + cd
 
     def mark_probed(self, name):
-        """Probe 后短冷却 (1s 就够了)"""
-        self.cooldown[name.lower()] = time.time() + 5
+        """Probe 后记录时间戳（控制间隔）"""
+        self._probe_last_time[name.lower()] = time.time()
 
     # ── PF 反馈 ──
 
@@ -205,8 +237,13 @@ class PareJudger:
     def purge_expired(self):
         now = time.time()
         for k in list(self.cooldown.keys()):
-            if self.cooldown[k] < now - 3600:
+            if self.cooldown[k] < now:
                 del self.cooldown[k]
+        # 清理过期 WS 基线（>1小时）
+        for k in list(self._post_clean_time.keys()):
+            if now - self._post_clean_time[k] > 3600:
+                del self._post_clean_ws[k]
+                del self._post_clean_time[k]
         # 清理过期 PF 缓存
         for k in list(self.pf_before.keys()):
             if now - self.pf_before[k][1] > 60:
@@ -219,5 +256,7 @@ class PareJudger:
         p = path.lower()
         return any(p.startswith(prefix) for prefix in SYSTEM_DIR_PREFIXES)
 
+
     def reset_pid(self):
+        """重置 PID 控制器"""
         self.pid.reset()

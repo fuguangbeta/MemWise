@@ -1,5 +1,5 @@
 """
-MemWise v1.1 GUI —— 图形界面
+MemWise v1.2 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -10,9 +10,10 @@ import ctypes
 import ctypes.wintypes as w
 
 try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except:
+except Exception:
     try: ctypes.windll.user32.SetProcessDPIAware()
-    except: pass
+    except Exception:
+        pass
 
 if getattr(sys, "frozen", False):
     exe_dir = os.path.dirname(sys.executable)
@@ -33,12 +34,14 @@ from core.judger import PareJudger as Judger
 from core.cleaner import PareCleaner as Cleaner
 from core.sniffer import Sniffer
 
-STATE_FILE = os.path.join(base, "memwise_state.json")
-
 from core.config import load as _load_cfg
+from core.config import get_state_path
 import core.config as _config
+
 def _save_cfg():
     _config.save(CFG)
+
+STATE_FILE = get_state_path()
 CFG = _load_cfg()
 
 # 托盘和热键常量
@@ -104,7 +107,7 @@ class ToolTip:
         self._tw.wm_geometry(f"+{x}+{y}")
         lbl = tk.Label(self._tw, text=self.text, justify="left",
                        bg="#2d2d2d", fg="#eee", font=("Segoe UI", 9),
-                       padx=8, pady=4, wraplength=320)
+                       padx=8, pady=4, wraplength=600)
         lbl.pack()
 
     def _hide(self):
@@ -118,7 +121,11 @@ class MemWiseGUI:
         _gui_ref = self
 
         self.root = tk.Tk()
-        self.root.title("MemWise v1.1")
+        self.root.title("MemWise v1.2")
+        # --minimized 模式：立即隐藏窗口，不等 800ms，避免开机闪烁
+        if "--minimized" in sys.argv:
+            self.root.withdraw()
+            self._minimized_to_tray = True
         self.root.geometry("1060x700")
         self.root.resizable(True, False)
         self.root.update_idletasks()
@@ -151,9 +158,10 @@ class MemWiseGUI:
         self._setup_hotkey_and_tray()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         if CFG.get("auto_start_daemon"):
-            self.root.after(300, self._on_daemon)
-        if CFG.get("auto_start_minimize"):
-            self.root.after(800, self._minimize_to_tray)
+            if "--minimized" in sys.argv:
+                self._on_daemon()  # 自启动：立即守护，不等待
+            else:
+                self.root.after(300, self._on_daemon)
 
     # ---- 窗口过程 + 热键 + 托盘 ----
 
@@ -219,7 +227,7 @@ class MemWiseGUI:
         menu.add_command(label="退出", command=self._do_exit)
         try:
             x, y = self.root.winfo_pointerxy()
-        except:
+        except Exception:
             x = y = 0
         menu.post(x, y)
         self.root.after(200, lambda: menu.focus_set() if menu.winfo_exists() else None)
@@ -252,8 +260,14 @@ class MemWiseGUI:
         self.mem_bar_rect = self.mem_canvas.create_rectangle(0, 0, 0, 22, fill="#4caf50", width=0)
         self.mem_bar_text = self.mem_canvas.create_text(8, 11, anchor="w", text="--%", font=("Segoe UI", 9, "bold"), fill="#fff")
         self._add_tip(self.mem_canvas,
-            "内存条颜色：绿<60%(空闲)、黄60~74%(注意)、橙75~89%(偏高)、红≥90%(紧张)。"
-            "如果一直红色说明内存不够用，考虑加内存条或关掉一些程序")
+            "内存条颜色指示当前物理内存使用率：\n"
+            "  • 绿(<60%) 空闲·健康\n"
+            "  • 黄(60~74%) 注意·可考虑清理\n"
+            "  • 橙(75~89%) 偏高·建议清理\n"
+            "  • 红(≥90%) 紧张·内存不够用了\n"
+            "\n"
+            "如果一直红色说明物理内存不足，考虑加内存条或关掉一些程序。\n"
+            "守护模式下蓝色(空闲·无压力)表示内存低于55%无需操作。")
         info = ttk.Frame(f); info.pack(fill="x")
         self.lbl_total = ttk.Label(info, text="总: -- GB"); self.lbl_total.pack(side="left", padx=(0,12))
         self.lbl_used = ttk.Label(info, text="已用: -- GB"); self.lbl_used.pack(side="left", padx=(0,12))
@@ -265,44 +279,102 @@ class MemWiseGUI:
         self.btn_opt = ttk.Button(bf, text="⚡ 优化", command=self._on_optimize)
         self.btn_opt.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_opt,
-            "一键释放内存。根据选择的清理模式(quick/normal/deep/full)和内存压力，"
-            "自动选进程做清理。采用双次清理(间隔300ms)提升释放量。"
-            "系统缓存清理需要管理员权限。"
-            "deep/full模式会清空standby缓存，之后打开大文件会慢几秒，这是正常的")
+            "⚡ 一键释放内存\n"
+            "\n"
+            "根据当前清理模式和内存压力自动选进程做分层清理：\n"
+            "  Layer1 系统级 — Standby缓存/Modified Page写回/内存压缩/文件缓存\n"
+            "  Layer2 进程级 — EmptyWorkingSet释放闲置页(双次·自适应间隔150~500ms)\n"
+            "  Layer3 深度 — 多轮渐进式压缩+低优先Standby，多释放5~10%\n"
+            "\n"
+            "  • 清理前对所有非系统进程按θ分3层设内存优先级+EcoQoS(节能标记)\n"
+            "  • 上下文增强Thompson评分(5维特征：WS/波动率/PF成本/置信度/趋势)\n"
+            "  • 三维自适应冷却(释放比×refill速率×PF反馈)，更精准的清理节奏\n"
+            "  • 多轮渐进式压缩(三步异步链)释放更多压缩存储页\n"
+            "\n"
+            "⚠ 系统缓存清理(Standby/文件缓存)需管理员权限才生效\n"
+            "⚠ deep/full模式会清standby，清理后打开大文件可能慢几秒(缓存重建)")
         self.btn_dae = ttk.Button(bf, text="▶ 守护", command=self._on_daemon)
         self.btn_dae.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_dae,
-            "在后台每30秒自动检查内存，按当前模式(quick/normal/deep/full)执行清理，"
-            "学习每个进程的内存行为。自动检测游戏进程——"
-            "游戏运行时对后台程序更激进，降低它们的内存优先级让Windows优先回收，"
-            "双次清理提升释放量。所有操作实时写入日志和图表。"
-            "非管理员时系统缓存清理不生效，进程级清理不受影响。"
-            "模式可在运行中随时切换")
+            "▶ 后台守护模式（每30秒自动运行）\n"
+            "\n"
+            "每30秒采集进程快照→PID控制器算压力→Thompson评分→分层清理：\n"
+            "  · 运行中可随时切换模式(quick/normal/deep/full)，即时生效\n"
+            "  · 实时柱图显示每次释放量，日志记录每轮详情\n"
+            "\n"
+            "  · 所有非系统进程按θ分3层设内存优先级+EcoQoS\n"
+            "    - 前台进程保持正常(不设低优先级)\n"
+            "    - θ≥0.7 → MEMORY_PRIORITY_VERY_LOW(最低，系统优先回收)\n"
+            "    - 0.3≤θ<0.7 → MEMORY_PRIORITY_LOW(低)\n"
+            "    - θ<0.3 → 保持正常(不值得清理)\n"
+            "    - 标记EcoQoS让系统主动降频+回收物理页\n"
+            "  · 比EmptyWorkingSet更温和——只是『提示』不强制\n"
+            "  · 自适应双次间隔(150~500ms)，refill快的间隔短\n"
+            "  · 三维冷却公式，精准控制清理节奏\n"
+            "\n"
+            "游戏模式：自动检测80+游戏+用户自定义名单\n"
+            "  游戏运行时后台进程内存优先级降至最低\n"
+            "  CPU阈值降至2%，联合概率阈值0.15，更激进\n"
+            "\n"
+            "⚠ 非管理员时系统缓存(Standby/文件缓存)不生效\n"
+            "⚠ 但进程级EmptyWorkingSet和内存优先级不受影响")
         self.btn_stop = ttk.Button(bf, text="■ 停止", command=self._stop_daemon, state="disabled")
         self.btn_stop.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_stop,
-            "停止后台的自动清理，"
-            "之前学到的程序行为数据会自动保存，下次启动接着用")
+            "■ 停止后台自动清理\n"
+            "\n"
+            "停止守护模式后，已采集的学习数据(Thompson画像/refill_ewma/清理历史)\n"
+            "会自动保存到 memwise_state.json，下次启动接着用，不会丢失。\n"
+            "守护期间累积的统计(清理次数/释放量)会保留在界面上。")
         self.btn_excl = ttk.Button(bf, text="⚙ 排除", command=self._edit_exclusion_list)
         self.btn_excl.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_excl,
-            "在这里添加不想被清理的程序，比如你正在用的浏览器或者开发工具，"
-            "加了之后这个程序就不会被整理。"
-            "注意如果加太多程序在排除列表里，释放内存的效果会变差")
+            "⚙ 进程排除列表\n"
+            "\n"
+            "在这里添加不想被清理的程序(输入进程名如 chrome.exe)。\n"
+            "添加后该进程将被跳过：\n"
+            "  · 不做EmptyWorkingSet\n"
+            "  · 不设低内存优先级/EcoQoS\n"
+            "  · 不参与Probe试探\n"
+            "\n"
+            "适合添加：正在用的浏览器、开发工具、IDE、播放器\n"
+            "\n"
+            "⚠ 注意：排除太多程序会明显降低释放效果\n"
+            "⚠ 排除不影响安全白名单(系统进程自动保护)")
         self.btn_set = ttk.Button(bf, text="☰ 设置", command=self._open_settings)
         self.btn_set.pack(side="left")
         self._add_tip(self.btn_set,
-            "打开详细设置面板：开机自启（普通/管理员）、"
-            "启动时自动守护、启动后最小化到托盘、"
-            "单独开关每种清理操作（EmptyWorkingSet/"
-            "Standby List/Modified Page/文件缓存）。"
-            "清理模式在主界面下拉框切换")
+            "☰ 打开详细设置面板\n"
+            "\n"
+            "设置项包括：\n"
+            "  启动：开机自启(普通快捷方式) / 管理员权限启动(Scheduled Task)\n"
+            "        / 启动时自动守护 / 启动后最小化到托盘\n"
+            "  清理：单独开关每种操作——\n"
+            "    · EmptyWorkingSet(进程闲置页释放)\n"
+            "    · Standby List清理(系统缓存)\n"
+            "    · Modified Page写回(脏页刷盘)\n"
+            "    · 内存压缩触发(紧缩压缩存储)\n"
+            "    · 系统文件缓存(谨慎使用)\n"
+            "\n"
+            "清理模式在主界面下拉框切换(quick/normal/deep/full)\n"
+            "留空=按模式自动选择操作")
         self.btn_log = ttk.Button(bf, text="学习日志", command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_log,
-            "查看每个进程的学习数据：可信度(θ，越高越该清理)、α/β(Beta分布参数)、"
-            "收益比(ROI)、偏差(z-score，异常偏离)、趋势(内存增长斜率)、"
-            "泄漏嫌疑。还有清理成功/试探统计，方便判断进程是否值得清理")
+            "📊 查看每个进程的详细学习数据\n"
+            "\n"
+            "核心指标：\n"
+            "  · θ (Thompson评分 0~1) — 越高越值得清理\n"
+            "     上下文增强Thompson：Beta×σ(w·f)，5维特征评分\n"
+            "  · α/β — Beta分布参数，控制探索vs利用平衡\n"
+            "  · ROI — 收益EWMA/成本EWMA，预期性价比\n"
+            "  · z-score — 工作集标准差偏离，>3.0为异常\n"
+            "  · 趋势斜率 — 30点最小二乘回归，正数=内存增长\n"
+            "  · 泄漏嫌疑 — 持续2倍增长超过5个采样点\n"
+            "  · refill_ewma — WS再填充速率，影响冷却和双次间隔\n"
+            "  · 清理历史 — clean_count/probe_ok/probe_fail\n"
+            "\n"
+            "这些数据帮您判断哪些进程值得清理、哪些清完很快又涨回来")
 
         # 状态文字单独放一行，避免按钮被挤出
         self.lbl_st = ttk.Label(bf, text="就绪 · Ctrl+Shift+M")
@@ -316,10 +388,37 @@ class MemWiseGUI:
                                         values=["quick","normal","deep","full"], state="readonly")
         self.mode_combo.pack(side="left", padx=(4,0))
         self._add_tip(self.mode_combo,
-            "选不同的清理力度：quick最轻(L1封顶30%+完整进程清理)，"
-            "normal适中(L1+进程清理)，deep全面(L1+进程+深度重复清理)，"
-            "full最激进(L1开满+进程+清空standby+多轮深度)。"
-            "deep/full都会清理系统缓存，之后打开大文件可能慢几秒")
+            "选不同的清理力度，守护和优化按钮共用此设置：\n"
+            "\n"
+            "  quick(快速) — L1系统级封顶30% + 进程EmptyWorkingSet\n"
+            "    适合：只是想快速释放一点，不想有卡顿感\n"
+            "\n"
+            "  normal(标准) — L1含压缩+Modified写回 + 进程清理\n"
+            "    适合：日常使用，兼顾效果和流畅度\n"
+            "\n"
+            "  deep(深度) — L1开满 + 进程清理 + Layer3深度重复\n"
+            "    适合：内存偏紧时需要多释放一些\n"
+            "\n"
+            "  full(全量) — L1开满 + 进程 + standby + 压缩 + 多轮深度\n"
+            "    适合：内存严重不足时最大释放\n"
+            "\n"
+            
+            "  · 进程内存优先级+EcoQoS分3层设置(守护模式下)\n"
+            "  · 自适应双次间隔(150~500ms根据refill rate)\n"
+            "  · 渐进式压缩(三步异步链)\n"
+            "\n"
+            "⚠ deep/full会清Standby缓存，打开大文件可能慢几秒\n"
+            "⚠ 模式切换后守护模式即时生效，无需重启")
+        self.btn_rank = ttk.Button(mf, text="进程排行", command=self._show_process_rank)
+        self.btn_rank.pack(side="left", padx=(6,0))
+        self._add_tip(self.btn_rank,
+            "📊 查看当前所有进程的内存占用排行\n"
+            "\n"
+            "按工作集(WS)从大到小排列：\n"
+            "  · 实时刷新当前快照数据\n"
+            "  · 快速定位哪些进程最占内存\n"
+            "\n"
+            "点击标题列可切换排序方式")
         ttk.Label(mf, text="  ").pack(side="left")
 
         # 统计
@@ -327,21 +426,46 @@ class MemWiseGUI:
         sf.pack(fill="x", padx=12, pady=4)
         self.lbl_sb = ttk.Label(sf, text="Standby: 0"); self.lbl_sb.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_sb,
-            "系统缓存的清理次数，这个需要管理员权限才能生效，"
-            "清理之后打开大文件可能会慢一点因为缓存没了")
+            "系统缓存清理总次数(Standby List清空+Modified Page写回+内存压缩)\n"
+            "\n"
+            "包括：Standby清空 / 低优先Standby / Modified Page写回 / 内存压缩触发\n"
+            "渐进式压缩(三步异步链)也会计在此处\n"
+            "\n"
+            "⚠ 需要管理员权限才生效\n"
+            "⚠ 清理后打开大文件可能慢一会儿(缓存重建)")
         self.lbl_tr = ttk.Label(sf, text="进程: 0"); self.lbl_tr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_tr,
-            "整理了多少次进程，这个数字大不代表释放得多，"
-            "因为小进程整理很多次也会计数")
+            "进程EmptyWorkingSet清理总次数\n"
+            "\n"
+            "每对一个进程做一次双次清理(含自适应间隔)计1次\n"
+            "清理前还会对该进程设内存优先级+EcoQoS\n"
+            "\n"
+            "⚠ 数字大不一定释放得多——多次清小进程也会计数\n"
+            "⚠ 参考释放量(MB)更有意义")
         self.lbl_fr = ttk.Label(sf, text="释放: 0 MB"); self.lbl_fr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_fr,
-            "总共释放的内存总量。释放后可用内存会立即上涨，"
-            "但系统会根据需要重新分配这些内存给其他程序使用")
+            "累计释放内存总量(MB)\n"
+            "\n"
+            "包括所有清理操作释放的内存：\n"
+            "  · 进程EmptyWorkingSet + 内存优先级/EcoQoS回收\n"
+            "  · Standby/Modified Page/文件缓存清理\n"
+            "  · 内存压缩+渐进式压缩(三步异步链)\n"
+            "\n"
+            "释放后可用内存会立即上涨，但系统很快会重新分配\n"
+            "给活跃程序使用，这是正常的内存管理行为\n"
+            "参考柱状图可看到每次清理的实时释放量")
         self.lbl_lr = ttk.Label(sf, text="已学习: 0"); self.lbl_lr.pack(side="right")
         self._add_tip(self.lbl_lr,
-            "程序一直在观察每个进程的内存使用习惯。采集的样本越多，"
-            "Thompson 评分越准。所有出现过的进程都会留下学习记录，"
-            "不会自动删除，长期积累更准确")
+            "已学习的进程画像数\n"
+            "\n"
+            "程序持续观察每个进程的内存使用习惯：\n"
+            "  · EWMA基线(Z-score)/波动率/趋势斜率\n"
+            "  · refill_ewma再填充速率\n"
+            "  · 上下文增强Thompson(5维特征评分)\n"
+            "\n"
+            "样本越多，θ评分越准确。\n"
+            "超过30天无活跃+样本<10的低价值画像自动清理\n"
+            "防止state.json无限膨胀")
 
         # 日志 — 上半文本 + 下半实时柱图
         lf = ttk.LabelFrame(self.root, text="日志", padding=4)
@@ -390,7 +514,7 @@ class MemWiseGUI:
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
                 args = os.path.abspath(__file__); wd = base
             if en:
-                winapi.set_auto_start("MemWise", target, args, wd)
+                winapi.set_auto_start("MemWise", target, args + " --minimized" if args else "--minimized", wd)
                 self._log("开机自启已启用")
             else:
                 winapi.remove_auto_start("MemWise")
@@ -400,7 +524,14 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text="开机自启", variable=ast_var,
                         command=on_autostart).pack(anchor="w")
         self._add_tip(sf.winfo_children()[-1],
-            "开机时自动启动本程序（启动文件夹快捷方式，不碰注册表）")
+            "开机时自动启动本程序\n"
+            "\n"
+            "方式：启动文件夹快捷方式\n"
+            "  · 不修改注册表，安全无残留\n"
+            "  · 普通用户权限启动\n"
+            "  · 如需管理员权限请勾下面的「管理员权限启动」\n"
+            "\n"
+            "⚠ 取消勾选后会自动删除快捷方式")
 
         asa_var = tk.BooleanVar(value=CFG.get("auto_start_admin", False))
         def on_autostart_admin():
@@ -412,7 +543,7 @@ class MemWiseGUI:
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
                 args = os.path.abspath(__file__); wd = base
             if en:
-                ok = winapi.set_auto_start_admin("MemWise", target, args)
+                ok = winapi.set_auto_start_admin("MemWise", target, args + " --minimized" if args else "--minimized")
                 if ok:
                     winapi.remove_auto_start("MemWise")
                     ast_var.set(True)
@@ -425,12 +556,22 @@ class MemWiseGUI:
                 winapi.remove_auto_start_admin("MemWise")
                 CFG["auto_start"] = ast_var.get()
                 self._log("管理员权限开机自启已关闭")
-            CFG["auto_start_admin"] = en
+            CFG["auto_start_admin"] = en if not en or ok else False
             _save_cfg()
         ttk.Checkbutton(sf, text="管理员权限启动", variable=asa_var,
                         command=on_autostart_admin).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "通过计划任务以最高权限开机启动，清理更彻底（需先以管理员身份运行一次）")
+            "通过Windows计划任务以最高权限(管理员)开机启动\n"
+            "\n"
+            "优势：\n"
+            "  · 系统缓存清理(Standby/文件缓存)需要管理员权限\n"
+            "  · 以最高权限启动后，所有清理操作都能完整执行\n"
+            "\n"
+            "前提：\n"
+            "  · 需先以管理员身份运行一次本程序\n"
+            "  · 非管理员时设置会失败\n"
+            "\n"
+            "⚠ 启用后会替换普通开机自启(二选一)")
 
         asd_var = tk.BooleanVar(value=CFG.get("auto_start_daemon", False))
         def on_auto_daemon():
@@ -439,7 +580,11 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text="启动时自动开启守护", variable=asd_var,
                         command=on_auto_daemon).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "程序启动后立即自动进入守护模式，无需手动点「守护」按钮")
+            "程序启动后立即自动进入守护模式\n"
+            "\n"
+            "无需手动点击「守护」按钮，程序一打开就在后台运行。\n"
+            "每30秒自动检查内存，按当前模式执行分层清理。\n"
+            "配合「启动后最小化到托盘」使用效果更佳。")
 
         asm_var = tk.BooleanVar(value=CFG.get("auto_start_minimize", False))
         def on_minimize():
@@ -448,7 +593,11 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text="启动后最小化到托盘", variable=asm_var,
                         command=on_minimize).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "程序启动成功后将窗口最小化到系统托盘，只在图标显示")
+            "程序启动后自动最小化到系统托盘\n"
+            "\n"
+            "窗口不显示，只在托盘区域显示图标。\n"
+            "双击托盘图标恢复窗口，右键弹出菜单。\n"
+            "适合搭配「启动时自动守护」使用，实现开机静默运行。")
 
         # ─── 清理设置 ───
         cf = ttk.LabelFrame(win, text="清理", padding=8)
@@ -468,29 +617,52 @@ class MemWiseGUI:
         sb_var = tk.BooleanVar(value=not ops or "standby" in ops)
         mp_var = tk.BooleanVar(value="modified" in ops)
         fc_var = tk.BooleanVar(value="filecache" in ops)
+        cp_var = tk.BooleanVar(value="compress" in ops or not ops)
 
         ops_frame = ttk.Frame(cf); ops_frame.pack(fill="x")
         cb_ews = ttk.Checkbutton(ops_frame, text="EmptyWorkingSet", variable=ws_var,
                                   command=lambda: toggle_op("ws", ws_var))
         cb_ews.pack(anchor="w")
-        self._add_tip(cb_ews, "对非前台、非排除的进程调用 EmptyWorkingSet，释放其闲置物理页。"
-                      "前台进程和排除列表中的不会被清理。"
-                      "切回被清理的后台程序时可能多几百毫秒加载")
+        self._add_tip(cb_ews, "对非前台、非排除的进程调用 EmptyWorkingSet，释放闲置物理页到 pagefile。\n"
+                      "前台进程和排除列表中的不会被清理。\n"
+                      "清理前还会对该进程设内存优先级+EcoQoS（仅守护模式下）。\n"
+                      "\n"
+                      "⚠ 切回被清理的后台程序时可能多几百毫秒加载（页面从 pagefile 调回）\n"
+                      "⚠ 但系统按需自动调回，不影响程序正常运行")
         cb_sb = ttk.Checkbutton(ops_frame, text="Standby List 清理", variable=sb_var,
                                 command=lambda: toggle_op("standby", sb_var))
         cb_sb.pack(anchor="w")
-        self._add_tip(cb_sb, "清空系统的 Standby 缓存页(Windows缓存的最近读取数据)，释放大量内存。"
-                      "需要管理员权限。清理后首次打开大文件可能慢一会儿，因为缓存需要重建")
+        self._add_tip(cb_sb, "清空系统的 Standby 缓存页(Windows 缓存的最近读取数据)，释放大量内存。\n"
+                      "低优先 Standby 清理+渐进式压缩链，比单次多释放 5~10%。\n"
+                      "\n"
+                      "⚠ 需要管理员权限\n"
+                      "⚠ 清理后首次打开大文件可能慢一会儿(缓存重建)")
         cb_mp = ttk.Checkbutton(ops_frame, text="Modified Page 写回", variable=mp_var,
                                 command=lambda: toggle_op("modified", mp_var))
         cb_mp.pack(anchor="w")
-        self._add_tip(cb_mp, "将已修改页面写回磁盘，释放脏页占用的物理内存。"
-                      "适合内存紧张时使用，平时不需要打开")
+        self._add_tip(cb_mp, "将已修改的脏页写回磁盘，释放其占用的物理内存。\n"
+                      "写回后页面变为干净页，系统可回收重用。\n"
+                      "memory pressure > 0.1 即触发，阈值较低更积极。\n"
+                      "\n"
+                      "⚠ 少量磁盘写入，对 SSD 几乎无影响")
+        cb_cp = ttk.Checkbutton(ops_frame, text="内存压缩触发", variable=cp_var,
+                                command=lambda: toggle_op("compress", cp_var))
+        cb_cp.pack(anchor="w")
+        self._add_tip(cb_cp, "主动触发 Windows 内置内存压缩，将已压缩的存储页进一步紧缩。\n"
+                      "多轮渐进式压缩(三步异步链)，比单次多释放更多压缩页。\n"
+                      "纯操作系统级操作，零副作用。\n"
+                      "memory pressure > 0.05 即触发\n"
+                      "\n"
+                      "⚠ 不增加 CPU 负担，Windows 自动管理解压时机")
         cb_fc = ttk.Checkbutton(ops_frame, text="系统文件缓存", variable=fc_var,
                                 command=lambda: toggle_op("filecache", fc_var))
         cb_fc.pack(anchor="w")
-        self._add_tip(cb_fc, "清空系统文件缓存（SetSystemFileCacheSize）。"
-                      "会显著降低文件操作速度直到缓存重建，仅在急需内存时开启")
+        self._add_tip(cb_fc, "清空系统文件缓存（SetSystemFileCacheSize）。\n"
+                      "会降低文件操作速度直到缓存重建。\n"
+                      "memory pressure > 0.25 触发，仅在真正需要时开启。\n"
+                      "\n"
+                      "⚠ 谨慎使用——文件缓存重建期间磁盘性能下降\n"
+                      "⚠ 适合内存严重不足(>85%)且刚用完大文件的场景")
         ttk.Label(ops_frame, text="（留空 = 按模式自动选择）",
                   foreground="#888").pack(anchor="w")
 
@@ -581,6 +753,140 @@ class MemWiseGUI:
         for row in info_data:
             tree.insert("", "end", values=row)
 
+
+    # ---- 进程内存排行 ----
+
+    def _show_process_rank(self):
+        """弹出进程内存占用排行榜"""
+        win = tk.Toplevel(self.root)
+        win.title("进程内存排行")
+        win.geometry("900x650")
+        win.resizable(True, True)
+        win.transient(self.root)
+        win.focus_set()
+        win.lift()
+        win.update_idletasks()
+        cx = (win.winfo_screenwidth() - 900) // 2
+        cy = (win.winfo_screenheight() - 650) // 2
+        win.geometry(f"900x650+{cx}+{cy}")
+
+        cols = ("进程", "PID", "工作集(WS)", "私有内存", "CPU", "学习")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=25)
+        for c in cols:
+            tree.heading(c, text=c, command=lambda _c=c: _sort_tree(_c))
+            if c in ("进程",):
+                tree.column(c, width=250)
+            elif c == "PID":
+                tree.column(c, width=70, anchor="center")
+            elif c == "CPU":
+                tree.column(c, width=70, anchor="center")
+            elif c == "学习":
+                tree.column(c, width=60, anchor="center")
+            else:
+                tree.column(c, width=120, anchor="e")
+
+        vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True, padx=(12,0), pady=(12,4))
+        vsb.pack(side="right", fill="y", pady=(12,4))
+
+        def _sort_tree(col):
+            """点击列头排序"""
+            items = [(tree.set(k, col), k) for k in tree.get_children("")]
+            items.sort(key=lambda x: float(x[0]) if x[0].replace('.','',1).isdigit() else x[0].lower(),
+                       reverse=True)
+            for idx, (_, k) in enumerate(items):
+                tree.move(k, "", idx)
+
+        def _on_item_click(event):
+            """点击进程行 → 弹窗确认后终止进程"""
+            sel = tree.selection()
+            if not sel:
+                return
+            item = sel[0]
+            vals = tree.item(item, "values")
+            if not vals or len(vals) < 2:
+                return
+            name = vals[0]
+            pid_str = vals[1]
+            try:
+                pid = int(pid_str)
+            except (ValueError, TypeError):
+                return
+            import os
+            # 保护系统进程和自身
+            if pid <= 4 or pid == os.getpid():
+                messagebox.showwarning("禁止终止", "不能终止系统进程或自身", parent=win)
+                return
+            ok = messagebox.askyesno("终止进程",
+                f"确定要终止「{name}」(PID={pid}) 吗？\n\n该操作会强制结束进程，未保存的数据可能丢失。",
+                icon="warning", parent=win)
+            if ok:
+                if winapi.terminate_process(pid):
+                    messagebox.showinfo("已完成", f"进程「{name}」已终止", parent=win)
+                    _refresh()
+                else:
+                    messagebox.showerror("失败", f"无法终止进程「{name}」\n可能权限不足或进程已退出", parent=win)
+
+        tree.bind("<<TreeviewSelect>>", _on_item_click)
+
+        # 鼠标悬浮高亮
+        tree.tag_configure("hover", background="#3a3a3a")
+        _cur_hover = None
+
+        def _on_motion(event):
+            nonlocal _cur_hover
+            item = tree.identify_row(event.y)
+            if item != _cur_hover:
+                if _cur_hover:
+                    tree.item(_cur_hover, tags=())
+                if item:
+                    tree.item(item, tags=("hover",))
+                _cur_hover = item
+
+        def _on_leave(event):
+            nonlocal _cur_hover
+            if _cur_hover:
+                tree.item(_cur_hover, tags=())
+                _cur_hover = None
+
+        tree.bind("<Motion>", _on_motion)
+        tree.bind("<Leave>", _on_leave)
+
+        def _restore_hover():
+            """刷新后恢复鼠标悬浮高亮"""
+            nonlocal _cur_hover
+            try:
+                y = win.winfo_pointery() - tree.winfo_rooty()
+                item = tree.identify_row(y)
+                if item:
+                    tree.item(item, tags=("hover",))
+                    _cur_hover = item
+            except Exception:
+                pass
+
+        def _refresh():
+            if not win.winfo_exists():
+                return
+            for item in tree.get_children():
+                tree.delete(item)
+            try:
+                snaps = self.sniffer.snapshot()
+            except Exception:
+                win.after(3000, _refresh)
+                return
+            for s in sorted(snaps, key=lambda x: -x.ws):
+                ws_mb = s.ws / (1 << 20)
+                priv_mb = "--"
+                p = self.learner.get_profile(s.name)
+                learned = "✓" if p and p.total_samples >= 3 else ""
+                tree.insert("", "end", values=(
+                    s.name, s.pid, f"{ws_mb:.0f} MB", priv_mb,
+                    f"{s.cpu:.1f}%", learned))
+            win.after(3000, _refresh)
+            win.after(10, _restore_hover)
+
+        _refresh()
 
 
     # ---- 日志 / 状态 ----
@@ -759,7 +1065,9 @@ class MemWiseGUI:
         try:
             tick = 0; interval = CFG.get("interval",30)
             while self.daemon_running:
-                tick += 1; m = winapi.get_memory_status()
+                tick += 1
+                tick_start = time.time()
+                m = winapi.get_memory_status()
                 if not m: time.sleep(interval); continue
                 snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
 
@@ -773,32 +1081,25 @@ class MemWiseGUI:
                 # 标记新守护周期 — 下次 _log 自动清屏
                 self._new_cycle_event.set()
 
-                # 根据当前清理模式执行对应操作（ComboBox 切换后即时生效）
+                # 统一通过 cleaner.optimize() 执行分层清理
                 mode = self.mode_var.get()
                 agg = self.judger.update_pressure(m['pct'])
                 ops = CFG.get("clean_operations")
-                ops_filter = set(ops) if ops else None
-                run_ws = ops_filter is None or "ws" in ops_filter
-                if mode == "quick":
-                    if agg > 0.1:
-                        self.cleaner._layer1_system(min(agg, 0.3), ops_filter)
-                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner) if run_ws else ([], [])
-                elif mode == "deep":
-                    self.cleaner._layer1_system(agg, ops_filter)
-                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner) if run_ws else ([], [])
-                    self.cleaner._layer3_deep(snaps, self.learner, agg, ops_filter)
-                elif mode == "full":
-                    self.cleaner._layer1_system(max(agg, 0.7), ops_filter)
-                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner) if run_ws else ([], [])
-                    if ops_filter is None or "standby" in ops_filter:
-                        time.sleep(3)
-                        self.cleaner.clean_standby()
-                        self.cleaner._layer3_deep(snaps, self.learner, agg, ops_filter)
-                        self.cleaner.clean_standby_low()
-                else:  # normal 或 fallback
-                    self.cleaner._layer1_system(agg, ops_filter)
-                    l2_results, probe_results = self.cleaner._layer2_process(snaps, self.learner) if run_ws else ([], [])
+                result = self.cleaner.optimize(snaps, self.learner, mode, operations=ops, aggressiveness=agg)
+                l2_results = result.get("layer2", [])
+                probe_results = result.get("probe", [])
+                agg = result.get("aggressiveness", agg)
                 s = self.cleaner.summary()
+                # 配置热加载：每 2 tick 检查 config.yaml 是否变更
+                if tick % 2 == 0:
+                    try:
+                        mtime = os.path.getmtime(_config.CONFIG_PATH)
+                        if mtime != getattr(self, "_cfg_mtime", 0):
+                            self._cfg_mtime = mtime
+                            _config.load()
+                            CFG.update(_config.load())
+                    except Exception:
+                        pass
                 if tick % 10 == 0:
                     self.judger.purge_expired()
                 self.learner.save(STATE_FILE)
@@ -819,7 +1120,8 @@ class MemWiseGUI:
                 self.root.after(0, lambda st=s,mem=m:
                     self._upd_dae_ui(st, mem, "🟢 守护中") if self.daemon_running else None)
                 self.root.after(0, lambda: self._draw_chart() if self.daemon_running else None)
-                time.sleep(interval)
+                elapsed = time.time() - tick_start
+                time.sleep(max(0.5, interval - elapsed))
                 if not self.daemon_running:
                     return  # 停止守护后立即退出，不提交多余回调
         except Exception as e:
@@ -899,10 +1201,15 @@ class MemWiseGUI:
         """直接退出（无确认）"""
         self.daemon_running = False
         try: winapi.tray_remove(self.root.winfo_id(), TRAY_UID)
-        except: pass
+        except Exception:
+            pass
+        try: self.cleaner.shutdown()
+        except Exception:
+            pass
         _save_cfg()
         try: self.learner.save(STATE_FILE)
-        except: pass
+        except Exception:
+            pass
         self.root.destroy()
 
     def run(self): self.root.mainloop()

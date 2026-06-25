@@ -18,6 +18,19 @@ DEFAULT_CFG = {
     "hotkey": "ctrl+shift+m", "game_processes": [],
 }
 
+
+def get_state_path():
+    """获取 memwise_state.json 路径，兼容 PyInstaller 打包"""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.basename(exe_dir).lower() == "dist":
+            base = os.path.dirname(exe_dir)
+        else:
+            base = exe_dir
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "memwise_state.json")
+
 def load():
     """加载 config.yaml，缺失字段用 DEFAULT_CFG 兜底"""
     d = DEFAULT_CFG.copy()
@@ -36,8 +49,8 @@ def load():
             else:
                 return d
         d.update(u)
-    except Exception:
-        pass
+    except Exception as e:
+        import sys; print(f"[MemWise] 配置加载失败: {e}", file=sys.stderr)
     return d
 
 def save(cfg):
@@ -47,5 +60,5 @@ def save(cfg):
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-    except Exception:
-        pass
+    except Exception as e:
+        import sys; print(f"[MemWise] 配置保存失败: {e}", file=sys.stderr)

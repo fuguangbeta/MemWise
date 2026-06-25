@@ -10,6 +10,8 @@ EWMA_LAMBDA = 0.5  # EWMA 衰减因子 (高=更快适应新数据)
 Z_SCORE_THRESHOLD = 3.0  # Z-score 异常阈值
 MIN_SAMPLES = 3  # 最小样本数 (更快对新进程做出决策)
 TREND_SAMPLES = 6  # 趋势线使用的采样数
+BETA_DECAY_RATE = 0.002  # Beta 分布衰减率（每次 feed 向先验收缩）
+CTX_LR_BASE = 0.03  # 上下文权重基础学习率
 
 SYSTEM_CORE = {
     "system", "system idle process", "registry", "smss", "csrss", "wininit",
@@ -31,7 +33,8 @@ class Profile:
                  "last_seen", "last_ws",
                  "probe_ok", "probe_fail",
                  "leak_suspect", "leak_tick_count",
-                 "clean_count")
+                 "clean_count", "refill_ewma",
+                 "_ctx_weights")
 
     def __init__(self, name):
         self.name = name
@@ -63,6 +66,9 @@ class Profile:
         self.leak_tick_count = 0
         # 清理统计
         self.clean_count = 0
+        self.refill_ewma = 0.0  # WS 再填充速率 (增长 bytes/s 的 EWMA)
+        # 上下文 Thompson 权重: [bias, norm_ws, norm_vol, norm_pf, conf]
+        self._ctx_weights = [0.0, 0.0, 0.0, 0.0, 0.0]
 
     def feed(self, ws):
         """喂入 WS 样本，更新 EWMA 和 Z-score 基线"""
@@ -72,6 +78,10 @@ class Profile:
         if self.last_ws > 0 and ws > 0:
             rate = abs(ws - self.last_ws) / max(self.last_ws, 1)
             self.vol_ewma = EWMA_LAMBDA * rate + (1 - EWMA_LAMBDA) * self.vol_ewma
+        # refill_ewma: WS 增长速率 (bytes/s)，仅在 WS 增长时更新
+        if self.last_ws > 0 and ws > self.last_ws:
+            growth = (ws - self.last_ws) / max(time.time() - self.last_seen, 1)
+            self.refill_ewma = EWMA_LAMBDA * growth + (1 - EWMA_LAMBDA) * self.refill_ewma
         self.last_ws = ws
         # EWMA 基线 (Z-score)
         if self.ws_ewma_mu == 0:
@@ -99,6 +109,13 @@ class Profile:
         else:
             self.leak_suspect = False
 
+        # Beta 衰减：每次 feed 轻微向先验 (α=2, β=1) 收缩
+        # 忘记旧观测，适应进程行为变化；活跃进程衰减快，自然更新
+        if self.alpha > 2 or self.beta > 1:
+            self.alpha += (2 - self.alpha) * BETA_DECAY_RATE
+            self.beta += (1 - self.beta) * BETA_DECAY_RATE
+            self._theta_dirty = True
+
     def _calc_slope(self):
         """最小二乘法计算 WS 趋势斜率 (最近 TREND_SAMPLES 个点)"""
         n = min(len(self.ws_deque), TREND_SAMPLES)
@@ -112,12 +129,59 @@ class Profile:
         den = sum((x - mx) ** 2 for x in xs)
         return num / den if den else 0.0
 
+    def _ctx_feature_vector(self):
+        """计算 5 维上下文特征向量用于修正 θ"""
+        # [1, norm_ws, norm_vol, norm_pf_ratio, confidence]
+        ws = self.ws_deque[-1] if self.ws_deque else 0
+        # WS sigmoid 归一化: 200MB 为中心点
+        norm_ws = 1.0 / (1.0 + math.exp(-(ws / (200 << 20) - 1))) if ws > 0 else 0.5
+        # 波动率 tanh 归一化
+        norm_vol = math.tanh(self.vol_ewma * 10) if self.vol_ewma > 0 else 0.0
+        # PF 成本/收益比
+        gain = max(self.gain_ewma, 1)
+        norm_pf = min(self.cost_ewma / gain, 2.0) if self.cost_ewma > 0 else 0.0
+        return [1.0, norm_ws, norm_vol, norm_pf, self.confidence]
+
+    @property
+    def thompson_theta(self):
+        """Thompson Sampling × 上下文修正: Beta(α,β) × σ(w·f)
+        同一 tick 内缓存复用"""
+        if not (self._theta_dirty or self._theta_cache is None):
+            return self._theta_cache
+        base = random.betavariate(self.alpha, self.beta)
+        # 上下文修正: sigmoid 加权
+        feats = self._ctx_feature_vector()
+        w_dot = sum(w * f for w, f in zip(self._ctx_weights, feats))
+        # clip 修正因子到 [0.5, 1.5] 避免过度偏离
+        correction = 1.0 / (1.0 + math.exp(-w_dot)) + 0.5  # range [0.5, 1.5]
+        self._theta_cache = max(0.01, min(0.99, base * correction))
+        self._theta_dirty = False
+        return self._theta_cache
+
+    def _update_ctx_weights(self, ok):
+        """在线梯度下降更新上下文权重，学习率随置信度自适应"""
+        feats = self._ctx_feature_vector()
+        base = random.betavariate(self.alpha, self.beta)
+        w_dot = sum(w * f for w, f in zip(self._ctx_weights, feats))
+        sig = 1.0 / (1.0 + math.exp(-w_dot))
+        predict = base * (sig + 0.5)
+        target = 1.0 if ok else 0.0
+        error = predict - target
+        # 自适应学习率：置信度高时微调，置信度低时大步探索
+        lr = CTX_LR_BASE * (1.0 - self.confidence * 0.8)
+        # sigmoid derivative: sig * (1 - sig)
+        grad = 2 * error * base * sig * (1 - sig)
+        for i in range(len(self._ctx_weights)):
+            self._ctx_weights[i] -= lr * grad * feats[i]
+
     def record_clean(self, ok, freed=0, pf_delta=0):
-        """记录清理结果 → 更新 Beta 分布 + EWMA"""
+        """记录清理结果 → 更新 Beta 分布 + EWMA + 上下文权重"""
         self.last_ok = ok
         if ok:
             self.ok_cnt += 1
-            self.fail_cnt = 0
+            # 遗忘：成功时逐渐减少失败计数，不让一次失败永久影响 θ
+            if self.fail_cnt > 0:
+                self.fail_cnt = max(0, self.fail_cnt - 1)
             self.alpha += 1
             self.clean_count += 1
             # 更新收益/成本 EWMA
@@ -130,6 +194,7 @@ class Profile:
             self.ok_cnt = 0
             self.beta += 1
         self._theta_dirty = True
+        self._update_ctx_weights(ok)
 
     def record_probe(self, ok):
         """记录微型试探结果"""
@@ -140,18 +205,11 @@ class Profile:
             self.probe_fail += 1
             self.beta += 1
         self._theta_dirty = True
+        self._update_ctx_weights(ok)
 
     @property
     def total_samples(self):
         return len(self.ws_deque)
-
-    @property
-    def thompson_theta(self):
-        """Thompson Sampling: 从 Beta(α, β) 采样，同一 tick 内缓存复用"""
-        if self._theta_dirty or self._theta_cache is None:
-            self._theta_cache = random.betavariate(self.alpha, self.beta)
-            self._theta_dirty = False
-        return self._theta_cache
 
     @property
     def roi(self):
@@ -175,9 +233,16 @@ class Profile:
 
     @property
     def confidence(self):
-        """Thompson 置信度: 分布越尖越高"""
+        """Beta 分布置信度：基于标准差，样本越多、分布越尖，置信度越高"""
         total = self.alpha + self.beta
-        return min(1.0, total / 50.0) if total > 2 else 0.0
+        if total <= 2:
+            return 0.0
+        # Beta 分布标准差衡量不确定性
+        variance = (self.alpha * self.beta) / ((total ** 2) * (total + 1))
+        std = math.sqrt(variance)
+        # Beta(1,1) 均匀分布时 std ≈ 0.289，此时置信度最低
+        # std → 0 时置信度最高
+        return max(0.0, min(1.0, 1.0 - std / 0.289))
 
     def to_dict(self):
         return {
@@ -195,6 +260,8 @@ class Profile:
             "leak_suspect": self.leak_suspect,
             "leak_tick_count": self.leak_tick_count,
             "clean_count": self.clean_count,
+            "refill_ewma": self.refill_ewma,
+            "ctx_weights": self._ctx_weights,
         }
 
     @classmethod
@@ -220,6 +287,8 @@ class Profile:
         p.leak_suspect = d.get("leak_suspect", False)
         p.leak_tick_count = d.get("leak_tick_count", 0)
         p.clean_count = d.get("clean_count", 0)
+        p.refill_ewma = d.get("refill_ewma", 0.0)
+        p._ctx_weights = d.get("ctx_weights", [0.0, 0.0, 0.0, 0.0, 0.0])
         return p
 
 
@@ -297,10 +366,11 @@ class PareLearner:
     def save(self, path):
         try:
             now = time.time()
-            # 过滤：30天以上没见过且样本<10的低价值画像，避免 state.json 无限膨胀
+            # 过滤：7天以上没见过且样本<5的低价值画像 ➔ 防止 state.json 膨胀
+            cutoff = 86400 * 7
             filtered = {
                 k: v for k, v in self.profiles.items()
-                if now - v.last_seen < 86400 * 30 or v.total_samples >= 10
+                if now - v.last_seen < cutoff or v.total_samples >= 5
             }
             data = {
                 "version": 3,
@@ -327,9 +397,33 @@ class PareLearner:
             if ver >= 2:
                 for k, v in data.get("profiles", {}).items():
                     learner.profiles[k] = Profile.from_dict(v)
-        except Exception:
-            pass
+        except Exception as e:
+            import sys; print(f"[MemWise] 学习数据加载失败: {e}", file=sys.stderr)
         return learner
+
+    # ── 复合评分 ──
+
+    def composite_score(self, name):
+        """复合评分 = θ × (置信度 + ROI)，选择更精准"""
+        p = self.profiles.get(name.lower())
+        if not p or p.total_samples < MIN_SAMPLES:
+            return 0.35  # 新进程默认中低分
+        theta = p.thompson_theta
+        conf = p.confidence
+        roi = min(p.roi, 1.0)  # 截断 ROI 防极端值
+        # θ 占主体，置信度和 ROI 做调节
+        return theta * (0.5 + 0.3 * conf + 0.2 * roi)
+
+    def top_by_score(self, n=25):
+        """按复合评分排序"""
+        items = []
+        for name, p in self.profiles.items():
+            if p.total_samples < MIN_SAMPLES:
+                continue
+            score = self.composite_score(name)
+            items.append((name, score, p.thompson_theta, p.roi, p.confidence, p))
+        items.sort(key=lambda x: -x[1])  # 复合评分降序
+        return items[:n]
 
     # ── 信息查询 ──
 

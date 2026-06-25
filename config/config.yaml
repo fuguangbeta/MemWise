@@ -2,7 +2,7 @@ auto_start: true
 auto_start_admin: true
 auto_start_daemon: true
 auto_start_minimize: true
-clean_mode: deep
+clean_mode: normal
 daemon_trim_every_ticks: 3
 game_processes: []
 hotkey: ctrl+shift+m

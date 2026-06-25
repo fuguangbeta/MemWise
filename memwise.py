@@ -1,6 +1,6 @@
 """
-MemWise v1.1 PARES —— 智能内存看护
-进阶算法: Thompson Sampling + PID 控制 + 3层清理
+MemWise v1.2 PARES —— 智能内存看护
+进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
 
@@ -12,10 +12,11 @@ from core.cleaner import PareCleaner as Cleaner
 from core.sniffer import Sniffer
 from core import winapi
 from core.config import load as _load_cfg
+from core.config import get_state_path
+import core.config as _config
 
 SEP = "─" * 50
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_PATH = os.path.join(BASE_DIR, "memwise_state.json")
+STATE_PATH = get_state_path()
 
 CFG = _load_cfg()
 
@@ -47,7 +48,8 @@ def cmd_status(_):
             with open(STATE_PATH, "r", encoding="utf-8") as f:
                 meta = json.load(f)
             print(f" 画像:   {len(meta.get('profiles',{}))} 个进程已学习")
-        except: pass
+        except Exception:
+            pass
 
 def cmd_learn(args):
     minutes = int(args[0]) if args and args[0].isdigit() else 10
@@ -91,7 +93,9 @@ def cmd_optimize(args):
     result = cleaner.optimize(snaps, learner, mode)
     stats = cleaner.summary()
     trimmed = [t for t in result.get("layer2", []) if t[1]]
-    print(f"\n释放: {stats['freed_mb']} MB | Standby={stats['standby']} | "
+    print(f"\n释放: {stats['freed_mb']} MB | Standby={stats['standby']} "
+          f"Modified={stats['modified']} 压缩={stats['compress']} "
+          f"文件缓存={stats['filecache']} | "
           f"整理={stats['ws_trim']} | Probe={stats['probe']} | 反馈异常={stats['failed_feedback']}")
     if trimmed:
         for snap, ok, freed, reason in trimmed[:20]:
@@ -108,7 +112,6 @@ def cmd_daemon(args):
     learner, judger, cleaner = _build_pipeline()
     sniffer = Sniffer()
     interval = CFG.get("interval", 30)
-    trim_every = CFG.get("daemon_trim_every_ticks", 3)
     mode = CFG.get("clean_mode", "normal")
     scheduled = CFG.get("scheduled_clean")
     i = 0
@@ -120,33 +123,28 @@ def cmd_daemon(args):
     tick = 0
     try:
         while True:
-            tick += 1; m = _mem_or_none()
+            tick += 1
+            tick_start = time.time()
+            m = _mem_or_none()
             if not m: time.sleep(interval); continue
             snaps = sniffer.snapshot(); learner.feed(snaps)
             agg = judger.update_pressure(m["pct"])
             ops = CFG.get("clean_operations")
-            ops_filter = set(ops) if ops else None
-            run_ws = ops_filter is None or "ws" in ops_filter
-            # 与 GUI daemon 一致：按 mode 执行完整分层清理
-            if mode == "quick":
-                if agg > 0.1:
-                    cleaner._layer1_system(min(agg, 0.3), ops_filter)
-                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
-            elif mode == "deep":
-                cleaner._layer1_system(agg, ops_filter)
-                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
-                cleaner._layer3_deep(snaps, learner, agg, ops_filter)
-            elif mode == "full":
-                cleaner._layer1_system(max(agg, 0.7), ops_filter)
-                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
-                if ops_filter is None or "standby" in ops_filter:
-                    time.sleep(3)
-                    cleaner.clean_standby()
-                    cleaner._layer3_deep(snaps, learner, agg, ops_filter)
-                    cleaner.clean_standby_low()
-            else:  # normal / fallback
-                cleaner._layer1_system(agg, ops_filter)
-                l2_results, probe_results = cleaner._layer2_process(snaps, learner) if run_ws else ([], [])
+            result = cleaner.optimize(snaps, learner, mode, operations=ops, aggressiveness=agg)
+            l2_results = result.get("layer2", [])
+            probe_results = result.get("probe", [])
+            agg = result.get("aggressiveness", agg)
+            # 配置热加载：每 2 tick 检查 config.yaml 是否变更
+            if tick % 2 == 0:
+                try:
+                    mtime = os.path.getmtime(_config.CONFIG_PATH)
+                    if mtime != getattr(cmd_daemon, "_cfg_mtime", 0):
+                        cmd_daemon._cfg_mtime = mtime
+                        CFG.update(_load_cfg())
+                        mode = CFG.get("clean_mode", "normal")
+                        interval = CFG.get("interval", 30)
+                except Exception:
+                    pass
             if scheduled:
                 try:
                     sh, sm = map(int, scheduled.split(":"))
@@ -155,13 +153,18 @@ def cmd_daemon(args):
                         last_sched_day = lt.tm_yday
                         print(f"\n⏰ 定时清理触发 ({scheduled})")
                         cleaner.optimize(snaps, learner, mode)
-                except: pass
+                except Exception:
+                    pass
             if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH)
             stats = cleaner.summary()
             sched_info = f" | 定时 {scheduled}" if scheduled else ""
             sys.stdout.write(f"\r内存 {m['pct']}% | agg={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
-                             f"释放 {stats['freed_mb']}MB | 整理 {stats['ws_trim']}{sched_info} | 已运行 {tick*interval}s")
-            sys.stdout.flush(); time.sleep(interval)
+                             f"释放 {stats['freed_mb']}MB | SB={stats['standby']} MP={stats['modified']} "
+                             f"CP={stats['compress']} FC={stats['filecache']} | "
+                             f"整理 {stats['ws_trim']}{sched_info} | {tick*interval}s")
+            sys.stdout.flush()
+            elapsed = time.time() - tick_start
+            time.sleep(max(0.5, interval - elapsed))
     except KeyboardInterrupt:
         learner.save(STATE_PATH)
         stats = cleaner.summary()
@@ -190,7 +193,7 @@ def cmd_auto_start(args):
     else:
         pythonw = sys.executable.replace("python.exe", "pythonw.exe")
         target = pythonw if os.path.isfile(pythonw) else sys.executable
-        arg = os.path.abspath(__file__) + " daemon"
+        arg = os.path.abspath(__file__) + " daemon --minimized"
         wd = os.path.dirname(os.path.abspath(__file__))
     if args[0] == "on":
         ok = winapi.set_auto_start("MemWise", target, arg, wd)
@@ -204,7 +207,7 @@ def cmd_install_service(args):
     exe = sys.executable
     script = os.path.abspath(__file__)
     task_name = "MemWiseDaemon"
-    action = f'"{exe}" "{script}" daemon'
+    action = f'"{exe}" "{script}" daemon --minimized'
     if args and args[0] == "remove":
         subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
                        capture_output=True, shell=True)
@@ -243,7 +246,7 @@ def cmd_profile(args):
 
 def main():
     if len(sys.argv) < 2:
-        print("MemWise v1.1 PARES —— 智能内存看护")
+        print("MemWise v1.2 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
         print("  status                    内存状态")
         print("  learn [分钟]              学习进程行为 (默认10分钟)")
