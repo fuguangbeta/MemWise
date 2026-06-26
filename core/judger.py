@@ -153,21 +153,20 @@ class PareJudger:
 
         # ── Thompson Sampling ──
         theta = self.learner.thompson_score(name)
-        # 联合概率: aggressiveness × theta
-        joint = theta * (0.5 + 0.5 * self.aggressiveness)
-        if joint < joint_threshold:
-            return False, f"联合概率不足({joint:.2f})"
+        # 由 mode 和学习系统决定是否清理，不由当前内存压力二次削减
+        if theta < joint_threshold:
+            return False, f"θ不足({theta:.2f})"
 
         # ── 泄漏检测: 泄漏进程跳过冷却，高频尝试 ──
         if self.learner.is_leak_suspect(name):
             pass  # 泄漏进程不冷却
 
-        # ── 系统目录进程: 需要高 joint 值 ──
+        # ── 系统目录进程: 需要高 θ 值 ──
         path = getattr(snap, "path", None)
-        if path and self._is_system_path(path) and joint < 0.6:
+        if path and self._is_system_path(path) and theta < 0.6:
             return False, "系统目录进程(概率不足)"
 
-        return True, f"θ={theta:.2f} agg={self.aggressiveness:.2f}"
+        return True, f"θ={theta:.2f}"
 
     def can_probe(self, snap):
         """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""

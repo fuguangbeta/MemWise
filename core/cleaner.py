@@ -166,8 +166,9 @@ class PareCleaner:
 
     def _layer1_system(self, aggressiveness, ops_filter=None):
         """
-        系统级清理 — 根据 aggressiveness + ops_filter 选择执行哪些操作
+        系统级清理 — 根据 ops_filter 选择执行哪些操作（不由内存压力决定力度）
         ops_filter: None = 全部, 集合如 {"standby","modified","filecache","compress"}
+        由上层 mode（quick/normal/deep/full）控制调用此方法时传入的 ops_filter。
         """
         ops = []
         has_sb = ops_filter is None or "standby" in ops_filter
@@ -175,35 +176,22 @@ class PareCleaner:
         has_fc = ops_filter is None or "filecache" in ops_filter
         has_cp = ops_filter is None or "compress" in ops_filter
 
-        # ── 频率门控：如果上次清理不足 60s 且内存压力不大，跳过系统级清理 ──
         now = time.time()
-        mem = winapi.get_memory_status()
-        mem_pct = mem["pct"] if mem else 0
-        if now - self._last_standby_time < MIN_STANDBY_INTERVAL and mem_pct < 80 and aggressiveness < 0.6:
-            # 低压 + 短间隔 → 跳过系统级清理，避免空转
-            return {}
-
-        # ── 可用内存门控：可用内存 > 25% 时跳过重清理（Standby/Modified/文件缓存）──
-        mem_avail_pct = 100 - mem_pct  # 可用内存占比
-        skip_heavy = mem_avail_pct > 25 and aggressiveness < 0.4
-
-        # 压缩：低压单次触发，高压渐进式
-        if has_cp and aggressiveness > 0.05:
+        # 按 ops_filter 执行全部允许的操作，力度由 mode 决定，不由内存压力决定
+        if has_cp:
             if aggressiveness > 0.4:
                 ops.append(("progressive_compress", self._progressive_compress))
             else:
                 ops.append(("compress", self.clean_compress))
-        if has_sb and aggressiveness > 0.05:
+        if has_sb:
             ops.append(("standby_low", self.clean_standby_low))
-        if has_sb and aggressiveness > 0.2 and not skip_heavy:
             ops.append(("standby", self.clean_standby))
-        if has_sb and aggressiveness > 0.25 and not skip_heavy:
             ops.append(("deep_standby", self.clean_deep_standby))
-        if has_mp and aggressiveness > 0.1 and not skip_heavy:
+        if has_mp:
             ops.append(("modified", self.clean_modified_pages))
-        if has_sb and aggressiveness > 0.3 and not skip_heavy:
+        if has_sb:
             ops.append(("combine", self.clean_combine_lists))
-        if has_fc and aggressiveness > 0.25 and not skip_heavy:
+        if has_fc:
             ops.append(("filecache", self.clear_file_cache))
 
         if ops:
