@@ -69,7 +69,6 @@ GAME_PROCESSES = {
     "mc.exe", "minecraftuwp.exe",
 }
 
-MIN_STANDBY_INTERVAL = 60  # Standby 清理最小间隔（秒），避免无效频繁清理
 
 
 class PareCleaner:
@@ -421,8 +420,8 @@ class PareCleaner:
         第一次: layer1 + layer2
         第二次 (if high pressure): sleep 5s → layer1 again + layer2 again
         """
-        if aggressiveness < 0.6 or (ops_filter is not None and "ws" not in ops_filter):
-            return  # 压力不够或禁用了 WS 清理
+        if ops_filter is not None and "ws" not in ops_filter:
+            return  # 禁用了 WS 清理
 
         time.sleep(2)
 
