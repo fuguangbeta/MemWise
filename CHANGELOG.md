@@ -218,8 +218,4 @@
 - CLI 界面
 - 首次发布
 
----
-
-##
-
 > [GitHub Releases](https://github.com/fuguangbeta/MemWise/releases) — 下载最新版本与历史发布
