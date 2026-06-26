@@ -74,4 +74,3 @@ RegisterEventSourceW = adv32.RegisterEventSourceW; RegisterEventSourceW.argtypes
 ReportEventW = adv32.ReportEventW; ReportEventW.argtypes=[w.HANDLE,w.WORD,w.WORD,w.DWORD,w.HANDLE,w.WORD,w.DWORD,ctypes.c_void_p,ctypes.c_void_p]; ReportEventW.restype=w.BOOL
 DeregisterEventSource = adv32.DeregisterEventSource; DeregisterEventSource.argtypes=[w.HANDLE]; DeregisterEventSource.restype=w.BOOL
 
-Other functions and classes remain unchanged from the current version...
