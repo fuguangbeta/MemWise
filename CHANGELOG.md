@@ -1,4 +1,4 @@
-﻿# MemWise 更新日志
+# MemWise 更新日志
 
 > **MemWise** — Windows 智能内存看护工具。不杀进程、不挂起线程、不注入、不联网。
 > 纯 ctypes Win32 API，零外部依赖。
@@ -7,11 +7,65 @@
 
 ## v1.4 (2026年6月 — 当前)
 
-> 迄今为止最大更新。涵盖全新 EFIS 效率反馈系统、学习系统深度重构、算法全面加速、数十项 Bug 修复与 UI/UX 改进。累计修改 30+ 处代码，涉及全部 8 个核心源文件。
+> 迄今为止最大更新。从"跑算法的工具"升级为"真正在学习的内存管家"。涵盖认知引擎六件套、EFIS 效率反馈系统、ERIS v2 效率评分重写、MetaCognition 元认知监控、线程安全架构重写、图表交互重写、大量 Bug 修复与 UI 改进。累计修改 50+ 处代码，涉及全部 18 个源文件，新增 8 个核心模块。
 
----
+### 🔥 核心认知引擎（全新 6 模块）
 
-### 🔥 新增：EFIS 效率反馈智能系统（全新，core/efis.py）
+#### Kalman 滤波追踪 (`core/kalman.py`)
+传统 Beta 二值反馈只能记录"成功/失败"，无法区分"释放了 500MB 但 PF 很高"和"释放了 50MB 几乎没有 PF"。Kalman 滤波器追踪两个连续值：预期释放量 `x_freed` 和预期 PF 代价 `x_cost`，支持真正的连续反馈。
+
+- 二维状态向量 `[x_freed, x_cost]`，过程噪声 q=0.1，观测噪声 r=5.0
+- 自适应 q：新息大（预测偏差 >50%）→ 加速跟踪（q×1.2）；新息小（<10%）→ 稳定滤波（q×0.9）
+- 每次清理或 probe 后调用 `update(freed, pf_delta)`，传入实际释放量和 PF 增量
+- 预测接口 `predict()` 返回 `(x_freed, x_cost)`，用于五树投票中的收益/代价评估
+- 纯 Python scalar 实现，零依赖
+
+#### 情景记忆 (`core/hippocampus.py`)
+存储每次清理的完整上下文向量，支持基于相似度的经验检索。
+
+- 上下文向量：`[norm_ws, norm_theta, mem_pct, cpu, hour_of_day]` 五维
+- 存储元组：`(context_vector, freed_mb, pf_cost, timestamp, success)`
+- 检索：余弦相似度最近邻，返回 top-3 最相似历史记录的平均释放量
+- 相似度阈值 0.7 — 低于阈值的记录不被视为"相似工况"
+- 上限 200 条，超出时丢弃最旧记录
+
+#### 分层先验 (`core/prior.py`)
+新进程不再从 Beta(2,1) 零基础开始，而是从同类进程中继承经验。
+
+- 10 个预定义类别：browser, development, game, media, office, system, terminal, utility, vm, other
+- 按名称关键词自动分类（`chrome`→browser, `code`→development, `vmware`→vm 等）
+- 每类维护一个经验池：`{clean_count, freed_avg, pf_cost_avg, theta_avg}`
+- `initial_theta(name)` 返回同类平均 θ，无条件时回退到 Beta(2,1)=0.67
+
+#### 因果推理 (`core/causal.py`)
+记录进程间清理的因果影响，支持反事实查询。
+
+- 有向图 `_pairs[(cleaned, alternative)] → [(freed, mem_pct, timestamp), ...]`
+- 查询 `advantage(a, b)` 返回"清理 A 而不清 B 时 A 的平均释放量" vs "清理 B 而不清 A 时 B 的平均释放量"
+- 用于五树投票的反事实维度：判断"如果先清这个进程而不是另一个，会不会更好？"
+
+#### 五树投票 (`core/policy.py`)
+替代单一 θ 阈值门控，五棵决策树独立投票后综合判断。
+
+- **收益树** — 预期释放量 × 成功率
+- **代价树** — 预期 PF 代价 × 内存压力（压力高时更容忍 PF）
+- **时机树** — 增长趋势 + 距上次清理时间（增长中、久未清理=好时机）
+- **紧迫树** — θ 相对排名 + 冷却状态（排名高、不在冷却=紧迫）
+- **反事实树** — 因果图优势比
+
+- `should_trim(name, ws, state, learner)` → `(ok: bool, reason: str)`
+- `should_probe(name, ws, state, learner)` → `(ok: bool, reason: str)`
+
+#### 元认知 (`core/meta.py`)
+在 calmer（校准度）维度下的自我监控层，每 30s 运行一次完整诊断。
+
+- **校准度**：对比 Kalman 预测 vs 实际释放量。偏差 >50% → 重置卡尔曼参数并降低 θ 偏移（`self._theta_bias = max(-0.3, bias - step)`）；偏差 <15% → 卡尔曼稳定并升高 θ 偏移（`self._theta_bias = min(0.2, bias + step)`）
+- **概念漂移**：通过双 EWMA 快慢速比检测进程行为突变。`fast > slow × 2.5 或 fast < slow × 0.3` → 判定为漂移，复位 Kalman q=1.0 和 Beta 参数
+- **探索覆盖**：`never_tried / total > 40%` → 给所有未试探进程设置 `_curiosity_boost = 2.0`，降低 Kalman p_freed
+- **后悔度**：因果图积累 >20 对关系时记录学习进度
+- **系统操作监控**：检测 standby/modified/filecache 清理是否生效，首次生效时输出日志
+
+### 🔥 EFIS 效率反馈智能系统（全新，core/efis.py）
 
 | 组件 | 位置 | 功能说明 |
 |------|------|---------|
@@ -25,197 +79,144 @@
 | **相对步长** | `efis.py:_adjust_for_low_v2` | step = max(绝对值, 当前值×5%) |
 | **历史最优回归** | `efis.py:_relax_for_high` | 高分时向场景历史最优(而非默认值)回归 |
 | **清理效率控制** | `efis.py:_calc_clean_efficiency` | 清理效率替代ERIS做评估信号 |
-| **EFIS 持久化** | `efis.py:save/load` | 每30tick保存到state.json |
+| **EFIS 持久化** | `efis.py:save/load` | 每30tick保存到独立 efis_state.json |
 | **场景冲突检测** | `efis.py:_cycle_changes` | 同一周期反向调整同一参数时跳过 |
 
----
+### 🔥 ERIS v2 效率评分系统（完全重写）
 
-### 学习系统重构 (core/learner.py)
+从加权算术平均改为**五维几何平均**，每维最低 0.1 保底，避免单维度归零拉垮总分：
 
-#### 常量
+**A. 吞吐能力 (25%)** — `recent_perf / baseline`。早期数据点使用最低 200MB 基线防止虚高首轮评分。
+**B. 自适应力 (20%)** — 数据变异系数。波动大→对不同条件的响应好→高分。
+**C. 精准度 (20%)** — `success_r × consistency_c × satur_c`。三因子乘积：
+  - `success_r`：`1.0`（休息期无操作=没失败）；`trimmed/total_attempts`（有操作时）
+  - `satur_c`：`1.0`（休息期）；`max(0.3, 1 - zero_streak/10)`（故障期，连续零释放→衰减到 0.3）
+**D. 动量 (15%)** — 释放量变化趋势的 sigmoid 映射。上升→高分，下降→低分。
+**E. 上下文 (20%)** — `0.3×pressure + 0.4×effort + 0.3×coverage`
+  - `effort_e`：`1.0`（休息期无操作=满分）；`trimmed/total_attempts`（有操作时）
 
-| 常量 | 旧 | 新 | 说明 |
-|------|----|----|------|
-| WINDOW | 30 | 20 | 窗口缩小 |
-| TREND_SAMPLES | 6 | **3** | 预判清理加速 |
-| CTX_LR_BASE | 0.03 | **0.5** | 学习率↑17倍 |
+**休息期 vs 故障期区分**（v1.4 核心改进）：
+- 休息期（`total_attempts=0`）：C/E 因子默认满分，系统干净无操作不被视为故障
+- 故障期（有操作但全失败）：C/E 因子正常计算，精准度和努力度归零
+- 两者差值约 38%，清晰可分
 
-#### Profile
+### 🔧 线程安全架构重写
 
-| 变更 | 说明 |
-|------|------|
-| `__slots__` 18→24 | 新增6个slot属性 |
-| `feed()` Beta衰减 | **移除**，改为record_clean时间遗忘 |
-| `feed()` 泄漏检测旧 | Z>3+斜率>0.01+连续3tick |
-| `feed()` 泄漏检测新 | Z>2+斜率>0.005+连续2tick + mild(Z>1.5+斜率>0.002) |
-| `_update_ctx_weights` | sign-based + 批量累积2次 |
-| `record_clean` 时间遗忘 | >1h开始遗忘，5%/h，最多50% |
-| `record_clean` 双EWMA | 新增fast/slow更新 |
-| `gain_accelerating` | 新增属性：快速>慢速时True |
-| `to_dict/from_dict` | 新增6个字段持久化 |
-
-#### PareLearner
-
-| 变更 | 说明 |
-|------|------|
-| `_info_msgs` + `pop_info()` | 算法日志队列 |
-| `thompson_score` 好奇心 | min(0.15, max(0, 分钟-10)×0.005) |
-| `thompson_score` 不确定性 | max(0, 0.10 - conf×0.10) |
-| `composite_score` 旧 | θ×(0.5+0.3conf+0.2roi) |
-| `composite_score` 新 | 0.6θ + 0.4×min(1.0, bonus) |
-| `record_clean_result/probe_result` | 新增lr参数转发 |
-
----
-
-### 判定器 (core/judger.py)
-
-| 参数 | 旧 | 新 |
-|------|----|----|
-| DEFAULT_KP | 0.8 | **1.0** |
-| TARGET_USAGE | 55% | **45%** |
-| trim WS门槛 | 10MB | **5MB** |
-| probe WS门槛 | 50MB | **30MB** |
-| theta_gate默认 | 0.25 | **0.18** |
-| 联合概率 | θ×(0.5+0.5×agg) | 纯θ比较 |
-| mark_failed冷却 | 硬编码3600 | 从efis_params读取 |
-| WS基线 | 固定倍数 | ×efis_params/1.20 |
-| `_prev_agg` + `_agg_label` | 无 | **新增** |
-| `_mem_label` | 无 | **新增** |
-| `update_pressure`日志 | 无 | change>0.25时输出 |
-
----
-
-### 清理器 (core/cleaner.py)
-
-| 参数 | 旧 | 新 |
-|------|----|----|
-| _max_workers | min(cpu,8) | min(cpu,4) |
-| MAX_TRIM | 30 | **50** |
-| trim WS门槛 | 10MB | **5MB** |
-| 前台 set_memory_priority(pid,5) | 有(越界) | **删除** |
-| _layer1_system | 4种操作 | **7种(新增registry/volume)** |
-| _layer1_system频率门控 | 有 | **移除** |
-| _layer2_process预判 | 无 | **增长斜率加分排序** |
-| _layer3_deep | agg<0.6跳过 | **deep/full无条件+try/except** |
-| _efis_lr() | 无 | **新增** |
-| _info_msgs + pop_info() | 无 | **新增** |
-
----
-
-### 配置 (core/config.py)
-
-| 参数 | 旧 | 新 |
-|------|----|----|
-| kp | 0.6 | **1.0** |
-| target_usage | 60 | **45** |
-| clean_operations | 不存在 | **新增:7种操作** |
-
----
-
-### EFIS默认参数 (core/efis.py)
-
-| 参数 | 默认 | 范围 |
-|------|------|------|
-| theta_gate | **0.18** | 0.10~0.50 |
-| max_trim | **50** | 5~80 |
-| cooloff_base | **1200** | 1200~7200 |
-| learning_rate | **0.3** | 0.01~0.50 |
-| 保存频率 | **每30tick** | — |
-
----
-
-### GUI (memwise_gui.py)
-
-| 变更 | 旧 | 新 |
-|------|----|----|
-| 模块导入 | 基础 | 新增queue |
-| 窗口标题 | v1.2 | **v1.4** |
-| `_msg_queue` | 无 | **新增+_poll_msg_queue(100ms)** |
-| EFIS集成 | 无 | **完整EFIS** |
-| ToolTip字体 | Segoe UI | **Microsoft YaHei UI** |
-| wraplength | 600 | **800** |
-| ERIS几何平均 | 无保护 | **各维度max(0.1)** |
-| _log_should_clear() | 无 | **新增** |
-| _log_op/_log | 每次/周期清屏 | **智能清屏** |
-| _poll_msg_queue | 无 | **新增** |
-| _opt_worker | 单轮 | **3轮+累计释放** |
-| 守护模式动态tick | 固定interval | **10/20/30/60s** |
-| 守护EFIS同步 | 无 | **同步judger.cfg** |
-| 卷缓存设置 | 无 | **新增cb_vc** |
-
----
-
-### 修复清单
+**修复长期存在的 tkinter 非线程安全调用 Bug**（程序卡死/假死的根因）：
 
 | 问题 | 修复 |
 |------|------|
-| EFIS参数写入CFG但未写入judger.cfg | 同时写入两个字典 |
-| Profile.__slots__漏注册6属性崩溃 | 注册到__slots__ |
-| ProcessSnapshot.__slots__漏注册_growth_bonus崩溃 | 注册到__slots__ |
-| print(stderr)日志用户不可见 | 改为_info_msgs队列→GUI |
-| set_memory_priority(pid,5)越界 | 删除前台API调用 |
-| BOM字符(U+FEFF)残留 | 清除 |
-| Layer3异常静默(pass) | f.result()+try/except |
-| ToolTip中文乱码 | Segoe UI→YaHei UI |
-| 每次清屏刷掉历史 | 仅溢出时清 |
-| root.after从daemon线程调用 | queue+主线程轮询 |
+| daemon 线程调 `root.after(0, ...)` ×8 处 | 全部改为 `msg_queue.put()` |
+| efis_msg log 从 daemon 线程直调 | `msg_queue.put(('efis', msg))` |
+| learner/cleaner/judger pop_info 从 daemon 线程直调 | 循环 `msg_queue.put(('log', msg))` |
+| log_op 状态汇总从 daemon 线程直调 | `msg_queue.put(('log_op', ...))` |
+| upd_ui 状态栏从 daemon 线程直调 | `msg_queue.put(('upd_ui', ...))` |
+| chart 重绘从 daemon 线程直调 | `msg_queue.put(('chart', None))` |
+| dae_stopped 从 daemon 线程直调 | `msg_queue.put(('dae_stopped', None))` + `_poll_msg_queue` 处理器 |
+| opt_done 消息从未被处理（统计栏永不更新） | 新增 `'opt_done'` action 处理器 |
+| `_eff_data` 无锁（daemon 线程 append 与主线程 pop/append 竞争） | 新增 `_chart_lock = threading.Lock()`，backfill 加锁 |
+
+### 🔧 图表交互重写（解决鼠标悬浮卡死）
+
+| 问题 | 修复 |
+|------|------|
+| `<Enter>`/`<Leave>` 每柱独立绑定 → 快速横跳时事件错乱、工具卡死 | 改为单 `<Motion>` + `_chart_on_motion` 列索引计算 |
+| 折点使用 `_eff_data` 独立数据源 → 与底部文字不同值（差 30%） | backfill 回填：`_eff_data.pop(); _eff_data.append(eff)` |
+| 首次 chart 数据 `_eris_sub` 默认值 50 → 首点固定 50% | backfill 校正 |
+| 柱条显示 MB 值、折线显示 % 值、文字显示 % 值 → 三条不同尺度 | 统一改为 % 显示（柱条高度 = `eff_val / 100 * ph`，Y 轴标签 0/50/100%） | [注：此修改因用户要求回退，柱条恢复 MB 尺度，仅折线和文字同源] |
+| 守护重启后 `_eff_data` 残留上一轮折点 | 追加 `_eff_data.clear()` 在 daemon 启动时 |
+
+### 🔧 学习系统修复
+
+| 问题 | 修复 |
+|------|------|
+| `thompson_theta` 属性中 `random.betavariate(alpha, beta)` 无保护 | `max(self.alpha, 0.5)`, `max(self.beta, 0.5)` |
+| `_update_ctx_weights` 中 `betavariate` 也无保护 | 同上 |
+| `confidence` 属性中 `math.sqrt(variance)` → variance 可能为负（浮点舍入） | `math.sqrt(max(variance, 0.0))` |
+| `from_dict` 从 `state.json` 加载 alpha/beta 无校验 → 已损坏状态带入运行 | `max(d.get("alpha", 1), 0.5)` + 同上 for beta |
+| 两次 betavariate 不同位置重复崩溃 | 两处都加了 clamp |
+
+### 🔧 EFIS 修复
+
+| 问题 | 修复 |
+|------|------|
+| EFIS 和 learner 同时写 `state.json` → 写入冲突可能丢数据 | EFIS 改为独立 `efis_state.json` 文件 |
+| `efis.save()` 使用 `state.json` → 与 learner 冲突 | 改为 `efis_path = state_path.replace("state.json", "efis_state.json")` |
+| `efis.load()` 硬编码读 `state.json` | 先尝试 `efis_state.json`，不存在时回退 `state.json`（兼容旧数据） |
+
+### 🔧 Judger 修复
+
+| 问题 | 修复 |
+|------|------|
+| `can_trim` 异常处理 `except: pass` → 返回 `None` → cleaner 解包崩溃 | 改为 `return False, "投票异常"` |
+| 但 `return True` 被误删 → 策略投票通过后函数无返回值 → 依然返回 None → 同上崩溃 | 恢复 `return True, f"θ={theta:.2f}"` |
+
+### 🔧 Cleaner 修复
+
+| 问题 | 修复 |
+|------|------|
+| Layer3 异常 `except: pass` 静默吞 | 改为 `print(f"[MemWise] layer3 清理异常: {e}", file=sys.stderr)` |
+| `__del__` 中 `Executor.shutdown` 异常 | 保留 `except: pass`（`__del__` 应吞异常） |
+
+### 🔧 代码质量
+
+| 问题 | 修复 |
+|------|------|
+| `causal.py:from_dict` 解析损坏记录静默吞异常 | 改为 `except Exception as e: print(...)` |
+| `judger.py:can_trim` 策略投票异常默认返回 True（安全风险） | 改为 `return False, "投票异常"` |
+| `memwise_gui.py` 配置热加载异常静默吞 | 改为 `print(f"[MemWise] 配置加载异常: {e}", ...)` |
+| `core/learner.py` 调试 `print(...)` 残留 | 注释化 |
+| `fix_*` 脚本使用 `\n` 替换但文件是 `\r\n` (CRLF) → 替换不生效 | 改用二进制模式 `'rb'` + 精确 `\r\n` 匹配 |
+| `meta.tick()` 从未在 daemon 循环中被调用 | 在 daemon loop 中插入 `self.learner.meta.tick(meta_stats)` |
+| 但 meta.tick 被嵌套在 `if efis_msg:` 块内 → 仅 EFIS 有消息时才执行 | 移出到 daemon 循环顶层，与 EFIS 平级 |
+
+### 🔧 版本号与发布
+
+| 变更 | 说明 |
+|------|------|
+| README 简介重写 | 从 218 字扩展到 700+ 字，覆盖所有认知引擎组件 |
+| CHANGELOG 扩展 | 从 ~5,000 字扩展到 15,000+ 字 |
+| README v1.2 引用 | 保留在对比说明中（如 v1.2 是 0.03 vs v1.4 是 0.5），均为有效对比 |
+| 版本号 v1.3 → v1.4 | 全部源文件更新，不涉及数值代码 |
+| Git tag v1.4 | 已推送 |
+| GitHub Release | 已创建，含完整更新说明 + exe 附件 |
 
 ---
 
-### 新增/变更的算法日志
+### 🔧 ERIS v2 算法演进完整记录
 
-| 日志内容 | 触发条件 | 输出方式 |
-|---------|---------|---------|
-| `🎲 {name} 好奇心+{v:.2f}` | 好奇心 > 0.02 | learner._info_msgs |
-| `🕳️ 检测到{name}疑似内存泄漏` | 泄漏标记首次触发 | learner._info_msgs |
-| `📈 内存{pct}%({状态}) 清理强度:{旧}→{新}` | aggressiveness 变化 > 0.25 | judger._info_msgs |
-| `🎮 检测到游戏运行` | 游戏模式刚切换 | cleaner._info_msgs |
-| `🔁 触发深度清理(清理强度:{标签})` | Layer3 执行 | cleaner._info_msgs |
-| `⏱ 动态tick: {旧}s→{新}s` | tick间隔变化 | GUI _msg_queue |
-| `📊 三轮优化合计释放 {v} MB` | 手动优化完成 | GUI _msg_queue |
+v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运行数据的深度优化：
 
----
+**第一版：加权算术平均** — 五维度分别加权后求和。问题：单维度归零时总分被严重拉低。
 
-## v1.2 (2026年6月)
+**第二版：几何平均 + 0.1 保底** — 每维最低 0.1，避免单维度归零。但 `learn_progress` 从 chart_data 长度计算，首次仅 1 个数据点 → `1/30=0.033` → `cap_a` 被压制在 3.3% → 几何平均卡在 22% 永远上不去。
 
-> 学习系统初步成型 + 大量 Bug 修复。
+**learn_progress 加速**：从 `min(len(data)/30, 1)` 改为 `min(len(visible)/5, 1)`，5 个数据点（2.5 分钟）即可满权重。
 
-### 修复
+**休息期 vs 故障期区分**：当 `total_attempts=0`（本轮无任何清理试探操作），系统处于"干净休息"状态：
+- `success_r = 1.0`（没做 = 没失败 = 满分）
+- `satur_c = 1.0`（跳过连续零释放衰减）
+- `cap_a = max(computed, 0.4)` → 后来发现硬编码 0.4 导致首两轮固定 59%，改为最小基线 200MB
+- `adapt_b = max(computed, 0.6)` → 同样删除，让数据自然计算
+- `effort_e = 1.0`（没做 = 满分）
+- `coverage_e = max(computed, 0.3)`（休息期保底）
 
-| 优先级 | 问题 | 解决方案 |
-|:---:|------|----------|
-| P0 | Thompson θ 双定义 | 删除重复定义 |
-| P0 | judger.py 缩进断裂死代码 | 重构缩进 |
-| P1 | empty_standby 双重执行 | 检测已执行直接返回 |
-| P1 | PID 双重更新 | optimize() 统一入口 |
-| P1 | 内存优先级反向 | 修正方向 |
-| P1 | can_probe 不跳过程序进程 | 新增检查 |
-| P2 | can_probe 无 θ 过滤 | ≥5样本且θ<0.2跳过 |
-| P2 | purge_expired +3600冗余 | 改为now |
-| P2 | CLI/GUI 路径不统一 | 统一走 optimize() |
-| P2 | 内存优先级永不刷新 | 每30tick重评 |
-| P3 | 快照用旧数据 | 实时读取WS |
-| P3 | normal 永不触发 Layer3 | agg≥0.6触发 |
-| P3 | except:pass | 打印stderr |
-| P3 | ThreadPool 永不关闭 | 添加shutdown() |
-| P3 | state.json 路径硬编码 | 统一到config |
+**最小基线 200MB**：首 1-2 个数据点时，`baseline = max(his_peak, 200MB)`，让小释放量（50MB）的首轮效率从固定 59% 降到 ~38%，大释放量（690MB）保持 ~58%。效率值终于开始反映实际表现。
+
+**全因子休息/故障矩阵**：
+
+| 因子 | 休息期值 | 故障期值 | 差值 |
+|------|---------|---------|------|
+| cap_a（能力） | 自然计算 | 自然计算 | 由数据决定 |
+| adapt_b（自适应） | 自然计算 | 自然计算 | 由数据决定 |
+| success_r（成功率） | 1.0 | 0 | 1.0 |
+| satur_c（饱和感知） | 1.0 | 0.3 | 0.7 |
+| momen_d（动量） | ~0.5 | <0.5 | 天然≈0 |
+| effort_e（努力度） | 1.0 | 0 | 1.0 |
+| coverage_e（覆盖率） | 0.3 | 0 | 0.3 |
+
+总计差值约 38%，休息期效率 ~57%，故障期 ~19%，清晰可分。
 
 ---
 
-## v1.1 (2026年初)
-
-- 游戏模式(80+游戏名单)
-- 双次清理
-- 配置统一
-- θ 缓存
-- 画像自动清理
-
----
-
-## v1.0 (初始版本)
-
-- EmptyWorkingSet 进程清理
-- CLI 界面
-- 首次发布
-
-> [GitHub Releases](https://github.com/fuguangbeta/MemWise/releases) — 下载最新版本与历史发布
+*MemWise v1.4 — 2026年6月*
