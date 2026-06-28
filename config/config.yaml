@@ -1,9 +1,23 @@
-auto_start: true
+auto_start: false
 auto_start_admin: true
 auto_start_daemon: true
 auto_start_minimize: true
-clean_mode: normal
+clean_mode: deep
+clean_operations:
+- ws
+- standby
+- compress
+- registry
+- modified
+- volume
 daemon_trim_every_ticks: 3
+efis_params:
+  cooloff_base: 6240.0
+  cpu_gate: 0.30000000000000016
+  learning_rate: 0.34
+  max_trim: 80
+  theta_gate: 0.14
+  ws_baseline_mul: 1.05
 game_processes: []
 hotkey: ctrl+shift+m
 interval: 30

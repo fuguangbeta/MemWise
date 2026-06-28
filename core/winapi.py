@@ -56,6 +56,8 @@ Process32NextW = k32.Process32NextW; Process32NextW.argtypes=[w.HANDLE,ctypes.PO
 OpenProcess = k32.OpenProcess; OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD]; OpenProcess.restype=w.HANDLE
 CloseHandle = k32.CloseHandle; CloseHandle.argtypes=[w.HANDLE]; CloseHandle.restype=w.BOOL
 GetCurrentProcess = k32.GetCurrentProcess; GetCurrentProcess.argtypes=[]; GetCurrentProcess.restype=w.HANDLE
+CreateFileW = k32.CreateFileW; CreateFileW.argtypes=[w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD, w.DWORD, w.HANDLE]; CreateFileW.restype=w.HANDLE
+FlushFileBuffers = k32.FlushFileBuffers; FlushFileBuffers.argtypes=[w.HANDLE]; FlushFileBuffers.restype=w.BOOL
 OpenProcessToken = k32.OpenProcessToken; OpenProcessToken.argtypes=[w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]; OpenProcessToken.restype=w.BOOL
 LookupPrivilegeValueW = adv32.LookupPrivilegeValueW; LookupPrivilegeValueW.argtypes=[w.LPCWSTR, w.LPCWSTR, ctypes.POINTER(LUID)]; LookupPrivilegeValueW.restype=w.BOOL
 AdjustTokenPrivileges = adv32.AdjustTokenPrivileges; AdjustTokenPrivileges.argtypes=[w.HANDLE, w.BOOL, ctypes.c_void_p, w.DWORD, ctypes.c_void_p, ctypes.c_void_p]; AdjustTokenPrivileges.restype=w.BOOL
@@ -105,7 +107,10 @@ def get_memory_status():
     return None
 
 def get_process_memory(pid):
+    """获取进程内存信息。先用标准权限查询，失败时回退到受限查询。"""
     h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+    if not h:
+        h = OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not h: return None
     try:
         pmc = PROCESS_MEMORY_COUNTERS_EX(); pmc.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
@@ -335,6 +340,68 @@ try:
 except AttributeError:
     pass
 
+# ── 进程树（父进程查询）──
+
+def get_parent_process_name(pid):
+    """返回给定 PID 的父进程名，或 None"""
+    try:
+        snapshot = k32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        if snapshot and snapshot != w.HANDLE(-1).value:
+            pe32 = (ctypes.c_ubyte * 556)()  # PROCESSENTRY32W size
+            ctypes.memset(pe32, 0, 556)
+            ctypes.cast(ctypes.pointer(pe32), ctypes.POINTER(w.DWORD))[0] = 556
+            if k32.Process32FirstW(snapshot, ctypes.byref(pe32)):
+                while True:
+                    # dwSize[0], cntUsage[4], th32ProcessID[8], th32DefaultHeapID[12],
+                    # th32ModuleID[20], cntThreads[24], th32ParentProcessID[28], pcPriClassBase[32], dwFlags[36], szExeFile[40]
+                    entry_pid = ctypes.cast(ctypes.pointer(pe32) + 8, ctypes.POINTER(w.DWORD))[0]
+                    entry_parent = ctypes.cast(ctypes.pointer(pe32) + 28, ctypes.POINTER(w.DWORD))[0]
+                    if entry_pid == pid:
+                        name_wchar = ctypes.c_wchar_p(ctypes.addressof(pe32) + 40)
+                        name = name_wchar.value
+                        k32.CloseHandle(snapshot)
+                        return name
+                    if not k32.Process32NextW(snapshot, ctypes.byref(pe32)):
+                        break
+            k32.CloseHandle(snapshot)
+    except Exception:
+        pass
+    return None
+
+# ── 事件驱动：内存通知 + 等待 ──
+
+MEMORY_RESOURCE_NOTIFICATION_TYPE_LOW = 0
+MEMORY_RESOURCE_NOTIFICATION_TYPE_HIGH = 1
+
+def create_memory_resource_notification(notification_type):
+    """创建内存资源通知对象。
+    Low: 可用内存低于阈值时触发
+    High: 可用内存恢复到阈值以上时触发
+    返回 HANDLE，可在 WaitForSingleObject 中使用
+    """
+    try:
+        k32.CreateMemoryResourceNotification.argtypes = [w.DWORD]
+        k32.CreateMemoryResourceNotification.restype = w.HANDLE
+        return k32.CreateMemoryResourceNotification(notification_type)
+    except Exception:
+        return None
+
+def wait_for_object(handle, timeout_ms):
+    """等待对象置位，或超时。
+    timeout_ms=INFINITE(0xFFFFFFFF) → 一直等到有信号
+    返回值: WAIT_OBJECT_0(0)=有信号, WAIT_TIMEOUT(0x102)=超时
+    """
+    WAIT_TIMEOUT = 0x102
+    try:
+        k32.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+        k32.WaitForSingleObject.restype = w.DWORD
+        ret = k32.WaitForSingleObject(handle, timeout_ms)
+        if ret == WAIT_TIMEOUT:
+            return "timeout"
+        return "signaled"
+    except Exception:
+        return "error"
+
 # ============================================================
 # 新增: 拓展清理操作
 # ============================================================
@@ -375,6 +442,34 @@ def trigger_memory_compression():
         return False
     info = w.ULONG(6)  # MemoryCompressInformation
     return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+
+
+def clear_registry_cache():
+    """清空注册表缓存 (Win8.1+)
+    注册表操作累积的缓存数据，清理后可释放 50-200 MB。"""
+    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
+        return False
+    # SystemRegistryReconciliationInformation = 81, NULL buffer = 0
+    return NtSetSystemInformation(81, None, 0) == 0
+
+
+def flush_volume_cache():
+    """刷新所有磁盘卷的文件缓存 (Vista+)
+    强制所有已挂载卷的缓存数据写回磁盘。"""
+    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
+        return False
+    try:
+        import string, os
+        for letter in string.ascii_uppercase:
+            vol = f"{letter}:\\"
+            if os.path.exists(vol):
+                h = k32.CreateFileW(vol, 0x40000000, 3, None, 3, 0x80, None)
+                if h and h != -1:
+                    k32.FlushFileBuffers(h)
+                    k32.CloseHandle(h)
+        return True
+    except Exception:
+        return False
 
 def empty_standby_deep():
     """深度 Standby 清理 — 多轮递进，捕获逐轮释放的新增可回收页"""
@@ -819,7 +914,7 @@ def create_memwise_icon(size=32, bg_color=(45,45,50)):
 def set_auto_start_admin(name, target_path, arguments=""):
     """通过 schtasks 创建计划任务，登录时以最高权限启动（无 UAC 弹窗）"""
     try:
-        import subprocess, shlex
+        import subprocess
         quoted = f'"{target_path}"'
         if arguments:
             quoted += f" {arguments}"
