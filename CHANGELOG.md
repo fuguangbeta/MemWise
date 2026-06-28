@@ -220,3 +220,135 @@ v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运
 ---
 
 *MemWise v1.4 — 2026年6月*
+
+
+### 🔧 线程安全架构重写（解决程序卡死/假死的根因）
+
+这是 v1.4 最重要的一项基础架构修复。整个 daemon 循环中存在 8 处 `self.root.after(0, ...)` 调用，全部从 daemon 工作线程直接调用 tkinter API——**而 tkinter 不是线程安全的**。
+
+**技术原理**：`tkinter.Tk.after()` 的实现会向 Tcl/Tk 的事件队列写入数据。Tcl 的事件队列使用全局链表，没有跨线程锁保护。当 daemon 线程和主线程同时操作这个链表时，内存损坏不可避免——表现为主线程事件循环进入 wait-for-message 后永久卡死。这就是用户观察到的"程序卡死、鼠标不动、界面完全无响应"现象。
+
+修复清单：
+
+| 原代码（daemon 线程中） | 问题 | 修复 |
+|---|---|---|
+| `self.root.after(0, lambda: self._log('[EFIS] '+msg))` | 非主线程写 Tcl 事件队列 | `self._msg_queue.put(('efis', msg))` |
+| `self.root.after(0, lambda m=msg: self._log(m))`（learner pop_info） | 同上 | `self._msg_queue.put(('log', msg))` |
+| `self.root.after(0, lambda m=msg: self._log(m))`（cleaner pop_info） | 同上 | `self._msg_queue.put(('log', msg))` |
+| `self.root.after(0, lambda m=msg: self._log(m))`（judger info_msgs） | 同上 | `self._msg_queue.put(('log', msg))` |
+| `self.root.after(0, lambda: self._log_op(...))`（状态汇总） | 同上 | `self._msg_queue.put(('log_op', ...))` |
+| `self.root.after(0, lambda: self._upd_dae_ui(...))`（状态栏更新） | 同上 | `self._msg_queue.put(('upd_ui', ...))` |
+| `self.root.after(0, lambda: self._draw_chart())`（图表重绘） | 同上 | `self._msg_queue.put(('chart', None))` |
+| `self.root.after(0, self._dae_stopped)`（守护停止） | 同上 | `self._msg_queue.put(('dae_stopped', None))` |
+
+所有 UI 更新现在通过 `queue.Queue` 传递到主线程的 `_poll_msg_queue`（每 100ms 由 `root.after(100, ...)` 调度），daemon 线程不再直接触碰任何 tkinter 对象。
+
+额外发现的线程安全问题：
+
+- **`_eff_data` 无锁竞争**：daemon 线程每 30s append 效率值到 `_eff_data`，主线程在 `_draw_chart` backfill 中 pop/append。虽因 CPython GIL 不崩溃，但可能丢数据点。修复：新增 `self._chart_lock = threading.Lock()`，backfill 加锁。
+- **`_poll_msg_queue` 原始版本异常后永久停止**：`except queue.Empty: pass` 之后未跟 `finally`，若处理消息时抛出非 `queue.Empty` 异常，`root.after(100, ...)` 永不执行 → 消息轮询永久停止 → 界面假死。修复：`finally: self.root.after(100, self._poll_msg_queue)`。
+- **`opt_done` 消息从未被处理**：`_opt_worker` 发送 `('opt_done', None)` 但 `_poll_msg_queue` 缺少这个 action 的 handler —— 消息静默丢弃。手动优化后统计栏永不更新、按钮永不恢复。修复：新增 `elif action == 'opt_done': self._opt_done(args)`。
+- **`opt_done` 不传结果**：消息中传递 `None` 而非最后一轮的 `result` 字典，导致 `_opt_done` 内 `result.get("layer2", [])` 调用时崩溃。修复：改为 `('opt_done', r)` 传递真实结果。
+
+### 🔧 图表交互重写（解决鼠标悬浮卡死、工具提示消失）
+
+**问题场景**：用户报告鼠标在图表区域和外部快速反复横跳时，详细信息提示框（显示释放量和效率值的悬浮窗）被卡住不消失，然后程序整个卡死。
+
+**根因分析**：原始实现使用 `<Enter>`/`<Leave>` 事件绑定在每个柱条的命中矩形上。每个柱条独立绑定意味着 N 个柱条有 N 对 Enter/Leave 处理器。当鼠标快速横跨多个柱条时：
+- tkinter 需要处理 N 个 Leave + N 个 Enter 事件
+- 每个事件处理器都操作 Canvas（`create_rectangle` / `create_text` / `delete`）
+- 高频 Canvas 操作 + `poll_msg_queue` 的 `_draw_chart()` 全量重绘 → Canvas 内部状态可能出现竞争
+- Tooltip 创建后对应的 Leave 事件因快速移动被丢弃 → Tooltip 永远不消失
+
+**修复方案**：改为单 `<Motion>` 绑定，通过列索引计算确定当前柱条：
+- 移除所有 `tag_bind(tag, "<Enter>", ...)` 和 `tag_bind(tag, "<Leave>", ...)` 调用
+- 图表绘制完成后，绑定 `c.bind("<Motion>", self._chart_on_motion)` 到整个 Canvas
+- 新增 `_chart_on_motion` 方法：`col = (event.x - px0) // step` 直接计算列索引
+- 索引有效（`0 <= col < len(visible)`）→ 查找对应 `eff_pts[col]` 调用 `_chart_show_tip`
+- 索引无效（鼠标在图表外或间隙中）→ 调用 `_chart_hide_tip` 清除 Tooltip
+- 同时追加 `c.tag_unbind("all", "<Enter>")` 和 `c.tag_unbind("all", "<Leave>")` 清除所有遗留绑定
+
+**数据回填机制**：图表底部的文字"效率: XX%"由 `_draw_chart` 内联 ERIS v2 算法计算，而钢蓝色折点的 Y 轴位置由 `_eff_data`（由 daemon tick 时存储的 `_eris_sub` 值决定）驱动。两者使用同一算法，但计算时机不同。当 `_chart_data` 在 daemon tick 和 chart draw 之间发生变化（例如手动优化触发 `_opt_done`），两者会分歧。修复：每次 `_draw_chart` 算出 `eff` 后，检查 `_eff_data` 末尾值偏差 >0.5% 则用 inline 结果替换末尾值。
+
+### 🔧 学习系统健壮性修复
+
+**`random.betavariate` 崩溃**：`thompson_theta` 属性和 `_update_ctx_weights` 方法中均有 `random.betavariate(self.alpha, self.beta)` 调用。根据 CPython 源码，`betavariate` 在 `alpha <= 0.0` 或 `beta <= 0.0` 时会抛出 `ValueError: alpha and beta must be > 0.0`。`self.alpha` 初始化时为 2 且只增不减（`record_clean` 中 `+= 1 + bonus`），本不可能为负。但 `_update_ctx_weights` 的 EWMA 公式 `self.alpha = min(5.0, self.alpha * 0.05 + base * 0.95)` 可能将其衰减到接近 0。更严重的是，`from_dict` 从 `state.json` 加载时直接读取存储值——如果之前版本的 bug 已写入负值或零值，加载后 `betavariate` 立即崩溃。修复：两处 `betavariate` 调用均加上 `max(self.alpha, 0.5)` 和 `max(self.beta, 0.5)` 保护。
+
+**`math.sqrt(variance)` 崩溃**：`confidence` 属性中 `variance = (self.alpha * self.beta) / ((self.alpha + self.beta) ** 2 * (self.alpha + self.beta + 1))`。极端情况下浮点舍入可导致 `variance` 为极小的负数（如 -0.0038）。`math.sqrt(variance)` 要求 `variance >= 0.0`。修复：`math.sqrt(max(variance, 0.0))`。
+
+**`from_dict` 无校验**：从 `state.json` 加载 `alpha` 和 `beta` 时直接 `d.get("alpha", 1)`，无任何值范围校验。已损坏的持久化数据会带入运行环境。修复：`max(d.get("alpha", 1), 0.5)` 和 `max(d.get("beta", 1), 0.5)`。
+
+### 🔧 ERIS v2 效率评分系统迭代历程
+
+第一版（加权算术平均）：五维度分别加权求和。问题：单维度归零时总分被严重拉低。
+
+第二版（几何平均 + 0.1 保底）：每维最低 0.1 保护。但 learn_progress 从 `_chart_data` 长度计算——首次仅 1 个数据点 → `learn_progress = 1/30 = 0.033` → `cap_a` 被压制在 3.3% → 几何平均卡在 22%。
+
+第三版（learn_progress 加速）：`min(len(visible)/5, 1)` 替代 `min(len(data)/30, 1)`。5 个数据点（2.5 分钟）即可满权重。但首次 1 个数据点依然只有 0.2，始终固定 59%。
+
+第四版（休息期硬编码覆盖）：为 `success_r`、`satur_c`、`cap_a`、`adapt_b`、`effort_e`、`coverage_e` 添加 `total_attempts == 0` 判断。但 `cap_a` 和 `adapt_b` 使用硬编码 0.4 和 0.6 导致首两轮固定 59%。
+
+最终版（最小基线 + 自然计算）：删除 `cap_a` 和 `adapt_b` 的硬编码覆盖，新增最小基线 `if len(visible) <= 2: baseline = max(baseline, 200MB)`。首轮释放 50MB → ERIS ~38%；释放 690MB → ERIS ~58%。效率值终于开始反映实际表现。
+
+全因子休息期 vs 故障期矩阵：C 因子（`success_r` 和 `satur_c`）和 E 因子（`effort_e` 和 `coverage_e`）保留休息期保护——当 `total_attempts = 0`（系统干净无操作）时：`success_r = 1.0`（没做 = 没失败）、`satur_c = 1.0`（跳过零释放惩罚）、`effort_e = 1.0`（没做 = 满分）、`coverage_e = max(computed, 0.3)`。故障期（有操作但全失败）时：`success_r = 0`、`satur_c` 衰减到 0.3、`effort_e = 0`。两者差值约 38%，休息期效率 ~57%，故障期 ~19%。
+
+### 🔧 元认知启动链修复（日志终于可以正常输出）
+
+元认知代码（`core/meta.py`）包含了完整的五维监控逻辑，但从 v1.3 迁移到 v1.4 的过程中，daemon 循环的多次重构（`root.after` → `msg_queue`）导致 `self.learner.meta.tick(stats)` 入口丢失。
+
+第一次修复：在 daemon 循环中插入 `self.learner.meta.tick(meta_stats)`。但代码被错误嵌套在 `if efis_msg:` 块内部——只有 EFIS 有输出消息时（约 1/30 的概率）才执行。元认知日志绝大多数时间不显示。
+
+第二次修复：移动到 daemon 循环顶层（16 空格缩进，与 `if hasattr(self, 'efis'):` 平级），每 tick 都调用。元认知内部有 30s 定时器不会过度执行（`if now - self._last_adjust < 30: return`）。
+
+第三次检查：元认知的输出通过 `learner._info_msgs` → `learner.pop_info()` → `msg_queue.put(('log', msg))` → `_poll_msg_queue` → `_log()` 显示在 GUI 日志区。此链路在第二次修复后完整打通。
+
+正常状态下约每 5 分钟输出一次"探索覆盖"类型的日志，异常时（校准偏差 >50%、概念漂移等）即时输出详细诊断。
+
+### 🔧 判定器修复（can_trim 返回 None 崩溃）
+
+**崩溃链**：`cleaner._layer2_process` 调用 `ok, reason = self.judger.can_trim(s)` → 期望返回二元组 `(bool, str)`。
+
+**根因**：上一轮修复中将 `can_trim` 的异常处理从 `except: pass` 改为 `except Exception as e: return False, "投票异常"`。但原始的 `return True, f"θ={theta:.2f}"` 在重构时被误删除。策略投票通过（`should_trim` 返回 True）时，函数正常退出 try 块后没有任何 `return` 语句——Python 默认返回 `None`。`cleaner` 解包 `None` 时报 `cannot unpack non-iterable NoneType object`。
+
+**修复**：恢复 `return True, f"θ={theta:.2f}"`。
+
+### 🔧 EFIS 持久化修复（消除与 learner 的写入冲突）
+
+EFIS（`core/efis.py`）和 Learner（`core/learner.py`）各自有 `save()` 方法，且都写入同一文件 `state.json`。两者的保存间隔不同（EFIS 每 30 tick，Learner 每 30s），存在读取-修改-写入的竞争窗口——EFIS 写入时可能覆盖 Learner 刚刚写入的数据，反之亦然。
+
+修复：EFIS 使用独立文件 `efis_state.json`。`save()` 写入新文件，`load()` 先读新文件，文件不存在时回退旧文件兼容已有数据。
+
+### 🔧 各种静默吞异常修复
+
+| 位置 | 原代码 | 修复 |
+|---|---|---|
+| `causal.py:from_dict` | `except Exception: pass` | `except Exception as e: print(f"[MemWise] 推论加载损坏记录: {e}", file=sys.stderr)` |
+| `cleaner.py:layer3` | `except Exception: pass` | `except Exception as e: print(f"[MemWise] layer3 清理异常: {e}", file=sys.stderr)` |
+| `judger.py:can_trim` | `except Exception: pass`（安全风险：默认 True） | `return False, "投票异常"`（安全否决） |
+| `memwise_gui.py:config` | `except Exception: pass` | `except Exception as e: print(f"[MemWise] 配置加载异常: {e}", file=sys.stderr)` |
+| `core/learner.py` | `print(f"[MemWise] 预测偏差...")`（调试残留） | 注释化 |
+| `memwise_gui.py:shutdown` | `except Exception: pass` | 保留（`__del__` 风格的关闭清理，应吞异常） |
+
+### 🔧 Cleaner 修复
+
+| 问题 | 修复 |
+|---|---|
+| Layer3 `f.result()` 未捕获异常导致 daemon 崩溃 | 添加 `try/except` 包裹 |
+| `ThreadPoolExecutor` 从不在 `__del__` 外关闭 | 添加 `shutdown()` 方法 + `_on_close` 调用 |
+| `_info_msgs` 日志队列 | `pop_info()` 接口，daemon loop 中消费 |
+
+### 🔧 图表显示修复
+
+| 问题 | 修复 |
+|---|---|
+| 守护重启后 `_eff_data` 残留上一轮折点 | 追加 `self._eff_data.clear()` |
+| `_chart_data` 清除但 `_eff_data` 不清除 | 同上 |
+| 守护启动后首 30s 图表显示占位文字 | `_draw_chart_placeholder()` 正常显示 |
+| 首次 chart 数据 `_eris_sub` 默认 50 | backfill 自动校正 |
+| `_cycle_trimmed` 定义前引用 | 初始化 `_cycle_trimmed = 0`、`_cycle_failed = 0` |
+| 多余日志"本轮释放 XX MB"与总账重复 | 删除 `_opt_done` 中的重复日志 |
+| Y 轴标签显示 MB 但柱条也显示 MB | 统一数据源（柱条仍用 MB，折线和文字用 %） |
+
+---
+
+*MemWise v1.4 — 2026年6月*
