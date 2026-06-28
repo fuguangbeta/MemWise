@@ -170,17 +170,6 @@
 | `meta.tick()` 从未在 daemon 循环中被调用 | 在 daemon loop 中插入 `self.learner.meta.tick(meta_stats)` |
 | 但 meta.tick 被嵌套在 `if efis_msg:` 块内 → 仅 EFIS 有消息时才执行 | 移出到 daemon 循环顶层，与 EFIS 平级 |
 
-### 🔧 版本号与发布
-
-| 变更 | 说明 |
-|------|------|
-| README 简介重写 | 从 218 字扩展到 700+ 字，覆盖所有认知引擎组件 |
-| CHANGELOG 扩展 | 从 ~5,000 字扩展到 15,000+ 字 |
-| README v1.2 引用 | 保留在对比说明中（如 v1.2 是 0.03 vs v1.4 是 0.5），均为有效对比 |
-| 版本号 v1.3 → v1.4 | 全部源文件更新，不涉及数值代码 |
-| Git tag v1.4 | 已推送 |
-| GitHub Release | 已创建，含完整更新说明 + exe 附件 |
-
 ---
 
 ### 🔧 ERIS v2 算法演进完整记录
