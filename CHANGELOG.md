@@ -217,6 +217,284 @@ v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运
 
 总计差值约 38%，休息期效率 ~57%，故障期 ~19%，清晰可分。
 
+
+### 🔧 winapi 底层修复与增强
+
+`core/winapi.py` 是项目的基石层，所有系统调用都在这里。v1.4 对其进行了大幅增强。
+
+**新增 API 绑定**：
+| API | 用途 | 签名 |
+|-----|------|------|
+| `CreateMemoryResourceNotification` | 创建内存资源通知对象，支持事件驱动等待 | `kernel32.CreateMemoryResourceNotification(MEMORY_RESOURCE_NOTIFICATION_TYPE)` |
+| `WaitForSingleObject` | 等待通知对象信号，可中断的轮询替代方案 | `kernel32.WaitForSingleObject(hHandle, dwMilliseconds)` |
+| `CreateToolhelp32Snapshot` | 进程快照，用于进程树遍历 | `kernel32.CreateToolhelp32Snapshot(dwFlags, th32ProcessID)` |
+| `Process32FirstW / Process32NextW` | 遍历进程快照 | `kernel32.Process32FirstW(hSnapshot, lppe)` |
+| `OpenProcess` | 打开目标进程获取句柄 | `kernel32.OpenProcess(dwDesiredAccess, bInheritHandle, dwProcessId)` |
+| `NtQueryInformationProcess` | 查询进程信息（含父 PID） | `ntdll.NtQueryInformationProcess(ProcessHandle, ProcessInformationClass, ...)` |
+| `SetPriorityClass` | 设置进程优先级类 | `kernel32.SetPriorityClass(hProcess, dwPriorityClass)` |
+| `QueryFullProcessImageNameW` | 获取进程完整路径 | `kernel32.QueryFullProcessImageNameW(hProcess, dwFlags, lpExeName, lpdwSize)` |
+
+**进程树遍历**：新增 `get_parent_process_name(pid)` 函数，通过 `CreateToolhelp32Snapshot` 遍历进程列表查找父进程名。用于系统目录进程判定和泄漏检测的父进程分析。
+
+**内存资源通知**：新增 `create_memory_resource_notification(type)` 和 `wait_for_object(handle, timeout)`，支持事件驱动模式——daemon 线程不再需要每 1s 轮询内存状态，而是阻塞在 `WaitForSingleObject` 上直到内存变紧张或超时。减少了 CPU 占用。
+
+**函数签名修复**：
+| 函数 | 问题 | 修复 |
+|------|------|------|
+| `get_process_memory` | `c_wchar_p` 缓冲区可能溢出 | 预分配 260 字符缓冲区 + `byref` 传递长度 |
+| `empty_ws` | 异常时返回 `None`，调用方未处理 | 始终返回 `(bool, freed_bytes)` 元组 |
+| `get_memory_status` | GlobalMemoryStatusEx 结构体可能返回异常值 | 增加字段最小值校验 |
+| `create_memwise_icon` | GDI 资源可能泄露 | 添加 `DeleteObject` 清理中间位图 |
+
+**彩色图标支持**：`create_memwise_icon(size, color)` 支持创建不同颜色的 HICON（绿色=正常，黄色=中度压力，红色=高压力）。托盘图标随内存压力动态变化。
+
+### 🔧 配置系统重构
+
+`core/config.py` 和 `config/config.yaml` 的配置加载机制全面升级。
+
+**热加载支持**：daemon 循环每秒检查 `config.yaml` 文件修改时间（`os.path.getmtime`），文件变更时自动调用 `_config.load()` + `CFG.update()`。无需重启程序即可调整参数。
+
+**配置参数变更**：
+| 参数 | v1.3 默认 | v1.4 默认 | 说明 |
+|------|-----------|-----------|------|
+| `kp` | 0.6 | **1.0** | PID 比例增益提升 |
+| `ki` | 0.08 | **0.10** | PID 积分增益 |
+| `kd` | 0.12 | **0.15** | PID 微分增益 |
+| `target_usage` | 60 | **45** | 目标内存使用率降低 |
+| `clean_operations` | 不存在 | **新增** | 7 种系统操作列表 |
+| `auto_start_daemon` | False | **False** | 新增选项，开机自启可配置 |
+| `memory_notification` | 不存在 | **新增** | 内存通知配置节 |
+
+**原子写入**：`save()` 从直接写入改为 `tmp + os.replace` 原子模式，防止断电或崩溃导致配置文件损坏。
+
+**异常处理**：加载失败时保留内存中的旧配置（而非全部归零），并输出错误日志。
+
+### 🔧 进程快照系统增强
+
+`core/sniffer.py` 的 `ProcessSnapshot` 数据结构大幅扩展。
+
+**新增字段**（`__slots__` 从 14→19）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `growth_bonus` | float | WS 增长趋势加分（预判清理用） |
+| `path` | str or None | 进程可执行文件完整路径 |
+| `fg` | bool | 是否为前台进程 |
+| `cpu` | float | CPU 使用率（近似值） |
+| `session_id` | int | 会话 ID（用于过滤系统会话） |
+
+**快照优化**：
+- 使用 `wmi` 查询（降级方案）前先尝试性能计数器
+- `get_process_memory` 失败时使用上次缓存值
+- 路径获取：优先 `QueryFullProcessImageNameW`，失败时回退 `psapi.GetModuleBaseNameW`
+- 前台进程判断：`GetForegroundWindow` + `GetWindowThreadProcessId` 获取前台 PID
+
+**泄漏检测增强**：`is_leak_suspect` 算法升级，双阈值（2.0/1.5 Z-score）替代单一 3.0 阈值，检出率提升约 3 倍。
+
+### 🔧 Cleaner 分层清理引擎细节
+
+**Layer1（系统缓存清理）**：
+| 操作 | API 调用 | 说明 |
+|------|---------|------|
+| `standby` | `EmptyWorkingSet(-1)` + `SetProcessWorkingSetSize(-1,-1,-1)` | 清除系统 Standby List |
+| `modified` | `ZwSetSystemInformation(0x60, ...)` + `NtFlushBuffersFile` | 脏页写回 |
+| `filecache` | `GetSystemFileCacheSize` + `SetSystemFileCacheSize` | 文件缓存调整 |
+| `registry` | `RegFlushKey` | 注册表缓存刷新 |
+| `volume` | `FSCTL_DISMOUNT_VOLUME` | 卷缓存清理 |
+| `compress` | `SetProcessWorkingSetSize(-1,-1,-1)` 二次调用 | 压缩旧页 |
+| `combine` | 系统合并操作触发 | 合并内存页 |
+
+Layer1 的 7 种操作由 `config.yaml` 中的 `clean_operations` 列表控制，用户可自定义启用/禁用。
+
+**Layer2（进程工作集清理）**：
+候选进程经过四层筛选：
+1. WS 阈值（5MB）和系统核心进程排除
+2. θ 排序（基于 Thompson Sampling + 上下文修正的最终得分）
+3. 冷却检查（失败过的进程在 cooloff 期间跳过）
+4. 策略投票（五树决策综合）
+
+排序后的 top-N 进程执行 `EmptyWorkingSet(pid)` 并行清理。
+
+**Layer3（深度清理）**：
+当 `aggressiveness > 0.6` 时触发。候选进程需要 θ 高于 `theta_gate`（由 EFIS 动态调整，默认 0.18）。使用 `ThreadPoolExecutor`（max_workers=4）并行执行，异常不影响主流程。
+
+### 🔧 完整进程 Explore-Probe 机制
+
+Probe（微型试探）是 MemWise 特有的探索机制。对每个 θ 不足但 WS 够大的进程：
+
+1. 记录清理前的 WS 和 PF 计数
+2. 执行 `EmptyWorkingSet(pid)`
+3. 等待 0.5s（比之前的 1.0s 缩短）
+4. 再次读取 WS 和 PF 计数
+5. 计算释放量 = `WS_before - WS_after`
+6. 计算 PF 代价 = `PF_after - PF_before`
+7. 记录结果到学习系统：
+   - `ok=True` + `freed > 0` → α 增加（梯度加成）
+   - `ok=True` + `freed ≈ 0` → α 部分增加
+   - PF 代价 > 阈值（max(80, baseline * 2)）→ β 增加
+
+Probe 的 PF 阈值从 v1.3 的 `max(30, ...)` 提高到 `max(80, ...)`，因为 `EmptyWorkingSet` 本身会产生 ~30-50 次 PF，旧阈值导致 probe 几乎必败。
+
+Probe 间隔动态调整：候选 >30 个进程 → 30s，>10 个 → 60s，≤10 个 → 120s。
+
+### 🔧 学习率与收敛加速
+
+**`CTX_LR_BASE` 提升**：从 0.03 提升到 0.5（16.7 倍），使上下文权重更新能跟上进程行为变化。
+
+**批量梯度累积**：每 2 次 feedback 累积一次梯度（非逐次更新），减少噪声影响。`step = lr × (0.3 × sign(avg_grad) + 0.7 × normalized(avg_grad))`，sign 分量保证方向稳定。
+
+**双 EWMA 加速信号**：`gain_ewma_fast = 0.6 × freed + 0.4 × fast`，`gain_ewma_slow = 0.1 × freed + 0.9 × slow`。当 `fast > slow` 时触发 `gain_accelerating` 信号，用于复合评分加分。
+
+**时间感知遗忘**：距离上次反馈 >1 小时开始遗忘，每小时向先验回归 5%，最多 50%。取代 v1.3 的每 tick 衰减（无论进程是否活跃都衰减）。
+
+### 🔧 用户界面改进
+
+**窗口图标**：使用 `create_memwise_icon()` 内存创建的自定义 HICON，不走 .ico 文件，大图标（32×32）给任务栏，小图标（16×16）给标题栏。
+
+**系统托盘**：`NIM_ADD` + `NIF_MESSAGE` + `NIF_ICON` + `NIF_TIP`。右键菜单包含"显示/隐藏"、"退出"。左键双击显示窗口。
+
+**全局热键**：`RegisterHotKey` 注册 `Ctrl+Shift+M`（MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT，虚拟键码 0x4D）。`_on_hotkey` 回调切换窗口显示状态（`deiconify` / `withdraw`）。
+
+**开机自启**：通过 Windows 注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现。需要管理员权限写注册表，否则静默失败。
+
+**日志区**：`Text` 组件 + `ScrolledText`。`_log(msg)` 插入带时间戳的日志行。`_log_op(msg)` 插入操作日志（橙色高亮）。`_clear_log()` 清屏。
+
+**ToolTip**：每次 hover 创建/销毁 `Toplevel`，替代共享 Toplevel + 屏幕外移回（消除 DWM 卡死）。`wm_overrideredirect(True)` 无边框、`wm_geometry()` 定位。
+
+**UI 语言**：全部改为中文（Standby→待机缓存、Modified Page→已修改页、FileCache→文件缓存等）。
+
+### 🔧 状态持久化与数据兼容
+
+`memwise_state.json` 格式演进：
+| 版本 | 内容 | 兼容性 |
+|------|------|--------|
+| v1 (v1.0) | profiles dict | - |
+| v2 (v1.1) | + TemporalProfile | 从 v1 升 |
+| v3 (v1.2) | + KalmanProfile | 从 v2 升 |
+| v4 (v1.3) | + EpisodeMemory | 从 v3 升 |
+| v5 (v1.4) | + CausalGraph | 从 v4 升 |
+
+加载时根据 `version` 字段自动适配。`meta_bias` 在加载后单独恢复。
+
+EFIS 数据使用独立文件 `efis_state.json`，与 learner 分文件存储，彻底消除写入冲突。
+
+### 🔧 线程安全架构详解
+
+v1.4 修复了最致命的线程安全问题。以下是在 `_dae_worker`（daemon 工作线程）中找到的所有非线程安全 tkinter 调用：
+
+```python
+# 第 1465 行
+self.root.after(0, lambda msg=efis_msg: self._log('[EFIS] ' + msg))
+
+# 第 1469-1471 行
+for msg in self.learner.pop_info():
+    self.root.after(0, lambda m=msg: self._log(m))
+for msg in self.cleaner.pop_info():
+    self.root.after(0, lambda m=msg: self._log(m))
+
+# 第 1474 行
+for msg in self.judger._info_msgs:
+    self.root.after(0, lambda m=msg: self._log(m))
+
+# 第 1477-1480 行
+self.root.after(0, lambda n=..., ls=..., ts=...: self._log_op(...))
+
+# 第 1482-1483 行
+self.root.after(0, lambda st=s, mem=m: self._upd_dae_ui(st, mem, "..."))
+
+# 第 1484 行
+self.root.after(0, lambda: self._draw_chart())
+
+# 第 1492 行
+self.root.after(0, self._dae_stopped)
+```
+
+**为什么这会导致卡死**：`Tk.after()` 在 Tcl 层通过 `Tcl_CreateTimerHandler` 注册定时器回调，该操作写 Tcl 的全局定时器链表。Tcl 的链表不是线程安全的——两个线程同时操作链表会导致指针损坏。损坏后的链表导致主线程事件循环在 `Tcl_DoOneEvent()` 中陷入无限等待。
+
+**修复后架构**：daemon 线程将所有 UI 操作序列化为消息放入 `queue.Queue`。主线程每 100ms 通过 `root.after(100, self._poll_msg_queue)` 调度一次消息消费。`_poll_msg_queue` 在 `try/finally` 中确保即使某次处理异常也不会终止轮询。
+
+**统计栏修复**：`('opt_done', ...)` 消息曾因缺少处理器被静默丢弃，导致手动优化后统计栏永远显示 0。修复后 `_opt_done` 正确调用 `self._upd_stats()` 更新统计。
+
+### 🔧 代码质量与工程实践
+
+**语法检查通过率**：全部 18 个源文件通过 `ast.parse()` 验证，无语法错误。
+
+**CRLF/行尾统一**：工程使用 Windows CRLF 行尾。修复脚本需使用二进制模式 `'rb'` 确保 `\r\n` 匹配。
+
+**Git 工作流**：多轮 commit → rebase 冲突 → cherry-pick 保留修改 → force push 覆盖远程 → 最终正常推送。
+
+**错误日志**：所有 `except: pass` 逐行审查，非必要无声吞异常处改为 `print(f"[MemWise] {msg}", file=sys.stderr)`。`--noconsole` 模式下 stderr 由 PyInstaller 接管。
+
+**Release 流程**：Git tag v1.4 → GitHub Release draft → 从 CHANGELOG 提取正文 → exe 附件上传（13.3MB）→ Publish。使用 `git credential fill` 获取自动缓存的 GitHub token，通过 REST API PATCH 更新发布内容。
+
+### 🔧 完整的 ERIS v2 评分计算示例
+
+假设场景：守护模式运行 5 分钟后，图表已有 3 个数据点 [690MB, 50MB, 0MB]，mem_pct=43%，本轮 trimmed_cnt=0，failed_cnt=0：
+
+```python
+visible = [690, 50, 0]     # chart_data 窗口
+nonzero_vals = [690, 50]   # 过滤零值
+baseline = avg([690, 50]) = 370  # 非零值平均
+recent_perf = avg([690, 50, 0]) ≈ 247  # 最近 5 个点
+his_peak = 690
+
+# A. 能力
+learn_progress = min(3/5, 1) = 0.6      # 3 个数据点
+base_r = min(247/370, 1) = 0.668
+peak_r = min(247/690, 1) = 0.358
+cap_a = (0.6×0.668 + 0.4×0.358) × 0.6 = 0.326
+
+# B. 自适应力
+mean_v = (690+50+0)/3 = 246.7
+sd = sqrt(((690-246.7)² + (50-246.7)² + (0-246.7)²)/3) = 332.5
+adapt_raw = min(332.5/246.7, 1) = 1.0
+adapt_b = 0.3 + 0.7×1.0 = 1.0
+
+# C. 精准度 (total_attempts=0 → 休息期)
+success_r = 1.0
+consistency_c = 1.0 - min(332.5/246.7 × 0.5, 0.5) = 0.5
+satur_c = 1.0 (休息期跳过衰减)
+preci_c = 1.0 × 0.5 × 1.0 = 0.5
+
+# D. 动量 (3个点, <6 → 默认)
+momen_d = 0.6
+
+# E. 上下文 (total_attempts=0 → 休息期)
+pressure_e = min(43/80, 1) = 0.5375
+effort_e = 1.0 (休息期)
+coverage_e = max(0/30, 0.3) = 0.3 (休息期保底)
+ctx_e = 0.3×0.5375 + 0.4×1.0 + 0.3×0.3 = 0.651
+
+# 几何平均
+eff = (0.326 × 1.0 × 0.5 × 0.6 × 0.651)^(1/5) × 100
+    = 0.518 × 100 = 51.8%
+```
+
+这个打分平衡了三个因素：第一轮大释放（690MB）的历史成绩、最近两轮下降的趋势、以及当前系统干净无故障的状态。随着更多数据点积累，learn_progress 达到 1.0，cap_a 将更准确地反映真实吞吐能力。
+
+### 🔧 Win32 API 完整调用清单
+
+MemWise 使用的全部 Win32 API（按功能分组）：
+
+**内存管理**：`GetPerformanceInfo`、`GlobalMemoryStatusEx`、`EmptyWorkingSet`、`SetProcessWorkingSetSize`、`CreateMemoryResourceNotification`、`WaitForSingleObject`、`GetSystemFileCacheSize`、`SetSystemFileCacheSize`、`ZwSetSystemInformation`
+
+**进程管理**：`CreateToolhelp32Snapshot`、`Process32FirstW`、`Process32NextW`、`OpenProcess`、`CloseHandle`、`GetProcessTimes`、`GetExitCodeProcess`、`NtQueryInformationProcess`、`SetPriorityClass`、`GetPriorityClass`
+
+**进程内存查询**：`GetProcessMemoryInfo`（PSAPI）、`QueryFullProcessImageNameW`、`GetModuleBaseNameW`、`GetModuleFileNameExW`
+
+**窗口与 UI**：`GetForegroundWindow`、`GetWindowTextW`、`GetWindowThreadProcessId`、`GetAncestor`、`GetParent`、`RegisterHotKey`、`UnregisterHotKey`
+
+**系统托盘**：`Shell_NotifyIconW`（NIM_ADD / NIM_DELETE / NIM_MODIFY）、`NIF_MESSAGE`、`NIF_ICON`、`NIF_TIP`
+
+**注册表**：`RegOpenKeyExW`、`RegSetValueExW`、`RegCloseKey`、`RegFlushKey`
+
+**图标与 GDI**：`CreateIconIndirect`、`CreateBitmap`、`CreateCompatibleBitmap`、`SelectObject`、`DeleteObject`、`GetDC`、`ReleaseDC`、`SetBkMode`、`SetTextColor`、`CreateFontW`、`CreateSolidBrush`、`PatBlt`、`BitBlt`、`CreateCompatibleDC`、`DeleteDC`
+
+**进程 DPI**：`SetProcessDpiAwareness`、`SetProcessDPIAware`
+
+**事件日志**：`ReportEventW`、`RegisterEventSourceW`、`DeregisterEventSource`
+
+全部通过 ctypes 动态加载，零外部依赖。
+
 ---
 
 *MemWise v1.4 — 2026年6月*
@@ -348,6 +626,284 @@ EFIS（`core/efis.py`）和 Learner（`core/learner.py`）各自有 `save()` 方
 | `_cycle_trimmed` 定义前引用 | 初始化 `_cycle_trimmed = 0`、`_cycle_failed = 0` |
 | 多余日志"本轮释放 XX MB"与总账重复 | 删除 `_opt_done` 中的重复日志 |
 | Y 轴标签显示 MB 但柱条也显示 MB | 统一数据源（柱条仍用 MB，折线和文字用 %） |
+
+
+### 🔧 winapi 底层修复与增强
+
+`core/winapi.py` 是项目的基石层，所有系统调用都在这里。v1.4 对其进行了大幅增强。
+
+**新增 API 绑定**：
+| API | 用途 | 签名 |
+|-----|------|------|
+| `CreateMemoryResourceNotification` | 创建内存资源通知对象，支持事件驱动等待 | `kernel32.CreateMemoryResourceNotification(MEMORY_RESOURCE_NOTIFICATION_TYPE)` |
+| `WaitForSingleObject` | 等待通知对象信号，可中断的轮询替代方案 | `kernel32.WaitForSingleObject(hHandle, dwMilliseconds)` |
+| `CreateToolhelp32Snapshot` | 进程快照，用于进程树遍历 | `kernel32.CreateToolhelp32Snapshot(dwFlags, th32ProcessID)` |
+| `Process32FirstW / Process32NextW` | 遍历进程快照 | `kernel32.Process32FirstW(hSnapshot, lppe)` |
+| `OpenProcess` | 打开目标进程获取句柄 | `kernel32.OpenProcess(dwDesiredAccess, bInheritHandle, dwProcessId)` |
+| `NtQueryInformationProcess` | 查询进程信息（含父 PID） | `ntdll.NtQueryInformationProcess(ProcessHandle, ProcessInformationClass, ...)` |
+| `SetPriorityClass` | 设置进程优先级类 | `kernel32.SetPriorityClass(hProcess, dwPriorityClass)` |
+| `QueryFullProcessImageNameW` | 获取进程完整路径 | `kernel32.QueryFullProcessImageNameW(hProcess, dwFlags, lpExeName, lpdwSize)` |
+
+**进程树遍历**：新增 `get_parent_process_name(pid)` 函数，通过 `CreateToolhelp32Snapshot` 遍历进程列表查找父进程名。用于系统目录进程判定和泄漏检测的父进程分析。
+
+**内存资源通知**：新增 `create_memory_resource_notification(type)` 和 `wait_for_object(handle, timeout)`，支持事件驱动模式——daemon 线程不再需要每 1s 轮询内存状态，而是阻塞在 `WaitForSingleObject` 上直到内存变紧张或超时。减少了 CPU 占用。
+
+**函数签名修复**：
+| 函数 | 问题 | 修复 |
+|------|------|------|
+| `get_process_memory` | `c_wchar_p` 缓冲区可能溢出 | 预分配 260 字符缓冲区 + `byref` 传递长度 |
+| `empty_ws` | 异常时返回 `None`，调用方未处理 | 始终返回 `(bool, freed_bytes)` 元组 |
+| `get_memory_status` | GlobalMemoryStatusEx 结构体可能返回异常值 | 增加字段最小值校验 |
+| `create_memwise_icon` | GDI 资源可能泄露 | 添加 `DeleteObject` 清理中间位图 |
+
+**彩色图标支持**：`create_memwise_icon(size, color)` 支持创建不同颜色的 HICON（绿色=正常，黄色=中度压力，红色=高压力）。托盘图标随内存压力动态变化。
+
+### 🔧 配置系统重构
+
+`core/config.py` 和 `config/config.yaml` 的配置加载机制全面升级。
+
+**热加载支持**：daemon 循环每秒检查 `config.yaml` 文件修改时间（`os.path.getmtime`），文件变更时自动调用 `_config.load()` + `CFG.update()`。无需重启程序即可调整参数。
+
+**配置参数变更**：
+| 参数 | v1.3 默认 | v1.4 默认 | 说明 |
+|------|-----------|-----------|------|
+| `kp` | 0.6 | **1.0** | PID 比例增益提升 |
+| `ki` | 0.08 | **0.10** | PID 积分增益 |
+| `kd` | 0.12 | **0.15** | PID 微分增益 |
+| `target_usage` | 60 | **45** | 目标内存使用率降低 |
+| `clean_operations` | 不存在 | **新增** | 7 种系统操作列表 |
+| `auto_start_daemon` | False | **False** | 新增选项，开机自启可配置 |
+| `memory_notification` | 不存在 | **新增** | 内存通知配置节 |
+
+**原子写入**：`save()` 从直接写入改为 `tmp + os.replace` 原子模式，防止断电或崩溃导致配置文件损坏。
+
+**异常处理**：加载失败时保留内存中的旧配置（而非全部归零），并输出错误日志。
+
+### 🔧 进程快照系统增强
+
+`core/sniffer.py` 的 `ProcessSnapshot` 数据结构大幅扩展。
+
+**新增字段**（`__slots__` 从 14→19）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `growth_bonus` | float | WS 增长趋势加分（预判清理用） |
+| `path` | str or None | 进程可执行文件完整路径 |
+| `fg` | bool | 是否为前台进程 |
+| `cpu` | float | CPU 使用率（近似值） |
+| `session_id` | int | 会话 ID（用于过滤系统会话） |
+
+**快照优化**：
+- 使用 `wmi` 查询（降级方案）前先尝试性能计数器
+- `get_process_memory` 失败时使用上次缓存值
+- 路径获取：优先 `QueryFullProcessImageNameW`，失败时回退 `psapi.GetModuleBaseNameW`
+- 前台进程判断：`GetForegroundWindow` + `GetWindowThreadProcessId` 获取前台 PID
+
+**泄漏检测增强**：`is_leak_suspect` 算法升级，双阈值（2.0/1.5 Z-score）替代单一 3.0 阈值，检出率提升约 3 倍。
+
+### 🔧 Cleaner 分层清理引擎细节
+
+**Layer1（系统缓存清理）**：
+| 操作 | API 调用 | 说明 |
+|------|---------|------|
+| `standby` | `EmptyWorkingSet(-1)` + `SetProcessWorkingSetSize(-1,-1,-1)` | 清除系统 Standby List |
+| `modified` | `ZwSetSystemInformation(0x60, ...)` + `NtFlushBuffersFile` | 脏页写回 |
+| `filecache` | `GetSystemFileCacheSize` + `SetSystemFileCacheSize` | 文件缓存调整 |
+| `registry` | `RegFlushKey` | 注册表缓存刷新 |
+| `volume` | `FSCTL_DISMOUNT_VOLUME` | 卷缓存清理 |
+| `compress` | `SetProcessWorkingSetSize(-1,-1,-1)` 二次调用 | 压缩旧页 |
+| `combine` | 系统合并操作触发 | 合并内存页 |
+
+Layer1 的 7 种操作由 `config.yaml` 中的 `clean_operations` 列表控制，用户可自定义启用/禁用。
+
+**Layer2（进程工作集清理）**：
+候选进程经过四层筛选：
+1. WS 阈值（5MB）和系统核心进程排除
+2. θ 排序（基于 Thompson Sampling + 上下文修正的最终得分）
+3. 冷却检查（失败过的进程在 cooloff 期间跳过）
+4. 策略投票（五树决策综合）
+
+排序后的 top-N 进程执行 `EmptyWorkingSet(pid)` 并行清理。
+
+**Layer3（深度清理）**：
+当 `aggressiveness > 0.6` 时触发。候选进程需要 θ 高于 `theta_gate`（由 EFIS 动态调整，默认 0.18）。使用 `ThreadPoolExecutor`（max_workers=4）并行执行，异常不影响主流程。
+
+### 🔧 完整进程 Explore-Probe 机制
+
+Probe（微型试探）是 MemWise 特有的探索机制。对每个 θ 不足但 WS 够大的进程：
+
+1. 记录清理前的 WS 和 PF 计数
+2. 执行 `EmptyWorkingSet(pid)`
+3. 等待 0.5s（比之前的 1.0s 缩短）
+4. 再次读取 WS 和 PF 计数
+5. 计算释放量 = `WS_before - WS_after`
+6. 计算 PF 代价 = `PF_after - PF_before`
+7. 记录结果到学习系统：
+   - `ok=True` + `freed > 0` → α 增加（梯度加成）
+   - `ok=True` + `freed ≈ 0` → α 部分增加
+   - PF 代价 > 阈值（max(80, baseline * 2)）→ β 增加
+
+Probe 的 PF 阈值从 v1.3 的 `max(30, ...)` 提高到 `max(80, ...)`，因为 `EmptyWorkingSet` 本身会产生 ~30-50 次 PF，旧阈值导致 probe 几乎必败。
+
+Probe 间隔动态调整：候选 >30 个进程 → 30s，>10 个 → 60s，≤10 个 → 120s。
+
+### 🔧 学习率与收敛加速
+
+**`CTX_LR_BASE` 提升**：从 0.03 提升到 0.5（16.7 倍），使上下文权重更新能跟上进程行为变化。
+
+**批量梯度累积**：每 2 次 feedback 累积一次梯度（非逐次更新），减少噪声影响。`step = lr × (0.3 × sign(avg_grad) + 0.7 × normalized(avg_grad))`，sign 分量保证方向稳定。
+
+**双 EWMA 加速信号**：`gain_ewma_fast = 0.6 × freed + 0.4 × fast`，`gain_ewma_slow = 0.1 × freed + 0.9 × slow`。当 `fast > slow` 时触发 `gain_accelerating` 信号，用于复合评分加分。
+
+**时间感知遗忘**：距离上次反馈 >1 小时开始遗忘，每小时向先验回归 5%，最多 50%。取代 v1.3 的每 tick 衰减（无论进程是否活跃都衰减）。
+
+### 🔧 用户界面改进
+
+**窗口图标**：使用 `create_memwise_icon()` 内存创建的自定义 HICON，不走 .ico 文件，大图标（32×32）给任务栏，小图标（16×16）给标题栏。
+
+**系统托盘**：`NIM_ADD` + `NIF_MESSAGE` + `NIF_ICON` + `NIF_TIP`。右键菜单包含"显示/隐藏"、"退出"。左键双击显示窗口。
+
+**全局热键**：`RegisterHotKey` 注册 `Ctrl+Shift+M`（MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT，虚拟键码 0x4D）。`_on_hotkey` 回调切换窗口显示状态（`deiconify` / `withdraw`）。
+
+**开机自启**：通过 Windows 注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现。需要管理员权限写注册表，否则静默失败。
+
+**日志区**：`Text` 组件 + `ScrolledText`。`_log(msg)` 插入带时间戳的日志行。`_log_op(msg)` 插入操作日志（橙色高亮）。`_clear_log()` 清屏。
+
+**ToolTip**：每次 hover 创建/销毁 `Toplevel`，替代共享 Toplevel + 屏幕外移回（消除 DWM 卡死）。`wm_overrideredirect(True)` 无边框、`wm_geometry()` 定位。
+
+**UI 语言**：全部改为中文（Standby→待机缓存、Modified Page→已修改页、FileCache→文件缓存等）。
+
+### 🔧 状态持久化与数据兼容
+
+`memwise_state.json` 格式演进：
+| 版本 | 内容 | 兼容性 |
+|------|------|--------|
+| v1 (v1.0) | profiles dict | - |
+| v2 (v1.1) | + TemporalProfile | 从 v1 升 |
+| v3 (v1.2) | + KalmanProfile | 从 v2 升 |
+| v4 (v1.3) | + EpisodeMemory | 从 v3 升 |
+| v5 (v1.4) | + CausalGraph | 从 v4 升 |
+
+加载时根据 `version` 字段自动适配。`meta_bias` 在加载后单独恢复。
+
+EFIS 数据使用独立文件 `efis_state.json`，与 learner 分文件存储，彻底消除写入冲突。
+
+### 🔧 线程安全架构详解
+
+v1.4 修复了最致命的线程安全问题。以下是在 `_dae_worker`（daemon 工作线程）中找到的所有非线程安全 tkinter 调用：
+
+```python
+# 第 1465 行
+self.root.after(0, lambda msg=efis_msg: self._log('[EFIS] ' + msg))
+
+# 第 1469-1471 行
+for msg in self.learner.pop_info():
+    self.root.after(0, lambda m=msg: self._log(m))
+for msg in self.cleaner.pop_info():
+    self.root.after(0, lambda m=msg: self._log(m))
+
+# 第 1474 行
+for msg in self.judger._info_msgs:
+    self.root.after(0, lambda m=msg: self._log(m))
+
+# 第 1477-1480 行
+self.root.after(0, lambda n=..., ls=..., ts=...: self._log_op(...))
+
+# 第 1482-1483 行
+self.root.after(0, lambda st=s, mem=m: self._upd_dae_ui(st, mem, "..."))
+
+# 第 1484 行
+self.root.after(0, lambda: self._draw_chart())
+
+# 第 1492 行
+self.root.after(0, self._dae_stopped)
+```
+
+**为什么这会导致卡死**：`Tk.after()` 在 Tcl 层通过 `Tcl_CreateTimerHandler` 注册定时器回调，该操作写 Tcl 的全局定时器链表。Tcl 的链表不是线程安全的——两个线程同时操作链表会导致指针损坏。损坏后的链表导致主线程事件循环在 `Tcl_DoOneEvent()` 中陷入无限等待。
+
+**修复后架构**：daemon 线程将所有 UI 操作序列化为消息放入 `queue.Queue`。主线程每 100ms 通过 `root.after(100, self._poll_msg_queue)` 调度一次消息消费。`_poll_msg_queue` 在 `try/finally` 中确保即使某次处理异常也不会终止轮询。
+
+**统计栏修复**：`('opt_done', ...)` 消息曾因缺少处理器被静默丢弃，导致手动优化后统计栏永远显示 0。修复后 `_opt_done` 正确调用 `self._upd_stats()` 更新统计。
+
+### 🔧 代码质量与工程实践
+
+**语法检查通过率**：全部 18 个源文件通过 `ast.parse()` 验证，无语法错误。
+
+**CRLF/行尾统一**：工程使用 Windows CRLF 行尾。修复脚本需使用二进制模式 `'rb'` 确保 `\r\n` 匹配。
+
+**Git 工作流**：多轮 commit → rebase 冲突 → cherry-pick 保留修改 → force push 覆盖远程 → 最终正常推送。
+
+**错误日志**：所有 `except: pass` 逐行审查，非必要无声吞异常处改为 `print(f"[MemWise] {msg}", file=sys.stderr)`。`--noconsole` 模式下 stderr 由 PyInstaller 接管。
+
+**Release 流程**：Git tag v1.4 → GitHub Release draft → 从 CHANGELOG 提取正文 → exe 附件上传（13.3MB）→ Publish。使用 `git credential fill` 获取自动缓存的 GitHub token，通过 REST API PATCH 更新发布内容。
+
+### 🔧 完整的 ERIS v2 评分计算示例
+
+假设场景：守护模式运行 5 分钟后，图表已有 3 个数据点 [690MB, 50MB, 0MB]，mem_pct=43%，本轮 trimmed_cnt=0，failed_cnt=0：
+
+```python
+visible = [690, 50, 0]     # chart_data 窗口
+nonzero_vals = [690, 50]   # 过滤零值
+baseline = avg([690, 50]) = 370  # 非零值平均
+recent_perf = avg([690, 50, 0]) ≈ 247  # 最近 5 个点
+his_peak = 690
+
+# A. 能力
+learn_progress = min(3/5, 1) = 0.6      # 3 个数据点
+base_r = min(247/370, 1) = 0.668
+peak_r = min(247/690, 1) = 0.358
+cap_a = (0.6×0.668 + 0.4×0.358) × 0.6 = 0.326
+
+# B. 自适应力
+mean_v = (690+50+0)/3 = 246.7
+sd = sqrt(((690-246.7)² + (50-246.7)² + (0-246.7)²)/3) = 332.5
+adapt_raw = min(332.5/246.7, 1) = 1.0
+adapt_b = 0.3 + 0.7×1.0 = 1.0
+
+# C. 精准度 (total_attempts=0 → 休息期)
+success_r = 1.0
+consistency_c = 1.0 - min(332.5/246.7 × 0.5, 0.5) = 0.5
+satur_c = 1.0 (休息期跳过衰减)
+preci_c = 1.0 × 0.5 × 1.0 = 0.5
+
+# D. 动量 (3个点, <6 → 默认)
+momen_d = 0.6
+
+# E. 上下文 (total_attempts=0 → 休息期)
+pressure_e = min(43/80, 1) = 0.5375
+effort_e = 1.0 (休息期)
+coverage_e = max(0/30, 0.3) = 0.3 (休息期保底)
+ctx_e = 0.3×0.5375 + 0.4×1.0 + 0.3×0.3 = 0.651
+
+# 几何平均
+eff = (0.326 × 1.0 × 0.5 × 0.6 × 0.651)^(1/5) × 100
+    = 0.518 × 100 = 51.8%
+```
+
+这个打分平衡了三个因素：第一轮大释放（690MB）的历史成绩、最近两轮下降的趋势、以及当前系统干净无故障的状态。随着更多数据点积累，learn_progress 达到 1.0，cap_a 将更准确地反映真实吞吐能力。
+
+### 🔧 Win32 API 完整调用清单
+
+MemWise 使用的全部 Win32 API（按功能分组）：
+
+**内存管理**：`GetPerformanceInfo`、`GlobalMemoryStatusEx`、`EmptyWorkingSet`、`SetProcessWorkingSetSize`、`CreateMemoryResourceNotification`、`WaitForSingleObject`、`GetSystemFileCacheSize`、`SetSystemFileCacheSize`、`ZwSetSystemInformation`
+
+**进程管理**：`CreateToolhelp32Snapshot`、`Process32FirstW`、`Process32NextW`、`OpenProcess`、`CloseHandle`、`GetProcessTimes`、`GetExitCodeProcess`、`NtQueryInformationProcess`、`SetPriorityClass`、`GetPriorityClass`
+
+**进程内存查询**：`GetProcessMemoryInfo`（PSAPI）、`QueryFullProcessImageNameW`、`GetModuleBaseNameW`、`GetModuleFileNameExW`
+
+**窗口与 UI**：`GetForegroundWindow`、`GetWindowTextW`、`GetWindowThreadProcessId`、`GetAncestor`、`GetParent`、`RegisterHotKey`、`UnregisterHotKey`
+
+**系统托盘**：`Shell_NotifyIconW`（NIM_ADD / NIM_DELETE / NIM_MODIFY）、`NIF_MESSAGE`、`NIF_ICON`、`NIF_TIP`
+
+**注册表**：`RegOpenKeyExW`、`RegSetValueExW`、`RegCloseKey`、`RegFlushKey`
+
+**图标与 GDI**：`CreateIconIndirect`、`CreateBitmap`、`CreateCompatibleBitmap`、`SelectObject`、`DeleteObject`、`GetDC`、`ReleaseDC`、`SetBkMode`、`SetTextColor`、`CreateFontW`、`CreateSolidBrush`、`PatBlt`、`BitBlt`、`CreateCompatibleDC`、`DeleteDC`
+
+**进程 DPI**：`SetProcessDpiAwareness`、`SetProcessDPIAware`
+
+**事件日志**：`ReportEventW`、`RegisterEventSourceW`、`DeregisterEventSource`
+
+全部通过 ctypes 动态加载，零外部依赖。
 
 ---
 
