@@ -109,7 +109,23 @@ class EfisController:
         tmp = efis_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, efis_path)
+        # 先删除旧文件再重命名，解决文件锁定竞争
+        for attempt in range(3):
+            try:
+                if os.path.exists(efis_path):
+                    os.remove(efis_path)
+                os.rename(tmp, efis_path)
+                break
+            except PermissionError:
+                if attempt < 2:
+                    time.sleep(0.1)
+                else:
+                    # 最终备份：直接写入（可能被防毒软件查扫）
+                    try:
+                        with open(efis_path, "w", encoding="utf-8") as f2:
+                            json.dump(data, f2, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
 
     def detect_scene(self, snaps, fore_fullscreen, mem_pct):
         names = [s.name.lower() for s in snaps]
