@@ -576,12 +576,7 @@ MemWise 使用的全部 Win32 API（按功能分组）：
 | 问题 | 修复 |
 |------|------|
 | `_fmt_label` 方法被删除 → daemon 日志格式化异常 | 恢复 `_fmt_label` |
-| 文件 CRLF（`
-
-`）与修复脚本的 LF（`
-`）不匹配 → 替换不生效 | 改用二进制模式 `rb` + 精确 `
-
-` 匹配 |
+| 文件 CRLF 与修复脚本的 LF 不匹配 → 替换不生效 | 改用二进制模式 `rb` + 精确 `\r\n` 匹配 |
 | `_upd_dae_ui` 未正确调用 `_upd_learned` | 补充调用 |
 | `dist/` 下残留旧 exe 和临时文件 | 构建前清理 |
 | Release exe 因 PyInstaller 缓存未被更新 | 删除 `build/*.spec` 后重建 |
