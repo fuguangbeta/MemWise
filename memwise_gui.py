@@ -151,8 +151,10 @@ class MemWiseGUI:
                 hwnd = self.root.winfo_id()
             if big_h:
                 ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, big_h)  # WM_SETICON ICON_BIG
+                ctypes.windll.user32.SetClassLongPtrW(hwnd, -14, big_h)
             if sml_h:
                 ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, sml_h)  # WM_SETICON ICON_SMALL
+                ctypes.windll.user32.SetClassLongPtrW(hwnd, -34, sml_h)
         except Exception:
             pass
 
@@ -384,7 +386,7 @@ class MemWiseGUI:
             "\n"
             "清理模式在主界面下拉框切换(quick/normal/deep/full)\n"
             "留空=按模式自动选择操作")
-        self.btn_log = ttk.Button(bf, text="学习日志", command=self._show_learn_log)
+        self.btn_log = ttk.Button(bf, text="📊 学习日志", command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_log,
             "📊 查看每个进程的详细学习数据\n"
@@ -443,7 +445,7 @@ class MemWiseGUI:
         self.btn_rank = ttk.Button(mf, text="进程排行", command=self._show_process_rank)
         self.btn_rank.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_rank,
-            "📊 查看当前所有进程的内存占用排行\n"
+            "查看当前所有进程的内存占用排行\n"
             "\n"
             "按内存占用从大到小排列：\n"
             "  · 实时刷新当前快照数据\n"
@@ -519,8 +521,24 @@ class MemWiseGUI:
 
     # ---- 设置对话框 ----
 
+    def _apply_icon(self, win):
+        try:
+            hwnd = win.winfo_id()
+            # 尝试发送到 Toplevel 本身
+            sml_h = winapi.create_memwise_icon(16)
+            if sml_h:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, sml_h)
+                ctypes.windll.user32.SetClassLongPtrW(hwnd, -34, sml_h)
+            big_h = winapi.create_memwise_icon(32)
+            if big_h:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, big_h)
+                ctypes.windll.user32.SetClassLongPtrW(hwnd, -14, big_h)
+        except:
+            pass
+
     def _open_settings(self):
         win = tk.Toplevel(self.root)
+        self._apply_icon(win)
         win.title("MemWise 设置")
         win.geometry("520x500")
         win.resizable(False, False)
@@ -714,6 +732,7 @@ class MemWiseGUI:
 
     def _edit_exclusion_list(self):
         win = tk.Toplevel(self.root)
+        self._apply_icon(win)
         win.title("进程排除列表")
         win.geometry("460x460")
         win.resizable(False, False)
@@ -766,6 +785,7 @@ class MemWiseGUI:
             messagebox.showinfo("学习日志", "还没有学习到任何数据，先运行一会儿优化再来看", parent=self.root)
             return
         win = tk.Toplevel(self.root)
+        self._apply_icon(win)
         win.title(f"学习日志 — {len(info_data)} 个进程")
         win.geometry("1000x650")
         win.transient(self.root)
@@ -800,6 +820,7 @@ class MemWiseGUI:
     def _show_process_rank(self):
         """弹出进程内存占用排行榜"""
         win = tk.Toplevel(self.root)
+        self._apply_icon(win)
         win.title("进程内存排行")
         win.geometry("900x650")
         win.resizable(True, True)
@@ -1699,6 +1720,7 @@ class MemWiseGUI:
     def _on_close(self):
         """窗口关闭按钮 — 弹出选择框：最小化到托盘 or 退出"""
         choice = tk.Toplevel(self.root)
+        self._apply_icon(choice)
         choice.title("MemWise")
         choice.geometry("360x150")
         choice.resizable(False, False)
