@@ -261,6 +261,7 @@ class PareCleaner:
             self.judger.mark_probed(name)
             if ok and freed > 0:
                 self.stats["freed_bytes"] += freed
+                self.judger.mark_trimmed(name, freed, ws_before, pf_delta, ws_after)
             self.stats["probe"] += 1
         return ok, freed, pf_delta
 
@@ -394,15 +395,13 @@ class PareCleaner:
         self._last_candidates = candidates  # 供因果记录使用
 
         for s in snaps:
-            # Probe 候选
-            if self.judger.can_probe(s):
-                probe_list.append(s)
-                continue
-
+            # Trim 优先：能整理的不需要试探
             ok, reason = self.judger.can_trim(s)
             if ok:
                 candidates.append(s)
             else:
+                if self.judger.can_probe(s):
+                    probe_list.append(s)
                 self.stats["skipped"] += 1
 
         # ── 全局 3 层内存优先级 + EcoQoS ──

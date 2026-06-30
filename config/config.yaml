@@ -12,11 +12,11 @@ clean_operations:
 - volume
 daemon_trim_every_ticks: 3
 efis_params:
-  cooloff_base: 6240.0
+  cooloff_base: 4121.46264
   cpu_gate: 0.30000000000000016
-  learning_rate: 0.34
+  learning_rate: 0.48
   max_trim: 80
-  theta_gate: 0.14
+  theta_gate: 0.12000000000000001
   ws_baseline_mul: 1.05
 game_processes: []
 hotkey: ctrl+shift+m

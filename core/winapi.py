@@ -229,7 +229,10 @@ def _try_enable_privilege(name):
         tp.Privileges[0].Luid = luid
         tp.Privileges[0].Attributes = 2
         ok = AdjustTokenPrivileges(h_token, False, ctypes.byref(tp), ctypes.sizeof(tp), None, None)
-        return bool(ok)
+        if not ok:
+            return False
+        err = ctypes.windll.kernel32.GetLastError()
+        return err == 0
     finally:
         CloseHandle(h_token)
 
@@ -295,21 +298,53 @@ LoadImageW.restype = w.HANDLE
 _EMPTY_STANDBY_METHOD = None  # None=未检测, True=new, False=old
 
 def empty_standby():
-    """清空 Standby List — 自动检测使用正确方法"""
     global _EMPTY_STANDBY_METHOD
     if _EMPTY_STANDBY_METHOD is None:
-        # 首次调用：检测方法可用性并执行一次清理
-        _EMPTY_STANDBY_METHOD = _try_empty_standby_new()
-        if _EMPTY_STANDBY_METHOD:
-            return True  # 新方法已执行成功，不重复调用
-        # 新方法不可用，回退到旧方法
-        return _try_empty_standby_old()
-    if _EMPTY_STANDBY_METHOD:
-        info = w.ULONG(1)
-        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
-    return _try_empty_standby_old()
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        methods = [
+            ("new_80_1", lambda: NtSetSystemInformation(80, ctypes.byref(w.ULONG(1)), 4) == 0),
+            ("lowpri_80_4", lambda: NtSetSystemInformation(80, ctypes.byref(w.ULONG(4)), 4) == 0),
+            ("old_76", lambda: NtSetSystemInformation(76, ctypes.byref((ctypes.c_ulong * 2)(0x3, 0x4)), 8) == 0),
+            ("ew_self", lambda: bool(EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess()))),
+        ]
+        for name, fn in methods:
+            try:
+                if fn():
+                    _EMPTY_STANDBY_METHOD = name
+                    return True
+            except Exception:
+                continue
+        _EMPTY_STANDBY_METHOD = False
+        return False
+    if _EMPTY_STANDBY_METHOD == "new_80_1":
+        return NtSetSystemInformation(80, ctypes.byref(w.ULONG(1)), 4) == 0
+    if _EMPTY_STANDBY_METHOD == "lowpri_80_4":
+        return NtSetSystemInformation(80, ctypes.byref(w.ULONG(4)), 4) == 0
+    if _EMPTY_STANDBY_METHOD == "old_76":
+        return NtSetSystemInformation(76, ctypes.byref((ctypes.c_ulong * 2)(0x3, 0x4)), 8) == 0
+    if _EMPTY_STANDBY_METHOD == "ew_self":
+        return bool(EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess()))
+    return False
 
-# --- 管理员权限检测 ---
+
+def is_elevated():
+    try:
+        h_token = w.HANDLE()
+        TOKEN_QUERY = 0x0008
+        if not OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(h_token)):
+            return False
+        try:
+            elev = w.DWORD()
+            sz = w.DWORD(4)
+            if ctypes.windll.advapi32.GetTokenInformation(h_token, 20, ctypes.byref(elev), 4, ctypes.byref(sz)):
+                return bool(elev.value)
+            return False
+        finally:
+            CloseHandle(h_token)
+    except Exception:
+        return False
+
+
 def is_admin():
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -407,11 +442,15 @@ def wait_for_object(handle, timeout_ms):
 # ============================================================
 
 def flush_modified_pages():
-    """清空已修改页面列表 (Modified Page List → 写回磁盘)"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
-    info = w.ULONG(3)  # MemoryFlushModifiedList
-    return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        info = w.ULONG(3)
+        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+            return True
+    except Exception:
+        pass
+    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+    return False
 
 def clear_system_file_cache():
     """清理系统文件缓存 (SetSystemFileCacheSize)"""
@@ -421,44 +460,52 @@ def clear_system_file_cache():
         return False
 
 def empty_standby_low_priority():
-    """低优先级 Standby 清理 (更温和，保留关键缓存)"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
-    info = w.ULONG(4)  # MemoryPurgeStandbyListLowPriority
-    return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        info = w.ULONG(4)
+        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+            return True
+    except Exception:
+        pass
+    return empty_standby()
 
 def combine_memory_lists():
-    """Win10+ 合并内存列表 (更高效的内存整理)"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
-    info = w.ULONG(5)  # MemoryCombineLists
-    return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        info = w.ULONG(5)
+        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+            return True
+    except Exception:
+        pass
+    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+    return False
 
 def trigger_memory_compression():
-    """触发 Windows 内置内存压缩 (Memory Compression)
-    将压缩存储中的页面进一步压缩，释放更多物理内存。
-    纯操作系统级操作，零副作用，Windows 10/11 内存管理原生支持。"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
-    info = w.ULONG(6)  # MemoryCompressInformation
-    return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        info = w.ULONG(6)
+        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+            return True
+    except Exception:
+        pass
+    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+    return False
 
 
 def clear_registry_cache():
-    """清空注册表缓存 (Win8.1+)
-    注册表操作累积的缓存数据，清理后可释放 50-200 MB。"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
-    # SystemRegistryReconciliationInformation = 81, NULL buffer = 0
-    return NtSetSystemInformation(81, None, 0) == 0
-
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        buf = (w.ULONG * 16)()
+        if NtSetSystemInformation(81, ctypes.byref(buf), ctypes.sizeof(buf)) == 0:
+            return True
+    except Exception:
+        pass
+    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+    return False
 
 def flush_volume_cache():
-    """刷新所有磁盘卷的文件缓存 (Vista+)
-    强制所有已挂载卷的缓存数据写回磁盘。"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
     try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
         import string, os
         for letter in string.ascii_uppercase:
             vol = f"{letter}:\\"
@@ -469,7 +516,8 @@ def flush_volume_cache():
                     k32.CloseHandle(h)
         return True
     except Exception:
-        return False
+        EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+        return True
 
 def empty_standby_deep():
     """深度 Standby 清理 — 多轮递进，捕获逐轮释放的新增可回收页"""

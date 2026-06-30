@@ -1,5 +1,5 @@
 """
-MemWise v1.4 GUI —— 图形界面
+MemWise v1.3 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -122,7 +122,7 @@ class MemWiseGUI:
         _gui_ref = self
 
         self.root = tk.Tk()
-        self.root.title("MemWise v1.4")
+        self.root.title("MemWise v1.3")
         # --minimized 模式：立即隐藏窗口，不等 800ms，避免开机闪烁
         if "--minimized" in sys.argv:
             self.root.withdraw()
@@ -180,13 +180,11 @@ class MemWiseGUI:
         self._msg_queue = queue.Queue()  # 线程安全消息队列
         self._mem_pct = 0
         self._eff_data = deque(maxlen=60)  # 效率折线数据
-        self._chart_lock = threading.Lock()
         self._eris_sub = {"total": 50}  # 初始效率值（首个chart点用）
 
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v1.4 启动完毕 \u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
         # 启动消息队列轮询（每 100ms 检查一次，主线程安全）
         self._poll_msg_queue()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -455,9 +453,9 @@ class MemWiseGUI:
         # 统计
         sf = ttk.LabelFrame(self.root, text="统计", padding=8)
         sf.pack(fill="x", padx=12, pady=4)
-        self.lbl_sb = ttk.Label(sf, text="系统杂项: 0"); self.lbl_sb.pack(side="left", padx=(0,14))
+        self.lbl_sb = ttk.Label(sf, text="Standby: 0"); self.lbl_sb.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_sb,
-            "系统杂项清理总次数(7种操作)\n"
+            "系统缓存清理总次数(7种操作)\n"
             "\n"
             "包括：Standby清空/低优先Standby/Modified Page写回/内存压缩触发\n"
             "文件缓存清除/卷缓存刷新/注册表缓存(Win8.1+)\n"
@@ -476,7 +474,7 @@ class MemWiseGUI:
             "⚠ 参考释放量(MB)更有意义")
         self.lbl_fr = ttk.Label(sf, text="释放: 0 MB"); self.lbl_fr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_fr,
-            "累计释放内存总量\n"
+            "累计释放内存总量(MB)\n"
             "\n"
             "包括所有清理操作释放的内存：\n"
             "  · 进程EmptyWorkingSet + 内存优先级/EcoQoS回收\n"
@@ -1011,14 +1009,9 @@ class MemWiseGUI:
                 elif action == 'efis': self._log('[EFIS] ' + args)
                 elif action == 'chart': self._draw_chart()
                 elif action == 'upd_ui': self._upd_dae_ui(*args)
-                elif action == 'opt_done': self._opt_done(args)
-                elif action == 'dae_stopped': self._dae_stopped()
         except queue.Empty:
             pass
-        except Exception:
-            import traceback; traceback.print_exc()
-        finally:
-            self.root.after(100, self._poll_msg_queue)
+        self.root.after(100, self._poll_msg_queue)
 
     def _upd_learned(self):
         self.lbl_lr.config(text=f"已学习: {len(self.learner.profiles)}")
@@ -1044,10 +1037,9 @@ class MemWiseGUI:
 
     def _upd_stats(self):
         s = self.cleaner.summary()
-        self.lbl_sb["text"] = f"系统杂项: {s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('compress',0) + s.get('combine',0) + s.get('registry',0) + s.get('volume',0)}"
+        self.lbl_sb["text"] = f"Standby: {s['standby']}"
         self.lbl_tr["text"] = f"进程: {s['ws_trim']}"
-        fm = s['freed_mb']
-        self.lbl_fr["text"] = f"释放: {fm/1024.0:.1f}GB" if fm >= 1000 else f"释放: {fm:.1f}MB"
+        self.lbl_fr["text"] = f"释放: {s['freed_mb']} MB"
         self._upd_learned()
 
     # ---- 柱图 ----
@@ -1064,98 +1056,6 @@ class MemWiseGUI:
 
     BAR_W = 14   # 每柱宽度 px
     BAR_GAP = 3  # 柱间距 px
-
-    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct):
-        if not data:
-            return {"capability": 0, "adaptivity": 0, "precision": 0,
-                    "momentum": 0, "context": 0, "total": 50}
-        visible = list(data)
-        total_attempts = trimmed_cnt + failed_cnt
-        nonzero_vals = [v for v in visible if v > 0]
-        his_peak = max(visible)
-        recent_n = min(5, len(visible))
-        recent_perf = sum(visible[-recent_n:]) / recent_n
-        
-        if len(nonzero_vals) >= 3:
-            baseline = sum(nonzero_vals[-10:]) / min(len(nonzero_vals[-10:]), 10)
-        else:
-            baseline = his_peak
-        baseline = max(baseline, 5.0)
-        if len(visible) <= 2:
-            baseline = max(baseline, 200.0)
-        
-        n = len(visible)
-        w = 5 if n < 5 else n
-        learn_progress = min(w / 5.0, 1.0)
-        
-        base_r = min(recent_perf / baseline, 1.0)
-        peak_r = min(recent_perf / max(his_peak, 1), 1.0)
-        cap_a = (0.6 * base_r + 0.4 * peak_r) * learn_progress
-        
-        if len(visible) >= 3:
-            mean_v = sum(visible) / len(visible)
-            sd = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5
-            if total_attempts == 0:
-                adapt_b = 0.6
-            else:
-                adapt_raw = min(sd / max(mean_v, 1), 1.0)
-                adapt_b = 0.3 + 0.7 * adapt_raw
-        else:
-            adapt_b = 0.6
-        
-        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + 1) / (total_attempts + 2)
-        if len(visible) >= 3:
-            cv = sd / max(mean_v, 1)
-            consistency_c = 1.0 - min(cv * 0.3, 0.5)
-        else:
-            consistency_c = 0.8
-        if total_attempts == 0:
-            satur_c = 1.0
-        else:
-            zs = 0
-            for v in reversed(visible):
-                if v == 0: zs += 1
-                else: break
-            satur_c = max(0.3, 1.0 - zs / 10.0)
-        preci_c = success_r * consistency_c * satur_c
-        
-        if len(visible) >= 6:
-            n = min(6, len(visible))
-            ys = visible[-n:]; xs = list(range(n))
-            xm = sum(xs)/n; ym = sum(ys)/n
-            num = sum((x-xm)*(y-ym) for x,y in zip(xs,ys))
-            den = sum((x-xm)**2 for x in xs)
-            slope = num/den if den else 0
-            rg = slope/max(ym,1) if ym else 0
-            momen_d = 1.0/(1.0 + math.exp(-rg * 5.0))
-        else:
-            momen_d = 0.6
-        
-        pressure_e = min(mem_pct / 80.0, 1.0)
-        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + 1) / (total_attempts + 2), 1.0)
-        coverage_e = max(min(trimmed_cnt / 30.0, 1.0), 0.3) if total_attempts == 0 else min(trimmed_cnt / 30.0, 1.0)
-        ctx_e = 0.3 * pressure_e + 0.4 * effort_e + 0.3 * coverage_e
-        
-        ref_fixed = 500.0
-        n = len(visible)
-        if n <= 5:
-            prev_nz = [v for v in visible[:-1] if v > 0]
-            dyn_base = sum(prev_nz) / len(prev_nz) if prev_nz else ref_fixed
-            mix = {1: (1.0, 0.0), 2: (0.5, 0.5), 3: (0.33, 0.67), 4: (0.25, 0.75), 5: (0.15, 0.85)}
-            fix_r, dyn_r = mix[n]
-            ref = fix_r * ref_fixed + dyn_r * dyn_base
-        else:
-            all_prev = [v for v in visible[:-1] if v > 0]
-            ref = sum(all_prev) / len(all_prev) if all_prev else ref_fixed
-        latest_val = visible[-1]
-        overflow_bonus = 0.25 * (1.0 - 1.0 / (latest_val / ref)) if latest_val > ref else 0.0
-        
-        eff = (cap_a * 0.25 + adapt_b * 0.20 + preci_c * 0.20 + momen_d * 0.15 + ctx_e * 0.20 + overflow_bonus) * 100.0
-        eff = max(0.0, min(100.0, eff))
-        return {
-            "capability": cap_a, "adaptivity": adapt_b, "precision": preci_c,
-            "momentum": momen_d, "context": ctx_e, "total": eff,
-        }
 
     def _draw_chart(self):
         """在 Canvas 上绘制固定宽度滚动柱图 + 统计指标"""
@@ -1199,59 +1099,40 @@ class MemWiseGUI:
         else:
             baseline = his_peak
         baseline = max(baseline, 5.0)
-        # 前2个数据点时用最小基线区分释放量大小
-        if len(visible) <= 2:
-            baseline = max(baseline, 200.0)
         
         # ── A. 能力 (0~1) ──
         base_r = min(recent_perf / baseline, 1.0)
         peak_r = min(recent_perf / max(his_peak, 1), 1.0)
         # 学习进度：前30周期线性增长
-        n = len(visible)
-        if n == 1:
-            w = 5
-        elif n == 2:
-            w = 5
-        elif n == 3:
-            w = 5
-        elif n == 4:
-            w = 5
-        else:
-            w = n
-        learn_progress = min(w / 5.0, 1.0)
+        learn_progress = min(len(visible) / 30.0, 1.0)
         cap_a = (0.6 * base_r + 0.4 * peak_r) * learn_progress
         
         # ── B. 自适应力 (0~1) ──
         # 用数据本身的波动推断：高低值越分散→可能在不同条件下都有产出
         if len(visible) >= 3:
             mean_v = sum(visible) / len(visible)
-            if total_attempts == 0:
-                adapt_b = 0.6
-            else:
-                sd = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5
-                adapt_raw = min(sd / max(mean_v, 1), 1.0)
-                adapt_b = 0.3 + 0.7 * adapt_raw
+            sd = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5
+            # 变异系数高 = 产出波动大 = 对不同条件有不同响应
+            adapt_raw = min(sd / max(mean_v, 1), 1.0)
+            adapt_b = 0.3 + 0.7 * adapt_raw
         else:
             adapt_b = 0.6
         
         # ── C. 精准度 (0~1) ──
-        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + 1) / (total_attempts + 2)
+        success_r = trimmed_cnt / max(total_attempts, 1)
         if len(visible) >= 3:
             cv = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5 / max(mean_v, 1)
-            consistency_c = 1.0 - min(cv * 0.3, 0.5)
+            consistency_c = 1.0 - min(cv * 0.5, 0.5)
         else:
             consistency_c = 0.8
-        # 连续零释放感知（休息期 skip：无操作不算故障）
-        if total_attempts == 0:
-            satur_c = 1.0
-        else:
-            zero_streak = 0
-            for v in reversed(visible):
-                if v == 0:
-                    zero_streak += 1
-                else:
-                    break
-            satur_c = max(0.3, 1.0 - zero_streak / 10.0)
+        # 连续零释放感知
+        zero_streak = 0
+        for v in reversed(visible):
+            if v == 0:
+                zero_streak += 1
+            else:
+                break
+        satur_c = max(0.3, 1.0 - zero_streak / 10.0)
         preci_c = success_r * consistency_c * satur_c
         
         # ── D. 动量 (0~1) ──
@@ -1271,49 +1152,28 @@ class MemWiseGUI:
         
         # ── E. 上下文 (0~1) ──
         pressure_e = min(mem_pct / 80.0, 1.0)
-        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + 1) / (total_attempts + 2), 1.0)
-        coverage_e = max(min(trimmed_cnt / 30.0, 1.0), 0.3) if total_attempts == 0 else min(trimmed_cnt / 30.0, 1.0)
+        effort_e = min(trimmed_cnt / max(total_attempts, 1), 1.0)
+        coverage_e = min(trimmed_cnt / 30.0, 1.0)
         ctx_e = 0.3 * pressure_e + 0.4 * effort_e + 0.3 * coverage_e
         
-        # 超出基线赋分（前 5 轮混合基线，第 6 轮起全动态）
-        ref_fixed = 500.0
-        n = len(visible)
-        if n <= 5:
-            prev_nz = [v for v in visible[:-1] if v > 0]
-            dyn_base = sum(prev_nz) / len(prev_nz) if prev_nz else ref_fixed
-            mix = {1: (1.0, 0.0), 2: (0.5, 0.5), 3: (0.33, 0.67), 4: (0.25, 0.75), 5: (0.15, 0.85)}
-            fix_r, dyn_r = mix[n]
-            ref = fix_r * ref_fixed + dyn_r * dyn_base
-        else:
-            all_prev = [v for v in visible[:-1] if v > 0]
-            ref = sum(all_prev) / len(all_prev) if all_prev else ref_fixed
-        overflow_bonus = 0.25 * (1.0 - 1.0 / (latest / ref)) if latest > ref else 0.0
-        # ── 加权算术平均：五维度独立贡献，互不影响 ──
-        eff = (cap_a * 0.25 + adapt_b * 0.20 + preci_c * 0.20 + momen_d * 0.15 + ctx_e * 0.20 + overflow_bonus) * 100.0
+        # ── 保护几何平均：任一维度不低于 0.1，避免单维度归零拉垮总分 ──
+        safe_cap = max(cap_a, 0.1)
+        safe_ada = max(adapt_b, 0.1)
+        safe_pre = max(preci_c, 0.1)
+        safe_mon = max(momen_d, 0.1)
+        safe_ctx = max(ctx_e, 0.1)
+        eff = (safe_cap * safe_ada * safe_pre * safe_mon * safe_ctx) ** (1.0 / 5.0) * 100.0
         eff = max(0.0, min(100.0, eff))
         eff_text = f"{eff:.0f}%"
         self._eris_sub = {
             "capability": cap_a, "adaptivity": adapt_b, "precision": preci_c,
             "momentum": momen_d, "context": ctx_e, "total": eff,
         }
-        # 回填 _eff_data 末尾，使折点与底部文字同值
-        if self._eff_data:
-            last_list = list(self._eff_data)
-            if last_list and abs(last_list[-1] - eff) > 0.5:
-                with self._chart_lock:
-                    self._eff_data.pop()
-                    self._eff_data.append(eff)
         # Y 轴标注 & 网格
-        for i, lbl_v in [(0, 0), (1, max_val//2), (2, max_val)]:
-            if i == 0:
-                lbl = "0"
-            elif lbl_v >= 1000:
-                lbl = f"{lbl_v/1024.0:.1f}GB"
-            else:
-                lbl = f"{lbl_v:.0f}MB"
+        for i, lbl in [(0, "0"), (1, f"{max_val//2:.0f}"), (2, f"{max_val:.0f}")]:
             y = py1 - int(i * ph / 2)
             c.create_line(px0 - 3, y, px0, y, fill="#555")
-            c.create_text(px0 - 6, y, text=lbl, anchor="e",
+            c.create_text(px0 - 6, y, text=f"{lbl}MB", anchor="e",
                           fill="#aaa", font=("Consolas", 8))
             if i > 0:
                 c.create_line(px0, y, px1, y, fill="#2a2a2a", dash=(2, 4))
@@ -1340,13 +1200,13 @@ class MemWiseGUI:
             eff_pts = eff_visible[-n_pts:]
             coords = []
             for i, e_val in enumerate(eff_pts):
-                cx = px0 + i * step2 + self.BAR_W // 2
+                cx = px0 + i * step2 + step2 // 2
                 cy = py1 - (e_val / 100.0) * ph
                 coords.extend([cx, cy])
                 # 折点圆（奶白描边，显示在柱子上方）
                 r = 4
                 c.create_oval(cx - r, cy - r, cx + r, cy + r,
-                              outline="#FFF8E0", width=1, fill="#4488CC", tags="eff_dot")
+                              outline="#FFF8E0", width=3, fill="#4488CC", tags="eff_dot")
             if len(coords) >= 4:
                 c.create_line(*coords, fill="#4488CC", width=2, smooth=False, tags="eff_line")
 
@@ -1358,68 +1218,39 @@ class MemWiseGUI:
             c.create_rectangle(x0, py0, x1, py1,
                                fill="", outline="", tags=tag)
             eff_val = eff_pts[i] if eff_pts and i < len(eff_pts) else 50
+            c.tag_bind(tag, "<Enter>",
+                       lambda e, mb=v, ev=eff_val, xx=i: self._chart_show_tip(e, mb, ev, xx))
+            c.tag_bind(tag, "<Leave>", lambda e: self._chart_hide_tip(e))
 
-        # 存储当前可见数据供 Motion handler 使用
-        self._chart_motion_visible = list(visible)
-        self._chart_motion_eff = list(eff_pts) if eff_pts else []
-        self._chart_motion_px0 = px0
-        self._chart_motion_step = step
         # 坐标轴
         c.create_line(px0, py0, px0, py1, fill="#666")
         c.create_line(px0, py1, px1, py1, fill="#666")
         # 标题 — 居中在顶部黑色区域，不与图表重叠
-        c.create_text(px0 + pw//2, 10, text=f"本次优化 {self._fmt_label(latest)}",
+        c.create_text(px0 + pw//2, 10, text=f"本次优化 {latest:.0f} MB",
                       anchor="center", fill="#ccc", font=("微软雅黑", 9))
         # 底部三指标
         metrics_y = ch - 6
         c.create_text(px0 + pw//2, metrics_y,
-                      text=f"平均 {self._fmt_label(avg_val)}    最高 {self._fmt_label(peak_val)}    效率 {eff_text}",
+                      text=f"平均 {avg_val:.0f} MB    最高 {peak_val:.0f} MB    效率 {eff_text}",
                       anchor="s", fill="#aaa", font=("Consolas", 8))
-        # 单一 Motion 绑定（替代多柱 Enter/Leave，消除事件竞争）
-        c.tag_unbind("all", "<Enter>")
-        c.tag_unbind("all", "<Leave>")
-        c.bind("<Motion>", self._chart_on_motion)
-        c.bind("<Leave>", self._chart_hide_tip)
     # ── 图表悬浮提示 ──
 
     def _chart_show_tip(self, event, freed_mb, eff_pct, idx):
         c = self.chart_canvas
         self._chart_hide_tip(None)
         x = event.x
-        # 限制 tooltip 不超出左右边界
-        cw = c.winfo_width() or 400
-        x = max(66, min(cw - 66, x))
-        tip_y0 = 22
+        tip_y0 = 22  # 图表顶部保护区内
+        # 提示框（固定在图表顶部，跟随鼠标 x 轴）
         c.create_rectangle(x - 60, tip_y0 - 8, x + 60, tip_y0 + 28,
                            fill="#2d2d2d", outline="#4488CC", width=1,
                            tags="chart_tip")
         c.create_text(x, tip_y0 + 10,
-                      text=f"释放 {self._fmt_label(freed_mb)}\n效率 {eff_pct:.0f}%",
+                      text=f"释放 {freed_mb:.1f} MB\n效率 {eff_pct:.0f}%",
                       fill="#eee", font=("Consolas", 8),
                       justify="center", tags="chart_tip")
 
-    def _fmt_label(self, v):
-        if abs(v) >= 1000:
-            return f"{v/1024.0:.1f}GB"
-        return f"{v:.1f}MB"
-
     def _chart_hide_tip(self, event):
         self.chart_canvas.delete("chart_tip")
-
-    def _chart_on_motion(self, event):
-        """单一 Motion 悬浮处理：计算列索引，不再依赖多个 Enter/Leave 绑定"""
-        visible = getattr(self, '_chart_motion_visible', [])
-        if not visible:
-            return
-        px0 = getattr(self, '_chart_motion_px0', 0)
-        step = getattr(self, '_chart_motion_step', 17)
-        col = (event.x - px0) // step
-        if 0 <= col < len(visible):
-            eff_data = getattr(self, '_chart_motion_eff', [])
-            eff_val = eff_data[col] if col < len(eff_data) else 50
-            self._chart_show_tip(event, visible[col], eff_val, col)
-        else:
-            self._chart_hide_tip(None)
 
     # ---- 优化 ----
 
@@ -1455,13 +1286,13 @@ class MemWiseGUI:
         self._msg_queue.put(('log', f"📊 三轮优化合计释放 {total_freed/(1<<20):.1f} MB，可用内存 {m0['pct']}%→{m1['pct']}%"))
         self._msg_queue.put(('log_op', f"优化完成 · 三轮合计释放 {total_freed/(1<<20):.1f} MB"))
 
-        self._msg_queue.put(('opt_done', r))
     def _opt_done(self, result):
         s = self.cleaner.summary()
         trimmed = [t for t in result.get("layer2", []) if t[1]]
         # 本次优化增量（从 result 中汇总，非累计）
         inc_freed = sum(t[2] for t in trimmed) + sum(p[2] for p in result.get("probe", []) if p[1])
         inc_mb = inc_freed / (1 << 20)
+        self._log(f"本轮释放 {inc_mb:.1f} MB · 整理 {len(trimmed)} 个 · Probe {len(result.get('probe',[]))}")
         for snap, ok, freed, reason in trimmed[:10]:
             self._log(f"  ✓ {snap.name} (PID={snap.pid}) {freed/(1<<20):.0f}MB — {reason}")
         # 统计栏始终显示程序运行以来累计总量
@@ -1487,10 +1318,6 @@ class MemWiseGUI:
         self._prev_trim_count = s['ws_trim']
         self._prev_fail_count = s['failed_feedback']
         self._chart_data.clear()
-        self._eff_data.clear()
-        self._last_sys_ops = 0
-        self._cycle_trimmed = 0
-        self._cycle_failed = 0
         self.daemon_thread = threading.Thread(target=self._dae_worker, daemon=True)
         self.daemon_thread.start()
 
@@ -1517,18 +1344,13 @@ class MemWiseGUI:
                 
                 # 事件驱动等待：内存变化或超时
                 if use_event_driver:
-                    # 可中断等待：每 1 秒检查 daemon_running
-                    for _ in range(interval):
-                        if not self.daemon_running:
-                            return
-                        ret = winapi.wait_for_object(h_low, 1000)
-                        if ret == "signaled":
-                            break
+                    ret = winapi.wait_for_object(h_low, interval * 1000)
+                    if ret == "signaled":
+                        # 内存变紧张了，立即响应
+                        pass
+                    # timeout 也正常走循环
                 else:
-                    for _ in range(interval):
-                        if not self.daemon_running:
-                            return
-                        time.sleep(1)
+                    time.sleep(interval)
                 
                 m = winapi.get_memory_status()
                 if not m: time.sleep(interval); continue
@@ -1574,8 +1396,8 @@ class MemWiseGUI:
                             self._cfg_mtime = mtime
                             _config.load()
                             CFG.update(_config.load())
-                    except Exception as e:
-                        import sys; print(f"[MemWise] 配置加载异常: {e}", file=sys.stderr)
+                    except Exception:
+                        pass
                 if now - last_save > 30:
                     last_save = now
                     self.judger.purge_expired()
@@ -1590,19 +1412,13 @@ class MemWiseGUI:
                 chart_accum += max(0.0, cycle_freed)
                 if now - last_chart_ts >= 30:
                     self._chart_data.append(chart_accum)
-                    eff_val = self._compute_eris(list(self._chart_data),
-                        self._cycle_trimmed, self._cycle_failed, m["pct"]
-                    ).get("total", 50)
-                    with self._chart_lock:
-                        self._eff_data.append(eff_val)
+                    self._eff_data.append(self._eris_sub.get('total', 50))
                     chart_accum = 0.0
                     last_chart_ts = now
                 cur_trim = s['ws_trim']
                 cur_fail = s['failed_feedback']
                 self._cycle_trimmed = cur_trim - self._prev_trim_count
                 self._cycle_failed = cur_fail - self._prev_fail_count
-                cycle_standby = s["standby"] + s.get("modified",0) + s.get("filecache",0) + s.get("compress",0) + s.get("combine",0) + s.get("registry",0) + s.get("volume",0) - self._last_sys_ops
-                self._last_sys_ops = s["standby"] + s.get("modified",0) + s.get("filecache",0) + s.get("compress",0) + s.get("combine",0) + s.get("registry",0) + s.get("volume",0)
                 self._mem_pct_for_chart = m['pct']
                 self._prev_trim_count = cur_trim
                 self._prev_fail_count = cur_fail  # 始终追加保持时间轴连续
@@ -1627,36 +1443,26 @@ class MemWiseGUI:
                         CFG['efis_params'] = params
                         self.judger.cfg['efis_params'] = params
                     if efis_msg:
-                        self._msg_queue.put(('efis', efis_msg))
-
-                # 元认知
-                meta_stats = {
-                    'mem_pct': m['pct'],
-                    'trimmed_cnt': self._cycle_trimmed,
-                    'failed_cnt': self._cycle_failed,
-                    'total_attempts': self._cycle_trimmed + self._cycle_failed,
-                    'cycle_freed': cycle_freed,
-                    'snaps': snaps,
-                    'fore_fullscreen': winapi.is_foreground_fullscreen(),
-                }
-                self.learner.meta.tick(meta_stats)
+                        self.root.after(0, lambda msg=efis_msg: self._log('[EFIS] ' + msg))
 
                 # ── 收集并显示算法日志消息 ──
                 for msg in self.learner.pop_info():
-                    self._msg_queue.put(('log', msg))
+                    self.root.after(0, lambda m=msg: self._log(m))
                 for msg in self.cleaner.pop_info():
-                    self._msg_queue.put(('log', msg))
+                    self.root.after(0, lambda m=msg: self._log(m))
                 if hasattr(self.judger, '_info_msgs') and self.judger._info_msgs:
                     for msg in self.judger._info_msgs:
-                        self._msg_queue.put(('log', msg))
+                        self.root.after(0, lambda m=msg: self._log(m))
                     self.judger._info_msgs.clear()
 
-                self._msg_queue.put(('log_op',
-                        f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {cycle_standby} · 整理 {len(trimmed)} 进程 · "
-                        f"试探 {len(probe_results)} ({probe_ok}成功) · 画像 {learned} 个 · 样本 {total_samples}"))
+                self.root.after(0, lambda n=len(trimmed),ls=learned,ts=total_samples,pt=len(probe_results),po=probe_ok,mem=m,cf=cycle_freed:
+                    self._log_op(
+                        f"本轮释放 {cf:.1f} MB · 整理 {n} 进程 · "
+                        f"画像 {ls} 个 · 样本 {ts} · 试探 {pt} ({po}成功) · 内存 {mem['pct']}%") if self.daemon_running else None)
                 # 状态栏（累计数据）
-                self._msg_queue.put(('upd_ui', (s, m, "🟢 守护中")))
-                self._msg_queue.put(('chart', None))
+                self.root.after(0, lambda st=s,mem=m:
+                    self._upd_dae_ui(st, mem, "🟢 守护中") if self.daemon_running else None)
+                self.root.after(0, lambda: self._draw_chart() if self.daemon_running else None)
                 elapsed = time.time() - tick_start
                 time.sleep(max(0.5, interval - elapsed))
                 if not self.daemon_running:
@@ -1666,13 +1472,12 @@ class MemWiseGUI:
             self._dae_error = f"{e}\n{traceback.format_exc()}"
             self.daemon_running = False
         finally:
-            self._msg_queue.put(('dae_stopped', None))
+            self.root.after(0, self._dae_stopped)
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
-        self.lbl_sb["text"] = f"系统杂项: {s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('compress',0) + s.get('combine',0) + s.get('registry',0) + s.get('volume',0)}"
+        self.lbl_sb["text"] = f"Standby: {s['standby']}"
         self.lbl_tr["text"] = f"进程: {s['ws_trim']}"
-        fm = s['freed_mb']
-        self.lbl_fr["text"] = f"释放: {fm/1024.0:.1f}GB" if fm >= 1000 else f"释放: {fm:.1f}MB"
+        self.lbl_fr["text"] = f"释放: {s['freed_mb']} MB"
         pct = m["pct"]
         icon = "🟢" if pct < 70 else ("🟡" if pct < 90 else "🔴")
         self.lbl_st["text"] = f"{icon} {txt} {pct}%"

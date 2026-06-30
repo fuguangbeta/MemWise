@@ -141,9 +141,6 @@ class PareJudger:
             if self.aggressiveness < agg_threshold_fg:
                 return False, "前台窗口"
 
-        if snap.cpu >= cpu_threshold and self.aggressiveness < 0.8:
-            return False, f"CPU活跃({snap.cpu:.1f}%)"
-
         if snap.ws < 5 << 20:  # 5MB 以下不碰
             return False, "工作集太小"
 
@@ -164,7 +161,7 @@ class PareJudger:
                     threshold = 1.2 * e_b_mul / 1.20
                 else:
                     threshold = 1.15 * e_b_mul / 1.20
-                min_delta = 20 << 20  # 至少20MB
+                min_delta = 2 << 20  # 至少2MB
                 if snap.ws < baseline * threshold or snap.ws - baseline < min_delta:
                     return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline * threshold)})"
         # ── 失败冷却检查（仅 mark_failed 设置的）──
@@ -172,11 +169,16 @@ class PareJudger:
         if now < cd:
             return False, f"失败冷却中({int(cd-now)}s)"
 
-        # ── Thompson Sampling ──
-        theta = self.learner.thompson_score(name)
-        # 由 mode 和学习系统决定是否清理，不由当前内存压力二次削减
-        if theta < joint_threshold:
-            return False, f"θ不足({theta:.2f})"
+        # ── WS 回弹覆盖 ──
+        ws_override = False
+        bl = self._post_clean_ws.get(snap.name.lower(), 0)
+        if bl > 0 and snap.ws >= bl * 2.0:
+            ws_override = True
+            theta = 1.0
+        else:
+            theta = self.learner.thompson_score(name)
+            if theta < joint_threshold:
+                return False, f"θ不足({theta:.2f})"
 
         # ── 泄漏检测: 泄漏进程跳过冷却，高频尝试 ──
         if self.learner.is_leak_suspect(name):
@@ -191,7 +193,12 @@ class PareJudger:
         try:
             if hasattr(self, 'learner') and hasattr(self.learner, 'policy'):
                 state = {"mem_pct": getattr(self, '_last_mem_pct', 50)}
-                ok, reason = self.learner.policy.should_trim(name, snap.ws, state, self.learner)
+                if ws_override:
+                    ok, reason = True, "WS回弹覆盖"
+                elif not self._post_clean_ws:
+                    ok, reason = True, "首轮(无基线)"
+                else:
+                    ok, reason = self.learner.policy.should_trim(name, snap.ws, state, self.learner)
                 if not ok:
                     return False, f"策略否决({reason})"
         except Exception as e:

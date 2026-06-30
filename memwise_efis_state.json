@@ -1,0 +1,1749 @@
+{
+  "efis": {
+    "params": {
+      "theta_gate": 0.18,
+      "cpu_gate": 0.30000000000000016,
+      "max_trim": 80,
+      "cooloff_base": 4052.3847383999996,
+      "ws_baseline_mul": 1.05,
+      "learning_rate": 0.48
+    },
+    "history": [
+      67.62984988016827,
+      54.1389698549852,
+      51.784377021252936,
+      59.7179512399547,
+      56.759869299851026,
+      63.73212338602453,
+      65.1270933591952,
+      62.86881462167564,
+      57.67797796419997,
+      60.93170146613549,
+      61.355396541975416,
+      66.45835020850079,
+      67.84211711866185,
+      58.67534783802264,
+      67.95394337130007,
+      52.37842167192734,
+      61.040002431503716,
+      67.87893456205555,
+      67.41295734984261,
+      57.31030257137283,
+      63.2683675028949,
+      64.19871307057339,
+      60.520547079905604,
+      64.84086988340256,
+      56.588725012424156,
+      66.59837390659217,
+      66.05688096502578,
+      66.10233298541999,
+      65.8146457095925,
+      55.63366546466612,
+      61.388948601758244,
+      64.22664554292979,
+      73.56884858695165,
+      65.20506969363531,
+      72.08389461314087,
+      58.64574446282775,
+      48.15811918471751,
+      66.11690890320016,
+      65.72164808921994,
+      54.887768886100254,
+      53.9203744156373,
+      65.19009592597695,
+      65.00963407612088,
+      66.08495407617092,
+      61.892435241634345,
+      39.47781473377501,
+      61.607137074702266,
+      49.924081005578834,
+      64.33008941222283,
+      67.92001810920378,
+      51.06826959643963,
+      56.283811980336274,
+      57.46083683769062,
+      67.43618093402412,
+      50,
+      50,
+      50,
+      40.88274263936811,
+      50,
+      66.45543190132064,
+      64.66278729445708,
+      61.653124826459546,
+      67.7894839105263,
+      66.86157839604792,
+      63.98340449009352,
+      67.21267640108188,
+      64.66469724336386,
+      56.3057552654898,
+      71.47330003482593,
+      67.57570102649004,
+      70.16035911062689,
+      63.89452795363258,
+      58.813929411312635,
+      51.9349832325039,
+      65.84405593506129,
+      50,
+      50,
+      50,
+      50,
+      65.62008416677949,
+      65.4570604902326,
+      53.73304774396802,
+      67.1990950761202,
+      50,
+      50,
+      59.064957662307826,
+      66.19509719460801,
+      64.66718780982464,
+      63.52991901896578,
+      49.53864299219803,
+      63.173096975936915,
+      56.578900171041965,
+      62.23469157318199,
+      55.549703704976984,
+      68.61846683204391,
+      65.20709436399787,
+      59.775600252815366,
+      49.77032941024581,
+      62.41814230223708,
+      50,
+      53.499990008509016,
+      63.86415338535747,
+      64.20601326304627,
+      64.89539239064858,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      49.392888574029556,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      51.95279946543808,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      50,
+      62.48216681064531,
+      59.763871706175074,
+      50.0029006932036,
+      56.55647850819712,
+      46.59458617971275,
+      72.17952665645393,
+      50.409930461837725,
+      59.24797687426112,
+      55.699653731136,
+      72.46017251304046,
+      74.57199882937488,
+      61.070969399146,
+      58.10413098797801,
+      63.31933413260106,
+      61.10012489849702,
+      54.75976144720613,
+      63.26886462046385,
+      85.94697111493474,
+      60.931368599952926,
+      83.8957456189344,
+      84.61923182023091,
+      66.44799698681743,
+      47.17218301194904,
+      53.290212118910496,
+      50,
+      50,
+      50,
+      50,
+      59.91789425080676,
+      50,
+      63.13525253373853,
+      62.306521142101815,
+      60.672849040525236,
+      66.23453209402136,
+      60.80783376805097,
+      64.56054634426334,
+      60.954009055136936,
+      50,
+      47.84918860819123,
+      80.13684817170696,
+      50,
+      54.271397008894965,
+      64.02053008396639,
+      57.46489903665665,
+      56.756965410798045,
+      64.52327949661432,
+      64.25354523386868,
+      55.21437586939808,
+      66.76579149023044,
+      85.43452415404292,
+      62.76723833174296,
+      63.57515347269622,
+      63.30282220300523,
+      56.96928508587155,
+      72.18790435445742,
+      73.12919965736305
+    ],
+    "last_save": 1782823973.0648804,
+    "experiments": [
+      {
+        "timestamp": 1782637246.3503482,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.14,
+            "new": 0.16
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637246.3503523,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 1200.0,
+            "new": 1500.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637246.3503554,
+        "trigger_dim": "context",
+        "changes": {
+          "max_trim": {
+            "old": 50.0,
+            "new": 55.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637246.3503575,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 1.0,
+            "new": 0.9
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637633.5235295,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.16,
+            "new": 0.14
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 377.3,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637633.5235407,
+        "trigger_dim": "capability",
+        "changes": {
+          "ws_baseline_mul": {
+            "old": 1.2,
+            "new": 1.14
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 377.3,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637633.5235455,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.12,
+            "new": 0.13999999999999999
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 377.3,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637633.5235476,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 1500.0,
+            "new": 1800.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 377.3,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637633.5235503,
+        "trigger_dim": "context",
+        "changes": {
+          "max_trim": {
+            "old": 55.0,
+            "new": 60.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 377.3,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782637633.5235517,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 0.9,
+            "new": 0.8
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 377.3,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641460.7951157,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.13999999999999999,
+            "new": 0.11999999999999998
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 1945.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641460.7951233,
+        "trigger_dim": "capability",
+        "changes": {
+          "ws_baseline_mul": {
+            "old": 1.14,
+            "new": 1.083
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 1945.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641460.795129,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.11999999999999998,
+            "new": 0.13999999999999999
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 1945.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641460.7951326,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 1800.0,
+            "new": 2100.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 1945.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641460.7951357,
+        "trigger_dim": "context",
+        "changes": {
+          "max_trim": {
+            "old": 60.0,
+            "new": 65.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 1945.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641460.795138,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 0.8,
+            "new": 0.7000000000000001
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 1945.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641772.976611,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.15999999999999998,
+            "new": 0.13999999999999999
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641772.9766226,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.13999999999999999,
+            "new": 0.15999999999999998
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641772.9766266,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 2400.0,
+            "new": 2700.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641772.97663,
+        "trigger_dim": "context",
+        "changes": {
+          "max_trim": {
+            "old": 70.0,
+            "new": 75.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641772.9766319,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 0.6000000000000001,
+            "new": 0.5000000000000001
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641947.4810133,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.15999999999999998,
+            "new": 0.13999999999999999
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 391.90000000000003,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641947.481023,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.11999999999999997,
+            "new": 0.13999999999999996
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 391.90000000000003,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641947.481027,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 2700.0,
+            "new": 3000.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 391.90000000000003,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641947.4810297,
+        "trigger_dim": "context",
+        "changes": {
+          "max_trim": {
+            "old": 75.0,
+            "new": 80
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 391.90000000000003,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782641947.4810312,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 0.5000000000000001,
+            "new": 0.40000000000000013
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 391.90000000000003,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642258.0365696,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.13999999999999996,
+            "new": 0.11999999999999995
+          }
+        },
+        "eris_before": 24.05990706772452,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642258.0365899,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.11999999999999995,
+            "new": 0.13999999999999996
+          }
+        },
+        "eris_before": 24.05990706772452,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642258.0365934,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 3000.0,
+            "new": 3300.0
+          }
+        },
+        "eris_before": 24.05990706772452,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642258.0365968,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 0.40000000000000013,
+            "new": 0.30000000000000016
+          }
+        },
+        "eris_before": 24.05990706772452,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782642566.839324,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.15999999999999995,
+            "new": 0.13999999999999996
+          }
+        },
+        "eris_before": 22.17623127804046,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642566.8393369,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.13999999999999996,
+            "new": 0.15999999999999995
+          }
+        },
+        "eris_before": 22.17623127804046,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642566.8393412,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 3600.0,
+            "new": 3900.0
+          }
+        },
+        "eris_before": 22.17623127804046,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642566.8393452,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.3,
+            "new": 0.32
+          }
+        },
+        "eris_before": 22.17623127804046,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782642921.2208233,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.15999999999999995,
+            "new": 0.13999999999999996
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642921.2208362,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.11999999999999994,
+            "new": 0.13999999999999993
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642921.2208405,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 3900.0,
+            "new": 4200.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782642921.2208443,
+        "trigger_dim": "context",
+        "changes": {
+          "cpu_gate": {
+            "old": 0.40000000000000013,
+            "new": 0.30000000000000016
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782643208.0900764,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.13999999999999993,
+            "new": 0.11999999999999993
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782643208.0900934,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.11999999999999993,
+            "new": 0.13999999999999993
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782643208.0900974,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4200.0,
+            "new": 4500.0
+          }
+        },
+        "eris_before": 20.47672511079219,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782643832.8043854,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.15999999999999992,
+            "new": 0.13999999999999993
+          }
+        },
+        "eris_before": 24.258048343234652,
+        "clean_efficiency_before": 40.75217391304348,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782643832.8044028,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.13999999999999993,
+            "new": 0.15999999999999992
+          }
+        },
+        "eris_before": 24.258048343234652,
+        "clean_efficiency_before": 40.75217391304348,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782643832.804407,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4800.0,
+            "new": 5100.0
+          }
+        },
+        "eris_before": 24.258048343234652,
+        "clean_efficiency_before": 40.75217391304348,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782644142.5142577,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.15999999999999992,
+            "new": 0.13999999999999993
+          }
+        },
+        "eris_before": 23.417062383526737,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782644142.5142658,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.11999999999999991,
+            "new": 0.1399999999999999
+          }
+        },
+        "eris_before": 23.417062383526737,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782646442.1691618,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1399999999999999,
+            "new": 0.1199999999999999
+          }
+        },
+        "eris_before": 31.091248644731607,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782646756.6336844,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1199999999999999,
+            "new": 0.1
+          }
+        },
+        "eris_before": 31.139646400243404,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782647077.1691852,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4440.0,
+            "new": 4740.0
+          }
+        },
+        "eris_before": 23.494632653386343,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782647077.1691902,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.3,
+            "new": 0.32
+          }
+        },
+        "eris_before": 23.494632653386343,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782647398.645285,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4740.0,
+            "new": 5040.0
+          }
+        },
+        "eris_before": 22.160822777005134,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782648051.8591652,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1199999999999999,
+            "new": 0.1
+          }
+        },
+        "eris_before": 27.306445500565225,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782649046.3698688,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 5340.0,
+            "new": 5640.0
+          }
+        },
+        "eris_before": 25.142629941749533,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782649691.5916278,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1199999999999999,
+            "new": 0.1399999999999999
+          }
+        },
+        "eris_before": 32.78900167211243,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782650353.5548801,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.3,
+            "new": 0.32
+          }
+        },
+        "eris_before": 33.84391512282906,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782651328.5023158,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1199999999999999,
+            "new": 0.1
+          }
+        },
+        "eris_before": 29.818008614905693,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782651328.5023248,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 29.818008614905693,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782651658.3776915,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.12000000000000001,
+            "new": 0.1
+          }
+        },
+        "eris_before": 29.030216306882345,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782651658.3777027,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 29.030216306882345,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782652005.3230712,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 5340.0,
+            "new": 5640.0
+          }
+        },
+        "eris_before": 26.450310372025726,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782652666.7325208,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 23.120795278525826,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782653001.4205766,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.14,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 32.301267703787694,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782653001.4205883,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 32.301267703787694,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782653645.7288208,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.3,
+            "new": 0.32
+          }
+        },
+        "eris_before": 23.285456608268838,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782653954.3785813,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 25.85,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782653954.3785887,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 5340.0,
+            "new": 5640.0
+          }
+        },
+        "eris_before": 25.85,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782654264.923709,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.12000000000000001,
+            "new": 0.1
+          }
+        },
+        "eris_before": 28.101510041083554,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782654264.9237247,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 28.101510041083554,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782654264.9237294,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 5940.0,
+            "new": 6240.0
+          }
+        },
+        "eris_before": 28.101510041083554,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782654264.9237347,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.32,
+            "new": 0.34
+          }
+        },
+        "eris_before": 28.101510041083554,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782708318.5210164,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.14,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 54.1389698549852,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782708662.901046,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.34,
+            "new": 0.36000000000000004
+          }
+        },
+        "eris_before": 51.784377021252936,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782709353.865003,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.38,
+            "new": 0.4
+          }
+        },
+        "eris_before": 56.759869299851026,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782710735.24325,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4,
+            "new": 0.42000000000000004
+          }
+        },
+        "eris_before": 57.67797796419997,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782712429.947932,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.42000000000000004,
+            "new": 0.44100000000000006
+          }
+        },
+        "eris_before": 58.67534783802264,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782719941.609839,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.42000000000000004,
+            "new": 0.44100000000000006
+          }
+        },
+        "eris_before": 58.64574446282775,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782724843.2910259,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4506.744,
+            "new": 4806.744
+          }
+        },
+        "eris_before": 51.06826959643963,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782725160.8424134,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.42000000000000004,
+            "new": 0.44100000000000006
+          }
+        },
+        "eris_before": 56.283811980336274,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782725474.3938463,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.44100000000000006,
+            "new": 0.4630500000000001
+          }
+        },
+        "eris_before": 57.46083683769062,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782728307.985327,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.14,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 40.88274263936811,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782728307.9853437,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.44100000000000006,
+            "new": 0.4630500000000001
+          }
+        },
+        "eris_before": 40.88274263936811,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782730322.1751757,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4630500000000001,
+            "new": 0.4862025000000001
+          }
+        },
+        "eris_before": 63.98340449009352,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782737304.2469947,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4630500000000001,
+            "new": 0.4862025000000001
+          }
+        },
+        "eris_before": 53.73304774396802,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782741314.0776289,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4630500000000001,
+            "new": 0.4862025000000001
+          }
+        },
+        "eris_before": 49.53864299219803,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782742005.142865,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4862025000000001,
+            "new": 0.5
+          }
+        },
+        "eris_before": 56.578900171041965,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782744796.1021485,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4862025000000001,
+            "new": 0.5
+          }
+        },
+        "eris_before": 53.499990008509016,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782752818.135686,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4862025000000001,
+            "new": 0.5
+          }
+        },
+        "eris_before": 51.95279946543808,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782797765.705398,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 59.763871706175074,
+        "clean_efficiency_before": 930.1000000000004,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782797765.7054305,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4121.46264,
+            "new": 4421.46264
+          }
+        },
+        "eris_before": 59.763871706175074,
+        "clean_efficiency_before": 930.1000000000004,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782798088.5921695,
+        "trigger_dim": "capability",
+        "changes": {
+          "theta_gate": {
+            "old": 0.12000000000000001,
+            "new": 0.1
+          }
+        },
+        "eris_before": 50.0029006932036,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782798425.727469,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4862025000000001,
+            "new": 0.5
+          }
+        },
+        "eris_before": 56.55647850819712,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782802369.2741323,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.4862025000000001,
+            "new": 0.5
+          }
+        },
+        "eris_before": 54.75976144720613,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782803351.7682776,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.48,
+            "new": 0.5
+          }
+        },
+        "eris_before": 60.931368599952926,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782804624.7329288,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.1,
+            "new": 0.12000000000000001
+          }
+        },
+        "eris_before": 47.17218301194904,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782807933.23638,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.48,
+            "new": 0.5
+          }
+        },
+        "eris_before": 59.91789425080676,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782813622.0343316,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.12000000000000001,
+            "new": 0.14
+          }
+        },
+        "eris_before": 47.84918860819123,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782813622.0343502,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4121.46264,
+            "new": 4421.46264
+          }
+        },
+        "eris_before": 47.84918860819123,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782819370.0549858,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.16,
+            "new": 0.18
+          }
+        },
+        "eris_before": 54.271397008894965,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782819370.054999,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4421.46264,
+            "new": 4721.46264
+          }
+        },
+        "eris_before": 54.271397008894965,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782820042.7846193,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.48,
+            "new": 0.5
+          }
+        },
+        "eris_before": 57.46489903665665,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      }
+    ],
+    "scene_params": {
+      "general": {
+        "theta_gate": 0.18,
+        "cpu_gate": 0.30000000000000016,
+        "max_trim": 80,
+        "cooloff_base": 4052.3847383999996,
+        "ws_baseline_mul": 1.05,
+        "learning_rate": 0.48
+      },
+      "browser_heavy": {
+        "theta_gate": 0.18,
+        "cpu_gate": 1.0,
+        "max_trim": 50,
+        "cooloff_base": 1200,
+        "ws_baseline_mul": 1.2,
+        "learning_rate": 0.3
+      }
+    },
+    "direction_wins": {
+      "theta_gate-": 1,
+      "ws_baseline_mul-": 0,
+      "theta_gate+": 1,
+      "cooloff_base+": 2,
+      "max_trim+": 2,
+      "cpu_gate-": 1,
+      "learning_rate+": 0
+    },
+    "clean_eff_history": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      495.6666666666667,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      756.65,
+      0.0,
+      647.5,
+      281.225,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      340.2714285714286,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1128.3,
+      151.20909090909092,
+      236.15454545454543,
+      0.0,
+      930.1000000000004,
+      0.0,
+      0.0,
+      599.6000000000004,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      47.774999999999636,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      87.65454545454546,
+      745.55,
+      1397.2,
+      16.736363636363635,
+      0.0,
+      109.75,
+      226.44999999999982,
+      0.0,
+      112.10000000000036,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      104.87692307692308,
+      0.0,
+      292.6999999999998,
+      183.1909090909091,
+      0.0,
+      221.80000000000018,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scene_best": {},
+    "current_scene": "general",
+    "last_scene": "browser_heavy"
+  }
+}
