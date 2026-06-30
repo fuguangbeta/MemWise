@@ -897,3 +897,82 @@ MemWise 使用的全部 Win32 API（按功能分组）：
 ---
 
 *MemWise v1.4 — 2026年6月*
+### 🔧 效率评分系统迭代
+
+| 问题 | 修复 | 影响 |
+|------|------|------|
+| 几何平均被首轮单维度低分压制 → 首轮 2GB 仅 71% | 改为**加权算术平均** + `overflow_bonus` 溢出赋分 | 首轮 2GB → 95% |
+| `200<<20` 字节 vs MB 单位不匹配 → 首轮 A 因子被 2亿基线杀死 | 改为 `200.0` MB | 首轮 A 因子恢复到 1.0 |
+| `learn_progress` 使用实际数据点 → 首轮 1 个点 `1/30=0.033` 压死 cap_a | 自定义权重 1→5, 2→5, 3→5, 4→5, ≥5→实际值 | 首轮 cap_a 恢复正常 |
+| 单次失败让 C/E 归零 → 第二轮固定 37% | **贝叶斯平滑** `(ok+1)/(总+2)` | 同样 1 次失败 → 37% → 47% |
+| 前 5 轮基线切换断点（200MB→均值） | **混合基线**，第 1→5 轮逐步过渡 | 消除陡崖式效率波动 |
+| 硬编码固定基线 → 动态基线无溢出赋分 | 固定 500MB（首轮）+ 动态均值混合 | 首轮 1.5GB → 溢出 ~0.17 |
+
+### 🔧 进程清理修复
+
+| 问题 | 修复 |
+|------|------|
+| `cpu_gate: 0.3` → 几乎所有进程 CPU >0.3% → 全部拦截 | **CPU 检查完全移除** |
+| probe 和 trim 对同一进程都调用 `empty_ws` → probe 清空后 trim 无事可做 | **Trim 优先**：能 trim 的不进 probe |
+| 首轮策略投票无基线 → 投票系统否决所有进程 | `_post_clean_ws` 为空时绕过策略投票 |
+| WS 回弹覆盖通过后 `theta` 未定义 → 系统路径检查 `theta<0.6` 崩溃 | 默认 `theta=1.0`，新增 `ws_override` 标志绕过策略投票和系统路径检查 |
+| 仅 `_trim_process` 记录 WS 基线 → 被 probe 的进程没有基线 → WS 覆盖永不触发 | Probe 成功后也调用 `mark_trimmed` 记录基线 |
+| `min_delta=20MB` 过高 → 进程需涨 20MB 才能跳过基线检查 | 降低至 **2MB** |
+
+### 🔧 系统操作修复
+
+| 问题 | 修复 |
+|------|------|
+| `SeIncreaseQuotaPrivilege` 在 Win11 24H2 不可用 | 所有操作加 `EmptyWorkingSet` 保底（仅执行不计数） |
+| `AdjustTokenPrivileges` 返回 True 但权限未实际启用 | 增加 `GetLastError()` 检查 |
+| `clear_registry_cache` 使用 `NULL` 缓冲区 → 失败 | 改用 `ULONG*16` 缓冲区 |
+| 统计栏仅显示 `s["standby"]`（1 种操作） | 改为 7 种操作总和（standby/modified/filecache/compress/combine/registry/volume） |
+| 日志"系统杂项"使用累计值 | 改为本轮增量，与释放量逻辑一致 |
+| `empty_standby()` 单方法 → 仅 `ew_self` 成功 | 多方法自动检测：new_80_1 → lowpri_80_4 → old_76 → ew_self |
+
+### 🔧 线程安全与崩溃修复
+
+| 问题 | 修复 |
+|------|------|
+| `_eff_data.append` 无锁 → daemon 线程与主线程竞争 | 加 `_chart_lock` 保护 |
+| `_cycle_trimmed` / `_cycle_failed` 在首轮未初始化 | 守护启动时初始化为 0 |
+| 首个 `_eff_data` 条目使用 `_eris_sub` 初始值 50 | 改用 `_compute_eris` 预计算真实效率 |
+| `_compute_eris` 方法在恢复操作中丢失 | 从 `_draw_chart` 提取为独立方法 |
+| `efis.save()` 中 `os.replace` 因文件被锁定而崩溃 | 改为先删除旧文件 + 重试 3 次 + 直接覆写保底 |
+| `is_elevated()` 被 git checkout 删除 | 重新实现 `TokenElevation` 检测 |
+| `_try_enable_privilege` 未检查 `GetLastError` | 增加 `ERROR_SUCCESS` 校验 |
+
+### 🔧 用户界面
+
+| 问题 | 修复 |
+|------|------|
+| 鼠标离开图表时悬浮窗口不消失 | 添加 `c.bind("<Leave>", self._chart_hide_tip)` |
+| 子窗口（设置/排除/学习日志/排行/关闭确认）图标为黑色羽毛 | `SetClassLongPtrW` 设置窗口类图标 |
+| 学习日志按钮无图标 | 按钮文本改为 "📊 学习日志" |
+| 进程排行 tooltip 包含 📊 图标 | 删除 tooltip 图标，保留纯文本 |
+| 优化完成日志格式固定 MB | 使用 `_fmt_label` 自适应 MB/GB |
+| 统计栏/freed/系统杂项显示 MB 或 GB | 每个数值独立判断 ≥1000MB → GB |
+| 优化量在统计栏 tooltip 中写死"(MB)" | 删除单位后缀 |
+
+### 🔧 配置与数据
+
+| 问题 | 修复 |
+|------|------|
+| EFIS `cooloff_base: 4121` → 实验回滚永不触发 | 改为 **60** 秒 |
+| `ws_baseline_mul: 1.20` → WS 基线增长门槛过高 | 改为 **1.05** |
+| `theta_gate: 0.18` → θ 门过高阻塞进程 | 改为 **0.1** |
+| 手动优化启用守护模式时 `_chart_last_freed` 初始值可能为 0 | 在 `_on_daemon` 中从 `cleaner.summary()` 读取 |
+| daemon 循环中 `chart_accum` 在首次 chart 追加时包含重复数据 | 修复 pre-compute 与 append 的顺序 |
+
+### 🔧 其他修复
+
+| 问题 | 修复 |
+|------|------|
+| `_fmt_label` 方法被删除 → daemon 日志格式化异常 | 恢复 `_fmt_label` |
+| 文件 CRLF（`
+`）与修复脚本的 LF（`
+`）不匹配 → 替换不生效 | 改用二进制模式 `rb` + 精确 `
+` 匹配 |
+| `_upd_dae_ui` 未正确调用 `_upd_learned` | 补充调用 |
+| `dist/` 下残留旧 exe 和临时文件 | 构建前清理 |
+| Release exe 因 PyInstaller 缓存未被更新 | 删除 `build/*.spec` 后重建 |
