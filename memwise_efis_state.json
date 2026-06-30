@@ -1,31 +1,14 @@
 {
   "efis": {
     "params": {
-      "theta_gate": 0.18,
+      "theta_gate": 0.24,
       "cpu_gate": 0.30000000000000016,
       "max_trim": 80,
       "cooloff_base": 4052.3847383999996,
       "ws_baseline_mul": 1.05,
-      "learning_rate": 0.48
+      "learning_rate": 0.5
     },
     "history": [
-      67.62984988016827,
-      54.1389698549852,
-      51.784377021252936,
-      59.7179512399547,
-      56.759869299851026,
-      63.73212338602453,
-      65.1270933591952,
-      62.86881462167564,
-      57.67797796419997,
-      60.93170146613549,
-      61.355396541975416,
-      66.45835020850079,
-      67.84211711866185,
-      58.67534783802264,
-      67.95394337130007,
-      52.37842167192734,
-      61.040002431503716,
       67.87893456205555,
       67.41295734984261,
       57.31030257137283,
@@ -208,62 +191,27 @@
       63.30282220300523,
       56.96928508587155,
       72.18790435445742,
-      73.12919965736305
+      73.12919965736305,
+      73.69352056644422,
+      67.28767811455401,
+      57.152023015007934,
+      65.70412837952344,
+      62.310759322070474,
+      54.79931880781124,
+      50,
+      48.293134098673534,
+      73.95463005456541,
+      58.51032266436369,
+      79.64767450947488,
+      63.74593252571666,
+      64.66666201470778,
+      61.67548344139965,
+      62.57608960376323,
+      67.53564385614767,
+      60.15860526700474
     ],
-    "last_save": 1782823973.0648804,
+    "last_save": 1782829862.5848806,
     "experiments": [
-      {
-        "timestamp": 1782637246.3503482,
-        "trigger_dim": "precision",
-        "changes": {
-          "theta_gate": {
-            "old": 0.14,
-            "new": 0.16
-          }
-        },
-        "eris_before": 20.47672511079219,
-        "clean_efficiency_before": 0.0,
-        "reverted": false
-      },
-      {
-        "timestamp": 1782637246.3503523,
-        "trigger_dim": "precision",
-        "changes": {
-          "cooloff_base": {
-            "old": 1200.0,
-            "new": 1500.0
-          }
-        },
-        "eris_before": 20.47672511079219,
-        "clean_efficiency_before": 0.0,
-        "reverted": false
-      },
-      {
-        "timestamp": 1782637246.3503554,
-        "trigger_dim": "context",
-        "changes": {
-          "max_trim": {
-            "old": 50.0,
-            "new": 55.0
-          }
-        },
-        "eris_before": 20.47672511079219,
-        "clean_efficiency_before": 0.0,
-        "reverted": false
-      },
-      {
-        "timestamp": 1782637246.3503575,
-        "trigger_dim": "context",
-        "changes": {
-          "cpu_gate": {
-            "old": 1.0,
-            "new": 0.9
-          }
-        },
-        "eris_before": 20.47672511079219,
-        "clean_efficiency_before": 0.0,
-        "reverted": false
-      },
       {
         "timestamp": 1782637633.5235295,
         "trigger_dim": "capability",
@@ -1511,16 +1459,68 @@
         "eris_before": 57.46489903665665,
         "clean_efficiency_before": 0.0,
         "reverted": true
+      },
+      {
+        "timestamp": 1782825947.820557,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.18,
+            "new": 0.19999999999999998
+          }
+        },
+        "eris_before": 54.79931880781124,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782825947.8205721,
+        "trigger_dim": "precision",
+        "changes": {
+          "cooloff_base": {
+            "old": 4052.3847383999996,
+            "new": 4352.3847384
+          }
+        },
+        "eris_before": 54.79931880781124,
+        "clean_efficiency_before": 0.0,
+        "reverted": true
+      },
+      {
+        "timestamp": 1782826818.7780728,
+        "trigger_dim": "precision",
+        "changes": {
+          "theta_gate": {
+            "old": 0.19999999999999998,
+            "new": 0.21999999999999997
+          }
+        },
+        "eris_before": 48.293134098673534,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
+      },
+      {
+        "timestamp": 1782828862.3621926,
+        "trigger_dim": "momentum",
+        "changes": {
+          "learning_rate": {
+            "old": 0.48,
+            "new": 0.5
+          }
+        },
+        "eris_before": 61.67548344139965,
+        "clean_efficiency_before": 0.0,
+        "reverted": false
       }
     ],
     "scene_params": {
       "general": {
-        "theta_gate": 0.18,
+        "theta_gate": 0.24,
         "cpu_gate": 0.30000000000000016,
         "max_trim": 80,
         "cooloff_base": 4052.3847383999996,
         "ws_baseline_mul": 1.05,
-        "learning_rate": 0.48
+        "learning_rate": 0.5
       },
       "browser_heavy": {
         "theta_gate": 0.18,
@@ -1534,30 +1534,13 @@
     "direction_wins": {
       "theta_gate-": 1,
       "ws_baseline_mul-": 0,
-      "theta_gate+": 1,
-      "cooloff_base+": 2,
+      "theta_gate+": 0,
+      "cooloff_base+": 0,
       "max_trim+": 2,
       "cpu_gate-": 1,
-      "learning_rate+": 0
+      "learning_rate+": 1
     },
     "clean_eff_history": [
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
       0.0,
       0.0,
       0.0,
@@ -1740,7 +1723,24 @@
       0.0,
       0.0,
       0.0,
-      0.0
+      0.0,
+      348.40000000000146,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      496.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      34.4333333333337
     ],
     "scene_best": {},
     "current_scene": "general",
