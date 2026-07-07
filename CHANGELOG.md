@@ -5,7 +5,7 @@
 
 ---
 
-## v1.4 (2026年6月 — 当前)
+## v1.5 (2026年6月 — 当前)
 
 > 迄今为止最大更新。从"跑算法的工具"升级为"真正在学习的内存管家"。涵盖认知引擎六件套、EFIS 效率反馈系统、ERIS v2 效率评分重写、MetaCognition 元认知监控、线程安全架构重写、图表交互重写、大量 Bug 修复与 UI 改进。累计修改 50+ 处代码，涉及全部 18 个源文件，新增 8 个核心模块。
 
@@ -95,7 +95,7 @@
 **E. 上下文 (20%)** — `0.3×pressure + 0.4×effort + 0.3×coverage`
   - `effort_e`：`1.0`（休息期无操作=满分）；贝叶斯平滑 min((trimmed+1)/(total_attempts+2), 1.0)（有操作时）
 
-**休息期 vs 故障期区分**（v1.4 核心改进）：
+**休息期 vs 故障期区分**（v1.5 核心改进）：
 - 休息期（`total_attempts=0`）：C/E 因子默认满分，系统干净无操作不被视为故障
 - 故障期（有操作但全失败）：C/E 因子使用贝叶斯平滑，精准度和努力度趋近零但不归零
 - 两者差值约 38%，清晰可分
@@ -174,7 +174,7 @@
 
 ### 🔧 ERIS v2 算法演进完整记录
 
-v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运行数据的深度优化：
+v1.5 的效率评分系统经历了多轮迭代，每一步都是针对实际运行数据的深度优化：
 
 **第一版：加权算术平均** — 五维度分别加权后求和。问题：单维度归零时总分被严重拉低。
 
@@ -209,7 +209,7 @@ v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运
 
 ### 🔧 winapi 底层修复与增强
 
-`core/winapi.py` 是项目的基石层，所有系统调用都在这里。v1.4 对其进行了大幅增强。
+`core/winapi.py` 是项目的基石层，所有系统调用都在这里。v1.5 对其进行了大幅增强。
 
 **新增 API 绑定**：
 | API | 用途 | 签名 |
@@ -244,7 +244,7 @@ v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运
 **热加载支持**：daemon 循环每秒检查 `config.yaml` 文件修改时间（`os.path.getmtime`），文件变更时自动调用 `_config.load()` + `CFG.update()`。无需重启程序即可调整参数。
 
 **配置参数变更**：
-| 参数 | v1.3 默认 | v1.4 默认 | 说明 |
+| 参数 | v1.3 默认 | v1.5 默认 | 说明 |
 |------|-----------|-----------|------|
 | `kp` | 0.6 | **1.0** | PID 比例增益提升 |
 | `ki` | 0.08 | **0.10** | PID 积分增益 |
@@ -360,7 +360,7 @@ Probe 间隔动态调整：候选 >30 个进程 → 30s，>10 个 → 60s，≤1
 | v2 (v1.1) | + TemporalProfile | 从 v1 升 |
 | v3 (v1.2) | + KalmanProfile | 从 v2 升 |
 | v4 (v1.3) | + EpisodeMemory | 从 v3 升 |
-| v5 (v1.4) | + CausalGraph | 从 v4 升 |
+| v5 (v1.5) | + CausalGraph | 从 v4 升 |
 
 加载时根据 `version` 字段自动适配。`meta_bias` 在加载后单独恢复。
 
@@ -368,7 +368,7 @@ EFIS 数据使用独立文件 `efis_state.json`，与 learner 分文件存储，
 
 ### 🔧 线程安全架构详解
 
-v1.4 修复了最致命的线程安全问题。以下是在 `_dae_worker`（daemon 工作线程）中找到的所有非线程安全 tkinter 调用：
+v1.5 修复了最致命的线程安全问题。以下是在 `_dae_worker`（daemon 工作线程）中找到的所有非线程安全 tkinter 调用：
 
 ```python
 # 第 1465 行
@@ -413,7 +413,7 @@ self.root.after(0, self._dae_stopped)
 
 **错误日志**：所有 `except: pass` 逐行审查，非必要无声吞异常处改为 `print(f"[MemWise] {msg}", file=sys.stderr)`。`--noconsole` 模式下 stderr 由 PyInstaller 接管。
 
-**Release 流程**：Git tag v1.4 → GitHub Release draft → 从 CHANGELOG 提取正文 → exe 附件上传（13.3MB）→ Publish。使用 `git credential fill` 获取自动缓存的 GitHub token，通过 REST API PATCH 更新发布内容。
+**Release 流程**：Git tag v1.5 → GitHub Release draft → 从 CHANGELOG 提取正文 → exe 附件上传（13.3MB）→ Publish。使用 `git credential fill` 获取自动缓存的 GitHub token，通过 REST API PATCH 更新发布内容。
 
 ### 🔧 完整的 ERIS v2 评分计算示例
 
@@ -487,7 +487,7 @@ MemWise 使用的全部 Win32 API（按功能分组）：
 
 ---
 
-*MemWise v1.4 — 2026年6月*
+*MemWise v1.5 — 2026年6月*
 
 
 ### 🔧 ERIS v2 效率评分系统迭代历程

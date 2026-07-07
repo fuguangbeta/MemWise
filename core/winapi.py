@@ -614,7 +614,9 @@ def set_auto_start(name, target_path, arguments="", work_dir=""):
     """通过 IShellLink 创建启动文件夹快捷方式（纯 Win32 API，无脚本引擎）"""
     global _COM_INITIALIZED
     if not _COM_INITIALIZED:
-        _ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+        ret = _ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+        if ret not in (0, 1):  # S_OK or S_FALSE
+            return False
         _COM_INITIALIZED = True
     try:
         import os
