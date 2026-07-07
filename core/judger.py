@@ -264,18 +264,18 @@ class PareJudger:
     def record_pf_before(self, pid, pf):
         self.pf_before[pid] = (pf, time.time())
 
-    def check_feedback(self, pid, pf_after, ws_before, ws_after):
+    def check_feedback(self, pid, pf_after, ws_before, ws_after, passes=2):
         """检查清理效果，返回 (ok, freed, pf_delta)"""
         entry = self.pf_before.pop(pid, None)
         if entry is None:
-            return True, ws_before, 0  # 没有基线，默认 ok
+            return True, ws_before, 0
         pf_before, t_before = entry
         dt = max(1.0, time.time() - t_before)
         pf_delta = max(0, pf_after - pf_before)
         freed = max(0, ws_before - ws_after)
-        # 如果 freed 够大，允许一定 PF 增加
-        allowed_pf = max(50, int(50 * dt), freed // (1 << 20) * 10)
-        ok = pf_delta < allowed_pf
+        # PF 成本：empty_ws 每轮 ~40 PF
+        allowed_pf = max(50, int(50 * dt), freed // (1 << 20) * 10, passes * 40)
+        ok = pf_delta <= allowed_pf
         return ok, freed, pf_delta
 
     def purge_expired(self):

@@ -1,5 +1,5 @@
 """
-MemWise v1.4 GUI —— 图形界面
+MemWise v1.5 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -122,7 +122,7 @@ class MemWiseGUI:
         _gui_ref = self
 
         self.root = tk.Tk()
-        self.root.title("MemWise v1.4")
+        self.root.title("MemWise v1.5")
         # --minimized 模式：立即隐藏窗口，不等 800ms，避免开机闪烁
         if "--minimized" in sys.argv:
             self.root.withdraw()
@@ -188,7 +188,7 @@ class MemWiseGUI:
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v1.4 启动完毕 \u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        self._log(f"MemWise v1.5 启动完毕 \u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
         # 启动消息队列轮询（每 100ms 检查一次，主线程安全）
         self._poll_msg_queue()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -314,9 +314,9 @@ class MemWiseGUI:
         self.btn_opt = ttk.Button(bf, text="⚡ 优化", command=self._on_optimize)
         self.btn_opt.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_opt,
-            "⚡ 一键释放内存（3轮深度清理）\n"
+            "⚡ 一键释放内存（两阶段异步管线+深度WS回弹率二次清理）\n"
             "\n"
-            "跑3轮：首轮按当前模式，后两轮深度模式补刀，合计释放量。\n"
+            "阶段1:触发(压缩+脏页)→等待 0.3s→阶段3:收前(全部standby统一回收)+深度模式再以WS回弹率选进程二次清理。\n"
             "\n"
             "  • 7种系统缓存清理(Standby/Modified/FileCache/Volume/压缩等)\n"
             "  • 进程EmptyWorkingSet释放闲置页+Thompson评分排序\n"
@@ -333,10 +333,10 @@ class MemWiseGUI:
             "\n"
             "学习系统：\n"
             "  • Thompson α/β贝叶斯更新 + 上下文5维修正 + 双EWMA \n"
-            "  • 预判清理(增长进程优先) + 探索奖励(>10min触发) \n"
+            "  • 预判清理(增长进程优先) + 探索奖励(>1min触发) \n"
             "  • 泄漏检测双阈值 + Beta时间遗忘(>1h无反馈遗忘)\n"
             "\n"
-            "EFIS自动调参(每30tick)：\n"
+            "EFIS自动调参(每300s)：\n"
             "  • 实验日志+回滚(效果差自动恢复)\n"
             "  • 场景参数记忆(游戏/开发/浏览/通用互不干扰)\n"
             "  • 窗口化评估(内存波动>8%跳过混杂因素)\n"
@@ -399,7 +399,7 @@ class MemWiseGUI:
             "  · z-score — 工作集标准差偏离，>3.0为异常\n"
             "  · 趋势斜率 — 30点最小二乘回归，正数=内存增长\n"
             "  · 泄漏嫌疑 — 持续2倍增长超过5个采样点\n"
-            "  · refill_ewma — WS再填充速率，影响冷却和双次间隔\n"
+            "  · refill_ewma — WS再填充速率，影响trim重试间隔\n"
             "  · 清理历史 — clean_count/probe_ok/probe_fail\n"
             "\n"
             "这些数据帮您判断哪些进程值得清理、哪些清完很快又涨回来")
@@ -433,14 +433,13 @@ class MemWiseGUI:
             
             "默认清理操作(7种)：\n"
             "· ws EmptyWorkingSet\n"
-            "· standby Standby缓存\n"
+            "· standby 系统杂项\n"
             "· modified 脏页写回\n"
             "· compress 内存压缩\n"
             "· filecache 文件缓存\n"
             "· volume 卷缓存\n"
             "· registry 注册表缓存\n"
             "\n"
-            "⚠ deep/full会清Standby缓存，打开大文件可能慢几秒\n"
             "⚠ 模式切换后守护模式即时生效，无需重启")
         self.btn_rank = ttk.Button(mf, text="进程排行", command=self._show_process_rank)
         self.btn_rank.pack(side="left", padx=(6,0))
@@ -471,7 +470,7 @@ class MemWiseGUI:
         self._add_tip(self.lbl_tr,
             "进程EmptyWorkingSet清理总次数\n"
             "\n"
-            "每对一个进程做一次双次清理(含自适应间隔)计1次\n"
+            "每成功清理一个进程计1次(含多轮深度清理)\n"
             "清理前还会对该进程设内存优先级+EcoQoS\n"
             "\n"
             "⚠ 数字大不一定释放得多——多次清小进程也会计数\n"
@@ -1086,11 +1085,12 @@ class MemWiseGUI:
     BAR_W = 14   # 每柱宽度 px
     BAR_GAP = 3  # 柱间距 px
 
-    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct):
+    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5, probe_ok=0, probe_total=0):
         if not data:
             return {"capability": 0, "adaptivity": 0, "precision": 0,
                     "momentum": 0, "context": 0, "total": 50}
         visible = list(data)
+        # total_attempts 只计 trim（probe 是探索，不算失败）
         total_attempts = trimmed_cnt + failed_cnt
         nonzero_vals = [v for v in visible if v > 0]
         his_peak = max(visible)
@@ -1124,7 +1124,7 @@ class MemWiseGUI:
         else:
             adapt_b = 0.6
         
-        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + 1) / (total_attempts + 2)
+        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2)
         if len(visible) >= 3:
             cv = sd / max(mean_v, 1)
             consistency_c = 1.0 - min(cv * 0.3, 0.5)
@@ -1153,11 +1153,11 @@ class MemWiseGUI:
             momen_d = 0.6
         
         pressure_e = min(mem_pct / 80.0, 1.0)
-        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + 1) / (total_attempts + 2), 1.0)
+        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2), 1.0)
         coverage_e = max(min(trimmed_cnt / 30.0, 1.0), 0.3) if total_attempts == 0 else min(trimmed_cnt / 30.0, 1.0)
         ctx_e = 0.3 * pressure_e + 0.4 * effort_e + 0.3 * coverage_e
         
-        ref_fixed = 500.0
+        ref_fixed = 200.0
         n = len(visible)
         if n <= 5:
             prev_nz = [v for v in visible[:-1] if v > 0]
@@ -1169,7 +1169,7 @@ class MemWiseGUI:
             all_prev = [v for v in visible[:-1] if v > 0]
             ref = sum(all_prev) / len(all_prev) if all_prev else ref_fixed
         latest_val = visible[-1]
-        overflow_bonus = 0.25 * (1.0 - 1.0 / (latest_val / ref)) if latest_val > ref else 0.0
+        overflow_bonus = 0.30 * (1.0 - 1.0 / (latest_val / ref)) if latest_val > ref else 0.0
         
         eff = (cap_a * 0.25 + adapt_b * 0.20 + preci_c * 0.20 + momen_d * 0.15 + ctx_e * 0.20 + overflow_bonus) * 100.0
         eff = max(0.0, min(100.0, eff))
@@ -1209,6 +1209,7 @@ class MemWiseGUI:
         trimmed_cnt = getattr(self, "_cycle_trimmed", 0)
         failed_cnt = getattr(self, "_cycle_failed", 0)
         total_attempts = trimmed_cnt + failed_cnt
+        failed_weight = getattr(self, "_failed_weight", 0.5)
         his_peak = max(visible) if visible else 1
         
         # ── ERIS: 五维几何平均效率评分 ──
@@ -1256,7 +1257,7 @@ class MemWiseGUI:
             adapt_b = 0.6
         
         # ── C. 精准度 (0~1) ──
-        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + 1) / (total_attempts + 2)
+        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2)
         if len(visible) >= 3:
             cv = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5 / max(mean_v, 1)
             consistency_c = 1.0 - min(cv * 0.3, 0.5)
@@ -1292,12 +1293,12 @@ class MemWiseGUI:
         
         # ── E. 上下文 (0~1) ──
         pressure_e = min(mem_pct / 80.0, 1.0)
-        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + 1) / (total_attempts + 2), 1.0)
+        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2), 1.0)
         coverage_e = max(min(trimmed_cnt / 30.0, 1.0), 0.3) if total_attempts == 0 else min(trimmed_cnt / 30.0, 1.0)
         ctx_e = 0.3 * pressure_e + 0.4 * effort_e + 0.3 * coverage_e
         
         # 超出基线赋分（前 5 轮混合基线，第 6 轮起全动态）
-        ref_fixed = 500.0
+        ref_fixed = 200.0
         n = len(visible)
         if n <= 5:
             prev_nz = [v for v in visible[:-1] if v > 0]
@@ -1308,7 +1309,7 @@ class MemWiseGUI:
         else:
             all_prev = [v for v in visible[:-1] if v > 0]
             ref = sum(all_prev) / len(all_prev) if all_prev else ref_fixed
-        overflow_bonus = 0.25 * (1.0 - 1.0 / (latest / ref)) if latest > ref else 0.0
+        overflow_bonus = 0.30 * (1.0 - 1.0 / (latest / ref)) if latest > ref else 0.0
         # ── 加权算术平均：五维度独立贡献，互不影响 ──
         eff = (cap_a * 0.25 + adapt_b * 0.20 + preci_c * 0.20 + momen_d * 0.15 + ctx_e * 0.20 + overflow_bonus) * 100.0
         eff = max(0.0, min(100.0, eff))
@@ -1584,6 +1585,8 @@ class MemWiseGUI:
                     interval = 30
                 if interval != prev_interval:
                     self._msg_queue.put(('log', f"⏱ 清理间隔: {prev_interval}s→{interval}s"))
+                self.cleaner._probe_budget = max(1, int(interval * 0.2))
+                self.cleaner._trim_budget = interval * 0.55
                 s = self.cleaner.summary()
                 now = time.time()
                 # 配置热加载：每秒检查一次 config.yaml 是否变更
@@ -1602,6 +1605,17 @@ class MemWiseGUI:
                     self.judger.purge_expired()
                     self.learner.save(STATE_FILE)
                 trimmed = [(snap, ok, freed, reason) for snap, ok, freed, reason in l2_results if ok]
+                failed = [r for r in l2_results if not r[1]]
+                ratios = []
+                for r in failed:
+                    snap = r[0]
+                    p = self.learner.get_profile(snap.name)
+                    if p and hasattr(p.kalman, 'x_freed') and p.kalman.x_freed > 0:
+                        ratio = r[2] / max(p.kalman.x_freed, 1.0)  # 实际/预期
+                        ratios.append(min(ratio, 1.0))
+                    else:
+                        ratios.append(0.5)  # 无画像或预期为零，默认半值
+                self._failed_weight = sum(ratios) / len(ratios) if ratios else 0.5
                 probe_ok = sum(1 for _, ok, _ in probe_results if ok)
 
                 # 累计图表数据（每 30s 记录一次总量）
@@ -1609,15 +1623,6 @@ class MemWiseGUI:
                 cycle_freed = cur_freed - self._chart_last_freed
                 self._chart_last_freed = cur_freed
                 chart_accum += max(0.0, cycle_freed)
-                if now - last_chart_ts >= 30:
-                    self._chart_data.append(chart_accum)
-                    eff_val = self._compute_eris(list(self._chart_data),
-                        self._cycle_trimmed, self._cycle_failed, m["pct"]
-                    ).get("total", 50)
-                    with self._chart_lock:
-                        self._eff_data.append(eff_val)
-                    chart_accum = 0.0
-                    last_chart_ts = now
                 cur_trim = s['ws_trim']
                 cur_fail = s['failed_feedback']
                 self._cycle_trimmed = cur_trim - self._prev_trim_count
@@ -1625,6 +1630,16 @@ class MemWiseGUI:
                 cycle_standby = s["standby"] + s.get("modified",0) + s.get("filecache",0) + s.get("compress",0) + s.get("combine",0) + s.get("registry",0) + s.get("volume",0) - self._last_sys_ops
                 self._last_sys_ops = s["standby"] + s.get("modified",0) + s.get("filecache",0) + s.get("compress",0) + s.get("combine",0) + s.get("registry",0) + s.get("volume",0)
                 self._mem_pct_for_chart = m['pct']
+                if now - last_chart_ts >= 30:
+                    self._chart_data.append(chart_accum)
+                    eff_val = self._compute_eris(list(self._chart_data),
+                        self._cycle_trimmed, self._cycle_failed, m["pct"],
+                        getattr(self, "_failed_weight", 0.5)
+                    ).get("total", 50)
+                    with self._chart_lock:
+                        self._eff_data.append(eff_val)
+                    chart_accum = 0.0
+                    last_chart_ts = now
                 self._prev_trim_count = cur_trim
                 self._prev_fail_count = cur_fail  # 始终追加保持时间轴连续
 
