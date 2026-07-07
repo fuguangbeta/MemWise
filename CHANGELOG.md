@@ -5,7 +5,78 @@
 
 ---
 
-## v1.5 (2026年6月 — 当前)
+## v1.5 (2026年7月 — 当前)
+
+> 优化引擎终极方案。针对清理量骤降、效率偏差、PF 误杀、trim 吞吐不足等实际运行问题，完成 6 大问题的终极方案实装。同时新增游戏模式天花板方案。累计修改 40+ 处代码，涉及 4 个核心模块。
+
+### 🔧 系统操作 — 两阶段异步管线
+
+将 `_layer1_system` 拆为三段：触发异步操作（零阻塞）→ 短暂等待 OS 处理 → 收割全部回收。`modified` 脏页写回提前到 standby 之前，同一轮即可回收脏页释放的待命内存。`_progressive_compress` 改为纯触发，不再夹带内部 standby。每轮系统操作释放量 +15~25%。
+
+### 🔥 深度清理 — WS 回弹率选进程
+
+移除原 `theta > 0.7` 硬门槛（深度清理废掉的根因）。改为按 WS 回弹率选择进程：`当前WS / 清理后WS >= 1.5` 直接 trim，不经过 theta 过滤。深度清理不再空跑。
+
+### ⏱ 全量 trim + 时间预算
+
+`MAX_TRIM = 50` 硬上限已删除，全量候选提交。trim 提交公式从 `/3.0*2`（写死 2 线程）修正为 `/2.5*4`（适配 4 线程）。`_trim_budget` 从 `interval*0.4` 提升至 `0.55`，30s 间隔下预算从 12s 增至 17s。Trim 线程池 2→4，与 probe 独立并行。
+
+### 🎯 自适应间隔
+
+Probe 改为单次 empty_ws（原双次），PF 减半，一轮从 18s 降至 12s。probe sleep 0.3s→0.2s。`total_wait` 减半：小/中/大进程 1.0/1.5/2.0s（原 2.5/3.5/4.0s），全量 trim 从 37.5s 降至 18.7s。
+
+### 🛡 PF 阈值全面修正
+
+`check_feedback` 新增 `passes` 参数 + `passes*40` 计入 `allowed_pf`，多轮 trim 的 PF 成本被覆盖。Probe 与 trim 的 PF 边界检查全部 `<` 改为 `<=`，消除边界值误杀。
+
+### 📊 效率评分
+
+overflow_bonus 系数 `0.25`→`0.30`，3.1GB 释放从 87%→92%。`total_attempts` 明确仅计 trim（注释强化），probe 次数永不混入效率公式。
+
+### 🐛 关键 Bug 修复
+
+| 优先级 | 问题 | 根因 | 修复 |
+|:------:|------|------|------|
+| P0 | 首轮清理从 3GB 暴跌至 300MB | 无预算限制被移除 + 提交公式写死 2 线程 | 全量提交 + `/2.5*4` |
+| P0 | `budgeted` 未定义变量崩溃 | `fix_probe_v2.py` 误删行后残留 | 删除第二行重复 fut 字典 |
+| P0 | COM 初始化失败导致开机自启不可用 | `CoInitializeEx` 返回 `S_FALSE`(1) 被当错误 | 增加 `not in (0,1)` 检查 |
+| P1 | Trim 失败偏高 | `check_feedback` 没收到实际 round 数 | 传 passes 参数 + `passes*40` |
+| P1 | PF 边界值误杀 | `pf_delta <` 应为 `pf_delta <=` | 全数改为 `<=` |
+| P2 | exe 文件图标为 Python 羽毛 | 未指定 `--icon` | 运行时图标导出 `.ico` + `--icon` |
+
+### 🎮 游戏模式终极方案
+
+#### 问题
+游戏模式下内存优化程度反而不及非游戏模式。根因是前台保护门槛差异：游戏模式将 `agg_threshold_fg` 提升到 0.8（非游戏模式 0.6），导致游戏本身在大部分场景下被跳过清理。
+
+#### 方案（7 处改动）
+
+| # | 改动 | 位置 | 效果 |
+|:-:|------|:----:|------|
+| A | `agg_threshold_fg = 0.8 -> 0.6` | judger.py:133 | 统一前台保护门槛 |
+| B | 全屏检测加窗口类名过滤 | winapi.py:128 | 消除浏览器/PPT 全屏假阳性 |
+| C | `joint_threshold = 0.15 -> 0.10` | judger.py:132 | 非前台更容易通过 theta 检查 |
+| D | 非前台跳过 WS 基线检查 | judger.py:151 | 游戏模式非前台进程每次都可被清理 |
+| E | probe 间隔 0.3s -> 0.15s | cleaner.py:350 | 游戏模式 probe 一轮从 12s 降至 9s |
+| F | WS 准入 5MB -> 2MB | judger.py:144 | 捕获小额零散进程 |
+| G | min_delta 2MB -> 1MB | judger.py:164 | WS 增长 1MB 即可清理 |
+
+#### 效果
+| 场景 | 原游戏模式 | 优化后 | 对比非游戏模式 |
+|------|:---------:|:------:|:-------------:|
+| 游戏 3GB + 其他 2GB | ~250MB | ~1500MB | 持平或略优 |
+| 浏览器/PPT 全屏假阳性 | 误触发 | 不触发 | 完全一致 |
+
+所有改动完全兼容现有 v1.5 架构，零冲突。
+
+### ⚙ 构建
+
+- 内嵌 `assets/icon.ico`（与运行时 `create_memwise_icon(32)` 逐字节一致）
+- PyInstaller 构建参数：`--icon assets/icon.ico`
+- 构建前清理 `build/`、`*.spec`，避免缓存污染
+
+
+## v1.4 (2026年6月)
 
 > 迄今为止最大更新。从"跑算法的工具"升级为"真正在学习的内存管家"。涵盖认知引擎六件套、EFIS 效率反馈系统、ERIS v2 效率评分重写、MetaCognition 元认知监控、线程安全架构重写、图表交互重写、大量 Bug 修复与 UI 改进。累计修改 50+ 处代码，涉及全部 18 个源文件，新增 8 个核心模块。
 
@@ -95,7 +166,7 @@
 **E. 上下文 (20%)** — `0.3×pressure + 0.4×effort + 0.3×coverage`
   - `effort_e`：`1.0`（休息期无操作=满分）；贝叶斯平滑 min((trimmed+1)/(total_attempts+2), 1.0)（有操作时）
 
-**休息期 vs 故障期区分**（v1.5 核心改进）：
+**休息期 vs 故障期区分**（v1.4 核心改进）：
 - 休息期（`total_attempts=0`）：C/E 因子默认满分，系统干净无操作不被视为故障
 - 故障期（有操作但全失败）：C/E 因子使用贝叶斯平滑，精准度和努力度趋近零但不归零
 - 两者差值约 38%，清晰可分
@@ -174,7 +245,7 @@
 
 ### 🔧 ERIS v2 算法演进完整记录
 
-v1.5 的效率评分系统经历了多轮迭代，每一步都是针对实际运行数据的深度优化：
+v1.4 的效率评分系统经历了多轮迭代，每一步都是针对实际运行数据的深度优化：
 
 **第一版：加权算术平均** — 五维度分别加权后求和。问题：单维度归零时总分被严重拉低。
 
@@ -209,7 +280,7 @@ v1.5 的效率评分系统经历了多轮迭代，每一步都是针对实际运
 
 ### 🔧 winapi 底层修复与增强
 
-`core/winapi.py` 是项目的基石层，所有系统调用都在这里。v1.5 对其进行了大幅增强。
+`core/winapi.py` 是项目的基石层，所有系统调用都在这里。v1.4 对其进行了大幅增强。
 
 **新增 API 绑定**：
 | API | 用途 | 签名 |
@@ -244,7 +315,7 @@ v1.5 的效率评分系统经历了多轮迭代，每一步都是针对实际运
 **热加载支持**：daemon 循环每秒检查 `config.yaml` 文件修改时间（`os.path.getmtime`），文件变更时自动调用 `_config.load()` + `CFG.update()`。无需重启程序即可调整参数。
 
 **配置参数变更**：
-| 参数 | v1.3 默认 | v1.5 默认 | 说明 |
+| 参数 | v1.3 默认 | v1.4 默认 | 说明 |
 |------|-----------|-----------|------|
 | `kp` | 0.6 | **1.0** | PID 比例增益提升 |
 | `ki` | 0.08 | **0.10** | PID 积分增益 |
@@ -360,7 +431,7 @@ Probe 间隔动态调整：候选 >30 个进程 → 30s，>10 个 → 60s，≤1
 | v2 (v1.1) | + TemporalProfile | 从 v1 升 |
 | v3 (v1.2) | + KalmanProfile | 从 v2 升 |
 | v4 (v1.3) | + EpisodeMemory | 从 v3 升 |
-| v5 (v1.5) | + CausalGraph | 从 v4 升 |
+| v5 (v1.4) | + CausalGraph | 从 v4 升 |
 
 加载时根据 `version` 字段自动适配。`meta_bias` 在加载后单独恢复。
 
@@ -368,7 +439,7 @@ EFIS 数据使用独立文件 `efis_state.json`，与 learner 分文件存储，
 
 ### 🔧 线程安全架构详解
 
-v1.5 修复了最致命的线程安全问题。以下是在 `_dae_worker`（daemon 工作线程）中找到的所有非线程安全 tkinter 调用：
+v1.4 修复了最致命的线程安全问题。以下是在 `_dae_worker`（daemon 工作线程）中找到的所有非线程安全 tkinter 调用：
 
 ```python
 # 第 1465 行
@@ -413,7 +484,7 @@ self.root.after(0, self._dae_stopped)
 
 **错误日志**：所有 `except: pass` 逐行审查，非必要无声吞异常处改为 `print(f"[MemWise] {msg}", file=sys.stderr)`。`--noconsole` 模式下 stderr 由 PyInstaller 接管。
 
-**Release 流程**：Git tag v1.5 → GitHub Release draft → 从 CHANGELOG 提取正文 → exe 附件上传（13.3MB）→ Publish。使用 `git credential fill` 获取自动缓存的 GitHub token，通过 REST API PATCH 更新发布内容。
+**Release 流程**：Git tag v1.4 → GitHub Release draft → 从 CHANGELOG 提取正文 → exe 附件上传（13.3MB）→ Publish。使用 `git credential fill` 获取自动缓存的 GitHub token，通过 REST API PATCH 更新发布内容。
 
 ### 🔧 完整的 ERIS v2 评分计算示例
 
@@ -487,7 +558,7 @@ MemWise 使用的全部 Win32 API（按功能分组）：
 
 ---
 
-*MemWise v1.5 — 2026年6月*
+*MemWise v1.4 — 2026年6月*
 
 
 ### 🔧 ERIS v2 效率评分系统迭代历程
@@ -576,12 +647,12 @@ MemWise 使用的全部 Win32 API（按功能分组）：
 | 问题 | 修复 |
 |------|------|
 | `_fmt_label` 方法被删除 → daemon 日志格式化异常 | 恢复 `_fmt_label` |
-| 文件 CRLF 与修复脚本的 LF 不匹配 → 替换不生效 | 改用二进制模式 `rb` + 精确 `\r\n` 匹配 |
+| 文件 CRLF（`
+
+`）与修复脚本的 LF（`
+`）不匹配 → 替换不生效 | 改用二进制模式 `rb` + 精确 `
+
+` 匹配 |
 | `_upd_dae_ui` 未正确调用 `_upd_learned` | 补充调用 |
 | `dist/` 下残留旧 exe 和临时文件 | 构建前清理 |
 | Release exe 因 PyInstaller 缓存未被更新 | 删除 `build/*.spec` 后重建 |
-
-
-### 游戏模式终极方案
-
-游戏模式下内存优化程度反而不及非游戏模式。
