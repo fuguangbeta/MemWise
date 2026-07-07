@@ -580,3 +580,8 @@ MemWise 使用的全部 Win32 API（按功能分组）：
 | `_upd_dae_ui` 未正确调用 `_upd_learned` | 补充调用 |
 | `dist/` 下残留旧 exe 和临时文件 | 构建前清理 |
 | Release exe 因 PyInstaller 缓存未被更新 | 删除 `build/*.spec` 后重建 |
+
+
+### 游戏模式终极方案
+
+游戏模式下内存优化程度反而不及非游戏模式。
