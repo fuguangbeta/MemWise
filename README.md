@@ -1,322 +1,336 @@
-# MemWise v1.5
+# MemWise v1.6
 
-## 智能内存看护 · 认知架构升级 · 自学习清理引擎 · 线程安全架构重写
+## Windows 智能内存看护工具
 
-Windows 智能内存整理与看护工具。纯 ctypes Win32 API，零外部依赖，单 exe 分发（13.3MB）。
-**不杀进程、不挂起线程、不注入、不联网。** 托盘静默运行，Ctrl+Shift+M 热键呼出主界面。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API，对进程闲置工作集、系统 Standby List、Modified Page List、内存压缩等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与压缩。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 13.3 MB），零外部依赖。
 
-### 核心算法层
-
-**Thompson Sampling + Kalman 混合学习引擎** — 对每个进程（浏览器标签页、开发工具、系统服务等）独立建模。Beta 分布追踪清理成功/失败的二元反馈，Kalman 滤波器追踪预期释放量（MB）和预期 PF 代价（缺页中断数）的连续值，支持真正的连续反馈而非简单的“成功/失败”。两路融合后得到每个进程的清理优先级 θ，θ 越高越值得清理。
-
-**上下文特征修正** — 基础 θ 经过 5 维特征（归一化 WS、波动率、PF 成本/收益比、置信度、偏置）的 sigmoid 加权修正，消除大/小进程之间的尺度偏差。权重更新使用 sign-based 批量梯度下降，每 2 次 feedback 累积一次梯度，CTX_LR_BASE=0.5（较 v1.3 提升 16.7 倍）。
-
-**PID 连续反馈控制器** — 以 45% 为目标内存使用率，P/I/D 三项连续调节清理强度 aggressiveness（0~1）。积分项消除稳态偏差（长时间维持在 65% 时端叠加），微分项抑制震荡（内存快速上升时提前响应）。强度 >0.8 时 tick 间隔缩至 10s，>0.5 时 20s，<40% 时放宽至 60s。
-
-**ERIS v2 效率评分系统** — 五维几何平均（吞吐/自适应/精准/动量/上下文），各维度最低 0.1 保底避免单维度归零拉垮总分。完整区分“休息期（系统干净无操作，高分）”和“故障期（有操作但全失败，低分）”，两者差值约 38%。单独的学习进度斜坡确保早期数据点不会被过度压制，最小基线 200MB 防止首轮小释放量虚高。
-
-### 认知引擎（新增 6 模块）
-
-- **Kalman 滤波** — 对每个进程做二维卡尔曼追踪（预期释放量 + PF 代价），自适应过程噪声 q。新息大→加速跟踪，新息小→稳定滤波
-- **情景记忆** — 存储清理时刻的五维上下文向量（WS/θ/mem_pct/cpu/小时），余弦相似度检索 top-3 最相似历史经验，加速冷启动收敛
-- **分层先验** — 10 类进程（浏览器/开发/游戏/媒体/办公/系统/终端/实用/虚拟机/其他）各自维护经验池，新进程从同类继承 θ 初始值
-- **因果推理** — 有向图记录“清 A 时 B 的释放量”，支持反事实优势比查询：“如果先清 Chrome 而不是 Firefox，释放量会不会更高？”
-- **五树投票决策** — 收益/代价/时机/紧迫/反事实五棵决策树综合输出 should_trim/should_probe，替代单一 θ 阈值门控
-- **元认知自我监控** — 每 30s 运行五维诊断：校准度（Kalman 预测 vs 实际）、概念漂移（双 EWMA 快慢速比突变检测）、探索覆盖（未试探进程比例）、后悔度（因果图累积）、系统操作监控，输出日志到 GUI
-
-### 自适应调参层
-
-**EFIS 效率反馈智能系统** — 每 30 tick 运行完整诊断→调参→评估闭环。支持四场景（game/browser/development/general）独立参数、历史最优回归、自动回滚与方向冷却。独立文件 efis_state.json 存储，与 learner 分文件消除写入冲突。
-
-### 基础设施
-
-**线程安全架构** — 完全重写的消息队列架构（queue.Queue + _poll_msg_queue），消除 daemon 工作线程中 8 处非线程安全的 root.after() 调用。新增 _chart_lock 保护 并发数据访问。解决了程序随机假死/卡死的根本原因。
-
-**Motion 式图表交互** — 单 <Motion> 绑定替代 N 对 <Enter>/<Leave> 柱条事件绑定，根除鼠标快速横跳时的工具卡死。数据回填机制确保图表折点与底部效率文字同源同值。
-
-**零外部依赖** — 纯 ctypes Win32 API，不依赖 pywin32、psutil、numpy 等任何第三方库。单 exe 即可运行，解压即用。
-
-**三层清理引擎** — Layer1（系统）执行 7 种缓存操作（standby/modified/filecache/volume/registry/compress/combine），Layer2（进程）通过 θ 排序+冷却检查+策略投票筛选候选进程执行 EmptyWorkingSet，Layer3（深度）在内存压力高时重复执行。4 线程池并行清理，动态间隔自适应调节。
-
-**全部 70+ 个 Win32 API 绑定** — 内存管理（GlobalMemoryStatusEx、EmptyWorkingSet、SetProcessWorkingSetSize、CreateMemoryResourceNotification）、进程管理（CreateToolhelp32Snapshot、OpenProcess、NtQueryInformationProcess）、窗口与 UI（GetForegroundWindow、RegisterHotKey）、系统托盘（Shell_NotifyIconW）、图标 GDI（CreateIconIndirect、CreateBitmap、SelectObject）、注册表（RegOpenKeyExW、RegSetValueExW）。全部通过 ctypes 动态加载，纵容各 Windows 版本差异。
-
-累计修改 50+ 处代码，涉及全部 18 个源文件，新增 8 个核心模块（kalman.py、hippocampus.py、prior.py、causal.py、policy.py、meta.py、efis.py、temporal.py）。
-
----
----
-
-## 为什么做这个
-
-Windows 的内存管理机制——Standby List（待命列表）、Modified Page List（脏页列表）、进程工作集（Working Set）——在多数场景下运转良好。但有两个缺口：
-
-1. **进程粒度**：Windows 按页为单位回收，但不区分"这个浏览器标签页已经闲置 5 分钟了"和"我正在编辑的文档"。
-2. **响应速度**：内存压力上升后，系统需要达到硬性阈值才会触发 aggressive 回收，这段时间内系统已经变卡。
-
-MemWise 在这两个缺口上做文章：用 Thompson Sampling 给每个进程独立建模，知道哪个进程值得清、哪个清了反而卡；用 PID 控制器做连续反馈，在压力还没到临界点时就提前介入。
+系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前，提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续满载优化。同时通过 Thompson Sampling、Kalman 滤波、因果推理、五树投票等学习与决策机制，为每个进程建立独立画像，实现"知道哪个进程值得清、哪个清了反而更卡"的意图识别。
 
 ---
 
-## 一分钟上手
+## 1. 运行模式
+
+### 1.1 一键优化
+
+点击主界面"优化"按钮（或按快捷键 Ctrl+Shift+M），程序执行单次完整的系统+进程深度清理，并输出累计释放量。适用于"感觉到卡了，临时清一下"的场景。每次手动优化执行 3 轮，累计来自 Layer1（系统缓存）、Layer2（进程闲置页）、Layer3（深度回弹清洗）和 probe（探测试探）的释放量，最终显示对比优化前后的内存占用变化。
+
+### 1.2 守护模式（推荐）
+
+点击"守护"按钮启动，程序以 60 秒为日志/图表输出周期，在周期内执行零空闲持续优化。具体节奏为：
+
+| 阶段 | 内容 |
+|------|------|
+| 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-25 秒），释放多则缩短、释放少则延长 |
+| 多次 optimize | 周期内执行 2-3 次完整的优化 pass，每次包含 Layer1 + Layer2（内层用 normal 模式），末次 pass 用 deep 模式追加 Layer3 |
+| gap fill 持续运行 | 在 optimize 之间持续执行压缩+脏页写回+快车道修剪+压力更新，不碰 standby，留给末次主 pass 收割 |
+
+守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示图标，右键可调出菜单。守护状态、累计释放量、系统杂项操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域实时输出算法诊断信息、优化量、EFIS 调参记录。图表区域以柱状图显示每轮释放量，折线显示效率评分。
+
+### 1.3 命令行
+
+程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）等子命令。适合计划任务或脚本集成。
+
+---
+
+## 2. 三层清理引擎
+
+### 2.1 Layer1 — 系统级缓存清理
+
+系统级清理通过调用 `NtSetSystemInformation` 等未文档化但广泛使用的 Windows 内部 API 实现，涵盖 8 种缓存操作的独立开关：
+
+| 操作 | 配置键 | 默认 | Win32 API | 说明 |
+|------|--------|:----:|-----------|------|
+| 进程闲置页释放 | `ws` | 开 | `EmptyWorkingSet` | 释放非活跃物理页，是唯一不需要管理员的进程级操作 |
+| Standby List 清理 | `standby` | 开 | `NtSetSystemInformation(80, info=1,4)` | 清空系统缓存页，低优先先清再全清，最后 deep 三轮 |
+| Modified Page 写回 | `modified` | 开 | `NtSetSystemInformation(44)` | 脏页写回磁盘后回收，配合 standby 收割 |
+| 内存压缩触发 | `compress` | 开 | `NtSetSystemInformation(80, info=6)` | 触发 OS 内存压缩引擎，压缩后可释放物理页 |
+| 系统文件缓存 | `filecache` | 关 | `SetSystemFileCacheSize(-1,-1,0)` | 清空文件系统缓存，会降低文件操作速度直到重建 |
+| 卷缓存刷新 | `volume` | 关 | `CreateFileW+FlushFileBuffers` | 卷级别缓存刷新 |
+| 注册表缓存 | `registry` | 关 | `NtSetSystemInformation(81)` | 清除注册表缓存页 |
+| 内存合并 | `combine` | 关 | `NtSetSystemInformation(80, info=5)` | 触发系统合并相同物理页 |
+
+守护模式下的 gap fill 期间仅执行压缩+脏页写回（`_layer1_light`），standby 留给主 pass 在积累整个 gap 后一次性收割，最大化单次效果。主 pass 的 `_layer1_system` 通过"两阶段异步管线"（触发→0.3s 等待 OS 处理→统一收割）完成全量操作。主 pass 末轮使用 `deep_compress` 四轮递进压缩（flush→compress→standby→compress，每轮 0.3s 间隔），实现远超单次压缩的释放效果。
+
+### 2.2 Layer2 — 进程级闲置页释放
+
+对每个非系统进程调用 `EmptyWorkingSet`，释放其物理内存中的非活跃页。决策链路：
+
+1. **`can_trim` 安全过滤**：排除系统核心进程（csrss、smss、wininit 等用户自定义黑名单中的进程）、前台窗口保护（压力低时跳过）、WS < 1 MB 的微小进程、WS 基线检查（上一轮清理后 WS 无增长则不重复清理）、失败冷却检查（PF 超标后进入冷却期）、系统路径门槛检查（`C:\Windows\`、`C:\Program Files\` 下的进程要求 θ > 0.3）
+
+2. **策略投票**（五树决策）：收益树（预期释放量×成功率）、代价树（预期 PF 代价×内存压力）、时机树（增长趋势+距上次清理时间）、紧迫树（θ 相对排名+冷却状态）、反事实树（因果图优势比）。总分 ≥ 0 即通过（不设硬性门槛）
+
+3. **复合评分排序**（`_composite_score_v2`）：θ、Kalman x_freed、WS 大小、WS 回弹率四维加权，EFIS 可调 `composite_kalman_w` 权重
+
+4. **并行执行**：4 线程池 `ThreadPoolExecutor`，按评分降序提交
+
+5. **自适应 Pass 数**：大进程（WS>200 MB 或 θ>EFIS deepen_theta）→ 4 pass, 1.0s；默认 → 3 pass, 0.6s；低 θ（θ<0.15）→ 1 pass, 0.3s
+
+6. **PF 反馈验证**（`check_feedback`）：对比清理前后 PF 计数，超过 `allowed_pf = max(120, 自由PF, 释放量×10MB, passes×60)` 则判定为失败
+
+### 2.3 Layer3 — 深度重复清理
+
+仅 deep 模式末次 optimize 执行。依次为：
+
+- **压缩 + 脏页写回**：调用 `deep_compress` 四轮递进
+- **全量 Standby List 收割**：低优先→全量→deep 三层
+- **文件缓存 / 卷缓存 / 注册表 / 内存合并**（按设置）
+- **WS 回弹率筛选**：从 Layer2 未清理的进程中选出 `当前WS / 上次清理后WS >= 1.5` 的高回弹进程，追加一次清理
+- **layer3_extra 追踪**：通过压缩/standby 前后 `avail` 差值（bytes）自动记录深度清理的净增量，用于 EFIS 判断 Layer3 的价值
+
+### 2.4 持续优化架构
+
+守护模式的核心架构改造：
+
+```
+deadline = now + interval - 3
+while time.time() < deadline:
+    optimize(normal)           # 完整 Layer1+Layer2, 无 Layer3
+    gap 自适应调整              # 根据上轮 per-process 释放量
+    gap fill:                  # 3 秒窗口内满载:
+        _layer1_light(agg)     #   快速压缩+脏页（不碰 standby）
+        快车道修剪              #   高回填进程高频 quick_retrim
+        快照刷新+压力更新       #   实时读取系统内存状态
+    
+# 末次
+optimize(deep)                 # 完整 Layer1+Layer2+Layer3
+输出日志+图表
+```
+
+- **自适应 gap**：每轮后计算 `realse_per_proc`，与上一轮比对，决定 gap 缩放（8s 到 25s）。首次 gap = 15s
+- **快车道**：`_layer2_process` 在每轮排序前遍历候选进程，将 `refill_ewma > 500KB/s` 的进程 PID 记录到 `self._fast_track`；gap fill 期间每轮从 `_fast_track` 中取出最多 10 个 PID 调用 `quick_retrim(pid)`（单次 `empty_ws` + 0.1s 等待，左右 WS 差值计入 freed_bytes）
+- **数据累加**：所有 sub-pass + gap fill + 快车道的释放量全部汇入 `freed_bytes`，确保 60 秒周期的最终输出汇总了一切操作的释放总量
+
+---
+
+## 3. 认知引擎（六模块）
+
+### 3.1 Thompson Sampling（Beta-Bernoulli）
+
+对每个进程维护一对 Beta 分布 (α, β)。每次清理成功后 α+=1，失败后 β+=1。采样得到的 θ ∈ [0,1] 表示"该进程在当前知识状态下值得清理的概率"。
+
+- **先验**：Beta(α=2, β=1)，偏向"可清理"，相当于已经"虚拟成功 1 次"
+- **时间遗忘**：距离上次 feedback >1 小时开始，每小时向先验回归 3%，最多 30%（减少历史数据对当前状态的滞后影响）
+- **置信度**：基于 Beta 分布标准差计算，用于策略投票中的权重调节
+
+### 3.2 Kalman 二维滤波
+
+追踪每个进程的两个连续值，比 Beta 更能捕捉释放量和 PF 代价的实际量级。
+
+- 状态：`[x_freed(MB), x_cost(PF)]`
+- 观测噪声 r = 固定，过程噪声 q 由 meta 每 30 秒校准
+- 每次清理后调用 `update(actual_freed, actual_pf_delta)`
+- `predict()` 返回 `(x_freed, x_cost)`，用于复合评分
+- v1.5 遗留 bug 曾导致所有进程的 `x_freed` 被重置为零；v1.6 在加载时自动从 `gain_ewma` 种子恢复
+
+### 3.3 情景记忆
+
+存储每次清理时刻的五维上下文向量 `[norm_ws, norm_theta, mem_pct, cpu, hour]`，支持余弦相似度检索 top-3 最相似历史经验。新进程通过记忆加速冷启动收敛。上限 200 条，超出时丢弃最旧记录。相似度阈值 0.7。
+
+### 3.4 分层先验
+
+10 个预定义类别（browser/development/game/media/office/system/terminal/utility/vm/other），按进程名关键词自动分类。新进程从同类经验池继承初始 θ，避免从 Beta(2,1) 零基础开始。
+
+### 3.5 因果推理
+
+有向图记录"清 A 时 B 的释放量"。支持反事实优势比查询，作为五树投票中"反事实维度"的输入。键统一使用小写进程名，每对仅存最新一条（新覆盖旧）。仅作为决策奖励（纯加分），不会惩罚数据不足的进程。
+
+### 3.6 五树投票策略
+
+替代单一 θ 门槛的多维综合决策：
+
+- **收益树**：预期释放量 × 成功率
+- **代价树**：预期 PF 代价 × 内存压力
+- **时机树**：增长趋势 + 距上次清理时间
+- **紧迫树**：θ 相对排名 + 冷却状态
+- **反事实树**：因果图优势比
+
+总分 ≥ 0 通过（不设硬性门槛，不因"不够好"而放过）。Probe 试探同步使用五树投票，高分进程探测间隔缩短到 30%，低分进程正常间隔——纯加速不拦截。
+
+---
+
+## 4. 元认知自我监控
+
+每 30 秒运行一次完整诊断：
+
+- **校准度**：对比 Kalman 预测 vs 实际释放。偏差 >50% → 重置卡尔曼参数并降低 θ 置信；偏差 <15% → 卡尔曼稳定并奖励 θ 置信
+- **概念漂移**：双 EWMA 快慢速比检测进程行为突变（阈值 4.0×/0.2×）。漂移时温和调整 Beta 和 Kalman 参数（避免过度重置）
+- **探索覆盖**：统计从未被试探的进程比例，超过 40% 时适度提高好奇心
+- **学习率自校准**（`self_check`）：每 30s 检查所有进程的预测误差，误差 >30% 降低上下文学习率，误差 <10% 恢复学习率
+- **因果对追踪**：仅在因果对数量变化时向用户报告
+
+---
+
+## 5. EFIS v3 全程序智能调参
+
+EFIS（Efficiency Feedback Intelligent System）已升级为覆盖全程序 5 层、9 参数的智能调参大脑。
+
+**参数一览**：
+
+| 参数 | 默认值 | 范围 | 控制的内容 |
+|------|:----:|:----:|------|
+| `deepen_theta` | 0.60 | 0.30-0.80 | θ 超过此值→trim 升级到 4 pass |
+| `layer3_agg_gate` | 0.60 | 0.30-0.90 | 压力低于此值→触发 Layer3 深度清理 |
+| `pid_kp` | 0.60 | 0.30-2.00 | PID 比例增益——对内存偏差的响应速度 |
+| `pid_kd` | 0.10 | 0.05-0.50 | PID 微分增益——抑制震荡 |
+| `target_usage` | 60% | 35-65% | PID 目标内存占用百分比 |
+| `interval_high` | 10s | 5-20s | 高压时（agg>0.8）的日志/图表输出间隔 |
+| `cooloff_base` | 360s | 60-360s | 失败冷却基数（实际冷却 = cooloff_base × 失败次数，最多×2） |
+| `learning_rate` | 0.30 | 0.05-0.40 | 上下文特征权重的学习速度 |
+| `composite_kalman_w` | 0.30 | 0.10-0.50 | 复合评分中 Kalman 分量 vs Thompson 分量的权重 |
+
+**诊断方式**：取消原有的 ERIS 代理指标映射（5 维中 2 维为死维），改为每个参数配备专属的因果症状规则。如 `deepen_waste` 检查 2-pass 进程的平均额外释放量是否低于 10MB；`layer3_extra` 检查 Layer3 每轮平均释放是否低于 50MB；`pid_kp` 检查内存振幅和 PF 速率是否异常。症状持续 ≥2 周期后触发调参，防止噪声误调。
+
+**场景记忆**：支持 game/browser/development/general 四个场景独立参数记忆。场景切换时 70% 当前参数 + 30% 场景历史参数平滑过渡，避免切换瞬间的参数跳跃。场景由进程名关键词自动检测。
+
+**文件与加载**：独立文件 `efis_state.json`（与 learner 的 `memwise_state.json` 分离）。加载时自动跳过已废弃参数（`theta_gate`、`ws_baseline_mul`、`cpu_gate`、`max_trim`），新参数缺失时取默认值。`save()` 通过 `临时文件.write + os.replace` 原子化写入，防止写一半崩溃导致配置损坏。
+
+---
+
+## 6. 内存优先级管理
+
+系统通过调用 `NtSetInformationProcess(ProcessMemoryPriority)` + `SetProcessInformation(EcoQoS)` 向 OS 传递偏好级别：
+
+- **所有非系统、非前台进程**：LOW 内存优先级 + EcoQoS 启用
+- **θ > 0.3 的高价值进程**：VERY_LOW（系统最优先回收其物理页）
+
+这一机制的作用在于"减少回填速度"：被设定 LOW 优先级的进程在访问已换出页面时，系统会优先从 Standby List 或压缩池中提供零页，而不是分配新的物理页。这是操作系统层面的被动优化，不消耗额外 CPU 或 I/O。
+
+---
+
+## 7. 游戏模式
+
+通过进程名匹配（内置约 70 个已知游戏 exe + 用户自定义名单）和全屏窗口检测（`GetWindowRect` + `GetSystemMetrics`，含类名过滤排除浏览器假全屏）自动激活。
+
+激活后效果：非前台进程 WS 准入降至 2 MB，probe 间隔压缩到 0.15s，min_delta 降至 1 MB。前台（游戏）进程加强保护（`agg_threshold_fg = 0.6`），全屏类名过滤排除 Chrome_WidgetWin_1、MozillaWindowClass、PPTFrameClass 等非游戏全屏窗口。
+
+---
+
+## 8. 图表与效率评分
+
+每轮（60 秒）推送一柱到柱状图，与日志同步输出。柱高为该轮累计释放量（MB），X 轴显示最近的约 60 轮数据。折线为 ERIS 效率评分（0-100），五维几何平均计算。`overflow_bonus` 0.20 权重，避免首轮 1GB+ 大释放量将效率虚推至 100%。鼠标悬浮显示具体数值。图表区域下方标注统计栏：当前物理内存占用百分比及彩色进度条（绿<60%、黄60-74%、橙75-89%、红≥90%）、累计释放量（自动换算 GB/MB）、系统杂项总次数（K 单位缩写）、进程清理总次数（K 单位缩写）。
+
+---
+
+## 9. 进程排行
+
+点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括：进程名、PID、物理内存（WorkingSet，与任务管理器的"工作集"列对齐）、CPU 占用（%）、学习数据（θ、ROI、清理次数、EWMA、refill_ewma 等）。每 2 秒自动刷新，底部显示"共 N 个进程"。
+
+内存数据的采集优先使用 `NtQuerySystemInformation(SystemProcessInformation=5)` 一口返回所有进程的工作集和私有内存值，无需对每个进程执行 `OpenProcess`。此 API 可绕过某些安全软件的进程保护机制（如 Kaspersky），确保全量覆盖。
+
+---
+
+## 10. 学习日志
+
+点击"学习日志"按钮弹出独立窗口，按复合评分降序显示所有已学习 ≥2 轮的进程的完整画像数据：θ 值、ROI、Kalman x_freed、gain_ewma、refill_ewma、vol_ewma、清理次数、成功率等。支持排序和滚动浏览。
+
+---
+
+## 11. 设置面板
+
+设置面板提供以下可配置项，所有更改即时保存至 `config/config.yaml`，重启后生效：
+
+**启动设置**：
+- 开机自启：创建/删除启动文件夹快捷方式（非注册表方式）
+- 管理员权限启动：创建/删除 Windows Scheduled Task（以最高权限运行）
+- 启动时自动开启守护：程序打开后无需手动点击守护按钮
+- 启动后最小化到托盘：程序窗口不显示，仅留托盘图标
+
+**关闭按钮行为**（设置面板内，位于"启动后最小化到托盘"下方）：
+- 最小化到托盘：点击 X 隐藏到托盘，守护模式继续运行
+- 直接退出程序：点击 X 完全退出，自动保存所有状态
+- 每次询问：弹窗选择（默认）
+
+**清理操作**：8 种操作独立开关（默认 ws/standby/compress/modified 开，其余关）。可实现"只清进程不清系统缓存"或"全开"等组合。
+
+**清理模式**：下拉框选择 quick / normal / deep / full（默认 deep）。
+
+---
+
+## 12. 日志系统
+
+主界面右侧为日志区域。每轮（60 秒）输出本轮释放量、系统杂项操作次数、整理的进程数、试探/成功数、已学习画像数、总样本数。在输出周期之间，算法诊断消息（元认知校准、概念漂移、EFIS 调参、因果统计、深度清理触发等）被累积到缓冲区，于日志输出时一并显示。
+
+**清屏机制**：每轮在输出第一条消息前检查"本轮前已有行数 + 本轮新增行数 > 7"，若成立则清屏再输出本轮全部消息，否则直接追加到旧日志下方。确保每条日志用户至少可见一整轮（60 秒）。
+
+算法消息中部分仅在状态变化时输出（如因果对关系数、探索覆盖率、Layer3 清理强度），减少重复刷屏。
+
+---
+
+## 13. 命令行工具
 
 ```bash
-pip install pyyaml          # 可选
-python memwise_gui.py       # 启动 GUI
+python memwise.py [command] [options]
 ```
 
-或从 [Releases](https://github.com/fuguangbeta/MemWise/releases) 下载 exe，双击 → 点击「守护」→ 完成。它在系统托盘里安静运行，你不需要操作任何选项。
+| 命令 | 说明 |
+|------|------|
+| `status` | 查看当前物理内存使用率、总可用量等 |
+| `learn [分钟]` | 采集并学习进程内存行为 |
+| `optimize [-m MODE]` | 单次优化（支持 quick/normal/deep/full） |
+| `daemon [-m MODE]` | CLI 守护模式 |
+| `profile <PID>` | 查看指定进程的完整学习画像 |
 
 ---
 
-## 核心算法
+## 14. 配置项
 
-### Thompson Sampling 学习引擎
+`config/config.yaml` 完整配置项：
 
-这是整个系统的决策核心。对每一个非系统进程，维护一对 Beta 分布参数 (α, β)：
-
-- 先验：`Beta(α=2, β=1)` — 先验偏向"可清理"
-- 清理成功 → `α += 1`
-- 清理失败（PF 增量超过阈值）→ `β += 1`
-- θ 值：`random.betavariate(α, β)` — 从 Beta 分布采样
-
-θ 越高越值得清理。同一个 Chrome 子进程，之前清过且 PF 反馈好 → θ 高 → 优先处理；之前清过但触发大量缺页中断 → θ 低 → 暂时跳过。
-
-每次 `feed()` 调用（每 tick 一次），更新 WS 追踪、EWMA、Z-score 基线。**Beta 衰减移到 record_clean 做时间感知遗忘**——距离上次反馈超过 1 小时才开始遗忘，每小时向先验回归 5%，最多 50%。这意味着长期活跃的进程 α 可以增长到两位数，不会被每 tick 衰减拉回。
-
-**置信度**基于 Beta 分布标准差计算：
-```
-variance = (α × β) / ((α+β)² × (α+β+1))
-std = √variance
-confidence = 1 - std / 0.289
-```
-Beta(1,1) 均匀分布时 std ≈ 0.289（置信度最低），std → 0 时置信度最高。
-
-### 上下文修正与特征工程
-
-基础 Thompson θ 经过 5 维上下文特征修正，最终得到用于决策的 `thompson_theta`：
-
-```
-f = [1.0, norm_ws, norm_vol, norm_pf, confidence]
-修正因子 = sigmoid(w·f) + 0.5    → 范围 [0.5, 1.5]
-thompson_theta = clamp(θ × 修正因子, 0.01, 0.99)
-```
-
-特征含义：
-- **norm_ws**：WS 的 sigmoid 归一化，200MB 为中心点。大进程更倾向于被修正。
-- **norm_vol**：波动率 tanh 归一化。WS 剧烈波动的进程修正幅度大。
-- **norm_pf**：PF 成本/收益比。之前清过但 PF 代价大的会被压低。
-- **confidence**：置信度。样本越多分布越尖 → 置信度高 → 修正更稳定。
-- **bias**：固定偏置项。
-
-权重更新使用 **sign-based 批量梯度下降**：
-- 每 2 次 feedback 累积一次梯度（不是逐次更新）
-- 更新公式：`step = lr × (0.3 × sign(avg_grad) + 0.7 × normalized(avg_grad))`
-- sign 分量保证方向稳定，即使梯度很小也能推进
-- `CTX_LR_BASE = 0.5`（v1.2 是 0.03，提升 16.7 倍）
-
-### 复合评分
-
-用于排序清理候选的综合评分，决定"这一轮先清谁"：
-
-```
-bonus = 0.5 × confidence + 0.3 × min(ROI, 1.0) + (0.2 if gain_accelerating else 0)
-composite_score = 0.6 × θ + 0.4 × min(1.0, bonus)
-```
-
-**加性混合**而非乘性——低 θ 但高置信度、高 ROI 的进程仍然能获得不错的总分，不会像 v1.2 那样被 θ 完全压制。
-
-`gain_accelerating` 信号来自双 EWMA：
-- `gain_ewma_fast = 0.6 × freed + 0.4 × gain_ewma_fast`
-- `gain_ewma_slow = 0.1 × freed + 0.9 × gain_ewma_slow`
-- 当 `fast > slow` 时，说明该进程的收益正在加速，"当前正是清理好时机"。
-
-### PID 反馈控制器
-
-不是简单的"内存 > 80% 就开始清"。PID 控制器提供连续调节：
-
-```
-error = current_usage - target(45%)
-P = Kp(1.0) × error
-I = Ki(0.10) × ∫error·dt    （抗饱和 ±20）
-D = Kd(0.15) × d(error)/dt
-output = P + I + D
-aggressiveness = clamp(output / 50, 0, 1)
-```
-
-- 目标 45%。当内存 > 55% 时清理强度开始线性上升。
-- 积分项消除稳态偏差（如果长时间维持在 65%，积分项会逐渐攀升直到清理力度够大）。
-- 微分项抑制震荡（内存快速上升时提前响应）。
-- 清理强度直接影响 Layer1 的激进程度和 Layer3 的触发条件。
-- 强度 > 0.8 时 tick 间隔缩至 10s；> 0.5 时 20s；< 40% 时 60s。
-
-### EFIS 效率反馈智能系统
-
-这不是一个静态规则引擎。EFIS 每 30 tick 运行一次诊断→调参→评估循环：
-
-```
-诊断：ERIS 五维评分低于 0.35 的维度
-  → capability↓ → theta_gate↓, ws_baseline_mul↓
-  → adaptivity↓  → max_trim↑, cpu_gate↓
-  → precision↓   → theta_gate↑, cooloff_base↑
-  → momentum↓    → learning_rate↑
-  → context↓     → max_trim↑, cpu_gate↓
-调参：severity 感知幅度
-  → step = base_step × (1 + 2 × severity) × win_mult
-  → severity = (0.35 - score) / 0.35
-评估：30 tick 后检查清理效率变化
-  → delta > 2.0 → 记录场景最优参数
-  → delta < -3.0 → 自动回滚 + 方向冷却
-  → 内存波动 > 8% → 跳过评估（排除用户操作干扰）
-```
-
-关键设计点：
-- **场景参数记忆**：game/browser/development/general 四个场景独立参数，切换场景时自动保存/恢复。
-- **历史最优回归**：高分时向该场景的历史最优参数回归（而非 v1.2 的默认值），持续迭代。
-- **相对步长**：`step = max(绝对步长, 当前值 × 5%)`。大参数大步调，小参数小步调。
-- **自适应步长**：连续 3 次有效调节 → 步长翻倍，加速收敛。
-
-### 预判式清理
-
-不是等进程涨到几百 MB 再清。每个进程的 WS 趋势斜率通过最小二乘法计算（最近 3 个点，原本是 6 个点），斜率 > 0.002 且 WS > 50MB 的进程获得排序加分：
-
-```
-growth_bonus = min(0.3, slope × 30)
-final_score = composite_score + growth_bonus
-```
-
-斜率 0.005 的进程获得 0.15 加分，相当于 confidence 从 0 提升到 0.5 的效果。这意味着**还在增长中的进程会比已经稳定的同 WS 进程优先清理**。
-
-### 探索与利用平衡
-
-Thompson Sampling 本身通过随机采样天然实现探索/利用平衡。在此基础上增加了：
-
-**好奇心奖励**：
-```
-mins_since = (time.time() - last_seen) / 60
-curiosity = min(0.15, max(0, mins_since - 10) × 0.005)
-```
-进程超过 10 分钟未清理 → 好奇心逐渐累积 → 20 分钟时 +0.05 → 40 分钟时 +0.15。确保冷门进程不会永久被忽略。
-
-**不确定性奖励**：
-```
-uncertainty = max(0, 0.10 - confidence × 0.10)
-```
-置信度低的进程（样本少或结果不稳定）获得额外加分，驱使它被 probe 或清理以收集更多数据。
-
-### 泄漏检测
-
-双阈值：
-- **严重泄漏**：`Z > 2.0` 且斜率 > 0.005 且连续 2 tick → `leak_suspect = True`，跳过冷却
-- **轻度泄漏**：`Z > 1.5` 且斜率 > 0.002 → `leak_suspect = "mild"`，同样跳过冷却（因为 truthy）
-
-v1.2 的标准是 Z > 3.0 + 斜率 > 0.01 + 连续 3 tick，大幅降低后的阈值使检出率提升了约 3 倍。
+| 键 | 类型 | 默认值 | 说明 |
+|------|------|:------|------|
+| `clean_mode` | str | `"deep"` | 清理模式 |
+| `clean_operations` | list | `[ws,standby,compress,modified]` | 启用的操作 |
+| `auto_start` | bool | `false` | 开机自启 |
+| `auto_start_admin` | bool | `false` | 管理员权限开机自启 |
+| `auto_start_daemon` | bool | `false` | 启动后自动守护 |
+| `auto_start_minimize` | bool | `false` | 启动后最小化 |
+| `close_action` | str | `"ask"` | 关闭按钮行为 |
+| `interval` | int | `60` | 日志/图表周期（秒） |
+| `hotkey` | str | `"ctrl+shift+m"` | 热键 |
+| `never` | list | `[]` | 排除列表（进程名或 PID） |
+| `game_processes` | list | `[]` | 自定义游戏 exe 名 |
+| `efis_params` | dict | 9 参数默认值 | EFIS 参数 |
 
 ---
 
-## 系统架构
+## 15. 文件结构
 
 ```
-用户界面 (tkinter, ~1400 行)
-    │
-    ├── 守护模式 (独立 daemon 线程)
-    │   │   每 tick(10~60s) 循环:
-    │   │   1. Sniffer.snapshot()        → 全系统进程快照
-    │   │   2. Learner.feed(snaps)       → 更新 WS/EWMA/Z-score/斜率
-    │   │   3. Judger.update_pressure()  → PID 计算 aggressiveness
-    │   │   4. Cleaner.optimize():
-    │   │      a. Layer1: 7 种系统缓存操作
-    │   │      b. Layer2: 进程排序→Probe→Trim
-    │   │      c. Layer3: 深度重复 (deep/full)
-    │   │   5. EFIS.tick()               → 每30tick调参+评估
-    │   │   6. 消息队列主线程轮询更新UI
-    │   │
-    │   ├── core/learner.py   (444行)   学习引擎
-    │   ├── core/judger.py    (264行)   判定器+PID
-    │   ├── core/cleaner.py   (538行)   清理引擎
-    │   ├── core/efis.py      (380行)   效率反馈系统
-    │   ├── core/winapi.py    (840行)   Win32 API 绑定
-    │   ├── core/sniffer.py   (57行)    进程快照
-    │   └── core/config.py    (65行)    配置加载
-    │
-    ├── 手动优化 (独立线程)
-    │   3 轮深度清理+累计释放量对比
-    │
-    └── 日志系统 (线程安全 queue.Queue, 主线程 100ms 轮询)
+MemWise/
+├── memwise_gui.py              # GUI 主程序，约 1800 行
+├── memwise.py                  # CLI 命令行入口
+├── config/config.yaml          # 配置文件（自动持久化）
+├── memwise_state.json          # 学习数据文件（自动保存/加载）
+├── memwise_efis_state.json     # EFIS 状态文件
+├── CHANGELOG.md                # 更新日志
+├── README.md                   # 本文件
+├── assets/icon.ico             # 程序图标
+├── core/
+│   ├── cleaner.py              # 三层清理引擎 + 持续优化
+│   ├── learner.py              # Thompson Sampling + Kalman + 特征学习
+│   ├── judger.py               # 判定器 + PID 控制器
+│   ├── efis.py                 # EFIS v3 全程序智能调参
+│   ├── meta.py                 # 元认知自我监控
+│   ├── policy.py               # 五树投票策略
+│   ├── causal.py               # 因果推理图
+│   ├── kalman.py               # Kalman 滤波器
+│   ├── temporal.py             # 时序画像
+│   ├── hippocampus.py          # 情景记忆
+│   ├── prior.py                # 分层先验
+│   ├── winapi.py               # Win32 API 绑定（70+ 函数）
+│   ├── sniffer.py              # 进程快照采集
+│   └── config.py               # 配置加载/保存
+└── scripts/
+    └── _validate.py            # 构建验证脚本
 ```
 
 ---
 
-## 三层清理引擎
+## 系统要求
 
-### Layer1 — 系统级
-
-按配置过滤执行 7 种操作之一：
-
-| 操作 | Win32 API | 说明 |
-|------|-----------|------|
-| standby | `NtSetSystemInformation(80)` | Standby List 清空（Win10≥20H1） |
-| modified | `NtSetSystemInformation(44)` | Modified Page 写回 |
-| filecache | `SetSystemFileCacheSize(-1,-1,0)` | 文件缓存清除 |
-| volume | `CreateFileW+FlushFileBuffers` | 卷缓存刷新 |
-| compress | `NtSetSystemInformation(80)` 压缩触发 | 渐进式压缩链 |
-| registry | `NtSetSystemInformation(81)` | 注册表缓存(Win8.1+) |
-| ws | EmptyWorkingSet（Layer2） | 进程级清理 |
-
-### Layer2 — 进程级
-
-1. **MemoryPriority 分级**（每 30 tick 全量刷新）
-   - θ ≥ 0.7 → MEMORY_PRIORITY_VERY_LOW(0) + EcoQoS
-   - 0.3 ≤ θ < 0.7 → MEMORY_PRIORITY_LOW(1) + EcoQoS
-   - 前台进程保持默认优先级（不调 API）
-   - 低 θ 进程不设优先级
-
-2. **Probe 试探**：对不明确的进程做双次清理（自适应间隔 150~500ms），1s 内 PF 增量 < 20 视为成功。
-3. **Trim 清理**：按复合评分降序排列，每轮最多 50 个，并行执行（4 线程池）。自适应轮数：WS≤50MB→2轮、≤200MB→3轮、>200MB→4轮。
-
-### Layer3 — 深度重复
-
-高压时 sleep 2s → 重复 Layer1 + Layer2（仅高 θ 进程）。normal 模式在 agg ≥ 0.6 时触发，deep/full 无条件执行。
-
----
-
-## 游戏模式
-
-自动检测通过两种方式：
-1. **进程名匹配**：内置约 70 个已知游戏 exe + 用户自定义名单
-2. **全屏窗口检测**：`GetWindowRect` + `GetSystemMetrics` 判断全屏
-
-激活后：
-- 非前台进程 `joint_threshold = min(theta_gate, 0.15)` — 更激进
-- 非前台进程 `cpu_threshold = max(cpu_gate, 2.0)` — 忽略 CPU
-- 前台（游戏）进程 `agg_threshold_fg = 0.8` — 更强保护
-
----
-
-## 命令行
-
-```
-memwise.py status                 查看内存状态
-memwise.py learn [分钟]           学习进程行为
-memwise.py optimize [--mode]      一键优化
-memwise.py daemon [--mode]        守护模式
-memwise.py profile <PID>          查看进程画像
-```
-
----
-
-## 快速开始
-
-```bash
-pip install pyyaml          # 可选
-python memwise_gui.py       # 启动 GUI
-python memwise.py daemon    # CLI 守护模式
-```
-
-或从 [Releases](https://github.com/fuguangbeta/MemWise/releases) 下载 exe。
-
-### 系统要求
-
-- Windows 10 20H1+ / Windows 11
-- 管理员权限（缓存清理需要；进程 EmptyWorkingSet 不受限）
+- Windows 10 20H1+ / Windows 11（部分缓存操作依赖较新版本）
+- 管理员权限（缓存清理需要；进程 EmptyWorkingSet 不受限制）
+- 无需安装任何第三方运行库
 
 ---
 
