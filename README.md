@@ -69,7 +69,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 2.3 Layer3 — 深度重复清理
 
-仅 deep 模式末次 optimize 执行。依次为：
+deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 - **压缩 + 脏页写回**：调用 `deep_compress` 四轮递进
 - **全量 Standby List 收割**：低优先→全量→deep 三层
