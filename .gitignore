@@ -1,7 +1,9 @@
 # Runtime
 memwise_state.json
+memwise_efis_state.json
 config.local.yaml
 /config.yaml
+config/config.yaml
 
 # Build artifacts
 build/
