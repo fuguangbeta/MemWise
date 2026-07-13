@@ -11,7 +11,7 @@ def _mb(b):
 DEFAULT_KP = 1.0    # 比例系数 — 响应当前压力 (更积极)
 DEFAULT_KI = 0.10   # 积分系数 — 消除稳态误差
 DEFAULT_KD = 0.15   # 微分系数 — 抑制震荡 (快速升压时提前响应)
-TARGET_USAGE = 45.0  # 目标内存使用率 (%) — 更低 → 更早开始清理
+TARGET_USAGE = 30.0  # 目标内存使用率 (%) — 对标 MemReduct 极致优化
 DT = 5.0             # 控制周期 (秒，匹配 daemon tick)
 
 SYSTEM_DIR_PREFIXES = ("c:\\windows\\", "c:\\program files\\", "c:\\program files (x86)\\")
@@ -69,11 +69,12 @@ class PareJudger:
         self.learner = learner
         self.cfg = config
         self.game_mode = False
+        efis_cfg = config.get("efis_params", {})
         self.pid = PidController(
-            kp=config.get("kp", DEFAULT_KP),
+            kp=efis_cfg.get("pid_kp", config.get("kp", DEFAULT_KP)),
             ki=config.get("ki", DEFAULT_KI),
-            kd=config.get("kd", DEFAULT_KD),
-            target=config.get("target_usage", TARGET_USAGE),
+            kd=efis_cfg.get("pid_kd", config.get("kd", DEFAULT_KD)),
+            target=efis_cfg.get("target_usage", config.get("target_usage", TARGET_USAGE)),
         )
         self.aggressiveness = 0.0
         self._prev_agg = 0.0
@@ -83,7 +84,7 @@ class PareJudger:
         self.pf_before = {}
         self._post_clean_ws = {}  # 进程清理后的 WS 基线
         self._post_clean_time = {}  # 基线设置时间戳（30分钟过期）
-        self._probe_last_time = {}  # 进程上次 probe 时间（150s 间隔）
+        self._probe_last_time = {}
 
     # ── PID ──
 
@@ -101,6 +102,7 @@ class PareJudger:
 
     def update_pressure(self, mem_usage_pct):
         """根据内存压力更新 PID，返回当前 aggressiveness"""
+        self._last_mem_pct = mem_usage_pct
         self.aggressiveness = self.pid.update(mem_usage_pct)
         if abs(self.aggressiveness - self._prev_agg) > 0.25:
             self._info_msgs.append(f"📈 内存{mem_usage_pct:.0f}%({self._mem_label(mem_usage_pct)}) 清理强度:{self._agg_label(self._prev_agg)}→{self._agg_label(self.aggressiveness)}")
@@ -123,51 +125,25 @@ class PareJudger:
 
         is_fg = getattr(snap, "fg", False)
 
-        # ── 游戏模式激进阈值 ──
         efis = self.cfg.get("efis_params", {})
-        e_theta = efis.get("theta_gate", 0.18)
-        e_cpu = efis.get("cpu_gate", 1.0)
-        if self.game_mode and not is_fg:
-            cpu_threshold = max(e_cpu, 2.0)
-            joint_threshold = min(e_theta, 0.15)
-            agg_threshold_fg = 0.8
-        else:
-            cpu_threshold = e_cpu
-            joint_threshold = e_theta
-            agg_threshold_fg = 0.6
-
-        # foreground → 仅在高压时清理
+        # foreground → moderate pressure allows cleaning (lowered from 0.6)
         if is_fg:
-            if self.aggressiveness < agg_threshold_fg:
+            if self.aggressiveness < 0.35:
                 return False, "前台窗口"
 
-        if snap.ws < 5 << 20:  # 5MB 以下不碰
+        min_ws = 1 << 20
+        if snap.ws < min_ws:
             return False, "工作集太小"
 
         # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──
         now = time.time()
         baseline = self._post_clean_ws.get(name, 0)
         bl_time = self._post_clean_time.get(name, 0)
-        if baseline > 0:
-            # 基线超过30分钟 → 过期，允许重新清理
-            if now - bl_time > 1800:
-                pass
-            else:
-                # 动态阈值：小进程需更多相对增长，大进程少一些
-                e_b_mul = efis.get("ws_baseline_mul", 1.20)
-                if baseline < 200 << 20:
-                    threshold = 1.3 * e_b_mul / 1.20
-                elif baseline < 500 << 20:
-                    threshold = 1.2 * e_b_mul / 1.20
-                else:
-                    threshold = 1.15 * e_b_mul / 1.20
-                min_delta = 2 << 20  # 至少2MB
-                if snap.ws < baseline * threshold or snap.ws - baseline < min_delta:
-                    return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline * threshold)})"
+        if baseline > 0 and now - bl_time <= 1800:
+            if snap.ws <= baseline:return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline)})"
         # ── 失败冷却检查（仅 mark_failed 设置的）──
         cd = self.cooldown.get(name, 0)
-        if now < cd:
-            return False, f"失败冷却中({int(cd-now)}s)"
+        if now < cd and not self.learner.is_leak_suspect(name):return False, f"失败冷却中({int(cd-now)}s)"
 
         # ── WS 回弹覆盖 ──
         ws_override = False
@@ -177,8 +153,6 @@ class PareJudger:
             theta = 1.0
         else:
             theta = self.learner.thompson_score(name)
-            if theta < joint_threshold:
-                return False, f"θ不足({theta:.2f})"
 
         # ── 泄漏检测: 泄漏进程跳过冷却，高频尝试 ──
         if self.learner.is_leak_suspect(name):
@@ -186,13 +160,12 @@ class PareJudger:
 
         # ── 系统目录进程: 需要高 θ 值 ──
         path = getattr(snap, "path", None)
-        if path and self._is_system_path(path) and theta < 0.6:
-            return False, "系统目录进程(概率不足)"
+        if path and self._is_system_path(path) and theta < 0.3:return False, "系统目录进程(概率不足)"
 
         # 策略投票: 综合 Kalman/记忆/因果/时机
         try:
             if hasattr(self, 'learner') and hasattr(self.learner, 'policy'):
-                state = {"mem_pct": getattr(self, '_last_mem_pct', 50)}
+                state = {"mem_pct": getattr(self, '_last_mem_pct', 50), "candidates": getattr(self, '_last_candidates', [])}
                 if ws_override:
                     ok, reason = True, "WS回弹覆盖"
                 elif not self._post_clean_ws:
@@ -209,27 +182,29 @@ class PareJudger:
     def can_probe(self, snap):
         """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""
         name = snap.name.lower()
-        if name in SYSTEM_CORE:
-            return False
+        if name in SYSTEM_CORE:return False
         # WS 门槛已移除
         # 前台进程不 probe，避免干扰
-        if getattr(snap, "fg", False):
-            return False
+        if getattr(snap, "fg", False):return False
         # θ 过低且有足够样本时暂时跳过探测，但冷却后重新评估
         theta = self.learner.thompson_score(name)
         profile = self.learner.get_profile(name)
         if profile and profile.total_samples >= 5 and theta < 0.2:
             # 低θ进程并非永久禁止：超过 30 分钟未被 probe 则重新给机会
             last = self._probe_last_time.get(name, 0)
-            if last > 0 and time.time() - last < 600:  # 10分钟冷却
-                return False
+            if last > 0 and time.time() - last < 600:return False
             # 冷却已过 → 允许重新 probe
         # 动态 probe 间隔：根据候选进程数自动调整
-        # 候选多 => 间隔短（快速覆盖），候选少 => 间隔长（稳中求进）
-        dynamic_interval = getattr(self, '_probe_dynamic_interval', 120)
+        # 策略加速：高分进程缩短探测间隔
+        boost = 1.0
+        if hasattr(self, 'learner') and hasattr(self.learner, 'policy'):
+            state = {"mem_pct": getattr(self, '_last_mem_pct', 50),
+                     "candidates": getattr(self, '_last_candidates', [])}
+            ok, _ = self.learner.policy.should_probe(name, snap.ws, state, self.learner)
+            boost = 0.3 if ok else 1.0
+        dynamic_interval = int(getattr(self, '_probe_dynamic_interval', 120) * boost)
         last = self._probe_last_time.get(name, 0)
-        if last > 0 and time.time() - last < dynamic_interval:
-            return False
+        if last > 0 and time.time() - last < dynamic_interval:return False
         return True
 
     # ── 冷却管理 ──
@@ -251,8 +226,8 @@ class PareJudger:
         """失败冷却: 失败次数越多，冷却越长"""
         name = name.lower()
         efis = self.cfg.get("efis_params", {})
-        cooloff_base = efis.get("cooloff_base", 3600)
-        cd = cooloff_base * min(8, fail_count)  # max 8h
+        cooloff_base = efis.get("cooloff_base", 300)  # 5min base (was 3600)
+        cd = cooloff_base * min(2, fail_count)  # max 12min for single-pass
         self.cooldown[name] = time.time() + cd
 
     def mark_probed(self, name):
@@ -274,7 +249,7 @@ class PareJudger:
         pf_delta = max(0, pf_after - pf_before)
         freed = max(0, ws_before - ws_after)
         # PF 成本：empty_ws 每轮 ~40 PF
-        allowed_pf = max(50, int(50 * dt), freed // (1 << 20) * 10, passes * 40)
+        allowed_pf = max(120, int(50 * dt), freed // (1 << 20) * 10, passes * 40)
         ok = pf_delta <= allowed_pf
         return ok, freed, pf_delta
 

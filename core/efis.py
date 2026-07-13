@@ -1,131 +1,99 @@
 """
-E.F.I.S. 效率反馈智能系统 v2 — ERIS 五维诊断 -> 自适应调参 -> 实验日志+回滚+场景自适应
+E.F.I.S. v3 - 全程序智能调优大脑
+因果诊断驱动，9 参数联动，覆盖优化管线全部 5 层
 """
-import os
-import time
-import math
-import json
+import os, time, json
+from collections import deque
 
-DEFAULT_PARAMS = {
-    "theta_gate": 0.18,
-    "cpu_gate": 1.0,
-    "max_trim": 50,
-    "cooloff_base": 1200,
-    "ws_baseline_mul": 1.20,
-    "learning_rate": 0.3,
+
+PARAMS = {
+    "deepen_theta":       {"min": 0.30, "max": 0.80, "default": 0.60, "step": 0.05},
+    "layer3_agg_gate":    {"min": 0.30, "max": 0.90, "default": 0.60, "step": 0.05},
+    "pid_kp":             {"min": 0.30, "max": 2.00, "default": 0.60, "step": 0.10},
+    "pid_kd":             {"min": 0.05, "max": 0.50, "default": 0.10, "step": 0.05},
+    "target_usage":       {"min": 35,   "max": 65,   "default": 60,   "step": 2},
+    "interval_high":      {"min": 5,    "max": 20,   "default": 10,   "step": 2},
+    "cooloff_base":       {"min": 60,   "max": 360,  "default": 360,  "step": 30},
+    "learning_rate":      {"min": 0.05, "max": 0.40, "default": 0.30, "step": 0.02},
+    "composite_kalman_w": {"min": 0.10, "max": 0.50, "default": 0.30, "step": 0.05},
 }
 
-PARAM_LIMITS = {
-    "theta_gate":      {"min": 0.10, "max": 0.50, "step": 0.02},
-    "cpu_gate":        {"min": 0.30, "max": 3.00, "step": 0.10},
-    "max_trim":        {"min": 5,    "max": 80,   "step": 5},
-    "cooloff_base":    {"min": 1200, "max": 7200, "step": 300},
-    "ws_baseline_mul": {"min": 1.05, "max": 1.50, "step": 0.03},
-    "learning_rate":   {"min": 0.01, "max": 0.50, "step": 0.02},
-}
-
-DIAGNOSIS_MAP = {
-    "capability": {"theta_gate": -1, "ws_baseline_mul": -1},
-    "adaptivity": {"max_trim": 1, "cpu_gate": -1},
-    "precision":  {"theta_gate": 1, "cooloff_base": 1},
-    "momentum":   {"learning_rate": 1},
-    "context":    {"max_trim": 1, "cpu_gate": -1},
-}
-
-REVERT_THRESHOLD = 3.0
-REVERT_EVAL_TICKS = 30
-CONSECUTIVE_BOOST = 3
-REVERT_COOLDOWN = 5
+WINDOW = 5
+EVAL_INTERVAL = 5
 
 
 class EfisController:
 
     def __init__(self, state_path=None):
         self.state_path = state_path
-        self.params = dict(DEFAULT_PARAMS)
-        self.eris_history = []
-        self.last_save_time = 0
-        self._last_efis_time = 0
-        self.last_log = ""
-        self.experiments = []
-        self._direction_wins = {}
-        self._revert_cooldown = {}
-        self._clean_eff_history = []
+        self.params = {k: v["default"] for k, v in PARAMS.items()}
+        self._window = deque(maxlen=WINDOW)
+        self._cycle = 0
+        self._symptoms = {}
+        self._last_params = dict(self.params)
+        self._adjust_log = []
         self.scene_params = {}
         self.current_scene = "general"
         self._last_scene = None
-        self._scene_best = {}
+        self._scene_stable = 0
         self.load()
 
     def load(self):
-        """Load from efis_state.json (fallback to old state.json)"""
         if not self.state_path:
             return
         efis_path = self.state_path.replace("state.json", "efis_state.json")
-        load_path = efis_path if os.path.exists(efis_path) else self.state_path
+        if not os.path.exists(efis_path):
+            return
         try:
-            with open(load_path, "r", encoding="utf-8") as f:
+            with open(efis_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             efis = data.get("efis", {})
             for k, v in efis.get("params", {}).items():
                 if k in self.params:
-                    self.params[k] = v
-            self.eris_history = efis.get("history", [])
-            self.last_save_time = efis.get("last_save", 0)
-            self.experiments = efis.get("experiments", [])
+                    lo, hi = PARAMS[k]["min"], PARAMS[k]["max"]
+                    self.params[k] = max(lo, min(hi, v))
             self.scene_params = efis.get("scene_params", {})
-            self._direction_wins = efis.get("direction_wins", {})
-            self._clean_eff_history = efis.get("clean_eff_history", [])
-            self._scene_best = efis.get("scene_best", {})
+            for sp in self.scene_params.values():
+                for k in list(sp.keys()):
+                    if k not in PARAMS:
+                        del sp[k]
+                    else:
+                        lo, hi = PARAMS[k]["min"], PARAMS[k]["max"]
+                        sp[k] = max(lo, min(hi, sp[k]))
             self.current_scene = efis.get("current_scene", "general")
-            self._last_scene = efis.get("last_scene", self.current_scene)
-            days_since = (time.time() - self.last_save_time) / 86400
-            if days_since > 3:
-                decay = min(1.0, (days_since - 3) * 0.05)
-                for k in self.params:
-                    d = DEFAULT_PARAMS[k]
-                    self.params[k] = self.params[k] * (1 - decay) + d * decay
+            self._scene_stable = efis.get("scene_stable", 0)
+            self._cycle = efis.get("cycle_count", 0)
+            self._symptoms = efis.get("symptoms", {})
         except Exception:
-            self.params = dict(DEFAULT_PARAMS)
+            self.params = {k: v["default"] for k, v in PARAMS.items()}
 
     def save(self):
-        """Save to efis_state.json (separate from learner, zero race)"""
+        if not self.state_path:
+            return
         efis_path = self.state_path.replace("state.json", "efis_state.json")
         self.scene_params[self.current_scene] = dict(self.params)
-        data = {
-            "efis": {
-                "params": self.params,
-                "history": self.eris_history[-200:],
-                "last_save": time.time(),
-                "experiments": self.experiments[-100:],
-                "scene_params": self.scene_params,
-                "direction_wins": self._direction_wins,
-                "clean_eff_history": self._clean_eff_history[-200:],
-                "scene_best": self._scene_best,
-                "current_scene": self.current_scene,
-                "last_scene": self._last_scene,
-            }
-        }
+        data = {"efis": {
+            "version": 3,
+            "params": self.params,
+            "scene_params": self.scene_params,
+            "current_scene": self.current_scene,
+            "cycle_count": self._cycle,
+            "symptoms": self._symptoms,
+            "scene_stable": self._scene_stable,
+            "adjust_log": self._adjust_log[-50:],
+            "last_save": time.time(),
+        }}
         tmp = efis_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        # 先删除旧文件再重命名，解决文件锁定竞争
-        for attempt in range(3):
+        for _ in range(3):
             try:
                 if os.path.exists(efis_path):
                     os.remove(efis_path)
                 os.rename(tmp, efis_path)
                 break
             except PermissionError:
-                if attempt < 2:
-                    time.sleep(0.1)
-                else:
-                    # 最终备份：直接写入（可能被防毒软件查扫）
-                    try:
-                        with open(efis_path, "w", encoding="utf-8") as f2:
-                            json.dump(data, f2, ensure_ascii=False, indent=2)
-                    except Exception:
-                        pass
+                time.sleep(0.1)
 
     def detect_scene(self, snaps, fore_fullscreen, mem_pct):
         names = [s.name.lower() for s in snaps]
@@ -140,104 +108,122 @@ class EfisController:
         if scene != self.current_scene:
             self._last_scene = self.current_scene
             self.current_scene = scene
+            self._scene_stable = 0
             self.scene_params.setdefault(scene, dict(self.params))
-            if scene in self._scene_best:
-                best = self._scene_best[scene]
-                for k in self.params:
-                    self.params[k] = best.get(k, self.params.get(k))
-            else:
-                self.params = dict(self.scene_params.get(scene, DEFAULT_PARAMS))
+            saved = self.scene_params.get(scene, {})
+            blend = {}
+            for k in PARAMS:
+                blend[k] = (self.params.get(k, PARAMS[k]["default"]) * 0.7 +
+                            saved.get(k, PARAMS[k]["default"]) * 0.3)
+            self.params = blend
             self.save()
+        else:
+            self._scene_stable = min(self._scene_stable + 1, 10)
 
-    def tick(self, eris_components, stats):
-        now = time.time()
-        if now - self._last_efis_time < 300:
+    def tick(self, stats):
+        self._window.append(stats)
+        self._cycle += 1
+        if self._cycle % EVAL_INTERVAL != 0 or len(self._window) < WINDOW:
             return ""
-        self._last_efis_time = now
-        eris_total = eris_components.get("total", 50.0)
-        self.eris_history.append(eris_total)
-        clean_eff = self._calc_clean_efficiency(stats)
-        self._clean_eff_history.append(clean_eff)
-        self._evaluate_previous_experiments(self.experiments)
-        logs = []
-        for dim_name in DIAGNOSIS_MAP:
-            dim_score = eris_components.get(dim_name, 0.5)
-            if dim_score < 0.4:
-                self._adjust_for_low_v2(dim_name, logs)
-            elif dim_score > 0.75:
-                self._relax_for_high(dim_name)
-        self.save()
-        return self.last_log
+        diag = self._diagnose()
+        if diag:
+            self._apply(diag)
+            self.save()
+        return self._format_log()
 
-    def _calc_clean_efficiency(self, stats):
-        if not stats:
-            return 0.0
-        trimmed = stats.get("trimmed_cnt", 0)
-        freed = stats.get("cycle_freed", 0)
-        attempts = stats.get("total_attempts", 0) or 1
-        return (freed / attempts) if trimmed > 0 else 0.0
+    def _diagnose(self):
+        w = list(self._window)
+        n = len(w)
+        mem_avg = sum(s["mem_pct"] for s in w) / n
+        mem_hi = max(s["mem_pct"] for s in w)
+        mem_lo = min(s["mem_pct"] for s in w)
+        mem_amp = (mem_hi - mem_lo) / max(mem_avg, 1)
+        freed_total = sum(s.get("cycle_freed", 0) for s in w)
+        pf_total = sum(s.get("pf_delta", 0) for s in w)
+        trimmed_total = sum(s.get("trimmed_cnt", 0) for s in w)
+        cycles_sec = sum(s.get("cycle_duration", 30) for s in w)
+        deepen_cnt = sum(s.get("deepen_cnt", 0) for s in w)
+        deepen_extra = sum(s.get("deepen_extra", 0) for s in w)
+        deepen_waste = (deepen_cnt > 0 and deepen_extra / max(deepen_cnt, 1) < 10 << 20)  # 10MB avg extra
+        layer3_ran = sum(1 for s in w if s.get("layer3_ran"))
+        layer3_extra = sum(s.get("layer3_extra", 0) for s in w)
+        cool_cnt = sum(s.get("cooldown_cnt", 0) for s in w)
+        repeat_fail = sum(s.get("repeat_fail", 0) for s in w)
+        theta_mean = sum(s.get("theta_mean", 0.3) for s in w) / n
+        theta_above = sum(s.get("theta_above_06", 0) for s in w) / n
+        agg_mean = sum(s.get("agg", 0.5) for s in w) / n
+        agg_change = sum(abs(s.get("agg", 0.5) - agg_mean) for s in w) / n
+        results = {}
+        target = self.params.get("target_usage", 60)
+        if deepen_waste and deepen_cnt > 0:
+            results["deepen_theta"] = +1
+        elif theta_above < 0.15 and mem_avg > target:
+            results["deepen_theta"] = -1
+        if layer3_ran < n * 0.1 and mem_avg > target:
+            results["layer3_agg_gate"] = -1
+        elif layer3_ran >= n * 0.9 and layer3_extra / max(layer3_ran, 1) < 50 << 20:
+            results["layer3_agg_gate"] = +1
+        if mem_amp > 0.10 or (agg_change > 0.2 and pf_total / max(cycles_sec, 1) > 80):
+            results["pid_kp"] = -1
+        elif mem_avg > target + 5 and trimmed_total > 0:
+            results["pid_kp"] = +1
+        if mem_amp > 0.08:
+            results["pid_kd"] = +1
+        if mem_avg < target - 10:
+            results["target_usage"] = -1
+        elif mem_avg > target + 10 and trimmed_total > 0:
+            results["target_usage"] = +1
+        if pf_total / max(cycles_sec / 60, 1) > 100:
+            results["interval_high"] = +1
+        elif mem_avg > target and freed_total / max(cycles_sec / 60, 1) < 500:
+            results["interval_high"] = -1
+        if cool_cnt > trimmed_total * 0.2:
+            results["cooloff_base"] = -1
+        elif repeat_fail > max(trimmed_total * 0.05, 2):
+            results["cooloff_base"] = +1
+        theta_osc = sum(abs(s.get("theta_mean", 0.3) - theta_mean) for s in w) / n
+        if theta_osc > 0.15:
+            results["learning_rate"] = -1
+        if trimmed_total > 0 and freed_total / max(trimmed_total, 1) < 20:
+            results["composite_kalman_w"] = -1
+        return results
 
-    def _evaluate_previous_experiments(self, experiments):
-        if len(experiments) < 2:
-            return
-        last = experiments[-1]
-        if last.get("reverted", False):
-            return
-        if len(self.eris_history) < 1:
-            return
-        eris_now = self.eris_history[-1]
-        eris_before = last.get("eris_before", eris_now)
-        drop = (eris_before - eris_now) / max(eris_before, 1)
-        if drop > (REVERT_THRESHOLD / 100.0):
-            for k, v in last.get("changes", {}).items():
-                self.params[k] = v.get("old", self.params.get(k))
-                self._revert_cooldown[k] = REVERT_COOLDOWN
-            last["reverted"] = True
-            self.last_log = f"EFIS回滚: {last.get('trigger_dim','?')}维度 下降{drop:.0%}"
-
-    def _adjust_for_low_v2(self, dim_name, logs):
-        for param, direction in DIAGNOSIS_MAP.get(dim_name, {}).items():
-            if param in self._revert_cooldown and self._revert_cooldown[param] > 0:
-                self._revert_cooldown[param] -= 1
+    def _apply(self, diag):
+        for param, direction in diag.items():
+            if direction == 0:
                 continue
-            limits = PARAM_LIMITS.get(param, {})
-            step = limits.get("step", 0.01)
-            cur = self.params.get(param, limits.get("min", 0))
-            step = max(step, cur * 0.05)
+            cfg = PARAMS[param]
+            step = cfg["step"]
+            cur = self.params[param]
+            key = f"{param}{'+' if direction > 0 else '-'}"
+            prev = self._symptoms.get(key, 0)
+            if prev > 0 and (direction > 0) == (prev > 0):
+                self._symptoms[key] = prev + 1
+            else:
+                self._symptoms[key] = 1 if direction > 0 else -1
+                continue
+            if abs(self._symptoms[key]) < 2:
+                continue
             new_val = cur + direction * step
-            new_val = max(limits.get("min", new_val), min(limits.get("max", new_val), new_val))
+            new_val = max(cfg["min"], min(cfg["max"], new_val))
             if abs(new_val - cur) > 0.001:
-                changes = {param: {"old": cur, "new": new_val}}
-                self.experiments.append({
-                    "timestamp": time.time(),
-                    "trigger_dim": dim_name,
-                    "changes": changes,
-                    "eris_before": self.eris_history[-1] if self.eris_history else 50,
-                    "clean_efficiency_before": self._clean_eff_history[-1] if self._clean_eff_history else 0,
-                    "reverted": False,
+                self._adjust_log.append({
+                    "cycle": self._cycle, "param": param,
+                    "old": cur, "new": new_val,
+                    "reason": f"symptom_x{abs(self._symptoms[key])}",
                 })
                 self.params[param] = new_val
-                win_key = f"{param}+" if direction > 0 else f"{param}-"
-                self._direction_wins[win_key] = self._direction_wins.get(win_key, 0) + 1
-                if self._direction_wins[win_key] >= CONSECUTIVE_BOOST:
-                    self._direction_wins[win_key] = 0
-                    boosted = cur + direction * step * 2
-                    self.params[param] = max(limits.get("min", boosted),
-                                             min(limits.get("max", boosted), boosted))
-                logs.append(f"{param} {direction:+}")
+                self._symptoms[key] = 0
 
-    def _relax_for_high(self, dim_name):
-        for param, direction in DIAGNOSIS_MAP.get(dim_name, {}).items():
-            limits = PARAM_LIMITS.get(param, {})
-            cur = self.params.get(param, limits.get("min", 0))
-            default_val = DEFAULT_PARAMS.get(param, cur)
-            revert_step = abs(cur - default_val) * 0.1
-            if revert_step < limits.get("step", 0.01):
-                continue
-            new_val = cur - direction * revert_step
-            new_val = max(limits.get("min", new_val), min(limits.get("max", new_val), new_val))
-            if abs(new_val - cur) > 0.001:
-                self.params[param] = new_val
+    def _format_log(self):
+        if not self._adjust_log:
+            return ""
+        PARAM_CN = {"deepen_theta":"深度门槛","layer3_agg_gate":"深层清理","pid_kp":"响应速度",
+                    "pid_kd":"抑制震荡","target_usage":"目标内存","interval_high":"高压间隔",
+                    "cooloff_base":"失败冷却","learning_rate":"学习率","composite_kalman_w":"卡尔曼权重"}
+        last = self._adjust_log[-1]
+        cn = PARAM_CN.get(last['param'], last['param'])
+        return f"EFIS调整{cn}: {last['old']:.2f}→{last['new']:.2f}"
 
     def get_params(self):
         return dict(self.params)

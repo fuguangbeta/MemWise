@@ -79,6 +79,7 @@ class PareCleaner:
         self.game_mode = False
         self._low_pri_pids = set()
         self._pri_refresh_counter = 0
+        self._fast_track = set()  # 高回填率 PID，gap-fill 期间快速重清
         self._last_standby_time = 0
         self._lock = threading.Lock()
         self._max_workers = min(os.cpu_count() or 2, 4)
@@ -90,6 +91,8 @@ class PareCleaner:
             "compress": 0, "combine": 0, "ws_trim": 0, "probe": 0,
             "skipped": 0, "failed_feedback": 0,
             "freed_bytes": prev_freed,
+            "deepen_cnt": 0, "deepen_extra": 0,
+            "layer3_ran": 0, "layer3_extra": 0,
         }
         self._info_msgs = []
 
@@ -119,7 +122,7 @@ class PareCleaner:
         return ok
 
     def clean_standby_low(self):
-        ok = winapi.empty_standby_low_priority()
+        ok = winapi.purge_low_priority_standby()
         if ok:
             self.stats["standby"] += 1
         return ok
@@ -168,12 +171,63 @@ class PareCleaner:
             self.stats["combine"] += 1
         return ok
 
-    def _progressive_compress(self):
-        """压缩触发（异步，零阻塞），等待和收割由 _layer1_system 统一处理"""
-        if not winapi.trigger_memory_compression():
+    def quick_retrim(self, pid):
+        """Fast trim for gap-fill; tracks release into freed_bytes."""
+        mem_pre = winapi.get_process_memory(pid)
+        if not mem_pre:
+            return 0
+        if not winapi.empty_ws(pid):
+            return 0
+        time.sleep(0.1)
+        mem_post = winapi.get_process_memory(pid)
+        if mem_post:
+            freed = max(0, mem_pre["ws"] - mem_post["ws"])
+            self.stats["freed_bytes"] += freed
+        return 1
+
+    def _layer1_light(self, aggressiveness):
+        """Lightweight system ops for gap fill: compress + modified, no standby"""
+        try:
+            if aggressiveness > 0.4:
+                winapi.deep_compress()
+            else:
+                winapi.trigger_memory_compression()
+            winapi.flush_modified_pages()
+            self.stats["compress"] = self.stats.get("compress", 0) + 1
+            self.stats["modified"] = self.stats.get("modified", 0) + 1
+        except Exception:
+            pass
+
+    def _layer1_memreduct(self, full=True):
+        """系统级内核清理 — 无 sleep，<10ms
+        
+        full=True : 全量 8 步（含系统级 WS 全清），主 pass 使用
+        full=False: 轻量 7 步（跳过 WS 全清），gap-fill 持续压制用
+        
+        操作码对齐 PHNT 标准。
+        """
+        try:
+            # 轻量模式跳过系统级 WS 全清（留给主 pass 做一次性深度收割）
+            if full:
+                winapi.empty_all_working_sets()
+            mem_pre = winapi.get_memory_used_bytes()
+            winapi.clear_system_file_cache_ex()
+            winapi.flush_modified_pages()
+            winapi.empty_standby()
+            winapi.purge_low_priority_standby()
+            winapi.flush_volume_cache()
+            winapi.clear_registry_cache()
+            winapi.clear_system_file_cache()
+            mem_post = winapi.get_memory_used_bytes()
+            sys_freed = max(0, mem_pre - mem_post)
+            if sys_freed > 0:
+                self.stats["freed_bytes"] += sys_freed
+            self.stats["standby"] += 1
+            self.stats["compress"] += 1
+            self.stats["modified"] = self.stats.get("modified", 0) + 1
+            return True
+        except Exception:
             return False
-        self.stats["compress"] += 1
-        return True
 
     def _layer1_system(self, aggressiveness, ops_filter=None):
         """
@@ -182,6 +236,7 @@ class PareCleaner:
         阶段 2: 等待 0.3s 让 OS 处理异步操作
         阶段 3: 收割（全部 standby 类操作统一回收）
         """
+        # 注意：不调用 empty_all_working_sets（系统级全清会把自己 page out）
         has_sb = ops_filter is None or "standby" in ops_filter
         has_mp = ops_filter is None or "modified" in ops_filter
         has_fc = ops_filter is None or "filecache" in ops_filter
@@ -190,23 +245,21 @@ class PareCleaner:
         has_vol = ops_filter is None or "volume" in ops_filter
 
         self._last_standby_time = time.time()
+        mem_pre_sys = winapi.get_memory_status()
 
         # 阶段 1: 触发异步操作
         if has_cp:
-            if aggressiveness > 0.4:
-                self._progressive_compress()
-            else:
-                self.clean_compress()
+            winapi.deep_compress()  # 简化后的单轮压缩管线，无 sleep
         if has_mp:
             self.clean_modified_pages()
 
-        # 阶段 2: 短暂等待（让 OS 处理异步操作）
-        time.sleep(0.2)
+        # 阶段 2: 内核操作已同步完成，无需等待
 
         # 阶段 3: 收割（全部回收）
         if has_reg:
             self._clear_registry_cache()
         if has_sb:
+            winapi.purge_low_priority_standby()
             self.clean_standby_low()
             self.clean_standby()
             self.clean_deep_standby()
@@ -214,13 +267,20 @@ class PareCleaner:
             self._flush_volume_cache()
         if has_sb:
             self.clean_combine_lists()
+        # Track system-level release
+        if mem_pre_sys:
+            mem_post_sys = winapi.get_memory_status()
+            sys_freed = (mem_post_sys["avail"] - mem_pre_sys["avail"]) if mem_post_sys else 0
+            if sys_freed > 0:
+                self.stats["freed_bytes"] += sys_freed
         if has_fc:
             self.clear_file_cache()
+            winapi.clear_system_file_cache_ex()
 
     # ── Layer 2: 进程级清理 ──
 
     def _probe_process(self, snap, learner):
-        """微型试探 — 对不确定进程做轻量测试 (双次清理, ~1s 等待)"""
+        """微型试探 — 对不确定进程做轻量测试 (单次清理, ~0.2s 等待)"""
         pid, name = snap.pid, snap.name
         ws_before = snap.ws
         # 读取实时 PF 作为基线（不用快照的旧值）
@@ -228,8 +288,8 @@ class PareCleaner:
         pf_before = mem_before["pf"] if mem_before else snap.pf
         if not winapi.empty_ws(pid):
             return False, 0, 0
-        # 单次清理后等待 PF 稳定
-        time.sleep(0.2)
+        # 单次清理后等待 PF 稳定（游戏模式减半加速）
+        time.sleep(0.15 if self.game_mode else 0.2)
         mem = winapi.get_process_memory(pid)
         if mem is None:
             with self._lock:
@@ -250,7 +310,6 @@ class PareCleaner:
             self.judger.mark_probed(name)
             if ok and freed > 0:
                 self.stats["freed_bytes"] += freed
-                self.judger.mark_trimmed(name, freed, ws_before, pf_delta, ws_after)
             self.stats["probe"] += 1
         return ok, freed, pf_delta
 
@@ -260,20 +319,26 @@ class PareCleaner:
         # 实时读取 WS，不用快照旧数据
         mem_before = winapi.get_process_memory(pid)
         ws_before = mem_before["ws"] if mem_before else snap.ws
-        if ws_before < 5 << 20:
+        if ws_before < 1 << 20:
             return False, 0, 0, "WS太小"
         self.judger.record_pf_before(pid, mem_before["pf"] if mem_before else snap.pf)
 
-        # 自适应轮数：大进程更多清理次数
-        if ws_before > 200 << 20:
-            passes = 4
-            total_wait = 2.0
+        # Restored pass counts: 4/3/2 (like old v1.6) with compressed waits
+        deepen = self.judger.cfg.get("efis_params", {}).get("deepen_theta", 0.6)
+        theta = learner.thompson_score(name)
+        if ws_before > 200 << 20 or theta > deepen:
+            passes = 4; total_wait = 1.0
         elif ws_before > 50 << 20:
-            passes = 3
-            total_wait = 1.5
+            passes = 3; total_wait = 0.6
+        elif theta < 0.15:
+            passes = 1; total_wait = 0.3
         else:
-            passes = 2
-            total_wait = 1.0
+            passes = 2; total_wait = 0.4
+        # 用户配置上限
+        max_p = self.judger.cfg.get("efis_params", {}).get("clean_passes", 4)
+        try: max_p = int(max_p)
+        except: max_p = 4
+        passes = min(passes, max_p)
 
         interval = self._trim_interval(learner, name, getattr(self.judger, "_last_mem_pct", 50))
         t_wait = interval * 0.5
@@ -293,27 +358,31 @@ class PareCleaner:
         mem = winapi.get_process_memory(pid)
         if mem is None:
             with self._lock:
-                learner.record_clean_result(name, True, lr=self._efis_lr())
+                learner.record_clean_result(name, True, freed=ws_before, lr=self._efis_lr())
                 self.judger.mark_trimmed(name)
                 self.stats["ws_trim"] += 1
-            return True, ws_before, 0, "进程已退出"
+            return True, ws_before, ws_before, "进程已退出"
         ws_after = mem["ws"]
         ok, freed, pf_delta = self.judger.check_feedback(
             pid, mem["pf"], ws_before, ws_after, passes
         )
         with self._lock:
+            # 先收后审：内存释放量始终计入，PF 增长仅影响学习信号
+            if freed > 0:
+                self.stats["freed_bytes"] += freed
+                # 记录因果
+                if hasattr(learner, 'record_causal'):
+                    learner.record_causal(name, freed,
+                        getattr(self.judger, '_last_mem_pct', 50),
+                        [s.name for s in getattr(self, '_last_candidates', [])])
             learner.record_clean_result(name, ok, freed, pf_delta, self._efis_lr())
             if ok:
                 self.judger.mark_trimmed(name, freed, ws_before, pf_delta, ws_after)
                 self.stats["ws_trim"] += 1
-                if freed > 0:
-                    self.stats["freed_bytes"] += freed
-                    # 记录因果
-                    if hasattr(learner, 'record_causal'):
-                        learner.record_causal(name, freed,
-                            getattr(self.judger, '_last_mem_pct', 50),
-                            [s.name for s in getattr(self, '_last_candidates', [])])
+                if passes >= 2:
+                    self.stats["deepen_cnt"] += 1
             else:
+                # PF 超标：仅记录负面学习信号，不丢弃已释放的字节
                 p = learner.get_profile(name)
                 self.judger.mark_failed(name, p.fail_cnt if p else 1)
                 self.stats["failed_feedback"] += 1
@@ -346,9 +415,6 @@ class PareCleaner:
             return False
 
     # 每 tick 最多清理的进程数，防止串行 sleep 堆积超时
-    def _probe_interval(self):
-        return 0.3
-
     def _trim_interval(self, learner, name, mem_pct):
         p = learner.get_profile(name)
         if not p or not hasattr(p, 'kalman') or p.kalman.x_freed <= 0:
@@ -368,31 +434,12 @@ class PareCleaner:
         ws = s.ws
         bl = self.judger._post_clean_ws.get(name, 0)
         regrowth = ws / max(bl, 1) if bl > 0 else 1.0
-        return (0.3 * min(theta, 1.0) +
-                0.3 * min(x_freed / (200 << 20), 1.0) +
+        kw = self.judger.cfg.get("efis_params", {}).get("composite_kalman_w", 0.3)
+        tw = 0.6 - kw
+        return (tw * min(theta, 1.0) +
+                kw * min(x_freed / (200 << 20), 1.0) +
                 0.2 * min(ws / (500 << 20), 1.0) +
                 0.2 * min(regrowth, 2.0))
-
-    def _adaptive_interval(self, learner, name):
-        return self._probe_interval()
-
-
-
-
-        """根据进程 refill rate 自适应双次清理间隔
-        refill 快 → 短间隔 (更快捕获二次释放)
-        refill 慢 → 长间隔 (更温和)"""
-        p = learner.get_profile(name)
-        if not p or p.refill_ewma <= 0:
-            return 0.3  # 默认 300ms
-        # refill_ewma > 1MB/s = 快 → 150ms
-        if p.refill_ewma > 1 << 20:
-            return 0.15
-        # refill_ewma < 100KB/s = 慢 → 500ms
-        if p.refill_ewma < 100 << 10:
-            return 0.5
-        return 0.3
-
     def _layer2_process(self, snaps, learner):
         """进程级清理 — 游戏检测 + Thompson/ROI 选进程 + 内存优先级"""
         # ── 检测游戏模式 ──
@@ -404,10 +451,14 @@ class PareCleaner:
 
         candidates = []
         probe_list = []
-        self._last_candidates = candidates
         self._last_candidates = candidates  # 供因果记录使用
 
+        import os
+        SELF_PID = os.getpid()
         for s in snaps:
+            # 排除自身进程
+            if s.pid == SELF_PID:
+                continue
             # Trim 优先：能整理的不需要试探
             ok, reason = self.judger.can_trim(s)
             if ok:
@@ -437,12 +488,10 @@ class PareCleaner:
                 self._low_pri_pids.add(s.pid)
                 continue
             theta = learner.thompson_score(name)
-            if theta >= 0.7:
-                level = 0   # MEMORY_PRIORITY_VERY_LOW — θ高，系统优先回收其物理页
-            elif theta >= 0.3:
-                level = 1   # MEMORY_PRIORITY_LOW
+            if theta >= 0.3:
+                level = 0   # VERY_LOW for proven processes
             else:
-                continue    # θ低，保持正常优先级
+                level = 1   # LOW for all else (OS reclaims proactively)
             if winapi.set_memory_priority(s.pid, level):
                 winapi.set_eco_qos(s.pid, True)
                 self._low_pri_pids.add(s.pid)
@@ -496,10 +545,15 @@ class PareCleaner:
                     now_bonus = getattr(s, '_growth_bonus', 0)
                     s._growth_bonus = now_bonus + 0.05  # 批量加分
 
+        self.judger._last_candidates = [s.name for s in candidates]
+        # Fast-track: high-refill PIDs for gap-fill re-trim
+        self._fast_track = set()
+        for s in candidates:
+            p = learner.get_profile(s.name)
+            if p and getattr(p, 'refill_ewma', 0) > 500 << 10:
+                self._fast_track.add(s.pid)
         candidates.sort(key=lambda s: -self._composite_score_v2(s, learner) - getattr(s, '_growth_bonus', 0))
-        # 时间预算制：用 interval 的 40% 做 trim，超时自动停止
-        trim_deadline = time.time() + getattr(self, '_trim_budget', 12.0)
-        trimmed_skipped = len(candidates) - max(1, int((trim_deadline - time.time()) / 2.5 * 4)) if candidates else 0
+        trimmed_skipped = 0
         results = []
         if candidates:
             fut = {self._trim_executor.submit(self._trim_process, s, learner): s for s in candidates}
@@ -508,6 +562,7 @@ class PareCleaner:
                 ok, freed, pf_delta, reason = f.result()
                 results.append((s, ok, freed, reason))
 
+        self._last_layer2_results = results
         return results, probe_results
 
     # ── Layer 3: 深度聚合 ──
@@ -516,20 +571,23 @@ class PareCleaner:
         if ops_filter is not None and "ws" not in ops_filter:
             return
         
-        self._info_msgs.append(f"🔁 触发深度清理(清理强度:{'极低' if aggressiveness <= 0.01 else '低' if aggressiveness <= 0.30 else '中' if aggressiveness <= 0.60 else '高'})")
+        mem_before_layer3 = winapi.get_memory_status()
+        self.stats["layer3_ran"] += 1
+        agg_label = '极低' if aggressiveness <= 0.01 else ('低' if aggressiveness <= 0.30 else ('中' if aggressiveness <= 0.60 else '高'))
+        if agg_label != getattr(self, '_last_layer3_agg', ''):
+            self._info_msgs.append(f"🔁 触发深度清理(清理强度:{agg_label})")
+            self._last_layer3_agg = agg_label
 
-        # 阶段 B: 深度预处理
+        # 预处理：使用简化的 deep_compress（无 sleep 管线）
         if ops_filter is None or "compress" in ops_filter:
-            if aggressiveness > 0.4:
-                self._progressive_compress()
-            else:
-                self.clean_compress()
+            winapi.deep_compress()
         if ops_filter is None or "modified" in ops_filter:
             self.clean_modified_pages()
-        time.sleep(2)
+        # 内核操作已同步完成，无需等待
 
         # 阶段 C: 收前
         if ops_filter is None or "standby" in ops_filter:
+            winapi.purge_low_priority_standby()
             self.clean_standby_low()
             self.clean_standby()
             self.clean_deep_standby()
@@ -537,49 +595,59 @@ class PareCleaner:
             self._flush_volume_cache()
         if ops_filter is None or "filecache" in ops_filter:
             self.clear_file_cache()
+            winapi.clear_system_file_cache_ex()
         if ops_filter is None or "standby" in ops_filter:
             self.clean_combine_lists()
+        # Track Layer3 standby release
+        mem_after_standby = winapi.get_memory_status()
+        if mem_before_layer3 and mem_after_standby:
+            extra_mem = mem_after_standby["avail"] - mem_before_layer3["avail"]
+            if extra_mem > 0:
+                self.stats["layer3_extra"] += extra_mem  # bytes, consistent with deepen_extra
 
-        # 阶段 D: WS 回弹率选进程
+        # 阶段 D: WS 回弹率选进程 (skip already trimmed in Layer2)
+        layer2_pids = {t[0].pid for t in getattr(self, "_last_layer2_results", []) if t[1]}
         pids_trimmed = set()
+        futs = {}
         for s in snaps:
+            if s.pid in layer2_pids:
+                continue  # Already trimmed in Layer2, skip
             name_lower = s.name.lower()
             bl = self.judger._post_clean_ws.get(name_lower, 0)
             if bl > 0 and s.ws >= bl * 1.5:
                 if s.pid not in pids_trimmed:
                     pids_trimmed.add(s.pid)
-                    fut = {self._trim_executor.submit(self._trim_process, s, learner): s}
-                    for f in concurrent.futures.as_completed(fut):
-                        try:
-                            f.result()
-                        except Exception as e:
-                            import sys; print(f"[MemWise] layer3 清理异常: {e}", file=sys.stderr)
+                    futs[s.pid] = self._trim_executor.submit(self._trim_process, s, learner)
             elif bl == 0:
                 theta = learner.thompson_score(name_lower)
                 if theta > 0.5:
                     if s.pid not in pids_trimmed:
                         pids_trimmed.add(s.pid)
-                        fut = {self._trim_executor.submit(self._trim_process, s, learner): s}
-                        for f in concurrent.futures.as_completed(fut):
-                            try:
-                                f.result()
-                            except Exception as e:
-                                import sys; print(f"[MemWise] layer3 清理异常: {e}", file=sys.stderr)
+                        futs[s.pid] = self._trim_executor.submit(self._trim_process, s, learner)
+
+        # 并行等待所有 layer3 trim
+        for f in concurrent.futures.as_completed(futs.values()):
+            try:
+                f.result()
+            except Exception as e:
+                import sys; print(f"[MemWise] layer3 清理异常: {e}", file=sys.stderr)
+
     # ── 统一入口 ──
 
     def optimize(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None):
         """
-        统一优化入口
+        统一优化入口 — 已激活 8 步内核快速管线
 
         mode: quick|normal|deep|full
-            quick  = layer1(mild) + layer2(full probe+trim)
-            normal = layer1(mild) + layer2(full) + layer3(if agg>=0.6)
-            deep   = layer1(aggressive) + layer2 + layer3
-            full   = layer1(all) + layer2 + layer3 + extra standby
+            quick  = layer1(7 步快速管线) + layer2(full probe+trim)
+            normal = layer1(7 步) + layer2(full) + layer3(if agg>=0.3)
+            deep   = layer1(8 步) + layer2 + layer3(always)
+            full   = layer1(8 步) + layer2 + layer3 + extra standby
 
         operations: 可选列表，限制允许的清理操作，如 ["ws","standby","modified","filecache"]
         aggressiveness: 可选，预计算的 aggressiveness 值（daemon 模式避免 PID 双重更新）
         """
+        mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()
             agg = self.judger.update_pressure(mem["pct"]) if mem else 0.5
@@ -587,38 +655,42 @@ class PareCleaner:
             agg = aggressiveness
         ops_filter = set(operations) if operations else None
         run_ws = ops_filter is None or "ws" in ops_filter
+        # Helper to build result with net_freed tracking
+        def _mk_result(l2, probe):
+            r = {"mode": mode, "aggressiveness": agg, "layer2": l2, "probe": probe}
+            mem_after = winapi.get_memory_used_bytes()
+            r["net_freed"] = max(0, mem_before_opt - mem_after)
+            return r
 
         if mode == "quick":
-            if agg > 0.1:
-                self._layer1_system(min(agg, 0.3), ops_filter)
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
+            if agg > 0.1:
+                self._layer1_memreduct()
+            return _mk_result(l2_results, probe_results)
 
         elif mode == "normal":
-            self._layer1_system(agg, ops_filter)
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            if agg >= 0.6:
+            self._layer1_memreduct()
+            if agg >= 0.3:
                 self._layer3_deep(snaps, learner, agg, ops_filter)
-            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
+            return _mk_result(l2_results, probe_results)
 
         elif mode == "deep":
-            self._layer1_system(agg, ops_filter)
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            self._layer1_memreduct()
             self._layer3_deep(snaps, learner, agg, ops_filter)
-            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
+            return _mk_result(l2_results, probe_results)
 
         elif mode == "full":
-            self._layer1_system(max(agg, 0.7), ops_filter)
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            self._layer3_deep(snaps, learner, agg, ops_filter)
-            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results}
+            self._layer1_memreduct()
+            self._layer3_deep(snaps, learner, max(agg, 0.5), ops_filter)
+            return _mk_result(l2_results, probe_results)
 
         else:
-            self._layer1_system(agg, ops_filter)
+            self._layer1_memreduct()
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            return {"mode": mode, "aggressiveness": agg, "layer2": l2_results, "probe": probe_results,
-            }
-
+            return _mk_result(l2_results, probe_results)
     def trim_batch(self, snaps, learner):
         """给 daemon 用的轻量批量整理"""
         results, _ = self._layer2_process(snaps, learner)
@@ -638,6 +710,8 @@ class PareCleaner:
             "compress": 0, "combine": 0, "ws_trim": 0, "probe": 0,
             "skipped": 0, "failed_feedback": 0,
             "freed_bytes": prev_freed,
+            "deepen_cnt": 0, "deepen_extra": 0,
+            "layer3_ran": 0, "layer3_extra": 0,
         }
         self.judger._post_clean_ws.clear()
         self.judger._post_clean_time.clear()

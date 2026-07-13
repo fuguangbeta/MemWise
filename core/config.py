@@ -6,8 +6,16 @@ try:
 except ImportError:
     yaml = None
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
+if getattr(sys, "frozen", False):
+    _exe_dir = os.path.dirname(sys.executable)
+    if os.path.basename(_exe_dir).lower() == "dist":
+        _base = os.path.dirname(_exe_dir)
+    else:
+        _base = _exe_dir
+    CONFIG_PATH = os.path.join(_base, "config", "config.yaml")
+else:
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 
 DEFAULT_CFG = {
     "kp": 1.0, "ki": 0.15, "kd": 0.1, "target_usage": 45,
@@ -59,6 +67,7 @@ def save(cfg):
     if not yaml:
         return
     try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
