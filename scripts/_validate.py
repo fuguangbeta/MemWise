@@ -1,4 +1,4 @@
-"""MemWise v1.5 验证脚本 — 适配当前 API"""
+"""MemWise v1.6 验证脚本 — 适配当前 API"""
 import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.learner import PareLearner as Learner
@@ -12,7 +12,7 @@ def check(name, cond, detail=""):
     print(f"  [{'OK' if cond else 'FAIL'}] {name}" + (f"  {detail}" if detail else ""))
     if not cond: errors.append(name)
 
-print("=== MemWise v1.5 验证 ===\n")
+print("=== MemWise v1.6 验证 ===\n")
 
 # 1. 模块导入
 print("[1] 模块导入")

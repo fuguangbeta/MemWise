@@ -30,7 +30,6 @@ class MetaCognition:
         
         # ── 1. 校准度: 预测 vs 实际 ──
         if len(self.history) >= 5:
-            recent = list(self.history)[-5:]
             # 从 learner 获取所有已清理进程的平均预测误差
             errors = []
             for name, p in self.learner.profiles.items():
@@ -47,34 +46,34 @@ class MetaCognition:
                     count = 0
                     for p in self.learner.profiles.values():
                         if hasattr(p, 'kalman') and p.gain_ewma > 0:
-                            p.kalman.q = min(5.0, p.kalman.q * 1.5)
-                            p.kalman.p_freed = min(200, p.kalman.p_freed * 1.5)
+                            p.kalman.q = min(5.0, p.kalman.q * 1.2)
+                            p.kalman.p_freed = min(200, p.kalman.p_freed * 1.2)
                             p.kalman.x_freed = p.gain_ewma
                             count += 1
-                    step = min(0.05, avg_err * 0.04)
-                    self._theta_bias = max(-0.3, self._theta_bias - step)
-                    findings.append(f"\u6821\u51c6: \u504f\u5dee{avg_err:.0%}>50%, \u5361\u5c14\u66fc\u91cd\u7f6e{count}\u4e2a, \u03b8\u504f\u79fb{self._theta_bias:.2f}")
+                    step = min(0.04, avg_err * 0.03)
+                    self._theta_bias = max(-0.2, self._theta_bias - step)
+                    findings.append(f"\u6821\u51c6: \u504f\u5dee{avg_err:.0%}>50%, \u5361\u5c14\u66fc\u91cd\u7f6e{count}\u4e2a, \u964d\u4f4e\u03b8\u7f6e\u4fe1")
                 elif avg_err < 0.15:
                     for p in self.learner.profiles.values():
-                        if hasattr(p, 'kalman') and p.kalman.q > 0.01:
-                            p.kalman.q = max(0.01, p.kalman.q * 0.5)
+                        if hasattr(p, 'kalman') and p.kalman.q > 0.02:
+                            p.kalman.q = max(0.02, p.kalman.q * 0.9)
                     step = min(0.03, (0.15 - avg_err) * 0.1)
                     self._theta_bias = min(0.2, self._theta_bias + step)
-                    findings.append(f"\u6821\u51c6: \u504f\u5dee{avg_err:.0%}<15%, \u5361\u5c14\u66fc\u7a33\u5b9a, \u03b8\u504f\u79fb{self._theta_bias:.2f}")
+                    findings.append(f"\u6821\u51c6: \u504f\u5dee{avg_err:.0%}<15%, \u5361\u5c14\u66fc\u7cbe\u51c6, \u5956\u52b1\u03b8\u7f6e\u4fe1")
         
         # ── 2. 概念漂移: EWMA快慢速比 ──
         drifted = []
         for name, p in self.learner.profiles.items():
-            if p.total_samples > 20:
+            if p.total_samples > 30:
                 fast = p.gain_ewma_fast
                 slow = p.gain_ewma_slow
-                if slow > 0 and (fast > slow * 2.5 or fast < slow * 0.3):
+                if slow > 0 and (fast > slow * 4.0 or fast < slow * 0.2):
                     drifted.append(name)
                     # 复位: 增大过程噪声, 让Kalman快速适应
-                    p.kalman.q = 1.0
-                    # 降低Beta信心
-                    p.alpha = max(2, p.alpha * 0.5)
-                    p.beta = max(1, p.beta * 0.5)
+                    p.kalman.q = 2.0
+                    # Halve Beta confidence (only 20% of profiles max)
+                    p.alpha = max(2, p.alpha * 0.7)
+                    p.beta = max(1, p.beta * 0.7)
         
         if drifted:
             findings.append(f"漂移: {len(drifted)}个进程({','.join(drifted[:3])}...)已复位")
@@ -86,7 +85,9 @@ class MetaCognition:
         never_ratio = never_tried / total
         
         if never_ratio > 0.4:
-            findings.append(f"探索: {never_tried}/{total}({never_ratio:.0%})从未试探,提高好奇心")
+            if never_tried != getattr(self, '_last_never_tried', -1):
+                findings.append(f"探索: {never_tried}/{total}({never_ratio:.0%})从未试探,提高好奇心")
+                self._last_never_tried = never_tried
             # 给所有未试探进程设置好奇心标记
             for p in self.learner.profiles.values():
                 if p.last_feedback_time == 0:
@@ -96,8 +97,9 @@ class MetaCognition:
         # ── 4. 后悔度: 反事实优势累积 ──
         if hasattr(self.learner, 'causal') and self.learner.causal:
             pair_count = len(self.learner.causal._pairs)
-            if pair_count > 20:
+            if pair_count > 20 and pair_count != getattr(self, '_last_pair_count', 0):
                 findings.append(f"因果: 已学习{pair_count}对进程关系")
+                self._last_pair_count = pair_count
         
         # ── 5. 系统操作监控: standby/modified/filecache ──
         cleaner = getattr(self.learner, '_cleaner_ref', None)
@@ -107,6 +109,9 @@ class MetaCognition:
             if sys_ok > 0 and hasattr(self, '_last_sys_ok') and self._last_sys_ok == 0:
                 findings.append(f"系统清理已生效: 待机缓存={s['standby']} 已修改页={s['modified']} 文件缓存={s['filecache']}")
             self._last_sys_ok = sys_ok
+        
+        # ── 6. 学习率自校准 (每30s一次) ──
+        self.learner.self_check()
         
         if findings:
             # 报告给 info_msgs

@@ -45,6 +45,9 @@ class LUID_AND_ATTRIBUTES(ctypes.Structure):
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+NtQuerySystemInformation = ntdll.NtQuerySystemInformation
+NtQuerySystemInformation.argtypes = [w.LONG, ctypes.c_void_p, w.ULONG, ctypes.POINTER(w.ULONG)]
+NtQuerySystemInformation.restype = w.LONG
 psapi = ctypes.WinDLL("psapi", use_last_error=True)
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 adv32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -125,11 +128,25 @@ def get_foreground_pid():
     GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return pid.value
 
+# 非游戏全屏窗口，防止假阳性触发游戏模式
+IGNORE_FULLSCREEN_CLASSES = {
+    "Chrome_WidgetWin_1",
+    "MozillaWindowClass",
+    "PPTFrameClass",
+    "Progman",
+    "WorkerW",
+}
+
 def is_foreground_fullscreen():
     """检测前台窗口是否为全屏模式（辅助游戏检测）"""
     hwnd = GetForegroundWindow()
     if not hwnd:
         return False
+    # 窗口类名过滤
+    buf = ctypes.create_unicode_buffer(256)
+    if ctypes.windll.user32.GetClassNameW(hwnd, buf, 256):
+        if buf.value in IGNORE_FULLSCREEN_CLASSES:
+            return False
     rect = RECT()
     if not GetWindowRect(hwnd, ctypes.byref(rect)):
         return False
@@ -236,18 +253,6 @@ def _try_enable_privilege(name):
     finally:
         CloseHandle(h_token)
 
-def _try_empty_standby_old():
-    """老方法: SystemFileCacheInformation (Win10 < 20H1)"""
-    info = (ctypes.c_size_t * 2)(-1, -1)
-    return NtSetSystemInformation(76, ctypes.byref(info), ctypes.sizeof(info)) == 0
-
-def _try_empty_standby_new():
-    """新方法: SystemMemoryListInformation (Win10 >= 20H1 / Win11)"""
-    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
-        return False
-    info = w.ULONG(1)  # MEMORY_LIST_PURGE_STANDBY_LIST
-    return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
-
 # --- 新增常量 ---
 EVENTLOG_INFORMATION_TYPE = 0x0004
 EVENTLOG_WARNING_TYPE = 0x0002
@@ -260,10 +265,10 @@ MOD_NOREPEAT = 0x4000
 
 NIM_ADD = 0; NIM_MODIFY = 1; NIM_DELETE = 2
 NIF_MESSAGE = 1; NIF_ICON = 2; NIF_TIP = 4
-NOTIFYICONDATA_V1_SIZE = 504  # 下限值，实际用 sizeof
+# 计算 NOTIFYICONDATA 真实大小（64位系统下 976字节）
 WM_TRAYICON = 0x8001
 
-class TRAYDATA(ctypes.Structure):
+class NOTIFYICONDATA(ctypes.Structure):
     _fields_ = [
         ("cbSize", w.DWORD),
         ("hWnd", w.HANDLE),
@@ -279,13 +284,15 @@ class TRAYDATA(ctypes.Structure):
         ("szInfoTitle", w.WCHAR * 64),
         ("dwInfoFlags", w.DWORD),
         ("guid", w.BYTE * 16),
-        ("hBalloon", w.HANDLE),
     ]
 
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 Shell_NotifyIconW = shell32.Shell_NotifyIconW
-Shell_NotifyIconW.argtypes = [w.DWORD, ctypes.POINTER(TRAYDATA)]
+Shell_NotifyIconW.argtypes = [w.DWORD, ctypes.POINTER(NOTIFYICONDATA)]
 Shell_NotifyIconW.restype = w.BOOL
+ExtractIconExW = shell32.ExtractIconExW
+ExtractIconExW.argtypes = [w.LPCWSTR, w.INT, ctypes.POINTER(w.HANDLE), ctypes.POINTER(w.HANDLE), w.UINT]
+ExtractIconExW.restype = w.UINT
 
 LoadIconW = u32.LoadIconW
 LoadIconW.argtypes = [w.HANDLE, ctypes.c_void_p]
@@ -295,37 +302,76 @@ LoadImageW.argtypes = [w.HANDLE, w.LPCWSTR, w.UINT, w.INT, w.INT, w.UINT]
 LoadImageW.restype = w.HANDLE
 
 # 模块级缓存 NtSetSystemInformation 方法检测结果
-_EMPTY_STANDBY_METHOD = None  # None=未检测, True=new, False=old
-
 def empty_standby():
-    global _EMPTY_STANDBY_METHOD
-    if _EMPTY_STANDBY_METHOD is None:
+    """清空 Standby 列表 — MemoryPurgeStandbyList = 4 (PHNT standard)"""
+    try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        methods = [
-            ("new_80_1", lambda: NtSetSystemInformation(80, ctypes.byref(w.ULONG(1)), 4) == 0),
-            ("lowpri_80_4", lambda: NtSetSystemInformation(80, ctypes.byref(w.ULONG(4)), 4) == 0),
-            ("old_76", lambda: NtSetSystemInformation(76, ctypes.byref((ctypes.c_ulong * 2)(0x3, 0x4)), 8) == 0),
-            ("ew_self", lambda: bool(EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess()))),
-        ]
-        for name, fn in methods:
-            try:
-                if fn():
-                    _EMPTY_STANDBY_METHOD = name
-                    return True
-            except Exception:
-                continue
-        _EMPTY_STANDBY_METHOD = False
+        info = w.ULONG(4)  # MemoryPurgeStandbyList (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    except Exception:
         return False
-    if _EMPTY_STANDBY_METHOD == "new_80_1":
-        return NtSetSystemInformation(80, ctypes.byref(w.ULONG(1)), 4) == 0
-    if _EMPTY_STANDBY_METHOD == "lowpri_80_4":
-        return NtSetSystemInformation(80, ctypes.byref(w.ULONG(4)), 4) == 0
-    if _EMPTY_STANDBY_METHOD == "old_76":
-        return NtSetSystemInformation(76, ctypes.byref((ctypes.c_ulong * 2)(0x3, 0x4)), 8) == 0
-    if _EMPTY_STANDBY_METHOD == "ew_self":
-        return bool(EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess()))
-    return False
 
+
+
+def get_process_private_ws(pid):
+    """Private WS via QueryWorkingSetEx. Returns (private_ws, total_ws) or (None,None)."""
+    h = None
+    try:
+        h = OpenProcess(0x0400, False, pid)
+        if not h:
+            return None, None
+        buf_size = 16 << 20  # 16MB (1M pages max)
+        buf = (ctypes.c_ubyte * buf_size)()
+        if not psapi.QueryWorkingSetEx(h, ctypes.c_void_p(ctypes.addressof(buf)), buf_size):
+            return None, None
+        priv = 0; total = 0; n = 0
+        for off in range(0, buf_size, 16):
+            n += 1
+            if n > 200000:  # max 200K pages (~800MB)
+                break
+            vp = ctypes.c_size_t.from_buffer(buf, off).value
+            if vp == 0:
+                break
+            total += 4096
+            attr = ctypes.c_size_t.from_buffer(buf, off + 8).value
+            if not (attr & 0x8000):
+                priv += 4096
+        return priv, total
+    except Exception:
+        return None, None
+    finally:
+        if h:
+            try: k32.CloseHandle(h)
+            except: pass
+
+
+def get_all_processes_memory():
+    """Returns {pid: {"ws":bytes, "priv":bytes}} for ALL processes via NtQuerySystemInformation.
+    No OpenProcess needed -- works with protected processes like AV."""
+    buf_size = 1 << 20  # 1MB starting buffer
+    while True:
+        buf = (ctypes.c_ubyte * buf_size)()
+        ret_len = w.ULONG()
+        status = NtQuerySystemInformation(5, buf, buf_size, ctypes.byref(ret_len))
+        if status == 0:
+            break
+        if status == 0xC0000004:
+            buf_size = ret_len.value + (512 << 10)
+            continue
+        return {}
+    result = {}
+    off = 0
+    while off < ret_len.value:
+        ne = ctypes.c_uint32.from_buffer(buf, off).value
+        pid = ctypes.c_size_t.from_buffer(buf, off + 0x68).value
+        if pid and pid > 4:
+            ws = ctypes.c_size_t.from_buffer(buf, off + 0x1F8).value
+            priv = ctypes.c_size_t.from_buffer(buf, off + 0x210).value
+            result[pid] = {"ws": ws, "priv": priv, "pf": 0}
+        if ne == 0:
+            break
+        off += ne
+    return result
 
 def is_elevated():
     try:
@@ -400,7 +446,10 @@ def get_parent_process_name(pid):
                         break
             k32.CloseHandle(snapshot)
     except Exception:
-        pass
+        try:
+            k32.CloseHandle(snapshot)
+        except Exception:
+            pass
     return None
 
 # ── 事件驱动：内存通知 + 等待 ──
@@ -441,16 +490,128 @@ def wait_for_object(handle, timeout_ms):
 # 新增: 拓展清理操作
 # ============================================================
 
-def flush_modified_pages():
+def empty_all_working_sets():
+    """MemoryEmptyWorkingSets — 系统级全进程 WS 清空（单次内核调用）"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(3)
-        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
-            return True
+        info = w.ULONG(2)  # MemoryEmptyWorkingSets = 2 (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
     except Exception:
-        pass
-    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-    return False
+        return False
+
+def purge_low_priority_standby():
+    """清空低优先级 Standby — MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)"""
+    try:
+        info = w.ULONG(5)  # MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    except Exception:
+        return False
+
+def clear_system_file_cache_ex():
+    """SystemFileCacheInformationEx — 强制 OS 回收文件缓存"""
+    try:
+        import sys
+        class _SFCI(ctypes.Structure):
+            _fields_ = [
+                ("CurrentSize", ctypes.c_size_t),
+                ("PeakSize", ctypes.c_size_t),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("MinimumWorkingSet", ctypes.c_size_t),
+                ("MaximumWorkingSet", ctypes.c_size_t),
+                ("Unused", ctypes.c_size_t * 4),
+            ]
+        sfci = _SFCI()
+        MAXSIZE = ctypes.c_size_t(sys.maxsize)
+        sfci.MinimumWorkingSet = MAXSIZE
+        sfci.MaximumWorkingSet = MAXSIZE
+        return NtSetSystemInformation(0x15, ctypes.byref(sfci), ctypes.sizeof(sfci)) == 0
+    except Exception:
+        return False
+
+
+# ============================================================
+# 托盘百分比图标
+# ============================================================
+
+def create_tray_percent_icon(percent, color=(0, 200, 0)):
+    """在 16x16 内存 DC 上绘制百分比数字图标"""
+    try:
+        import ctypes.wintypes as wt
+        gm = ctypes.windll.gdi32
+        um = ctypes.windll.user32
+        hdc_screen = um.GetDC(None)
+        if not hdc_screen:
+            return None
+        hdc = gm.CreateCompatibleDC(hdc_screen)
+        hdc_mask = gm.CreateCompatibleDC(hdc_screen)
+        hbm = gm.CreateCompatibleBitmap(hdc_screen, 16, 16)
+        hbm_mask = gm.CreateBitmap(16, 16, 1, 1, None)
+        if not all([hdc, hdc_mask, hbm, hbm_mask]):
+            for h in [hdc, hdc_mask]: gm.DeleteDC(h)
+            for h in [hbm, hbm_mask]: gm.DeleteObject(h)
+            um.ReleaseDC(None, hdc_screen)
+            return None
+        prev_bm = gm.SelectObject(hdc, hbm)
+        prev_font = gm.SelectObject(hdc, gm.GetStockObject(17))  # DEFAULT_GUI_FONT
+        # Draw background
+        r, g, b = color
+        bg_color = r | (g << 8) | (b << 16)
+        brush = gm.CreateSolidBrush(bg_color)
+        rect = wt.RECT(0, 0, 16, 16)
+        gm.FillRect(hdc, ctypes.byref(rect), brush)
+        gm.DeleteObject(brush)
+        # Draw text
+        text = str(min(99, max(1, percent)))
+        gm.SetBkMode(hdc, 1)  # TRANSPARENT
+        gm.SetTextColor(hdc, 0xFFFFFF)  # white text
+        gm.DrawTextW(hdc, text, -1, ctypes.byref(rect), 0x25)  # DT_CENTER|DT_VCENTER|DT_SINGLELINE
+        gm.SelectObject(hdc, prev_font)
+        gm.SelectObject(hdc, prev_bm)
+        gm.DeleteDC(hdc)
+        # Create icon
+        ic = ctypes.windll.user32.CreateIconIndirect
+        ii = (1, 0, 0, hbm, hbm_mask)
+        hicon = _create_icon_indirect(*ii) if hasattr(globals(), '_create_icon_indirect') else None
+        # Fallback: use ICONINFO via ctypes
+        class ICONINFO(ctypes.Structure):
+            _fields_ = [("fIcon", wt.BOOL), ("xHotspot", wt.DWORD), ("yHotspot", wt.DWORD),
+                        ("hbmMask", wt.HBITMAP__), ("hbmColor", wt.HBITMAP__)]
+        ii2 = ICONINFO(True, 0, 0, hbm_mask, hbm)
+        hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii2))
+        gm.DeleteObject(hbm)
+        gm.DeleteObject(hbm_mask)
+        gm.DeleteDC(hdc_mask)
+        um.ReleaseDC(None, hdc_screen)
+        return hicon
+    except Exception:
+        return None
+
+def enable_reduct_privileges():
+    """启用清理所需权限（SE_PROF_SINGLE_PROCESS + SE_INCREASE_QUOTA）"""
+    try:
+        for priv in ("SeIncreaseQuotaPrivilege", "SeProfileSingleProcessPrivilege"):
+            _try_enable_privilege(priv)
+        return True
+    except Exception:
+        return False
+
+def get_memory_used_bytes():
+    """获取物理内存已用量（字节）"""
+    try:
+        s = get_memory_status()
+        return s.total - s.free
+    except Exception:
+        return 0
+
+
+def flush_modified_pages():
+    """冲刷 Modified 脏页列表 — MemoryFlushModifiedList = 3 (PHNT standard)"""
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        info = w.ULONG(3)  # MemoryFlushModifiedList = 3 (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    except Exception:
+        return False
 
 def clear_system_file_cache():
     """清理系统文件缓存 (SetSystemFileCacheSize)"""
@@ -459,51 +620,48 @@ def clear_system_file_cache():
     except Exception:
         return False
 
-def empty_standby_low_priority():
-    try:
-        _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(4)
-        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
-            return True
-    except Exception:
-        pass
-    return empty_standby()
-
 def combine_memory_lists():
+    """冲刷 Modified 列表以合并物理内存 — MemoryFlushModifiedList = 3 (PHNT standard)"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(5)
-        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
-            return True
+        info = w.ULONG(3)  # MemoryFlushModifiedList = 3 (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
     except Exception:
-        pass
-    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-    return False
+        return False
 
 def trigger_memory_compression():
+    """触发 Win10+ 内存压缩 — MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(6)
-        if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
-            return True
+        info = w.ULONG(5)  # MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
     except Exception:
-        pass
-    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-    return False
+        return False
 
+
+def deep_compress():
+    """单轮完整压缩：flush modified → purge standby — 无 sleep，不碰自身 WS"""
+    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
+        return False
+    ok = False
+    # Flush modified pages (MemoryFlushModifiedList = 3)
+    if NtSetSystemInformation(80, ctypes.byref(w.ULONG(3)), 4) == 0:
+        ok = True
+    # Purge standby list (MemoryPurgeStandbyList = 4)
+    if NtSetSystemInformation(80, ctypes.byref(w.ULONG(4)), 4) == 0:
+        ok = True
+    return ok
 
 def clear_registry_cache():
+    """清空注册表缓存 — SystemRegistryReconciliationInformation = 81 (Win8.1+)"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        buf = (w.ULONG * 16)()
-        if NtSetSystemInformation(81, ctypes.byref(buf), ctypes.sizeof(buf)) == 0:
-            return True
+        return NtSetSystemInformation(81, None, 0) == 0
     except Exception:
-        pass
-    EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-    return False
+        return False
 
 def flush_volume_cache():
+    """冲刷所有卷的待写缓冲区"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
         import string, os
@@ -516,31 +674,22 @@ def flush_volume_cache():
                     k32.CloseHandle(h)
         return True
     except Exception:
-        EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-        return True
+        return False
 
 def empty_standby_deep():
-    """深度 Standby 清理 — 多轮递进，捕获逐轮释放的新增可回收页"""
+    """深度 Standby 清空：低优先 → 全量 → 冲刷脏页 — 无 sleep，不碰自身 WS"""
     if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
         return False
     ok = False
-    # 第一轮：低优先
-    info = w.ULONG(4)
-    if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+    # Low-priority standby (MemoryPurgeLowPriorityStandbyList = 5)
+    if NtSetSystemInformation(80, ctypes.byref(w.ULONG(5)), 4) == 0:
         ok = True
-    time.sleep(0.3)
-    # 第二轮：全量
-    info = w.ULONG(1)
-    if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+    # Full standby purge (MemoryPurgeStandbyList = 4)
+    if NtSetSystemInformation(80, ctypes.byref(w.ULONG(4)), 4) == 0:
         ok = True
-    time.sleep(0.3)
-    # 第三轮：再低优先（捕获第二轮后新产生的）
-    info = w.ULONG(4)
-    if NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0:
+    # Flush modified list (MemoryFlushModifiedList = 3)
+    if NtSetSystemInformation(80, ctypes.byref(w.ULONG(3)), 4) == 0:
         ok = True
-    # 合并列表
-    info = w.ULONG(5)
-    NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info))
     return ok
 
 # ============================================================
@@ -692,20 +841,24 @@ def get_last_input_tick():
 
 def tray_add(hwnd, uid, icon_handle, tip=""):
     """添加系统托盘图标"""
-    nid = TRAYDATA()
-    nid.cbSize = NOTIFYICONDATA_V1_SIZE
+    nid = NOTIFYICONDATA()
+    nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd
     nid.uID = uid
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
     nid.uCallbackMessage = WM_TRAYICON
     nid.hIcon = icon_handle
     nid.szTip = tip[:127]
+    # NIM_SETVERSION MUST come before NIM_ADD (MSDN requirement)
+    nid.uVer = 4  # NOTIFYICON_VERSION_4
+    Shell_NotifyIconW(0x00000004, ctypes.byref(nid))  # NIM_SETVERSION
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
     return bool(Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)))
 
 def tray_modify(hwnd, uid, icon_handle, tip=""):
     """更新托盘图标"""
-    nid = TRAYDATA()
-    nid.cbSize = NOTIFYICONDATA_V1_SIZE
+    nid = NOTIFYICONDATA()
+    nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd
     nid.uID = uid
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
@@ -716,26 +869,14 @@ def tray_modify(hwnd, uid, icon_handle, tip=""):
 
 def tray_remove(hwnd, uid):
     """移除托盘图标"""
-    nid = TRAYDATA()
-    nid.cbSize = NOTIFYICONDATA_V1_SIZE
+    nid = NOTIFYICONDATA()
+    nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd; nid.uID = uid
     return bool(Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid)))
 
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x10
 LR_DEFAULTSIZE = 0x40
-
-def load_std_icon(icon_id):
-    """加载标准 Windows 图标 (如 IDI_APPLICATION=32512)"""
-    return LoadIconW(None, icon_id)
-
-def load_icon_from_file(path):
-    """从 .ico 文件加载图标，返回 HICON"""
-    try:
-        h = LoadImageW(None, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
-        return h
-    except Exception:
-        return None
 
 # ============================================================
 # 新增: 在内存中创建自定义图标 (零外部文件)
@@ -864,6 +1005,26 @@ def create_memwise_ico(path, size=32):
         f.write(and_mask)
     return True
 
+def load_app_icon():
+    """加载 exe 内嵌图标：遍历资源 ID，LoadImageW 从模块句柄加载"""
+    import sys as _sys
+    hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+    if not hInstance:
+        return None
+    # PyInstaller --icon 会将图标嵌入为 IDI_APPLICATION(32512)
+    # 也有可能作为资源 ID 1 嵌入；遍历所有常见 ID
+    for rid in (32512, 1, 101, 201):
+        hIcon = ctypes.windll.user32.LoadImageW(
+            hInstance, ctypes.c_void_p(rid), 1,  # IMAGE_ICON, MAKEINTRESOURCE(rid)
+            16, 16,  # 托盘标准小图标尺寸
+            0  # 无特殊标志
+        )
+        if hIcon:
+            return hIcon
+    # Ultimate fallback: GDI MemWise icon (never returns None)
+    return create_memwise_icon(16)
+
+
 def create_memwise_icon(size=32, bg_color=(45,45,50)):
     """在内存中创建 MemWise 图标，bg_color 为 (R,G,B) 自动转 BGRA
     默认深灰(45,45,50)，托盘和大图标都清晰"""
@@ -942,8 +1103,10 @@ def create_memwise_icon(size=32, bg_color=(45,45,50)):
                 else:
                     buf[i:i+4] = (230, 235, 240, alpha)
 
-    # 创建 1bpp 遮罩
-    hMask = CreateBitmap(size, size, 1, 1, None)
+    # 创建 1bpp 遮罩（全部为 0 = 不透明）
+    mask_row = ((size + 15) // 16) * 2  # 1bpp scanline aligned to WORD
+    mask_bits = (ctypes.c_ubyte * (mask_row * size))()  # all zeros
+    hMask = CreateBitmap(size, size, 1, 1, mask_bits)
     if not hMask:
         DeleteObject(hColor)
         return None

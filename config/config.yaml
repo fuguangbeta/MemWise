@@ -10,14 +10,21 @@ clean_operations:
 - registry
 - modified
 - volume
+- combine
+clean_passes: 4
+close_action: minimize
 daemon_trim_every_ticks: 3
 efis_params:
-  cooloff_base: 4224.37962686424
-  cpu_gate: 0.30000000000000016
-  learning_rate: 0.48
-  max_trim: 80
-  theta_gate: 0.33999999999999997
-  ws_baseline_mul: 1.05
+  composite_kalman_w: 0.3
+  cooloff_base: 360
+  deepen_theta: 0.7999999999999999
+  interval_high: 20
+  layer3_agg_gate: 0.65
+  learning_rate: 0.3
+  pid_kd: 0.4999999999999999
+  pid_kp: 0.74
+  target_usage: 62.8
+emergency_threshold: 80
 game_processes: []
 hotkey: ctrl+shift+m
 interval: 30
@@ -27,3 +34,4 @@ kp: 0.6
 never: []
 scheduled_clean: null
 target_usage: 60
+tray_left_action: show

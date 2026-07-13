@@ -97,14 +97,16 @@ class Profile:
     def feed(self, ws):
         """喂入 WS 样本，更新 EWMA 和 Z-score 基线"""
         self.ws_deque.append(ws)
+        prev_seen = self.last_seen
         self.last_seen = time.time()
         # 波动率 (WS 变化率)
         if self.last_ws > 0 and ws > 0:
             rate = abs(ws - self.last_ws) / max(self.last_ws, 1)
             self.vol_ewma = EWMA_LAMBDA * rate + (1 - EWMA_LAMBDA) * self.vol_ewma
         # refill_ewma: WS 增长速率 (bytes/s)，仅在 WS 增长时更新
-        if self.last_ws > 0 and ws > self.last_ws:
-            growth = (ws - self.last_ws) / max(time.time() - self.last_seen, 1)
+        if self.last_ws > 0 and ws > self.last_ws and prev_seen > 0:
+            dt = max(time.time() - prev_seen, 1)
+            growth = (ws - self.last_ws) / dt
             self.refill_ewma = EWMA_LAMBDA * growth + (1 - EWMA_LAMBDA) * self.refill_ewma
         self.temporal.feed(ws, time.time())
         self.last_ws = ws
@@ -218,9 +220,6 @@ class Profile:
                 self._ctx_weights[i] -= step
             self._grad_buffer = [0.0] * 5
             self._grad_count = 0
-        self.kalman = KalmanProfile()
-        self._curiosity_boost = 1.0   # 卡尔曼连续值估计
-        self.temporal = TemporalProfile()  # 时间槽画像
 
     def record_clean(self, ok, freed=0, pf_delta=0, lr=None):
         """连续反馈记录清理结果 — 考虑释放质量和PF代价"""
@@ -398,6 +397,12 @@ class Profile:
         kalman_d = d.get("kalman")
         if kalman_d:
             p.kalman = KalmanProfile.from_dict(kalman_d)
+        if p.kalman.x_freed == 0 and p.gain_ewma > 0:
+            p.kalman.x_freed = p.gain_ewma
+            p.kalman.p_freed = 50.0
+        if p.kalman.x_cost == 0 and p.cost_ewma > 0:
+            p.kalman.x_cost = p.cost_ewma
+            p.kalman.p_cost = 50.0
         temporal_d = d.get("temporal")
         if temporal_d:
             p.temporal = TemporalProfile.from_dict(temporal_d)
@@ -417,16 +422,7 @@ class PareLearner:
         self._ctx = {}                     # 当前系统上下文
         self._info_msgs = []
 
-    def set_context(self, mem_pct=50, is_fg=False, trimmed_cnt=0, total_attempts=0, agg=0.0):
-        """设置当前系统上下文 (供 episode memory 使用)"""
-        self._ctx = {
-            "mem_pct": mem_pct,
-            "fg": is_fg,
-            "trimmed": trimmed_cnt,
-            "total": total_attempts,
-            "agg": agg,
-        }
-    
+ 
     def pop_info(self):
         """取出并清空日志消息"""
         msgs = self._info_msgs[:]
@@ -513,9 +509,7 @@ class PareLearner:
         p = self.profiles.get(name.lower())
         return p.slope if p else 0.0
 
-    def get_volatility(self, name):
-        p = self.profiles.get(name.lower())
-        return p.vol_ewma if p else 0.0
+
 
     def is_leak_suspect(self, name):
         p = self.profiles.get(name.lower())
@@ -525,9 +519,7 @@ class PareLearner:
         p = self.profiles.get(name.lower())
         return p.confidence if p else 0.0
 
-    def get_clean_count(self, name):
-        p = self.profiles.get(name.lower())
-        return p.clean_count if p else 0
+
 
     def get_profile(self, name):
         return self.profiles.get(name.lower())
@@ -689,19 +681,7 @@ class PareLearner:
         # 加性混合：θ 占60%，bonus占40%
         return 0.6 * theta + 0.4 * min(1.0, bonus)
 
-    def top_by_score(self, n=25):
-        """按复合评分排序"""
-        items = []
-        for name, p in self.profiles.items():
-            if p.total_samples < MIN_SAMPLES:
-                continue
-            score = self.composite_score(name)
-            items.append((name, score, p.thompson_theta, p.roi, p.confidence, p))
-        items.sort(key=lambda x: -x[1])  # 复合评分降序
-        return items[:n]
-
-    # ── 信息查询 ──
-
+ 
     def top(self, n=25):
         """按 ROI 排序，返回 (name, roi, theta, profile) 列表"""
         items = []
@@ -712,8 +692,4 @@ class PareLearner:
         items.sort(key=lambda x: -x[1])  # ROI 降序
         return items[:n]
 
-    def top_by_theta(self, n=25):
-        items = [(name, p.thompson_theta, p.roi, p)
-                 for name, p in self.profiles.items() if p.total_samples >= MIN_SAMPLES]
-        items.sort(key=lambda x: -x[1])
-        return items[:n]
+ 

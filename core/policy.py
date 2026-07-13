@@ -22,9 +22,7 @@ class PolicyVoter:
             elif k_freed > 10 << 20:
                 score += 1
                 reasons.append("收益中")
-            else:
-                score -= 1
-                reasons.append("收益低")
+            # No penalty for low k_freed: single-pass cost is only 0.3s/30PF
             
             # 树2: 历史成功率 (情景记忆)
             sr = learner.memory.success_rate(name.lower(), state.get("mem_pct"), hours=24)
@@ -57,7 +55,7 @@ class PolicyVoter:
             reasons.append("内存紧张")
         elif mem_pct > 65:
             score += 1
-        elif mem_pct < 40:
+        elif mem_pct < 30:
             score -= 1
             reasons.append("内存充足")
         if mem_trend > 0.03:
@@ -66,14 +64,14 @@ class PolicyVoter:
         
         # 树5: 反事实优势 (因果图)
         adv = learner.causal_compare(name, state.get("candidates", []), mem_pct)
-        if adv > 0:
+        if adv > 50 << 20:
+            score += 2
+            reasons.append(f"因果优势{adv/(1<<20):.0f}MB")
+        elif adv > 20 << 20:
             score += 1
-            reasons.append(f"比替代方案好{adv/(1<<20):.0f}MB")
-        elif adv < 0:
-            score -= 1
-            reasons.append(f"不如替代方案")
+            reasons.append(f"因果优势{adv/(1<<20):.0f}MB")
         
-        return score >= 1, "; ".join(reasons[:3]) if reasons else ""
+        return score >= 0, "; ".join(reasons[:3]) if reasons else ""
     
     def should_probe(self, name, ws, state, learner):
         """是否试探此进程 → (True/False, 理由)"""
