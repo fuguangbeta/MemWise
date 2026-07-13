@@ -32,8 +32,9 @@ class Sniffer:
         procs = winapi.enum_processes()
         self._purge_dead(p for p,_,_ in procs)
         result = []
+        bulk_mem = winapi.get_all_processes_memory()
         for pid, name, _ in procs:
-            mem = winapi.get_process_memory(pid)
+            mem = bulk_mem.get(pid) or winapi.get_process_memory(pid)
             if not mem:
                 # 即使无法读取内存信息，也加入列表（进程排行等场景需要完整列表）
                 result.append(ProcessSnapshot(pid=pid, name=name, ws=0, pf=0, priv=0,
