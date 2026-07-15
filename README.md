@@ -1,8 +1,8 @@
-# MemWise v1.7
+# MemWise v1.8
 
 ## Windows 智能内存看护工具
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统 Standby List、Modified Page List、内存压缩等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与压缩。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 13.2 MB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统 Standby List、Modified Page List、内存压缩等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与压缩。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 13.3 MB），零外部依赖。
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前，提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续满载优化。同时通过 Thompson Sampling、Kalman 滤波、因果推理、五树投票等学习与决策机制，为每个进程建立独立画像，实现"知道哪个进程值得清、哪个清了反而更卡"的意图识别。
 
@@ -121,7 +121,7 @@ optimize(mode)                  #   全量 8 步管线 + Layer2 + Layer3
 
 ### 3.3 情景记忆
 
-存储每次清理时刻的五维上下文向量 `[norm_ws, norm_theta, mem_pct, cpu, hour]`，支持余弦相似度检索 top-3 最相似历史经验。新进程通过记忆加速冷启动收敛。上限 200 条，超出时丢弃最旧记录。相似度阈值 0.7。
+存储每次清理/试探时刻的完整上下文 episode（时间戳、小时、星期、进程名、工作集大小、前台标志、动作类型、是否成功、释放量、缺页增量、系统内存占用率、激进度等）。deque(maxlen=2000) 滚动存储。检索（retrieve）使用加权相似度评分：0.5 基础分 + 0.3 × 内存压力相似度（|Δmem_pct|/30）+ 0.4 × 同名进程加成 + 0.2 × 时间衰减（24 小时内越近权重越高）。支持 success_rate() 查询同名进程最近 12 或 24 小时内的历史成功率。新进程通过分层先验（HierarchicalPrior）获得同类进程的平均初始 θ 值，加速冷启动收敛。
 
 ### 3.4 分层先验
 
@@ -129,7 +129,7 @@ optimize(mode)                  #   全量 8 步管线 + Layer2 + Layer3
 
 ### 3.5 因果推理
 
-有向图记录"清 A 时 B 的释放量"。支持反事实优势比查询，作为五树投票中"反事实维度"的输入。键统一使用小写进程名，每对仅存最新一条（新覆盖旧）。仅作为决策奖励（纯加分），不会惩罚数据不足的进程。
+有序对记录「清 A 时 B 也在场」的历史观测：每次实际清理进程 A 时，对每个在场候选进程 B ≠ A，往有序对 (A, B) 追加一条记录（时间戳、内存占用率、实际释放量），每对保持最近 50 条滑动窗口。advantage(A, B, mem_pct) 使用上下文加权平均——内存压力越接近当前情境的历史观测权重越高（w = max(0.01, 1−|Δmem_pct|/30)），返回「清理 A 比清理 B 平均多释放多少字节」。best_alternative() 在所有候选中找到最优替代进程。作为五树投票中「因果优势维度」的输入（优势 >50MB 加 2 分、>20MB 加 1 分），纯加分不惩罚。
 
 ### 3.6 五树投票策略
 
@@ -204,7 +204,7 @@ EFIS（Efficiency Feedback Intelligent System）覆盖全程序 5 层、9 参数
 
 ## 8. 图表与效率评分
 
-每轮（60 秒）推送一柱到柱状图，与日志同步输出。柱高为该轮累计释放量（MB），X 轴显示最近的约 20 轮数据。折线为 ERIS 效率评分（0-100），五维几何平均计算。`overflow_bonus` 0.20 权重，避免首轮大释放量将效率虚推至 100%。鼠标悬浮显示具体数值。图表区域下方标注统计栏：当前物理内存占用百分比及彩色进度条（绿<60%、黄60-74%、橙75-89%、红≥90%）、累计释放量（自动换算 GB/MB）、系统杂项总次数（K 单位缩写）、进程清理总次数（累计值）。
+图表数据源为 `freed_bytes` 标量累加器——所有操作（系统级 `_layer1_memreduct`、进程级 `_trim_process`、试探 `_probe_process`、fast-track `quick_retrim`）的释放量统一汇入，通过累计差值法（`cur_freed - _chart_last_freed`）计算每轮增量。不使用 `GlobalMemoryStatusEx`（惰性更新，常返回 0）。日志、统计栏、图表三者同源一致。X 轴显示最近的约 20 轮数据。折线为 ERIS 效率评分（0-100），五维几何平均计算。`overflow_bonus` 0.20 权重，避免首轮大释放量将效率虚推至 100%。鼠标悬浮显示具体数值。图表区域下方标注统计栏：当前物理内存占用百分比及彩色进度条（绿<60%、黄60-74%、橙75-89%、红≥90%）、累计释放量（自动换算 GB/MB）、系统杂项总次数（K 单位缩写）、进程清理总次数（累计值）。
 
 ---
 
@@ -237,7 +237,7 @@ EFIS（Efficiency Feedback Intelligent System）覆盖全程序 5 层、9 参数
 - 直接退出程序：点击 X 完全退出，自动保存所有状态
 - 每次询问：弹窗选择（默认）
 
-**清理操作**：8 种操作独立开关（默认 ws/standby/compress/modified 开，其余按需开启）。可实现"只清进程不清系统缓存"或"全开"等组合。
+**清理操作**：6 种操作独立开关：ws（进程工作集）、standby（备用列表）、modified（已修改页）、compress（内存压缩）、volume（卷缓存）、registry（注册表缓存）。默认全部开启，可按需关闭以实现「只清进程不清系统缓存」或「全开」等组合。
 
 **清理模式**：下拉框选择 quick / normal / deep / full（默认 normal）。
 
@@ -275,14 +275,16 @@ python memwise.py [command] [options]
 
 | 键 | 类型 | 默认值 | 说明 |
 |------|------|:------|------|
-| `clean_mode` | str | `"deep"` | 清理模式 |
-| `clean_operations` | list | `[ws,standby,compress,modified]` | 启用的操作 |
+| `clean_mode` | str | `"normal"` | 清理模式 |
+| `clean_operations` | list | `[ws,standby,modified,volume,compress,registry]` | 启用的操作 |
 | `auto_start` | bool | `false` | 开机自启 |
 | `auto_start_admin` | bool | `false` | 管理员权限开机自启 |
 | `auto_start_daemon` | bool | `false` | 启动后自动守护 |
 | `auto_start_minimize` | bool | `false` | 启动后最小化 |
 | `close_action` | str | `"ask"` | 关闭按钮行为 |
-| `interval` | int | `60` | 日志/图表周期（秒） |
+| `interval` | int | `30` | 日志/图表周期（秒） |
+| `emergency_threshold` | int | `80` | 紧急触发阈值（%） |
+| `clean_passes` | int | `4` | 最大清理轮数 |
 | `tray_left_action` | str | `"show"` | 托盘左键行为 |
 | `hotkey` | str | `"ctrl+shift+m"` | 热键 |
 | `never` | list | `[]` | 排除列表（进程名或 PID） |
