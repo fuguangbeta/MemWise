@@ -393,7 +393,7 @@ MemWise/
 │   ├── cleaner.py              # 三层清理引擎 + 持续优化 · Cleaning Engine
 │   ├── learner.py              # Thompson Sampling + Kalman + 特征学习 · Cognitive Learner
 │   ├── judger.py               # 判定器 + PID 控制器 · Judger + PID
-│   ├── efis.py                 # EFIS v3 全程序智能调参 · EFIS Parameter Tuner
+│   ├── efis.py                 # EFIS v5 全程序智能调参 · EFIS Parameter Tuner
 │   ├── meta.py                 # 元认知自我监控 · Meta-Cognitive Monitor
 │   ├── policy.py               # 五树投票策略 · Policy Voter
 │   ├── kalman.py               # Kalman 滤波器 · Kalman Filter
