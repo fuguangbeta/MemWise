@@ -1,4 +1,4 @@
-# MemWise v2.5
+# MemWise v2.6
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
@@ -38,7 +38,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 *Operates in 60-second log/chart cycles with uninterrupted optimization. An adaptive gap timer (8–25s) dynamically adjusts based on per-process release rates. Each cycle alternates between lightweight suppression — a 4-step pipeline (standby, low-priority standby, modified, and registry) that skips the system-wide WS clear, file cache, and volume flush — and full harvesting passes whose cleaning depth follows the user-selected mode: 5 steps for normal, 8 steps for deep, 8 steps plus a process-level rebound second round for full.*
 
-守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。
+守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。
 
 *The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line.*
 
@@ -268,13 +268,13 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数�
 
 退出检测为即时模式，恢复运行中已调优的参数。常规参数不受游戏模式切换影响。
 
-*Auto-activated via process-name matching plus full-screen detection, or toggled manually from the UI or Ctrl+Shift+G — a confirmation dialog prevents accidental activation. When active, a triple-layer ceiling protection engages: (1) Per-process absolute protection — game PIDs and their children are tracked in real time, exempt from WS sweeps, memory-priority demotion, and can_trim gating. (2) System-level operation suppression — empty_all_working_sets, file cache clear, and volume flush are skipped; only standby/registry cleanup and modified-page flush continue. (3) Non-game extreme release — every non-game process is swept unconditionally and demoted to VERY_LOW priority, maximizing reclaimable physical memory. The gap interval extends to 22s to reduce daemon intervention density. Exit detection is immediate — regular parameters resume on the next probe cycle after the game process disappears.*
+*Auto-activated via process-name matching plus full-screen detection, or toggled manually from the UI or Ctrl+Shift+G — a confirmation dialog prevents accidental activation. When active, a triple-layer ceiling protection engages: (1) Per-process absolute protection — game PIDs and their children are tracked in real time, exempt from WS sweeps, memory-priority demotion, and can_trim gating. (2) System-level operation suppression — empty_all_working_sets, file cache clear, and volume flush are skipped; only standby/registry cleanup and modified-page flush continue. (3) Non-game extreme release — every non-game process is swept unconditionally and demoted to VERY_LOW priority, maximizing reclaimable physical memory. The gap interval extends to 18s (auto ×1.5 in game mode) to reduce daemon intervention density. Exit detection is immediate — regular parameters resume on the next probe cycle after the game process disappears.*
 
 ---
 
 ## 8. 图表与效率评分 · *Charting & Efficiency Scoring*
 
-图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v5 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身 50 轮滚动窗的中位数和四分位距(IQR)为基准，通过 80 + 60×(raw−p50)/IQR 将原始值映射为独立分数，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。释放量不参与分数构成，分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 >100% 时折点显示金色、<60% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 或 ≤60% 时极性覆盖但不跨轮比较。同维正负设有防振荡保护。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率、彩色内存占用进度条和关键统计指标。
+图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v5 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身 50 轮滚动窗的中位数和四分位距(IQR)为基准，通过 80 + 60×(raw−p50)/IQR 将原始值映射为独立分数，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。释放量不参与分数构成，分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 >100% 时折点显示金色、<60% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤60% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（60-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率、彩色内存占用进度条和关键统计指标。
 
 *A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars overlaid with the ERIS v5 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, parameter convergence, side-effect control, learning convergence, and exploration completeness — with each dimension’s EWMA-decayed baseline serving as the 100% benchmark. A dual-speed divisor dampens values — light suppression (×1.05) above baseline, heavy suppression (×1.55) below. Baselines for affected dimensions auto-reset on game mode transitions. The weighted sum yields an efficiency score reflecting the engine’s genuine performance relative to its own norm. Freed volume does not participate in scoring. Golden dots mark scores above 100%, coral-red dots warn below 60%. Each dimension’s factor is selected by its deviation from the EWMA baseline — rising efficiency picks the largest positive deviation, falling efficiency picks the largest negative deviation. When efficiency exceeds 100%, only positive factors are shown; below 60%, only negative. Anti-oscillation guards prevent same-dimension flip-flopping. Fluctuations within ±2% display as relatively stable. The first 3 absolute data points (since daemon start) display dashed lines and dots during the convergence period. Hover tooltips reveal the true value and dominant influencing factors. Below the chart: average efficiency, a color-coded memory bar, cumulative freed total, and key operation counters.*
 
@@ -322,9 +322,9 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数�
 
 *Manage custom game process entries (add/view), with comma-separated batch input and case-insensitive matching. A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click game mode switching.*
 
-**触发与日志 · Trigger & Logging**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4）。
+**触发与日志 · Trigger & Logging**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
 
-*Emergency trigger threshold (50–99%, default 80%), daemon clean interval (8-20s, default 12s), tray left-click action, file-log toggle, cleaning depth (2–6 pass, default 4).*
+*Emergency trigger threshold (50–99%, default 80%), daemon clean interval (8-20s, default 12s), tray left-click action, file-log toggle, cleaning depth (2–6 pass, default 4; large-process ceiling directly follows this value, other tiers unaffected).*
 
 ---
 
