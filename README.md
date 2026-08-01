@@ -1,15 +1,15 @@
-# MemWise v2.6
+﻿# MemWise v3.0
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统 Standby List、Modified Page List、内存压缩等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与压缩。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 12.7 MB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表、内存压缩等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与压缩。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 13.3 MB），零外部依赖。
 
-*Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, modified page lists, and memory compression — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~12.7 MB executable.*
+*Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, modified page lists, and memory compression — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~13.3 MB executable.*
 
 
-系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、泄漏检测、情景记忆、分层先验、五树投票等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
+系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、三树投票等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
-*MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization at 60-second intervals in daemon mode. A cognitive engine combining Thompson Sampling, Kalman filtering, leak detection, episodic memory, hierarchical priors, and five-tree policy voting builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.*
+*MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization at 60-second intervals in daemon mode. A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and three-tree policy voting builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.*
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
@@ -21,9 +21,9 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.1 一键优化 · *One-Click Optimization*
 
-点击主界面"优化"按钮（或按快捷键 Ctrl+Shift+M），程序按当前选择的清理模式执行单次优化，并输出累计释放量。四种模式从快速（3 步系统轻扫）到全量（8 步 + 进程回弹二轮）梯度递增，最终显示对比优化前后的内存占用变化。
+点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 触发与日志 → 全局热键中自定义），程序按当前选择的清理模式执行单次优化，并输出累计释放量。四种模式从快速（3 步系统轻扫）到全量（8 步 + 进程回弹二轮）梯度递增，最终显示对比优化前后的内存占用变化。
 
-*Triggered via the Optimize button or Ctrl+Shift+M. Runs a single optimization pass in the currently selected cleaning mode — from quick (3-step lightweight sweep) to full (8-step pipeline with a rebound second round) — and displays the before-and-after memory delta.*
+*Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Triggers & Logging → Global Hotkey). Runs a single optimization pass in the currently selected cleaning mode — from quick (3-step lightweight sweep) to full (8-step pipeline with a rebound second round) — and displays the before-and-after memory delta.*
 
 ### 1.2 守护模式（推荐）· *Daemon Mode (Recommended)*
 
@@ -32,15 +32,15 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | 阶段 | 内容 |
 |------|------|
 | 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-25 秒），释放多则缩短、释放少则延长 |
-| gap fill 轻量压制 | 持续执行 4 步轻量管线（standby + 低优先 standby + modified + 注册表），跳过 WS 全清/文件缓存/卷冲刷，留给主 pass 收割 |
-| 多次 harvest | 周期内执行 2-3 次完整的 optimize pass（normal 模式），每次含 Layer2 进程修剪 + Layer1 管线 |
+| gap fill 轻量压制 | 高频阶段仅执行注册表缓存清理（零磁盘影响）；standby 与脏页写回由 gap 末 optimize 统一执行——缓存有累积时间，单次释放量更大 |
+| 多次 harvest | 周期内执行 2-3 次完整的 optimize pass（normal 模式），每次含 Layer2 进程修剪 + Layer1 管线（高频 gap 阶段不触发深度聚合） |
 | 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（normal 5 步 / deep 8 步 / full 8 步+回弹二轮）→ Layer3 深度聚合 |
 
-*Operates in 60-second log/chart cycles with uninterrupted optimization. An adaptive gap timer (8–25s) dynamically adjusts based on per-process release rates. Each cycle alternates between lightweight suppression — a 4-step pipeline (standby, low-priority standby, modified, and registry) that skips the system-wide WS clear, file cache, and volume flush — and full harvesting passes whose cleaning depth follows the user-selected mode: 5 steps for normal, 8 steps for deep, 8 steps plus a process-level rebound second round for full.*
+*Operates in 60-second log/chart cycles with uninterrupted optimization. An adaptive gap timer (8–25s) dynamically adjusts based on per-process release rates. High-frequency suppression touches only the registry cache (zero disk impact); standby and dirty-page flush are batched into each gap-end optimize pass so the cache accumulates before each purge, yielding larger per-pass releases. Full harvesting passes follow the user-selected mode: 5 steps for normal, 8 steps for deep, 8 steps plus a process-level rebound second round for full. Deep aggregation (Layer 3) runs only in the final harvest pass.*
 
-守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。
+守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。内存占用达到紧急阈值（默认 80%）时，立即跳过等待执行一次极限模式（full）清理。
 
-*The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line.*
+*The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting.*
 
 程序内嵌看门狗子进程，主进程意外崩溃后可在数秒内自动重启并恢复守护状态。
 
@@ -73,7 +73,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | 注册表缓存 | `registry` | 开 | `NtSetSystemInformation(81)` | 清除注册表缓存页 · *Clear registry cache pages* |
 | 内存合并 | `combine` | 关 | `NtSetSystemInformation(80, info=3)` | 触发系统合并相同物理页 · *Trigger page combining for identical physical pages* |
 
-守护模式下的 gap-fill 期间使用轻量管线（跳过系统级 WS 全清、文件缓存和卷冲刷），只做 standby purge + modified flush + 注册表清理，留给主 pass 在积累整个 gap 后一次性全量收割。为控制功耗，卷缓存冲刷等重量级操作仅在 optimize 全量收割阶段执行。
+守护模式下的高频阶段仅执行注册表缓存清理（零磁盘影响），standby 与脏页写回由 gap 末 optimize 统一执行——缓存有累积时间，单次释放量更大。为控制功耗，卷缓存冲刷等重量级操作仅在 optimize 全量收割阶段执行。
 
 四种清理模式的操作梯度由轻到重：
 
@@ -84,7 +84,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | deep | ✅ | ✅ | ✅ | 始终 | 8步 | 重度使用后深度清扫 |
 | full | ✅ | ✅ | ✅ | 强制 | 8步+回弹二轮 | 极限释放 |
 
-*During gap-fill phases, a lightweight pipeline is used — skipping system-wide WS clear, file cache, and volume flush — performing only standby purge, modified flush, and registry cleanup. Heavyweight operations are deferred to the full-harvest optimize pass to conserve power and eliminate I/O contention.*
+*High-frequency suppression touches only the registry cache (zero disk impact); standby and dirty-page flush are batched into each gap-end optimize pass so the cache accumulates before each purge. Heavyweight operations such as volume flush run only during full-harvest optimize passes.*
 
 *The four cleaning modes offer a progressive gradient:*
 
@@ -103,7 +103,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 1. **安全过滤 · Safety Gate**：排除系统核心进程、前台窗口保护（压力达到阈值时放开）、工作集过小的微小进程、WS 基线检查（上一轮清理后 WS 无增长则不重复清理）、失败冷却检查 · *Excludes system-core processes, foreground windows, tiny processes, baseline-checked processes, and processes in failure cooldown*
 
-2. **策略投票（五树决策）· Five-Tree Policy Vote**：Kalman 预测收益、历史记忆验证、时序活跃度判断、Kalman 反事实优势、复合评分加权。总分 ≥ 0 即通过（不设硬性门槛）· *Kalman-predicted gain, historical success verification, temporal activity judgment, counterfactual advantage, and composite weighting — soft pass threshold of total score ≥ 0*
+2. **策略投票（三树决策）· Three-Tree Policy Vote**：Kalman 预期收益、内存压力与趋势、反事实优势（对比全体画像均值）。总分 ≥ 0 即通过（不设硬性门槛）· *Kalman-predicted gain, memory-pressure and trend, and counterfactual advantage over the profile average — soft pass threshold of total score ≥ 0*
 
 3. **复合评分排序 · Composite Score Ranking**：θ、Kalman 预期释放量、WS 大小、WS 回弹率四维加权，EFIS 可调权重 · *Four-dimensional weighted ranking with EFIS-tunable weights*
 
@@ -137,7 +137,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ## 3. 认知引擎 · *Cognitive Engine*
 
-### 3.1 Thompson Sampling (Beta-Bernoulli)
+### 3.1 Thompson Sampling (Beta-Bernoulli) · *Thompson Sampling*
 
 对每个进程维护一对 Beta 分布 (α, β)。清理成功后 α 增量按释放量对数缩放（释放越多学习越快），失败后 β+=1。采样得到的 θ ∈ [0,1] 表示该进程在当前知识状态下值得清理的倾向。
 
@@ -146,7 +146,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 - **先验 · Prior**：Beta(α=2, β=1)，偏乐观，相当于已经观察到 1 次成功
 - **软上限 · Soft Cap**：α 超过阈值后等比缩归，保持 α/β 比例不畸变，防止长期运行后探索能力退化
 - **对数缩放学习率 · Log-Scaled Learning Rate**：α 增量按释放量对数缩放——释放 500MB 的学习速度是释放 5MB 的约两倍，使大释放量产生更强的正反馈
-- **时间遗忘 · Temporal Decay**：距离上次反馈超过 1 小时后，每小时向先验回归 3%，避免历史数据对当前状态的滞后影响
+- **时间遗忘 · Temporal Decay**：距离上次反馈超过 1 小时后，每小时向先验回归 5%（上限 50%），避免历史数据对当前状态的滞后影响
 - **置信度 · Confidence**：基于 Beta 分布标准差计算，用于策略投票中的权重调节
 
 ### 3.2 Kalman 滤波器 · *Kalman Filter*
@@ -165,58 +165,46 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ### 3.3 内存泄漏检测 · *Memory Leak Detection*
 
-系统对每个进程维护工作集的 Z-score 基线与趋势斜率。当工作集持续偏离历史均值超过两个标准差，且相对增长斜率超过阈值时，判定为疑似内存泄漏。判定后的进程在守护周期中获得优先清理，同时其 Kalman 不确定性被调高以增加后续观测的权重。泄漏阈值根据进程自身的工作集大小自动缩放——大进程敏感度更高，小进程避免误报。
+系统对每个进程维护工作集的 Z-score 基线与趋势斜率。当工作集持续偏离历史均值超过两个标准差，且相对增长斜率超过阈值时，判定为疑似内存泄漏并在诊断日志中提示。泄漏数据仅作观察记录，不参与清理决策。阈值根据进程自身的工作集大小自动缩放——大进程敏感度更高，小进程避免误报。
 
-*Each process maintains a Z-score baseline and trend slope over its working set history. When the WS persistently exceeds two standard deviations above the historical mean with a relative growth slope exceeding the threshold, the system flags a suspected leak. Flagged processes receive prioritized cleanup in subsequent daemon cycles, and their Kalman uncertainty is elevated. The leak threshold scales automatically with the process's own working set size.*
+*Each process maintains a Z-score baseline and trend slope over its working set history. When the WS persistently exceeds two standard deviations above the historical mean, the system logs a diagnostic alert. Leak data is for observation only and does not affect cleaning decisions.*
 
-### 3.4 情景记忆 · *Episodic Memory*
-
-存储每次清理与试探的完整上下文 episode，包含时间戳、进程标识、工作集大小、系统内存占用率、动作类型、结果与释放量等十余项字段。以定长双端队列滚动存储。基于时间戳的持久映射实现 O(1) 检索，消除双端队列淘汰导致的索引漂移。检索时使用加权相似度评分，综合考量内存压力相似度、同名进程加成和时间衰减。支持按时间窗口查询同名进程的历史成功率。新进程通过分层先验获得同类进程的平均初始倾向，加速冷启动。
-
-*Each cleanup or probe stores a full-context episode with over a dozen fields — timestamp, process identity, working set size, system memory percentage, action type, outcome, and freed bytes. A fixed-length deque provides bounded rolling storage. A persistent timestamp-based map enables O(1) retrieval immune to deque index drift. Retrieval uses weighted similarity scoring that combines memory-pressure proximity, same-name affinity, and temporal decay. Time-windowed historical success rates can be queried per process name. New processes receive an initial θ inherited from their category's hierarchical prior, accelerating cold-start convergence.*
-
-### 3.5 分层先验 · *Hierarchical Prior*
+### 3.4 分层先验 · *Hierarchical Prior*
 
 十余个预定义类别按进程名关键词自动分类。新进程从同类经验池继承初始 θ，避免从零基础开始。
 
 *Over a dozen predefined categories auto-classify processes by name keyword. New processes inherit the average θ of their category, avoiding a cold start from the default prior.*
 
-### 3.6 五树投票策略 · *Five-Tree Policy Voting*
+### 3.5 三树投票策略 · *Three-Tree Policy Voting*
 
 替代单一门槛的多维综合决策：
 
 *A multi-dimensional decision model replaces single-threshold gating:*
 
-- **Kalman 预测树 · Kalman Prediction Tree**：预期释放量与预期代价的比值，权重最高
-- **历史记忆树 · Historical Memory Tree**：同压力下的历史成功率，情景记忆验证
-- **时序时机树 · Temporal Timing Tree**：基于 24 小时时间槽的活跃度判断
-- **反事实预测树 · Counterfactual Prediction Tree**：Kalman 预测的释放量差值——清理该进程相比最优替代进程的预期优势
-- **复合评分树 · Composite Scoring Tree**：Kalman 置信度与 WS 趋势的综合加权
+- **收益树 · Gain Tree**：Kalman 预期释放量（经上下文修正），权重最高
+- **压力树 · Pressure Tree**：内存占用与趋势——高于 65% 加分、低于 30% 减分
+- **反事实树 · Counterfactual Tree**：Kalman 预期释放量对比全体画像均值——高于均值 50MB 加分、20MB 小加分
 
-每棵树的权重通过在线学习自动调整——以每进程的实际清理结果为反馈信号，有效树的权重自然上升。总分 ≥ 0 通过（不设硬性门槛）。
-
-*Tree weights are continuously tuned through online learning, using each trim outcome as feedback. Effective trees increase in relative weight over time. The soft pass threshold is a total score ≥ 0.*
+总分 ≥ 0 通过（不设硬性门槛）。
 
 ---
 
 ## 4. 元认知自我监控 · *Meta-Cognitive Self-Monitoring*
 
-每 5 个周期运行一次完整诊断（约 5 分钟），逐画像独立评估：
+每个守护周期运行一次完整诊断，逐画像独立评估：
 
-*A comprehensive diagnostic cycle runs every 5 cycles (~5 minutes), evaluating each profile independently:*
+*A diagnostic cycle runs every daemon tick, evaluating:*
 
-- **校准度 · Calibration**：每个画像独立对比 Kalman 预测与实际释放。偏差越大衰减越多——仅对不准确的画像渐进调整，精准的画像不受影响，替代旧版全局平均重置
-- **概念漂移 · Concept Drift**：双 EWMA 快慢速比检测进程行为突变。漂移时温和调整 Beta 和 Kalman 参数
-- **探索覆盖 · Exploration Coverage**：统计从未被试探的进程比例，超过阈值时适度提高探索倾向
-- **学习率自校准 · Learning Rate Self-Calibration**：检查所有进程的预测误差，动态调整上下文权重学习率
+- **概念漂移 · Concept Drift**：双 EWMA 快慢速比检测进程行为突变。漂移时重置 Kalman 过程噪声，加速适应新行为模式 · *Dual EWMA fast/slow ratio detects sudden process behavior changes, resetting Kalman process noise to accelerate adaptation*
+- **探索覆盖 · Exploration Coverage**：统计从未被试探的进程比例，超阈值时加速未试探进程的探索频率 · *Monitors never-probed process ratio and accelerates probe frequency when coverage is low*
 
 ---
 
 ## 5. EFIS v3 全程序智能调参 · *System-Wide Intelligent Parameter Tuning*
 
-EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数闭环调参引擎。
+EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数闭环调参引擎。
 
-*EFIS is a 10-parameter closed-loop tuning engine spanning the entire system.*
+*EFIS is a 9-parameter closed-loop tuning engine spanning the entire system.*
 
 **参数一览 · Parameter Overview**：
 
@@ -227,19 +215,14 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数�
 | `pid_kp` | 0.60 | 0.30-2.00 | PID 比例增益（对内存偏差的响应速度） |
 | `pid_kd` | 0.10 | 0.05-0.50 | PID 微分增益（抑制震荡） |
 | `target_usage` | 30% | 25-65% | PID 控制目标内存占用百分比 |
-| `interval_high` | 10s | 5-20s | 高压时的日志输出间隔 |
 | `cooloff_base` | 300s | 60-360s | 失败冷却基准时长 |
-| `learning_rate` | 0.30 | 0.05-0.40 | 上下文特征权重学习速率 |
+| `learning_rate` | 0.30 | 0.05-0.40 | 反馈学习速率（保留参数，暂未启用） |
 | `composite_kalman_w` | 0.30 | 0.10-0.50 | 复合评分中 Kalman 分量的权重 |
 | `kalman_r` | 5.0 | 1.0-20.0 | 卡尔曼观测噪声——值越大对新观测越不敏感 |
 
 **诊断方式 · Diagnosis**：每个参数配备专属的症状规则，基于滑动窗口内的释放效率、缺页速率、内存振幅等多维指标综合评估。症状须持续达到确认周期后才触发调整，防止单次噪声误调。参数调整步长经过约束，不会剧烈震荡。协方差监控层在检测到两个参数反向调整时冻结步长较小的一方，防止补偿性震荡。
 
 *Each parameter has dedicated symptom rules evaluated over sliding windows of release efficiency, PF rate, and memory amplitude. Adjustments require symptom persistence across a confirmation interval to prevent noise-induced false positives. Step magnitudes are bounded. A covariance monitor detects opposing adjustment signals between parameter pairs and freezes the one with the smaller step size to prevent compensatory oscillation.*
-
-**场景记忆 · Scene Memory**：支持多种场景独立参数记忆，场景切换时通过平滑插值过渡。场景由进程名关键词自动检测。
-
-*Scene-specific parameter sets are maintained with smooth interpolation during transitions. Scene detection is driven by process-name keyword matching.*
 
 **持久化 · Persistence**：独立状态文件，加载时自动跳过已废弃参数，新参数缺失时取默认值。写入采用原子化操作，防止中途崩溃导致配置损坏。
 
@@ -261,30 +244,30 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数�
 
 激活后实施三层天花板保护：
 
-- **进程级绝对保护**：游戏进程及其子进程的 PID 被实时追踪。`EmptyWorkingSet` 扫荡、内存优先级降权、`can_trim` 判定对所有匹配进程自动跳过，游戏 WS 完全不受触碰 · *Game PIDs and children are tracked in real time — WS sweeps, priority demotion, and can_trim gating all auto-skip matched processes*
-- **系统级操作抑制**：`empty_all_working_sets`、文件缓存清空、卷缓存冲刷全部跳过，仅保留 standby/registry 清理和脏页写回。消除磁盘 I/O 与游戏读盘竞争 · *System-wide WS clear, file cache clear, and volume flush are all suppressed; only standby/registry cleanup and modified-page flush continue*
-- **非游戏极致释放**：全部非游戏进程工作集清空（不受 `can_trim` 门槛限制），内存优先级统一降为 VERY_LOW，操作系统优先回收其页面供游戏使用 · *Every non-game process is swept unconditionally and demoted to VERY_LOW priority*
+- **进程级绝对保护**：游戏进程及其子进程的 PID 被实时追踪，`EmptyWorkingSet` 清理、内存优先级降权、`can_trim`/`can_probe` 判定对所有匹配进程自动跳过，游戏工作集完全不受触碰 · *Game PIDs and children are tracked in real time — WS trims, priority demotion, and can_trim/can_probe gating all auto-skip matched processes*
+- **系统级操作抑制**：standby 清空、脏页写回、文件缓存清空、卷缓存冲刷在游戏模式全部跳过，仅保留注册表缓存清理——零磁盘 I/O，消除游戏读盘竞争 · *Standby purge, dirty-page flush, file-cache clear, and volume flush are all suppressed in game mode; only registry-cache cleanup remains — zero disk I/O, eliminating read contention with the game*
+- **非游戏智能释放**：非游戏进程按智能评分持续清理（受门槛约束，前台窗口与排除列表受保护），内存优先级降为低优先，操作系统优先回收其页面供游戏使用 · *Non-game processes are continuously cleaned by intelligent scoring (gated by thresholds; foreground and excluded processes are protected) and demoted to low memory priority so the OS reclaims their pages for the game first*
 - **操作频率自适应**：gap 间隔从常规 12s 拉长至 18s（游戏模式自动 ×1.5），降低守护周期对系统的干预密度 · *Gap interval extended from 12s to 18s (auto ×1.5 in game mode) to reduce daemon intervention density*
 
 退出检测为即时模式，恢复运行中已调优的参数。常规参数不受游戏模式切换影响。
 
-*Auto-activated via process-name matching plus full-screen detection, or toggled manually from the UI or Ctrl+Shift+G — a confirmation dialog prevents accidental activation. When active, a triple-layer ceiling protection engages: (1) Per-process absolute protection — game PIDs and their children are tracked in real time, exempt from WS sweeps, memory-priority demotion, and can_trim gating. (2) System-level operation suppression — empty_all_working_sets, file cache clear, and volume flush are skipped; only standby/registry cleanup and modified-page flush continue. (3) Non-game extreme release — every non-game process is swept unconditionally and demoted to VERY_LOW priority, maximizing reclaimable physical memory. The gap interval extends to 18s (auto ×1.5 in game mode) to reduce daemon intervention density. Exit detection is immediate — regular parameters resume on the next probe cycle after the game process disappears.*
+*Auto-activated via process-name matching plus full-screen detection, or toggled manually from the UI or Ctrl+Shift+G — a confirmation dialog prevents accidental activation. When active, a triple-layer ceiling protection engages: (1) Per-process absolute protection — game PIDs and their children are tracked in real time, exempt from WS trims, memory-priority demotion, and can_trim/can_probe gating. (2) System-level operation suppression — standby purge, dirty-page flush, file-cache clear, and volume flush are all skipped; only registry-cache cleanup remains, eliminating disk I/O contention with the game. (3) Non-game intelligent release — non-game processes are continuously cleaned via intelligent scoring (gated; foreground and excluded processes protected) and demoted to low memory priority so the OS reclaims their pages for the game first. The gap interval extends to 18s (auto ×1.5 in game mode) to reduce daemon intervention density. Exit detection is immediate — regular parameters resume on the next probe cycle after the game process disappears.*
 
 ---
 
 ## 8. 图表与效率评分 · *Charting & Efficiency Scoring*
 
-图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v5 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身 50 轮滚动窗的中位数和四分位距(IQR)为基准，通过 80 + 60×(raw−p50)/IQR 将原始值映射为独立分数，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。释放量不参与分数构成，分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 >100% 时折点显示金色、<60% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤60% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（60-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率、彩色内存占用进度条和关键统计指标。
+图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v6 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身特异性滚动窗（释放效率 25 轮、参数收敛 8 轮、其余 20 轮）的中位数和四分位距(IQR)为基准，经 trimmed IQR 去极值与内插分位，通过 80 + 40×(raw−p50)/IQR（scale=40）将原始值映射为独立分数，释放效率维度经对数压缩，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 >100% 时折点显示金色、<60% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤60% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（60-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率与关键统计指标。
 
-*A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars overlaid with the ERIS v5 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, parameter convergence, side-effect control, learning convergence, and exploration completeness — with each dimension’s EWMA-decayed baseline serving as the 100% benchmark. A dual-speed divisor dampens values — light suppression (×1.05) above baseline, heavy suppression (×1.55) below. Baselines for affected dimensions auto-reset on game mode transitions. The weighted sum yields an efficiency score reflecting the engine’s genuine performance relative to its own norm. Freed volume does not participate in scoring. Golden dots mark scores above 100%, coral-red dots warn below 60%. Each dimension’s factor is selected by its deviation from the EWMA baseline — rising efficiency picks the largest positive deviation, falling efficiency picks the largest negative deviation. When efficiency exceeds 100%, only positive factors are shown; below 60%, only negative. Anti-oscillation guards prevent same-dimension flip-flopping. Fluctuations within ±2% display as relatively stable. The first 3 absolute data points (since daemon start) display dashed lines and dots during the convergence period. Hover tooltips reveal the true value and dominant influencing factors. Below the chart: average efficiency, a color-coded memory bar, cumulative freed total, and key operation counters.*
+*A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars overlaid with the ERIS v6 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, release efficiency, side-effect control, parameter convergence, and exploration completeness — each with its own dimension-specific rolling window (25 cycles for release efficiency, 8 for parameter convergence, 20 for the rest), trimmed-IQR outlier removal, interpolated quantiles, EWMA-smoothed medians, and a log-compressed release-efficiency raw. Scores map via 80 + 40×(raw−p50)/IQR (scale=40) and are weighted-summed into the final efficiency score. Affected quantile windows auto-reset on game-mode transitions. The score genuinely reflects engine performance relative to its own norm. The first 3 data points render as dashed lines/dots during convergence; golden dots mark scores above 100%, coral-red dots warn below 60%. Factor selection uses each dimension's deviation from the IQR center (80) — rising efficiency picks the largest positive deviation, falling picks the largest negative; ±2% fluctuation shows as relatively stable. Scores ≥100% append a 🚀 efficiency-exceptional tag, ≤60% a ⚠ efficiency-abnormal tag; 🔥 sustained-improvement / ⚠ sustained-decline tags trigger only within the normal range (60–100) on three consecutive same-direction cycles, with polarity-continuity protection. Anti-oscillation guards prevent same-dimension flip-flopping, and stable periods auto-reset anti-oscillation state. Hover tooltips reveal true values and the dominant factors. Below the chart: average efficiency and key statistics.*
 
 ---
 
 ## 9. 进程排行 · *Process Ranking*
 
-点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、PID、物理内存（WorkingSet）、CPU 占用率、以及学习画像数据。每 2 秒自动刷新。
+点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存、CPU 占用、以及学习画像数据。每 3 秒自动刷新。
 
-*A standalone window displays a live snapshot of all active processes ranked by working set, with columns for name, PID, physical memory, CPU%, and learned profile data. Refreshes every 2 seconds.*
+*A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory, CPU usage, and learned profile data. Refreshes every 3 seconds.*
 
 内存数据的采集优先使用内核批量查询接口，无需对每个进程执行 `OpenProcess`，可绕过安全软件的进程保护机制。
 
@@ -294,15 +277,15 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数�
 
 ## 10. 学习日志 · *Learning Log*
 
-点击"学习日志"按钮弹出独立窗口，按复合评分降序显示所有已学习进程的完整画像数据：θ 值、ROI、Kalman 预测值、EWMA、回弹率、清理次数、成功率等。支持排序和滚动浏览。
+点击"学习日志"按钮弹出独立窗口，按进程名排序显示所有已学习进程的完整画像数据：θ 值、ROI、Kalman 预测值、EWMA、回弹率、清理次数、成功率等。支持排序和滚动浏览。
 
-*A standalone window displays the complete profile of every learned process — θ, ROI, Kalman predictions, EWMA values, refill rate, clean count, and success rate — sorted by descending composite score with sortable columns and scroll navigation.*
+*A standalone window displays the complete profile of every learned process — θ, ROI, Kalman predictions, EWMA values, refill rate, clean count, and success rate — sorted by process name with sortable columns and scroll navigation.*
 
 ---
 
 ## 11. 设置面板 · *Settings Panel*
 
-设置面板提供以下可配置项，所有更改即时保存，重启后生效：
+设置面板提供以下可配置项，所有更改即时保存；守护运行中排除列表、清理操作、清理深度、全局热键即时生效，其余重启后生效：
 
 *All changes are saved immediately and take effect on restart:*
 
@@ -314,17 +297,17 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 10 参数�
 
 *Minimize to tray (daemon continues), exit immediately, or ask each time (default).*
 
-**清理操作 · Operations**：8 种操作独立开关：ws、standby、modified、compress、volume、registry、combine。前六项默认开启，内存合并默认关闭。
+**清理操作 · Operations**：8 种操作独立开关：ws、standby、modified、compress、filecache、volume、combine、registry。前七项默认开启，文件缓存与内存合并默认关闭。
 
-*Seven independent toggles: ws, standby, modified, compress, volume, registry, combine. The first six default on; combine defaults off.*
+*Eight independent toggles: ws, standby, modified, compress, filecache, volume, combine, registry. The first six default on; file cache and combine default off.*
 
 **游戏模式 · Game Mode**：管理自定义游戏进程名单（添加/查看），支持逗号分隔批量输入与大小写无关匹配。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
 *Manage custom game process entries (add/view), with comma-separated batch input and case-insensitive matching. A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click game mode switching.*
 
-**触发与日志 · Trigger & Logging**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
+**触发与日志 · Trigger & Logging**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、全局热键（默认 ctrl+shift+m）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
 
-*Emergency trigger threshold (50–99%, default 80%), daemon clean interval (8-20s, default 12s), tray left-click action, file-log toggle, cleaning depth (2–6 pass, default 4; large-process ceiling directly follows this value, other tiers unaffected).*
+*Emergency trigger threshold (50–99%, default 80%), daemon clean interval (8-20s, default 12s), global hotkey (default ctrl+shift+m), tray left-click action, file-log toggle, cleaning depth (2–6 pass, default 4; large-process ceiling directly follows this value, other tiers unaffected).*
 
 ---
 
@@ -346,8 +329,8 @@ python memwise.py [command] [options]
 |------|------|
 | `status` | 查看当前物理内存使用状态 |
 | `learn [分钟]` | 采集并学习进程内存行为 |
-| `optimize [-m MODE]` | 单次优化（支持 quick/normal/deep/full） |
-| `daemon [-m MODE]` | CLI 守护模式 |
+| `optimize [--mode MODE]` | 单次优化（支持 quick/normal/deep/full） |
+| `daemon [--mode MODE]` | CLI 守护模式 |
 | `profile <PID>` | 查看指定进程的完整学习画像 |
 
 ---
@@ -365,7 +348,7 @@ python memwise.py [command] [options]
 | `auto_start_daemon` | bool | `false` | 启动后自动守护 |
 | `auto_start_minimize` | bool | `false` | 启动后最小化 |
 | `close_action` | str | `"ask"` | 关闭按钮行为 |
-| `interval` | int | `60` | 日志/图表周期（秒） |
+| `interval` | int | `30` | 守护基础周期（秒；daemon 实际固定 60 秒日志/图表周期） |
 | `gap_seconds` | int | `12` | 守护清理间隔（秒） |
 | `emergency_threshold` | int | `80` | 紧急触发阈值（%） |
 | `clean_passes` | int | `4` | 进程清理深度（2-6） |
@@ -373,7 +356,7 @@ python memwise.py [command] [options]
 | `hotkey` | str | `"ctrl+shift+m"` | 热键 |
 | `never` | list | `[]` | 排除列表（进程名或 PID） |
 | `game_processes` | list | `[]` | 自定义游戏 exe 名 |
-| `efis_params` | dict | 10 参数默认值 | EFIS 参数 |
+| `efis_params` | dict | 9 参数默认值 | EFIS 参数 |
 
 ---
 
@@ -397,16 +380,15 @@ MemWise/
 │   ├── judger.py               # 判定器 + PID 控制器 · Judger + PID
 │   ├── efis.py                 # EFIS v3 全程序智能调参 · EFIS Parameter Tuner
 │   ├── meta.py                 # 元认知自我监控 · Meta-Cognitive Monitor
-│   ├── policy.py               # 五树投票策略 · Policy Voter
+│   ├── policy.py               # 三树投票策略 · Policy Voter
 │   ├── kalman.py               # Kalman 滤波器 · Kalman Filter
-│   ├── temporal.py             # 时序画像 · Temporal Profiler
-│   ├── hippocampus.py          # 情景记忆 · Episodic Memory
 │   ├── prior.py                # 分层先验 · Hierarchical Prior
 │   ├── winapi.py               # Win32 API 绑定（70+ 函数）· Win32 API Bindings
 │   ├── sniffer.py              # 进程快照采集 · Process Snapshot Collector
 │   └── config.py               # 配置加载/保存 · Configuration Loader
-└── scripts/
-    └── _validate.py            # 构建验证脚本 · Build Validator
+├── scripts/
+│   ├── test_v2.6.py             # 回归测试（37 项断言）· Regression Suite
+│   └── _validate.py             # 历史构建验证脚本（已标注废弃，回归请用 test_v2.6.py）· Legacy Validator
 ```
 
 ---
