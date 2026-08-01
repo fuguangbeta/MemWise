@@ -1,4 +1,4 @@
-﻿# MemWise v3.0
+﻿# MemWise v3.0.1
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
@@ -42,7 +42,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 *The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting.*
 
-程序内嵌看门狗子进程，主进程意外崩溃后可在数秒内自动重启并恢复守护状态。
+程序内嵌看门狗子进程，主进程意外崩溃后可在数秒内自动重启，并恢复崩溃前的运行状态——守护运行中则自动续守护，空闲中则保持空闲。
 
 *A watchdog subprocess automatically restores daemon state within seconds of an unexpected crash. A single-instance mutex prevents conflicts between recovered and manually launched instances.*
 
@@ -103,7 +103,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 1. **安全过滤 · Safety Gate**：排除系统核心进程、前台窗口保护（压力达到阈值时放开）、工作集过小的微小进程、WS 基线检查（上一轮清理后 WS 无增长则不重复清理）、失败冷却检查 · *Excludes system-core processes, foreground windows, tiny processes, baseline-checked processes, and processes in failure cooldown*
 
-2. **策略投票（三树决策）· Three-Tree Policy Vote**：Kalman 预期收益、内存压力与趋势、反事实优势（对比全体画像均值）。总分 ≥ 0 即通过（不设硬性门槛）· *Kalman-predicted gain, memory-pressure and trend, and counterfactual advantage over the profile average — soft pass threshold of total score ≥ 0*
+2. **策略投票（三树决策）· Three-Tree Policy Vote**：Kalman 预期收益、内存压力与趋势、反事实优势（对比全体画像均值）。各树贡献经在线学习的权重加权（权重可为负，按清理结果持续调节预测可靠度），加权总分 ≥ 0 即通过（不设硬性门槛）· *Kalman-predicted gain, memory-pressure and trend, and counterfactual advantage over the profile average — contributions weighted by online-learned per-tree weights (can be negative), soft pass threshold of weighted total ≥ 0*
 
 3. **复合评分排序 · Composite Score Ranking**：θ、Kalman 预期释放量、WS 大小、WS 回弹率四维加权，EFIS 可调权重 · *Four-dimensional weighted ranking with EFIS-tunable weights*
 
@@ -184,8 +184,9 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 - **收益树 · Gain Tree**：Kalman 预期释放量（经上下文修正），权重最高
 - **压力树 · Pressure Tree**：内存占用与趋势——高于 65% 加分、低于 30% 减分
 - **反事实树 · Counterfactual Tree**：Kalman 预期释放量对比全体画像均值——高于均值 50MB 加分、20MB 小加分
+- **在线权重学习 · Online Weight Learning**：每轮清理后按"预测贡献 × 实际结果"调节各树权重（有界 ±2）——正贡献+成功升权重、正贡献+失败降权重、负贡献+成功降权重（可为负），使投票随经验收敛
 
-总分 ≥ 0 通过（不设硬性门槛）。
+加权总分 ≥ 0 通过（不设硬性门槛）。
 
 ---
 
@@ -211,12 +212,12 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 | 参数 | 默认值 | 范围 | 控制的内容 |
 |------|:----:|:----:|------|
 | `deepen_theta` | 0.60 | 0.30-0.80 | 大进程 trim 升级门槛 |
-| `layer3_agg_gate` | 0.60 | 0.30-0.90 | 深度聚合触发阈值 |
+| `layer3_agg_gate` | 0.60 | 0.30-0.70 | 深度聚合触发阈值（仅 normal 模式寻优） |
 | `pid_kp` | 0.60 | 0.30-2.00 | PID 比例增益（对内存偏差的响应速度） |
 | `pid_kd` | 0.10 | 0.05-0.50 | PID 微分增益（抑制震荡） |
 | `target_usage` | 30% | 25-65% | PID 控制目标内存占用百分比 |
 | `cooloff_base` | 300s | 60-360s | 失败冷却基准时长 |
-| `learning_rate` | 0.30 | 0.05-0.40 | 反馈学习速率（保留参数，暂未启用） |
+| `learning_rate` | 0.30 | 0.05-0.40 | 反馈学习速率（保留参数，不参与自动调参） |
 | `composite_kalman_w` | 0.30 | 0.10-0.50 | 复合评分中 Kalman 分量的权重 |
 | `kalman_r` | 5.0 | 1.0-20.0 | 卡尔曼观测噪声——值越大对新观测越不敏感 |
 
@@ -224,7 +225,9 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 
 *Each parameter has dedicated symptom rules evaluated over sliding windows of release efficiency, PF rate, and memory amplitude. Adjustments require symptom persistence across a confirmation interval to prevent noise-induced false positives. Step magnitudes are bounded. A covariance monitor detects opposing adjustment signals between parameter pairs and freezes the one with the smaller step size to prevent compensatory oscillation.*
 
-**持久化 · Persistence**：独立状态文件，加载时自动跳过已废弃参数，新参数缺失时取默认值。写入采用原子化操作，防止中途崩溃导致配置损坏。
+**持久化 · Persistence**：独立状态文件，写入采用原子化操作，防止中途崩溃导致配置损坏。
+
+**场景自适应 · Scene Adaptation**：守护周期内自动检测运行场景（游戏/浏览器/开发/常规），场景切换时按 7:3 混合新场景参数并持久化，各场景独立调参互不干扰。
 
 *An independent state file with atomic write semantics (tmp-then-replace). Deprecated parameters are silently skipped on load; missing new parameters default to their factory values.*
 
@@ -240,7 +243,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 
 ## 7. 游戏模式 · *Game Mode*
 
-通过进程名匹配（内置已知游戏清单 + 用户自定义名单）和全屏窗口检测（含类名过滤排除浏览器等伪全屏窗口）自动激活，也可通过主界面按钮或 Ctrl+Shift+G 手动切换（含确认弹窗防误触）。
+通过进程名匹配（内置已知游戏清单 + 用户自定义名单）和全屏窗口检测（含类名过滤排除浏览器等伪全屏窗口）自动激活，也可通过主界面按钮或 Ctrl+Shift+G 手动切换（含确认弹窗防误触）。手动设置的模式持续生效，自动检测不再覆盖，直到用户再次手动切换或程序重启；游戏运行期间 PID 保护集仍实时刷新。
 
 激活后实施三层天花板保护：
 
