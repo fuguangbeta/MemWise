@@ -46,6 +46,13 @@
 - **统计真实化**：`ws_trim` 按 `empty_all_working_sets` 实际成功计数（原权限不足时虚增）
 - **PF 无基线兜底**：probe/trim 的 PF 基线读取失败时跳过副作用判定（原误进失败冷却）
 
+### 统计口径：系统杂项囊括全部系统操作
+
+系统杂项此前只统计 `standby`/`modified`/`combine` 等部分操作——`volume`（卷缓存）、`registry`（注册表）、`compress`（压缩）、`filecache`（文件缓存）实际执行却不计数，统计栏数字与设置面板 8 个勾选项脱节。
+
+- **计数补齐**：`_layer1_memreduct` 的 `volume`/`registry`/`compress`/`filecache` 分支按 API 真实成功计数（原只执行不写统计）
+- **口径对齐**：系统杂项 = 设置面板 8 勾选项中除 `ws`（归"进程"栏）外的 7 类系统操作的真实成功次数之和，勾选即执行、执行成功即计入
+
 ---
 
 ### 构建
