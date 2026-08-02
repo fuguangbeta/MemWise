@@ -2,10 +2,10 @@ import time
 from . import winapi
 
 class ProcessSnapshot:
-    __slots__ = ("pid","name","ws","pf","priv","cpu","fg","path","ts","_growth_bonus")
+    __slots__ = ("pid","name","ws","pf","priv","cpu","fg","path","_growth_bonus","_tree_scores")
     def __init__(self, pid, name, ws, pf, priv, cpu, fg, path=None):
         self.pid=pid; self.name=name; self.ws=ws; self.pf=pf; self.priv=priv
-        self.cpu=cpu; self.fg=fg; self.path=path; self.ts=time.time()
+        self.cpu=cpu; self.fg=fg; self.path=path
 
 class Sniffer:
     def __init__(self, collect_path=True):
@@ -16,9 +16,9 @@ class Sniffer:
         alive = set(alive_pids)
         for pid in list(self._prev_times.keys()):
             if pid not in alive: self._prev_times.pop(pid, None); self._path_cache.pop(pid, None)
-        # 限制路径缓存大小，防止长期运行膨胀
-        if len(self._path_cache) > 200:
-            for pid in list(self._path_cache.keys())[:50]:
+        # 限制路径缓存大小，防止长期运行膨胀（上限需高于常见进程数，避免每轮删-建抖动）
+        if len(self._path_cache) > 512:
+            for pid in list(self._path_cache.keys())[:128]:
                 self._path_cache.pop(pid, None)
                 self._prev_times.pop(pid, None)
 
