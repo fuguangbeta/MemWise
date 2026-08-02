@@ -1,4 +1,4 @@
-"""MemWise v1.6 验证脚本 — 适配当前 API"""
+"""MemWise v1.6 历史验证脚本 — 已过时，部分断言与现行行为不符，请使用 scripts/test_v2.6.py"""
 import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.learner import PareLearner as Learner
