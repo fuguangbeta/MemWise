@@ -7,13 +7,13 @@ import time
 class KalmanProfile:
     """2维卡尔曼滤波: 追踪 (预期释放量, 预期PF代价)"""
     
-    def __init__(self):
+    def __init__(self, r=5.0):
         self.x_freed = 0.0     # 预期释放量 (bytes)
         self.x_cost = 0.0      # 预期 PF 代价
         self.p_freed = 100.0   # 不确定性
         self.p_cost = 100.0
-        self.q = 0.1           # 过程噪声 (行为变化速度)
-        self.r = 5.0           # 测量噪声
+        self.q = 0.1           # 过程噪声
+        self.r = r             # 测量噪声（EFIS 可调，默认 5.0）
         self.last_update = 0.0
     
     def predict(self):
@@ -55,9 +55,8 @@ class KalmanProfile:
     
     @property
     def roi(self):
-        if self.x_cost < 1:
-            return self.x_freed / (1 << 20)
-        return (self.x_freed / (1 << 20)) / max(self.x_cost, 1)
+        freed_mb = self.x_freed / (1 << 20)
+        return freed_mb / max(self.x_cost, 1.0)
     
     def to_dict(self):
         return {
