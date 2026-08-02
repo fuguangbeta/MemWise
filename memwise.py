@@ -1,10 +1,10 @@
 """
-MemWise v1.7 PARES —— 智能内存看护
+MemWise v3.1.5 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
 
-import os, sys, time
+import json, os, sys, time
 
 from core.learner import PareLearner as Learner
 from core.judger import PareJudger as Judger
@@ -32,7 +32,8 @@ def _build_pipeline():
     learner = Learner.load(STATE_PATH)
     jcfg = {"kp": CFG.get("kp", 0.6), "ki": CFG.get("ki", 0.15),
             "kd": CFG.get("kd", 0.1), "target_usage": CFG.get("target_usage", 60),
-            "never": CFG.get("never",[])}
+            "never": CFG.get("never",[]),
+            "efis_params": CFG.get("efis_params",{})}
     judger = Judger(learner, jcfg)
     return learner, judger, Cleaner(judger)
 
@@ -77,6 +78,9 @@ def cmd_optimize(args):
         if args[i] == "--quick": mode = "quick"
         elif args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
         i += 1
+    if mode not in ("quick", "normal", "deep", "full"):
+        print(f"未知模式 {mode}，回退 normal")
+        mode = "normal"
     print(f"{mode.title()} 优化模式")
     m0 = _mem_or_none()
     if not m0: return
@@ -90,11 +94,14 @@ def cmd_optimize(args):
         if i < 2: time.sleep(2)
     print(f"  ─ 观察到 {len(snaps)} 个进程")
     print("  ─ 执行清理...")
-    result = cleaner.optimize(snaps, learner, mode)
+    freed0 = cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
+    result = cleaner.optimize(snaps, learner, mode, operations=CFG.get("clean_operations"))
     stats = cleaner.summary()
     trimmed = [t for t in result.get("layer2", []) if t[1]]
-    print(f"\n释放: {stats['freed_mb']} MB | 待机缓存={stats['standby']} "
-          f"已修改页={stats['modified']} 压缩={stats['compress']} "
+    net = result.get("net_freed", 0)
+    released = max(0.0, stats['freed_mb'] - freed0)
+    print(f"\n本次释放: {released:.0f} MB · 内存净下降: {_mb(net):.0f} MB | 累计释放: {stats['freed_mb']} MB")
+    print(f"待机缓存={stats['standby']} 已修改页={stats['modified']} 压缩={stats['compress']} "
           f"文件缓存={stats['filecache']} | "
           f"整理={stats['ws_trim']} | Probe={stats['probe']} | 反馈异常={stats['failed_feedback']}")
     if trimmed:
@@ -113,13 +120,10 @@ def cmd_daemon(args):
     sniffer = Sniffer()
     interval = CFG.get("interval", 30)
     mode = CFG.get("clean_mode", "normal")
-    scheduled = CFG.get("scheduled_clean")
     i = 0
     while i < len(args):
-        if args[i] == "--scheduled" and i+1 < len(args): scheduled = args[i+1]; i += 1
-        elif args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
+        if args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
         i += 1
-    last_sched_day = -1
     tick = 0
     try:
         while True:
@@ -143,25 +147,18 @@ def cmd_daemon(args):
                         CFG.update(_load_cfg())
                         mode = CFG.get("clean_mode", "normal")
                         interval = CFG.get("interval", 30)
-                except Exception:
-                    pass
-            if scheduled:
-                try:
-                    sh, sm = map(int, scheduled.split(":"))
-                    lt = time.localtime()
-                    if lt.tm_hour == sh and lt.tm_min == sm and lt.tm_yday != last_sched_day:
-                        last_sched_day = lt.tm_yday
-                        print(f"\n⏰ 定时清理触发 ({scheduled})")
-                        cleaner.optimize(snaps, learner, mode)
+                        # 同步 judger 运行配置（排除列表/清理深度/EFIS 参数即时生效）
+                        judger.cfg["never"] = CFG.get("never", [])
+                        judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
+                        judger.cfg["efis_params"] = CFG.get("efis_params", {})
                 except Exception:
                     pass
             if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH); import gc; gc.collect()
             stats = cleaner.summary()
-            sched_info = f" | 定时 {scheduled}" if scheduled else ""
             sys.stdout.write(f"\r内存 {m['pct']}% | 清理强度={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
                              f"释放 {stats['freed_mb']}MB | SB={stats['standby']} MP={stats['modified']} "
                              f"压缩={stats['compress']} 文件缓存={stats['filecache']} | "
-                             f"整理 {stats['ws_trim']}{sched_info} | {tick*interval}s")
+                             f"整理 {stats['ws_trim']} | {tick*interval}s")
             sys.stdout.flush()
             elapsed = time.time() - tick_start
             time.sleep(max(0.5, interval - elapsed))
@@ -246,13 +243,12 @@ def cmd_profile(args):
 
 def main():
     if len(sys.argv) < 2:
-        print("MemWise v1.7 PARES —— 智能内存看护")
+        print("MemWise v3.1.5 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
         print("  status                    内存状态")
         print("  learn [分钟]              学习进程行为 (默认10分钟)")
         print("  optimize [--mode q|n|d|f] 执行优化")
-        print("  daemon [--scheduled HH:MM] 守护模式")
-        print("         [--mode q|n|d|f]")
+        print("  daemon [--mode q|n|d|f] 守护模式")
         print("  profile <pid>             进程详情 (含 PARES 指标)")
         print("  auto-start on|off         开机自启")
         print("  service [remove]          安装/移除 Scheduled Task 服务")
