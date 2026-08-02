@@ -60,23 +60,24 @@ def delete_file(path):
 
 # ── 更新（远程已有）──
 UPDATES = [
-    'README.md', 'memwise.py', 'memwise_gui.py',
+    'README.md', 'memwise.py', 'memwise_gui.py', '.gitignore',
     'core/cleaner.py', 'core/config.py', 'core/efis.py', 'core/judger.py',
     'core/kalman.py', 'core/learner.py', 'core/meta.py', 'core/policy.py',
     'core/prior.py', 'core/sniffer.py', 'core/winapi.py',
-    'scripts/_validate.py', 'scripts/build_exe.bat', 'scripts/memwise.bat',
+    'scripts/build_exe.bat', 'scripts/memwise.bat',
     'scripts/memwise_gui.bat', 'assets/icon.ico', 'assets/memwise.ico',
 ]
 # ── 新增（远程缺失）──
 NEWS = [
-    '.gitignore',
+    'MemWise.spec',
     'scripts/test_v2.6.py',
     'scripts/release_body.py', 'scripts/release_push.py',
     'scripts/release_replace_asset.py', 'scripts/release_tag.py',
     'scripts/release_upload.py', 'scripts/release_sync.py',
 ]
-# ── 删除（远程残留、本地已移除的旧模块）──
-DELETES = ['core/causal.py', 'core/hippocampus.py', 'core/temporal.py']
+# ── 删除（远程残留、本地已移除）──
+DELETES = ['core/causal.py', 'core/hippocampus.py', 'core/temporal.py',
+           'scripts/_validate.py']
 
 if __name__ == '__main__':
     mode = sys.argv[1] if len(sys.argv) > 1 else 'all'
