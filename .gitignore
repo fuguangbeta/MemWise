@@ -15,7 +15,6 @@ config/config.yaml
 # Build artifacts
 build/
 dist/
-MemWise.spec
 /MemWise.exe
 
 # Python
