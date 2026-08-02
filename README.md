@@ -304,11 +304,13 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 
 *Eight independent toggles: ws, standby, modified, compress, filecache, volume, combine, registry. The first six default on; file cache and combine default off.*
 
-**游戏模式 · Game Mode**：管理自定义游戏进程名单（添加/查看），支持逗号分隔批量输入与大小写无关匹配。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
+**游戏模式 · Game Mode**：管理自定义游戏进程名单（一体化窗口：列出/添加/删除，逗号分隔批量输入、重复项提示、删除带确认，内置名单只读展示）。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
 *Manage custom game process entries (add/view), with comma-separated batch input and case-insensitive matching. A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click game mode switching.*
 
-**触发与日志 · Trigger & Logging**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、全局热键（默认 ctrl+shift+m）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
+**触发与日志 · Trigger & Logging**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
+
+**全局热键 · Global Hotkeys**：独立栏汇总所有快捷键——手动优化（默认 `ctrl+shift+m`）与游戏模式开关（默认 `ctrl+shift+g`），各自独立配置。格式校验（至少一个修饰键 + 单字母/F1-F24）、双键冲突检测、注册占用提示（被其他程序占用时本次使用默认值），修改即时生效。
 
 *Emergency trigger threshold (50–99%, default 80%), daemon clean interval (8-20s, default 12s), global hotkey (default ctrl+shift+m), tray left-click action, file-log toggle, cleaning depth (2–6 pass, default 4; large-process ceiling directly follows this value, other tiers unaffected).*
 
@@ -356,7 +358,8 @@ python memwise.py [command] [options]
 | `emergency_threshold` | int | `80` | 紧急触发阈值（%） |
 | `clean_passes` | int | `4` | 进程清理深度（2-6） |
 | `tray_left_action` | str | `"show"` | 托盘左键行为 |
-| `hotkey` | str | `"ctrl+shift+m"` | 热键 |
+| `hotkey` | str | `"ctrl+shift+m"` | 手动优化热键 |
+| `game_hotkey` | str | `"ctrl+shift+g"` | 游戏模式开关热键 |
 | `never` | list | `[]` | 排除列表（进程名或 PID） |
 | `game_processes` | list | `[]` | 自定义游戏 exe 名 |
 | `efis_params` | dict | 9 参数默认值 | EFIS 参数 |
