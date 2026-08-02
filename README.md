@@ -1,4 +1,4 @@
-﻿# MemWise v3.0.1
+﻿# MemWise v3.1.5
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
