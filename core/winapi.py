@@ -342,36 +342,91 @@ def get_process_private_ws(pid):
     finally:
         if h:
             try: k32.CloseHandle(h)
-            except: pass
+            except Exception: pass
 
+
+# SYSTEM_PROCESS_INFORMATION 布局候选（x64）：(pid_off, ws_off, priv_off)
+# 微软可能增删字段改变布局（实测 Win11 24H2+ 为 0x50/0x90/0xB8，旧版为 0x68/0x1F8/0x210），
+# 用自身进程交叉校验动态选表，跨版本兼容
+_SPI_LAYOUTS = (
+    (0x50, 0x90, 0xB8),   # Win11 24H2+ 实测布局
+    (0x68, 0x1F8, 0x210),  # Win10 2004+ / Win11 早期
+    (0x68, 0x1E8, 0x200),  # Win10 1809-1903 附近
+    (0x68, 0x1C8, 0x1E0),  # 更早版本
+)
+_spi_layout = None  # 模块级缓存：首次自校验后锁定
+
+def _resolve_spi_layout(buf, ret_len):
+    """用自身进程的已知 PID/WS 交叉校验，选定结构布局（失败返回 None，调用方有兜底）"""
+    global _spi_layout
+    if _spi_layout:
+        return _spi_layout
+    import os
+    self_pid = os.getpid()
+    self_ws = 0
+    try:
+        m = get_process_memory(self_pid)
+        self_ws = m["ws"] if m else 0
+    except Exception:
+        pass
+    if self_ws <= 0:
+        return None
+    for pid_off, ws_off, priv_off in _SPI_LAYOUTS:
+        off = 0
+        while off < ret_len.value:
+            ne = ctypes.c_uint32.from_buffer(buf, off).value
+            pid = ctypes.c_size_t.from_buffer(buf, off + pid_off).value
+            if pid == self_pid:
+                ws = ctypes.c_size_t.from_buffer(buf, off + ws_off).value
+                if abs(ws - self_ws) <= (1 << 20):  # 1MB 容差（两次读取间瞬时抖动）
+                    _spi_layout = (pid_off, ws_off, priv_off)
+                    return _spi_layout
+            if ne == 0:
+                break
+            off += ne
+    return None
 
 def get_all_processes_memory():
     """Returns {pid: {"ws":bytes, "priv":bytes}} for ALL processes via NtQuerySystemInformation.
-    No OpenProcess needed -- works with protected processes like AV."""
-    buf_size = 1 << 20  # 1MB starting buffer
-    while True:
-        buf = (ctypes.c_ubyte * buf_size)()
-        ret_len = w.ULONG()
-        status = NtQuerySystemInformation(5, buf, buf_size, ctypes.byref(ret_len))
-        if status == 0:
+    No OpenProcess needed -- works with protected processes like AV.
+    布局运行时自校验跨版本兼容；内置重试(×3)和条目上限(8192)。"""
+    MAX_RETRIES = 3
+    MAX_ITEMS = 8192
+    for attempt in range(MAX_RETRIES):
+        buf_size = 1 << 20  # 1MB starting buffer
+        status = 0; ret_len = w.ULONG()
+        while True:
+            buf = (ctypes.c_ubyte * buf_size)()
+            ret_len = w.ULONG()
+            status = NtQuerySystemInformation(5, buf, buf_size, ctypes.byref(ret_len))
+            if status == 0:
+                break
+            if status == 0xC0000004:  # STATUS_INFO_LENGTH_MISMATCH
+                buf_size = ret_len.value + (512 << 10)
+                continue
             break
-        if status == 0xC0000004:
-            buf_size = ret_len.value + (512 << 10)
+        if status != 0:
             continue
-        return {}
-    result = {}
-    off = 0
-    while off < ret_len.value:
-        ne = ctypes.c_uint32.from_buffer(buf, off).value
-        pid = ctypes.c_size_t.from_buffer(buf, off + 0x68).value
-        if pid and pid > 4:
-            ws = ctypes.c_size_t.from_buffer(buf, off + 0x1F8).value
-            priv = ctypes.c_size_t.from_buffer(buf, off + 0x210).value
-            result[pid] = {"ws": ws, "priv": priv, "pf": 0}
-        if ne == 0:
-            break
-        off += ne
-    return result
+        layout = _resolve_spi_layout(buf, ret_len)
+        if not layout:
+            continue
+        pid_off, ws_off, priv_off = layout
+        result = {}
+        off = 0; items = 0
+        while off < ret_len.value and items < MAX_ITEMS:
+            ne = ctypes.c_uint32.from_buffer(buf, off).value
+            pid = ctypes.c_size_t.from_buffer(buf, off + pid_off).value
+            if pid and pid > 4:
+                ws = ctypes.c_size_t.from_buffer(buf, off + ws_off).value
+                priv = ctypes.c_size_t.from_buffer(buf, off + priv_off).value
+                result[pid] = {"ws": ws, "priv": priv, "pf": 0}
+            if ne == 0:
+                break
+            off += ne
+            items += 1
+        if items < MAX_ITEMS:
+            return result
+    return {}
 
 def is_elevated():
     try:
@@ -486,6 +541,13 @@ def wait_for_object(handle, timeout_ms):
     except Exception:
         return "error"
 
+def close_handle(handle):
+    """关闭内核句柄（供守护等模块释放事件/内存通知对象）"""
+    try:
+        return bool(CloseHandle(handle))
+    except Exception:
+        return False
+
 # ============================================================
 # 新增: 拓展清理操作
 # ============================================================
@@ -535,10 +597,11 @@ def clear_system_file_cache_ex():
 
 def create_tray_percent_icon(percent, color=(0, 200, 0)):
     """在 16x16 内存 DC 上绘制百分比数字图标"""
+    import ctypes.wintypes as wt
+    gm = ctypes.windll.gdi32
+    um = ctypes.windll.user32
+    hdc_screen = hdc = hdc_mask = hbm = hbm_mask = hicon = None
     try:
-        import ctypes.wintypes as wt
-        gm = ctypes.windll.gdi32
-        um = ctypes.windll.user32
         hdc_screen = um.GetDC(None)
         if not hdc_screen:
             return None
@@ -547,9 +610,6 @@ def create_tray_percent_icon(percent, color=(0, 200, 0)):
         hbm = gm.CreateCompatibleBitmap(hdc_screen, 16, 16)
         hbm_mask = gm.CreateBitmap(16, 16, 1, 1, None)
         if not all([hdc, hdc_mask, hbm, hbm_mask]):
-            for h in [hdc, hdc_mask]: gm.DeleteDC(h)
-            for h in [hbm, hbm_mask]: gm.DeleteObject(h)
-            um.ReleaseDC(None, hdc_screen)
             return None
         prev_bm = gm.SelectObject(hdc, hbm)
         prev_font = gm.SelectObject(hdc, gm.GetStockObject(17))  # DEFAULT_GUI_FONT
@@ -567,24 +627,22 @@ def create_tray_percent_icon(percent, color=(0, 200, 0)):
         gm.DrawTextW(hdc, text, -1, ctypes.byref(rect), 0x25)  # DT_CENTER|DT_VCENTER|DT_SINGLELINE
         gm.SelectObject(hdc, prev_font)
         gm.SelectObject(hdc, prev_bm)
-        gm.DeleteDC(hdc)
+        gm.DeleteDC(hdc); hdc = None
         # Create icon
-        ic = ctypes.windll.user32.CreateIconIndirect
-        ii = (1, 0, 0, hbm, hbm_mask)
-        hicon = _create_icon_indirect(*ii) if hasattr(globals(), '_create_icon_indirect') else None
-        # Fallback: use ICONINFO via ctypes
         class ICONINFO(ctypes.Structure):
             _fields_ = [("fIcon", wt.BOOL), ("xHotspot", wt.DWORD), ("yHotspot", wt.DWORD),
-                        ("hbmMask", wt.HBITMAP__), ("hbmColor", wt.HBITMAP__)]
+                        ("hbmMask", wt.HBITMAP), ("hbmColor", wt.HBITMAP)]
         ii2 = ICONINFO(True, 0, 0, hbm_mask, hbm)
         hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii2))
-        gm.DeleteObject(hbm)
-        gm.DeleteObject(hbm_mask)
-        gm.DeleteDC(hdc_mask)
-        um.ReleaseDC(None, hdc_screen)
         return hicon
     except Exception:
         return None
+    finally:
+        if hbm_mask: gm.DeleteObject(hbm_mask)
+        if hbm: gm.DeleteObject(hbm)
+        if hdc_mask: gm.DeleteDC(hdc_mask)
+        if hdc: gm.DeleteDC(hdc)
+        if hdc_screen: um.ReleaseDC(None, hdc_screen)
 
 def enable_reduct_privileges():
     """启用清理所需权限（SE_PROF_SINGLE_PROCESS + SE_INCREASE_QUOTA）"""
@@ -599,7 +657,9 @@ def get_memory_used_bytes():
     """获取物理内存已用量（字节）"""
     try:
         s = get_memory_status()
-        return s.total - s.free
+        if s:
+            return s["total"] - s["avail"]
+        return 0
     except Exception:
         return 0
 
@@ -669,7 +729,7 @@ def flush_volume_cache():
             vol = f"{letter}:\\"
             if os.path.exists(vol):
                 h = k32.CreateFileW(vol, 0x40000000, 3, None, 3, 0x80, None)
-                if h and h != -1:
+                if h and h != INVALID_HANDLE_VALUE:
                     k32.FlushFileBuffers(h)
                     k32.CloseHandle(h)
         return True
@@ -819,21 +879,6 @@ def remove_auto_start(name):
         return True
     except Exception:
         return False
-
-# ============================================================
-# 新增: 用户闲置检测
-# ============================================================
-
-class LASTINPUTINFO(ctypes.Structure):
-    _fields_ = [("cbSize", w.UINT), ("dwTime", w.DWORD)]
-
-def get_last_input_tick():
-    """获取上次用户输入后的毫秒数"""
-    lii = LASTINPUTINFO()
-    lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-    if GetLastInputInfo(ctypes.byref(lii)):
-        return ctypes.windll.kernel32.GetTickCount() - lii.dwTime
-    return 0
 
 # ============================================================
 # 新增: 系统托盘图标
