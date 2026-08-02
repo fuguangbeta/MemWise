@@ -4,10 +4,7 @@ Thompson Sampling + 3x EWMA + Z-score + 趋势线
 """
 import json, os, time, math, random
 from .kalman import KalmanProfile
-from .temporal import TemporalProfile
-from .hippocampus import EpisodeMemory
 from .prior import HierarchicalPrior
-from .causal import CausalGraph
 from .policy import PolicyVoter
 from .meta import MetaCognition
 from collections import deque
@@ -44,11 +41,10 @@ class Profile:
                  "probe_ok", "probe_fail",
                  "leak_suspect", "leak_tick_count",
                  "clean_count", "refill_ewma",
-                 "_ctx_weights",
-                 "_grad_buffer", "_grad_count",
-                 "kalman", "temporal", "_curiosity_boost", "last_feedback_time")
+                 "kalman", "last_feedback_time",
+                 "_info_msgs", "timeout_count")
 
-    def __init__(self, name):
+    def __init__(self, name, kalman_r=5.0):
         self.name = name
         # Thompson Sampling — Beta(α, β) (先验偏向可清理)
         self.alpha = 2
@@ -86,13 +82,10 @@ class Profile:
         self.clean_count = 0
         self.refill_ewma = 0.0  # WS 再填充速率 (增长 bytes/s 的 EWMA)
         # 上下文 Thompson 权重: [bias, norm_ws, norm_vol, norm_pf, conf]
-        self._ctx_weights = [0.0, 0.0, 0.0, 0.0, 0.0]
         # 批量梯度累积
-        self._grad_buffer = [0.0] * 5
-        self._grad_count = 0
-        self.kalman = KalmanProfile()
-        self._curiosity_boost = 1.0   # 卡尔曼连续值估计
-        self.temporal = TemporalProfile()  # 时间槽画像
+        self.kalman = KalmanProfile(r=kalman_r)
+        self._info_msgs = []  # 泄漏检测等消息缓冲
+        self.timeout_count = 0  # 超时累计（仅内存，不持久化）
 
     def feed(self, ws):
         """喂入 WS 样本，更新 EWMA 和 Z-score 基线"""
@@ -108,7 +101,6 @@ class Profile:
             dt = max(time.time() - prev_seen, 1)
             growth = (ws - self.last_ws) / dt
             self.refill_ewma = EWMA_LAMBDA * growth + (1 - EWMA_LAMBDA) * self.refill_ewma
-        self.temporal.feed(ws, time.time())
         self.last_ws = ws
         # EWMA 基线 (Z-score)
         if self.ws_ewma_mu == 0:
@@ -124,15 +116,18 @@ class Profile:
             z = abs(ws - self.ws_ewma_mu) / max(self.ws_ewma_sigma, 1)
             # 检查是否持续增长
             if len(self.ws_deque) >= TREND_SAMPLES:
+                # 双阈值：相对斜率（按进程WS缩放）>0.005 + Z>2.0 → 中等泄漏
                 slope = self._calc_slope()
-                # 双阈值：Z>2.0+斜率>0.005 → 中等泄漏；Z>3.0+斜率>0.01 → 严重泄漏
-                if slope > 0.005 and z > 2.0:
+                ws_avg = sum(self.ws_deque) / max(len(self.ws_deque), 1)
+                ws_scale = max(1.0, ws_avg / (1 << 20))  # 按 MB 缩放
+                rel_slope = slope / ws_scale if ws_scale > 0 else 0.0
+                if rel_slope > 0.005 and z > 2.0:
                     self.leak_tick_count += 1
                     if self.leak_tick_count >= 2:
                         self.leak_suspect = True
                         if self.leak_tick_count == 2:
-                            self._info_msgs.append(f"🕳️ 检测到{self.name}疑似内存泄漏(斜率{slope:.3f},Z={z:.1f})")
-                elif slope > 0.002 and z > 1.5:
+                            self._info_msgs.append(f"🕳️ {self.name} 疑似内存持续增长，建议关注")
+                elif rel_slope > 0.002 and z > 1.5:
                     # 轻度泄漏——标记但不跳过冷却
                     self.leak_suspect = "mild"
                 else:
@@ -158,19 +153,6 @@ class Profile:
         den = sum((x - mx) ** 2 for x in xs)
         return num / den if den else 0.0
 
-    def _ctx_feature_vector(self):
-        """计算 5 维上下文特征向量用于修正 θ"""
-        # [1, norm_ws, norm_vol, norm_pf_ratio, confidence]
-        ws = self.ws_deque[-1] if self.ws_deque else 0
-        # WS sigmoid 归一化: 200MB 为中心点
-        norm_ws = 1.0 / (1.0 + math.exp(-(ws / (200 << 20) - 1))) if ws > 0 else 0.5
-        # 波动率 tanh 归一化
-        norm_vol = math.tanh(self.vol_ewma * 10) if self.vol_ewma > 0 else 0.0
-        # PF 成本/收益比
-        gain = max(self.gain_ewma, 1)
-        norm_pf = min(self.cost_ewma / gain, 2.0) if self.cost_ewma > 0 else 0.0
-        return [1.0, norm_ws, norm_vol, norm_pf, self.confidence]
-
     @property
     def thompson_theta(self):
         """Thompson θ: Kalman 基线 + Beta 探索 + 上下文修正"""
@@ -189,47 +171,20 @@ class Profile:
         mix = min(1.0, self.total_samples / 20.0)
         base = (1 - mix) * beta_sample + mix * kalman_base
         # 上下文修正
-        feats = self._ctx_feature_vector()
-        w_dot = sum(w * f for w, f in zip(self._ctx_weights, feats))
-        correction = 1.0 / (1.0 + math.exp(-w_dot)) + 0.5
-        self._theta_cache = max(0.01, min(0.99, base * correction))
+        self._theta_cache = max(0.01, min(0.99, base))
         self._theta_dirty = False
         return self._theta_cache
-
-    def _update_ctx_weights(self, ok, lr=None):
-        """在线梯度下降更新上下文权重 — sign-based + 批量累积"""
-        feats = self._ctx_feature_vector()
-        base = random.betavariate(max(self.alpha, 0.5), max(self.beta, 0.5))
-        w_dot = sum(w * f for w, f in zip(self._ctx_weights, feats))
-        sig = 1.0 / (1.0 + math.exp(-w_dot))
-        predict = base * (sig + 0.5)
-        target = 1.0 if ok else 0.0
-        error = predict - target
-        if lr is None:
-            lr = CTX_LR_BASE * (1.0 - self.confidence * 0.8)
-        else:
-            lr = lr * (0.5 + 0.5 * (1.0 - self.confidence))
-        grad = 2 * error * base * sig * (1 - sig)
-        for i in range(len(self._ctx_weights)):
-            self._grad_buffer[i] += grad * feats[i]
-        self._grad_count += 1
-        if self._grad_count >= 2:  # 累积2次就更新（原5，加快上下文修正收敛）
-            for i in range(len(self._ctx_weights)):
-                avg_grad = self._grad_buffer[i] / self._grad_count
-                step = lr * (0.3 * (1.0 if avg_grad > 0 else -1.0) + 0.7 * avg_grad / max(abs(avg_grad), 1e-8))
-                self._ctx_weights[i] -= step
-            self._grad_buffer = [0.0] * 5
-            self._grad_count = 0
 
     def record_clean(self, ok, freed=0, pf_delta=0, lr=None):
         """连续反馈记录清理结果 — 考虑释放质量和PF代价"""
         self.last_ok = ok
+        prev_feedback = self.last_feedback_time
         self.last_feedback_time = time.time()
         
-        # 时间感知遗忘：距离上次反馈超过1小时，alpha/beta向先验回归
+        # 时间感知遗忘：距离上次反馈（清理/试探）超过1小时，alpha/beta向先验回归
         now = time.time()
-        if self.last_seen > 0 and now - self.last_seen > 3600:
-            hours_since = (now - self.last_seen) / 3600
+        if prev_feedback > 0 and now - prev_feedback > 3600:
+            hours_since = (now - prev_feedback) / 3600
             forget = min(0.5, hours_since * 0.05)
             if self.alpha > 2:
                 self.alpha = 2 + (self.alpha - 2) * (1 - forget)
@@ -262,17 +217,25 @@ class Profile:
                 # 期望效率：历史 gain_ewma / max(cost_ewma, 1)
                 expected = self.gain_ewma / max(self.cost_ewma + 1, 1)
                 ratio = min(3.0, efficiency / max(expected * 0.5, 1))
-                # alpha 增量 = 基础1 + 效率加成（0~2）
+                # alpha 增量 = 基础1 + 效率加成（0~2），再按释放量对数缩放
                 bonus = max(0, ratio - 1) * 1.5
-                self.alpha += 1 + min(2.0, bonus)
+                freed_mb = max(1, freed / (1 << 20))
+                scale = 1.0 + min(1.5, math.log2(freed_mb + 1) / 6)
+                self.alpha += scale * (1 + min(2.0, bonus))
             else:
                 self.alpha += 0.5  # 成功但没释放到内存 → 部分奖励
         else:
             self.fail_cnt += 1
             self.ok_cnt = 0
             self.beta += 1
+        self.alpha = min(self.alpha, 100)   # 防止 Alpha 无限膨胀导致 Thompson 退化
+        self.beta = min(self.beta, 50)      # 同上
+        # 软上限：超限后等比缩归，保持 α/β 比例不畸变
+        if self.alpha > 80:
+            ratio = self.beta / max(self.alpha, 1)
+            self.alpha = int(self.alpha * 0.85)
+            self.beta = max(1, int(self.alpha * ratio))
         self._theta_dirty = True
-        self._update_ctx_weights(ok, lr)
 
     def record_probe(self, ok, lr=None, freed=0):
         """记录微型试探结果 — 连续反馈"""
@@ -291,7 +254,6 @@ class Profile:
             self.probe_fail += 1
             self.beta += 1
         self._theta_dirty = True
-        self._update_ctx_weights(ok, lr)
 
     @property
     def total_samples(self):
@@ -355,11 +317,7 @@ class Profile:
             "leak_tick_count": self.leak_tick_count,
             "clean_count": self.clean_count,
             "refill_ewma": self.refill_ewma,
-            "ctx_weights": self._ctx_weights,
-            "grad_buffer": self._grad_buffer,
-            "grad_count": self._grad_count,
             "kalman": self.kalman.to_dict(),
-            "temporal": self.temporal.to_dict(),
         }
 
     @classmethod
@@ -391,9 +349,6 @@ class Profile:
         p.leak_tick_count = d.get("leak_tick_count", 0)
         p.clean_count = d.get("clean_count", 0)
         p.refill_ewma = d.get("refill_ewma", 0.0)
-        p._ctx_weights = d.get("ctx_weights", [0.0, 0.0, 0.0, 0.0, 0.0])
-        p._grad_buffer = d.get("grad_buffer", [0.0] * 5)
-        p._grad_count = d.get("grad_count", 0)
         kalman_d = d.get("kalman")
         if kalman_d:
             p.kalman = KalmanProfile.from_dict(kalman_d)
@@ -403,9 +358,7 @@ class Profile:
         if p.kalman.x_cost == 0 and p.cost_ewma > 0:
             p.kalman.x_cost = p.cost_ewma
             p.kalman.p_cost = 50.0
-        temporal_d = d.get("temporal")
-        if temporal_d:
-            p.temporal = TemporalProfile.from_dict(temporal_d)
+        p._info_msgs = []  # 从磁盘恢复后初始化消息缓冲
         return p
 
 
@@ -413,26 +366,56 @@ class PareLearner:
     """PARES 学习器 — 管理所有进程画像"""
     def __init__(self):
         self.profiles = {}
-        self.memory = EpisodeMemory()      # 情景记忆
         self.prior = HierarchicalPrior()   # 分层先验
-        self.causal = CausalGraph()        # 因果图
         self.policy = PolicyVoter()        # 策略投票器
         self.meta = MetaCognition(self)    # 元认知监控
         self._meta_ready = True
         self._ctx = {}                     # 当前系统上下文
         self._info_msgs = []
+        # 上下文修正查找表: 30桶 × 1 float，在线学习条件偏差
+        self._ctx_corrections = {}         # {bucket_key: correction_ewma}
+    
+    @staticmethod
+    def _ctx_bucket(mem_pct, is_fg, hour):
+        """三维上下文 → 桶键 (5×2×3=30)"""
+        mb = 0 if mem_pct < 30 else (1 if mem_pct < 50 else (2 if mem_pct < 70 else (3 if mem_pct < 85 else 4)))
+        fb = 1 if is_fg else 0
+        hb = 0 if hour < 6 else (1 if hour < 22 else 2)  # 深夜/活跃/普通
+        return (mb, fb, hb)
+    
+    def ctx_correction(self, mem_pct, is_fg=False, hour=12):
+        """获取当前上下文下的 Kalman 预测修正因子（freed, cost）"""
+        v = self._ctx_corrections.get(self._ctx_bucket(mem_pct, is_fg, hour), (1.0, 1.0))
+        return v if isinstance(v, tuple) else (v, 1.0)  # 兼容旧单值格式
+    
+    def record_ctx_correction(self, mem_pct, is_fg, hour, actual_freed, kalman_freed, actual_pf=0, kalman_cost=0):
+        """每次 trim 后更新上下文修正 EWMA（freed + cost 双值）"""
+        if kalman_freed <= 0:
+            return
+        key = self._ctx_bucket(mem_pct, is_fg, hour)
+        fr = max(0.1, min(5.0, actual_freed / kalman_freed))
+        cr = max(0.1, min(5.0, actual_pf / max(kalman_cost, 1))) if kalman_cost > 0 and actual_pf > 0 else 1.0
+        old_f, old_c = self._ctx_corrections.get(key, (1.0, 1.0))
+        if not isinstance(old_f, tuple):
+            old_f, old_c = (old_f, 1.0)
+        self._ctx_corrections[key] = (0.85 * old_f + 0.15 * fr, 0.85 * old_c + 0.15 * cr)
 
  
     def pop_info(self):
-        """取出并清空日志消息"""
+        """取出并清空日志消息（含 Learner 自身 + 各 Profile 消息）"""
         msgs = self._info_msgs[:]
         self._info_msgs.clear()
+        # 收集各 Profile 的消息（如泄漏检测）
+        for p in self.profiles.values():
+            if hasattr(p, '_info_msgs') and p._info_msgs:
+                msgs.extend(p._info_msgs)
+                p._info_msgs.clear()
         return msgs
 
     def get(self, name):
         key = name.lower()
         if key not in self.profiles:
-            self.profiles[key] = Profile(key)
+            self.profiles[key] = Profile(key, kalman_r=getattr(self, '_kalman_r', 5.0))
         return self.profiles[key]
 
     def feed(self, snaps):
@@ -442,64 +425,26 @@ class PareLearner:
 
     # ── Thompson Sampling ──
 
-    def thompson_score(self, name):
-        """返回 Thompson θ ∈ [0,1]，越高越值得清理
-        自适应好奇心 + 不确定性奖励 — 根据全局覆盖率动态调整"""
+    def thompson_score(self, name, mem_pct=None, is_fg=None):
+        """t — mem_pct/is_fg 由调用方传入真实上下文，修正取实际桶；未传时回退 _ctx/默认值"""
         key = name.lower()
         if key in SYSTEM_CORE:
             return 0.0
         p = self.profiles.get(key)
         if not p or p.total_samples < 2:
             return self.prior.initial_theta(key, self.profiles)
-
-        # 历史记忆查询
-        hist = self.memory.success_rate(key, mem_pct=self._ctx.get("mem_pct", 50), hours=12)
         base = p.thompson_theta
-
-        # 情景记忆检索: 找到相似上下文的历史经验调整θ
-        if hasattr(self, 'memory') and self.memory and p.total_samples >= 5:
-            mem_hits = self.memory.retrieve(key)
-            if mem_hits:
-                best_ep = mem_hits[0][1]
-                eff = best_ep.get('efficiency', 0)
-                if eff > 0:
-                    base = max(0.05, min(0.95, base + (eff - 0.3) * 0.15))
-
-        # ── 自适应好奇心 ──
-        last_fb = p.last_feedback_time
-        mins_since = (time.time() - last_fb) / 60 if last_fb > 0 else 999
-        
-        # 全局探索覆盖率：最近1小时内被 probe/clean 过的进程比例
-        now = time.time()
-        recently_served = sum(1 for pp in self.profiles.values()
-                             if pp.last_feedback_time > 0 and now - pp.last_feedback_time < 3600)
-        total = max(len(self.profiles), 1)
-        coverage = recently_served / total
-        
-        # 覆盖率低(<=30%) → 好奇心加速（系统需要探索更多）
-        # 覆盖率高(>=70%) → 好奇心减速（系统已知足够）
-        if coverage <= 0.3:
-            rate = 0.012  # 快3倍
-        elif coverage >= 0.7:
-            rate = 0.003  # 减半
-        else:
-            rate = 0.006  # 默认
-        
-        curiosity = min(0.20, max(0, mins_since - 5) * rate)
-        
-        # 不确定性奖励：置信度低(样本少/结果不稳定)的进程给额外机会
+        if mem_pct is None:
+            mem_pct = self._ctx.get("mem_pct", 50)
+        if is_fg is None:
+            is_fg = self._ctx.get("is_fg", False)
+        if hasattr(p, 'kalman') and p.kalman.x_freed > 0:
+            f_corr, _ = self.ctx_correction(mem_pct, is_fg=is_fg, hour=time.localtime().tm_hour)
+            base = max(0.01, min(0.99, base * max(0.3, min(3.0, f_corr))))
         uncertainty = max(0, 0.12 - p.confidence * 0.12)
-        
-        result = min(0.99, base + curiosity * getattr(p, '_curiosity_boost', 1.0) + uncertainty)
-        result = self.meta.adjust_theta(result)
-        
-        # 探索奖励：累计统计，每 tick 汇总输出一次
-        total_bonus = curiosity + uncertainty
-        if total_bonus > 0.08:
-            pass
+        result = min(0.99, base + uncertainty)
+        result = max(0.01, min(0.99, result))
         return result
-
-    # ── 成本收益 ──
 
     def get_roi(self, name):
         p = self.profiles.get(name.lower())
@@ -511,10 +456,6 @@ class PareLearner:
 
 
 
-    def is_leak_suspect(self, name):
-        p = self.profiles.get(name.lower())
-        return p.leak_suspect if p else False
-
     def get_confidence(self, name):
         p = self.profiles.get(name.lower())
         return p.confidence if p else 0.0
@@ -524,119 +465,26 @@ class PareLearner:
     def get_profile(self, name):
         return self.profiles.get(name.lower())
 
-    # ── 反饋 ──
-
-    def record_clean_result(self, name, ok, freed=0, pf_delta=0, lr=None):
-        p = self.profiles.get(name.lower())
-        if p:
-            p.record_clean(ok, freed, pf_delta, lr)
-            # 存入情景记忆
-            if freed > 0 or pf_delta > 0:
-                self.memory.store(
-                    name=name.lower(),
-                    mem_pct=self._ctx.get("mem_pct", 50),
-                    ws=p.last_ws,
-                    is_fg=self._ctx.get("fg", False),
-                    action="trim",
-                    ok=ok, freed=freed, pf_delta=pf_delta,
-                    trimmed_cnt=self._ctx.get("trimmed", 0),
-                    total_att=self._ctx.get("total", 0),
-                    agg=self._ctx.get("agg", 0.0),
-                )
-
-    def record_probe_result(self, name, ok, lr=None, freed=0):
-        p = self.profiles.get(name.lower())
-        if p:
-            p.record_probe(ok, lr, freed)
-            # 存入情景记忆
-            self.memory.store(
-                name=name.lower(),
-                mem_pct=self._ctx.get("mem_pct", 50),
-                ws=p.last_ws,
-                is_fg=self._ctx.get("fg", False),
-                action="probe",
-                ok=ok, freed=freed, pf_delta=0,
-                trimmed_cnt=self._ctx.get("trimmed", 0),
-                total_att=self._ctx.get("total", 0),
-                agg=self._ctx.get("agg", 0.0),
-            )
-
     # ── 持久化 ──
 
-    def self_check(self):
-        """每 100 tick 检查预测准确性，动态调整学习率"""
-        errors = []
-        now = time.time()
-        for name, p in self.profiles.items():
-            if p.clean_count >= 5 and p.gain_ewma > 0:
-                # 预测释放量 = θ × gain_ewma（期望值）
-                predicted = p.thompson_theta * p.gain_ewma
-                # 实际最近释放 = gain_ewma（EWMA已是最新估计）
-                actual = p.gain_ewma
-                err = abs(predicted - actual) / max(actual, 1)
-                errors.append(err)
-        
-        if not errors:
-            return
-        
-        avg_err = sum(errors) / len(errors)
-        # 平均误差 > 30% → 学习太激进，降速
-        if avg_err > 0.3:
-            new_lr = CTX_LR_BASE * 0.8
-            if new_lr != CTX_LR_BASE:
-                import sys
-                # print(f"[MemWise] ⚠ 预测偏差{avg_err:.0%}，学习率{CTX_LR_BASE:.3f}→{new_lr:.3f}", file=sys.stderr)
-        # 平均误差 < 5% → 预测很准，允许加速
-        elif avg_err < 0.05:
-            new_lr = CTX_LR_BASE * 1.1
-            if new_lr != CTX_LR_BASE:
-                import sys
-                # print(f"[MemWise] ✅ 预测精准({avg_err:.1%})，学习率保持{CTX_LR_BASE:.3f}", file=sys.stderr)
-
-    def record_causal(self, name, freed, mem_pct, candidates):
-        """Record causal observation"""
-        self.causal.record(name.lower(), freed, mem_pct, candidates or [])
-    
-    def causal_compare(self, name, candidates, mem_pct=None):
-        """Counterfactual: how much better than alternatives"""
-        best_adv = 0
-        for alt in (candidates or []):
-            if alt.lower() == name.lower():
-                continue
-            adv = self.causal.advantage(name.lower(), alt.lower(), mem_pct)
-            if adv > best_adv:
-                best_adv = adv
-        return best_adv
-    
     def save(self, path):
         try:
             now = time.time()
-            # 过滤：7天以上没见过且样本<5的低价值画像 ➔ 防止 state.json 膨胀
             cutoff = 86400 * 7
             filtered = {
                 k: v for k, v in self.profiles.items()
-                if now - v.last_seen < cutoff or v.total_samples >= 5
+                if now - v.last_seen < cutoff or v.alpha != 2 or v.beta != 1
             }
-            # 读取现有 state，保留其他组件（如 EFIS）的数据
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
-            existing.update({
-                "version": 5,
-                "saved_at": now,
+            data = {
+                "version": 4,
                 "profiles": {k: v.to_dict() for k, v in filtered.items()},
-                "memory": self.memory.to_dict(),
-                "causal": self.causal.to_dict(),
-                "meta_bias": self.meta._theta_bias,
-            })
+            }
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False)
+                json.dump(data, f)
             os.replace(tmp, path)
             return True
-        except OSError:
+        except Exception:
             return False
 
     @classmethod
@@ -647,49 +495,22 @@ class PareLearner:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            ver = data.get("version", 0)
-            if ver >= 2:
-                for k, v in data.get("profiles", {}).items():
-                    learner.profiles[k] = Profile.from_dict(v)
-            if ver >= 4:
-                mem_data = data.get("memory")
-                if mem_data:
-                    learner.memory = EpisodeMemory.from_dict(mem_data)
-            if ver >= 5:
-                causal_data = data.get("causal")
-                if causal_data:
-                    learner.causal = CausalGraph.from_dict(causal_data)
-        except Exception as e:
-            import sys; print(f"[MemWise] 学习数据加载失败: {e}", file=sys.stderr)
-        # 还原元认知偏差
-        mb = data.get("meta_bias", 0)
-        if mb != 0:
-            learner.meta._theta_bias = mb
+            for k, v in data.get("profiles", {}).items():
+                learner.profiles[k] = Profile.from_dict(v)
+        except Exception:
+            pass
         return learner
 
-    # ── 复合评分 ──
+    # ── 反饋 ──
 
-    def composite_score(self, name):
-        """复合评分 = 60% θ + 40% bonus (置信度+ROI+加速)，bonus可拉升低θ进程"""
+    def record_clean_result(self, name, ok, freed=0, pf_delta=0, lr=None):
+        """记录清理结果 — 走完整清理反馈通道（收益/成本/清理计数）"""
         p = self.profiles.get(name.lower())
-        if not p or p.total_samples < MIN_SAMPLES:
-            return 0.35  # 新进程默认中低分
-        theta = p.thompson_theta
-        conf = p.confidence
-        roi = min(p.roi, 1.0)
-        bonus = 0.5 * conf + 0.3 * roi + (0.2 if p.gain_accelerating else 0)
-        # 加性混合：θ 占60%，bonus占40%
-        return 0.6 * theta + 0.4 * min(1.0, bonus)
+        if p:
+            p.record_clean(ok, freed, pf_delta, lr)
 
- 
-    def top(self, n=25):
-        """按 ROI 排序，返回 (name, roi, theta, profile) 列表"""
-        items = []
-        for name, p in self.profiles.items():
-            if p.total_samples < MIN_SAMPLES:
-                continue
-            items.append((name, p.roi, p.thompson_theta, p))
-        items.sort(key=lambda x: -x[1])  # ROI 降序
-        return items[:n]
-
- 
+    def record_probe_result(self, name, ok, lr=None, freed=0):
+        """记录试探结果"""
+        p = self.profiles.get(name.lower())
+        if p:
+            p.record_probe(ok, lr, freed)
