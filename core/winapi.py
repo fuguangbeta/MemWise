@@ -1,4 +1,4 @@
-import ctypes, ctypes.wintypes as w, time
+import ctypes, ctypes.wintypes as w, time, math
 
 TH32CS_SNAPPROCESS = 2
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -971,6 +971,189 @@ def _dist_to_seg(px, py, x1, y1, x2, y2):
     t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
     return ((px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2) ** 0.5
 
+def _dist_to_seg_hq(px, py, x1, y1, x2, y2):
+    """返回 (距离, 最近点x, 最近点y)"""
+    vx, vy = x2 - x1, y2 - y1
+    wx, wy = px - x1, py - y1
+    c1 = vx * wx + vy * wy
+    if c1 <= 0:
+        return math.hypot(px - x1, py - y1), x1, y1
+    c2 = vx * vx + vy * vy
+    if c2 <= c1:
+        return math.hypot(px - x2, py - y2), x2, y2
+    t = c1 / c2
+    nx, ny = x1 + t * vx, y1 + t * vy
+    return math.hypot(px - nx, py - ny), nx, ny
+
+
+def _fit_m_scale(s, off_mult, soft_r, R):
+    """数值解最大 m_scale：M 最远角（左/右竖顶端）+ 软边 ≤ 圆盘半径，保证 M 不伸出圆外。
+    s 为目标像素/16；off_mult 控制重心下移；soft_r 为 M 软边半径；R 为圆盘半径（同单位）。"""
+    lo, hi = 0.30, 1.0
+    for _ in range(14):
+        ms = (lo + hi) / 2
+        d = math.hypot(6 * ms, 5 * ms + off_mult) * s  # 最远角 (lx,ty) 到圆心
+        if d + soft_r <= R:
+            lo = ms
+        else:
+            hi = ms
+    return lo
+
+
+def _draw_memwise_pixels_hq(size, buf, base_color=(62, 62, 72), off_mult=0.75, shadow=True, gradient=0.47, force_large=False):
+    """HQ 渲染（4x 超采样）：径向渐变圆盘 + 管状法线光照 M + 圆盘内投影。
+    base_color 为圆盘基色（托盘变色图标传不同颜色仍可区分）；M 保持白光照。
+    shadow=False 时不投影（托盘变色用，小尺寸下投影会糊）；gradient 控制渐变压暗幅度（托盘用 0.12 保持鲜亮）。
+    小尺寸：M 等比收进圆内（无伸出毛刺）+ 扁平光照 + 窄柔边（干净锐利）。
+    输出写入 buf（BGRA top-down，长度 size*size*4）。"""
+    SS = 4
+    cs = size * SS
+    n = cs * cs
+    canvas = [[0, 0, 0, 0] for _ in range(n)]
+    cx = cy = cs // 2
+    R = (size // 2 - 2) * SS
+    s = size / 16.0
+
+    small = (size <= 48) and not force_large
+    if small:
+        # 小尺寸简洁模式：纯色（零色差）+ 无投影 + 窄柔边（防设计过度显脏）
+        shadow = False
+        gradient = 0.0
+    edge_out = (0.4 if small else 0.5) * SS   # 圆外柔边（小尺寸收窄→边缘更锐利，4x 超采样下仍无锯齿）
+    edge_in = (0.7 if small else 1.0) * SS    # 圆内柔边
+
+    # 1. 径向渐变背景（平面感，相对 base_color 明暗：中心亮 → 边缘暗）
+    for y in range(cs):
+        for x in range(cs):
+            dx, dy = x - cx, y - cy
+            d = math.sqrt(dx * dx + dy * dy)
+            if d > R + edge_out:
+                continue
+            t = min(1.0, d / R)
+            lum = 1.0 - gradient * t
+            r = int(min(255, base_color[0] * lum))
+            g = int(min(255, base_color[1] * lum))
+            b = int(min(255, base_color[2] * lum))
+            a = 255
+            if d > R - edge_in:
+                a = max(0, min(255, int(255 * (R + edge_out - d) / (edge_in + edge_out))))
+            canvas[y * cs + x] = [b, g, r, a]
+
+    # 2. M 骨架（off_mult 控制重心下移；小尺寸等比收窄 0.87 防横向显扁，大尺寸与母版同构）
+    core_r = 1.1 * s
+    soft_r = (1.22 if small else 1.35) * s
+    m_scale = 0.87 if small else 1.0
+    segs = []
+    off = -off_mult * s
+    lx = -6 * s * m_scale; rx = 6 * s * m_scale
+    ty = -5 * s * m_scale + off; by = 5 * s * m_scale + off
+    mx = 0; my = 1 * s * m_scale + off
+    segs.extend([(lx, ty, lx, by), (lx, ty, mx, my), (mx, my, rx, ty), (rx, ty, rx, by)])
+
+    # 3. M 掩码 + 管状法线光照
+    m_alpha = [0.0] * n
+    m_col = [None] * n
+    DARK = (125, 135, 150)
+    BRIGHT = (255, 255, 255)
+    MLX, MLY = -0.7071, -0.7071
+    for y in range(cs):
+        row = y * cs
+        for x in range(cs):
+            px, py = (x - cx) / SS, (y - cy) / SS
+            best = None
+            for sg in segs:
+                d, nx_, ny_ = _dist_to_seg_hq(px, py, *sg)
+                if best is None or d < best[0]:
+                    best = (d, nx_, ny_)
+            d, nx_, ny_ = best
+            if d >= soft_r:
+                continue
+            a = 1.0 if d < core_r else (soft_r - d) / (soft_r - core_r)
+            m_alpha[row + x] = a
+            if d > 1e-6:
+                nx2, ny2 = (px - nx_) / d, (py - ny_) / d
+                diff = nx2 * MLX + ny2 * MLY
+                # 小尺寸扁平光照（近白纯色），大尺寸保持立体管状光照（0.10~1.0）
+                shade = 0.9 if small else (0.55 + 0.45 * diff)
+            else:
+                shade = 0.9 if small else 0.55
+            if small:
+                DARK, BRIGHT = (235, 238, 242), (255, 255, 255)  # flat：近白 M
+            r = int(DARK[0] + (BRIGHT[0] - DARK[0]) * shade)
+            g = int(DARK[1] + (BRIGHT[1] - DARK[1]) * shade)
+            b = int(DARK[2] + (BRIGHT[2] - DARK[2]) * shade)
+            m_col[row + x] = (b, g, r)
+
+    # 4. 投影（高斯模糊掩码偏移；仅叠加在完全不透明圆内像素，防缩小后暗色扩散到圆外）
+    tmp = [0.0] * n
+    for y in range(cs):
+        row = y * cs
+        for x in range(cs):
+            v = m_alpha[row + x]
+            tmp[row + x] = (m_alpha[row + x - 1] if x > 0 else v) + 2 * v + (m_alpha[row + x + 1] if x < cs - 1 else v)
+    blurred = [0.0] * n
+    for y in range(cs):
+        for x in range(cs):
+            i = y * cs + x
+            v = tmp[i]
+            blurred[i] = ((tmp[i - cs] if y > 0 else v) + 2 * v + (tmp[i + cs] if y < cs - 1 else v)) / 16.0
+
+    if shadow:
+        ox, oy = int(0.6 * s * SS), int(0.9 * s * SS)
+        for y in range(cs):
+            sy = y - oy
+            if sy < 0 or sy >= cs:
+                continue
+            row_s = sy * cs
+            for x in range(cs):
+                sx = x - ox
+                if sx < 0 or sx >= cs:
+                    continue
+                sh = blurred[row_s + sx] * 0.42
+                if sh > 0.01:
+                    i = y * cs + x
+                    if canvas[i][3] < 250:
+                        continue  # 边缘 AA 像素不叠加投影（防扩散出圆）
+                    a = int(255 * sh)
+                    cb, cg, cr, ca = canvas[i]
+                    canvas[i] = [(cb * (255 - a)) // 255, (cg * (255 - a)) // 255,
+                                 (cr * (255 - a)) // 255, min(255, ca + a)]
+
+    # 5. M 本体合成（圆外直接画，圆内混合）
+    for y in range(cs):
+        row = y * cs
+        for x in range(cs):
+            a_m = m_alpha[row + x]
+            if a_m <= 0:
+                continue
+            a = int(255 * a_m)
+            i = row + x
+            mb, mg, mr = m_col[i]
+            bg_a = canvas[i][3]
+            if bg_a == 0:
+                canvas[i] = [mb, mg, mr, a]
+            else:
+                cb, cg, cr, ca = canvas[i]
+                canvas[i] = [(cb * (255 - a) + mb * a) // 255,
+                             (cg * (255 - a) + mg * a) // 255,
+                             (cr * (255 - a) + mr * a) // 255,
+                             min(255, ca + a)]
+
+    # 6. 4x 盒式缩小 → 写入 buf
+    for y in range(size):
+        for x in range(size):
+            rs = gs = bs = as_ = 0
+            for sy in range(SS):
+                for sx in range(SS):
+                    b, g, r, a = canvas[(y * SS + sy) * cs + (x * SS + sx)]
+                    rs += r; gs += g; bs += b; as_ += a
+            nn = SS * SS
+            i = (y * size + x) * 4
+            buf[i] = bs // nn; buf[i+1] = gs // nn; buf[i+2] = rs // nn
+            buf[i+3] = as_ // nn if as_ else 0
+    return buf
+
+
 def _draw_memwise_pixels(size, buf, bg_color=(45,45,50)):
     """在 buf（BGRA bytes）上画圆+M，bg_color 为 (R,G,B) 自动转 BGRA"""
     # RGB → BGRA
@@ -1018,6 +1201,51 @@ def _draw_memwise_pixels(size, buf, bg_color=(45,45,50)):
                 else:
                     buf[i:i+4] = (230, 235, 240, a)
     return buf
+
+def create_memwise_ico_multi(path, sizes=(16, 24, 32, 48, 64, 128, 256), bg_color=(45, 45, 50)):
+    """生成多尺寸 ICO（16-256 全套）——资源管理器大图标/任务栏/开始菜单/高 DPI 全清晰。
+    256×256 按 ICO 规范用 PNG 压缩（zlib 手写，零第三方依赖）；小尺寸用 DIB（32bpp + AND 全透明蒙版）。
+    复用 _draw_memwise_pixels 的矢量式抗锯齿绘制，任意尺寸边缘锐利。"""
+    import struct, zlib
+    entries = []  # (size, data)
+
+    def _png_encode(size, pixels):
+        raw = b"".join(b"\x00" + pixels[y * size * 4:(y + 1) * size * 4] for y in range(size))
+        def chunk(t, d):
+            c = t + d
+            return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+        ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+    for size in sizes:
+        buf = (ctypes.c_ubyte * (size * size * 4))()
+        _draw_memwise_pixels_hq(size, buf, bg_color)
+        pixels = bytes(buf)
+        if size == 256:
+            entries.append((size, _png_encode(size, pixels)))
+        else:
+            # DIB: BITMAPINFOHEADER + XOR(bottom-up BGRA) + AND 蒙版（全 0 = 不透明）
+            row = size * 4
+            xor = bytearray(row * size)
+            for y in range(size):
+                xor[(size - 1 - y) * row:(size - y) * row] = pixels[y * size * 4:(y + 1) * size * 4]
+            and_row = ((size + 31) // 32) * 4
+            and_mask = bytearray(and_row * size)
+            header = struct.pack("<IIIHHIIIIII", 40, size, size * 2, 1, 32, 0,
+                                 row * size + and_row * size, 0, 0, 0, 0)
+            entries.append((size, header + bytes(xor) + bytes(and_mask)))
+
+    with open(path, "wb") as f:
+        f.write(struct.pack("<HHH", 0, 1, len(entries)))
+        offset = 6 + 16 * len(entries)
+        for w, data in entries:
+            f.write(struct.pack("<BBBBHHII", w if w < 256 else 0, w if w < 256 else 0,
+                                0, 0, 1, 32, len(data), offset))
+            offset += len(data)
+        for _, data in entries:
+            f.write(data)
+    return True
+
 
 def create_memwise_ico(path, size=32):
     """直接生成 .ico 文件，不走 HICON 中转"""
@@ -1070,9 +1298,31 @@ def load_app_icon():
     return create_memwise_icon(16)
 
 
-def create_memwise_icon(size=32, bg_color=(45,45,50)):
+def _sharpen_bgra(buf, size, amount=0.8):
+    """Unsharp 锐化（拉普拉斯 4 邻域）：只处理不透明像素，透明邻域不参与，避免边缘发暗。
+    仅任务栏图标使用。"""
+    src = bytes(buf)
+    for y in range(size):
+        for x in range(size):
+            i = (y * size + x) * 4
+            if src[i + 3] < 100:
+                continue
+            nb = [(dx, dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))
+                  if 0 <= x + dx < size and 0 <= y + dy < size
+                  and src[((y + dy) * size + x + dx) * 4 + 3] > 100]
+            if len(nb) < 2:
+                continue
+            for c in range(3):
+                v = src[i + c]
+                s = sum(src[((y + dy) * size + x + dx) * 4 + c] for dx, dy in nb)
+                lap = len(nb) * v - s
+                buf[i + c] = max(0, min(255, int(v + amount * lap / len(nb))))
+
+
+def create_memwise_icon(size=32, bg_color=(45,45,50), shadow=True, gradient=0.47, force_large=False, sharpen=False):
     """在内存中创建 MemWise 图标，bg_color 为 (R,G,B) 自动转 BGRA
-    默认深灰(45,45,50)，托盘和大图标都清晰"""
+    默认深灰(45,45,50)，托盘和大图标都清晰。
+    shadow=False + 轻 gradient 供托盘变色图标使用（小尺寸下保持鲜亮、无投影糊边）"""
     # RGB → BGRA
     bg = (bg_color[2], bg_color[1], bg_color[0])
     bmi = BITMAPINFO()
@@ -1090,63 +1340,12 @@ def create_memwise_icon(size=32, bg_color=(45,45,50)):
 
     w_addr = bits_ptr.value
     buf = (ctypes.c_ubyte * (size * size * 4)).from_address(w_addr)
-    cx = cy = size // 2
-    R = cx - 2  # 圆半径
-    s = size / 16.0  # 缩放因子
 
-    # 绘制深色圆背景（带柔边）
-    for y in range(size):
-        for x in range(size):
-            dx, dy = x - cx, y - cy
-            dist = (dx*dx + dy*dy) ** 0.5
-            i = (y * size + x) * 4
-            if dist > R + 0.5:
-                buf[i:i+4] = (0, 0, 0, 0)
-            elif dist > R - 1.5:
-                a = int(255 * (R + 0.5 - dist))
-                buf[i:i+4] = (*bg, max(0, min(255, a)))
-            else:
-                buf[i:i+4] = (*bg, 255)
-
-    # 用线段定义 M 形状（相对于圆心，按 size 缩放）
-    # 4 条线段组成 M：左竖、左斜、右斜、右竖
-    segs = []
-    off = -2 * s  # 整体垂直微调
-    # 左竖: (-6s~-5s, -5s+off) → (-6s~-5s, +5s+off)
-    lx = -6 * s; rx = 6 * s
-    ty = -5 * s + off; by = 5 * s + off
-    mx = 0; my = 1 * s + off  # 中间顶点
-    segs.append((lx, ty, lx, by))
-    segs.append((lx, ty, mx, my))
-    segs.append((mx, my, rx, ty))
-    segs.append((rx, ty, rx, by))
-    thick = 1.5 * s  # 线条粗细
-
-    for y in range(size):
-        for x in range(size):
-            px, py = x - cx, y - cy
-            min_d = float('inf')
-            for x1, y1, x2, y2 in segs:
-                d = _dist_to_seg(px, py, x1, y1, x2, y2)
-                if d < min_d:
-                    min_d = d
-            if min_d < thick:
-                i = (y * size + x) * 4
-                if min_d < thick * 0.4:
-                    a = 255
-                elif min_d < thick:
-                    a = int(255 * (thick - min_d) / (thick * 0.6))
-                else:
-                    continue
-                bg = buf[i+3]
-                alpha = max(0, min(255, a))
-                if bg > 0:
-                    buf[i] = buf[i] * (255 - alpha) // 255 + 230 * alpha // 255
-                    buf[i+1] = buf[i+1] * (255 - alpha) // 255 + 235 * alpha // 255
-                    buf[i+2] = buf[i+2] * (255 - alpha) // 255 + 240 * alpha // 255
-                    buf[i+3] = min(255, bg + alpha)
-                else:
-                    buf[i:i+4] = (230, 235, 240, alpha)
+    # HQ 渲染：径向渐变圆盘 + 管状光照 M + 圆盘内投影（4x 超采样）
+    # base_color 即托盘变色基色——不同状态颜色仍可区分
+    _draw_memwise_pixels_hq(size, buf, bg_color, off_mult=0.75, shadow=shadow, gradient=gradient, force_large=force_large)
+    if sharpen:
+        _sharpen_bgra(buf, size)
 
     # 创建 1bpp 遮罩（全部为 0 = 不透明）
     mask_row = ((size + 15) // 16) * 2  # 1bpp scanline aligned to WORD
