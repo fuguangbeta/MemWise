@@ -1,4 +1,4 @@
-﻿# MemWise v3.1.5
+﻿# MemWise v3.2.6
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
@@ -380,6 +380,7 @@ MemWise/
 ├── CHANGELOG.md                # 更新日志 · Changelog
 ├── README.md                   # 本文件 · This File
 ├── assets/icon.ico             # 程序图标 · Application Icon
+├── assets/icons/               # 图标源文件（母版/扁平成品 PNG）· Icon Sources
 ├── core/
 │   ├── cleaner.py              # 三层清理引擎 + 持续优化 · Cleaning Engine
 │   ├── learner.py              # Thompson Sampling + Kalman + 特征学习 · Cognitive Learner
