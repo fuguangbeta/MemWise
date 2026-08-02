@@ -1,30 +1,53 @@
 """
-MemWise v1.7 GUI —— 图形界面
+MemWise v3.1.5 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
-import os, sys, time, threading, tkinter as tk, math, queue
+import os, sys, time, threading, tkinter as tk, math, queue, subprocess, concurrent.futures
 from collections import deque
 from tkinter import ttk, simpledialog, messagebox
 import ctypes
 import ctypes.wintypes as w
 
 # ── 崩溃诊断：所有未捕获异常写入 crash.log，faulthandler 捕获 C 层崩溃 ──
-_crash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memwise_crash.log")
-try:
-    import faulthandler, io
-    _crash_fd = open(_crash_path, "a", encoding="utf-8", buffering=1)
-    _crash_fd.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-    faulthandler.enable(_crash_fd, all_threads=True)
-    def _crash_hook(et, ev, tb):
-        import traceback
-        _crash_fd.write("".join(traceback.format_exception(et, ev, tb)) + "\n")
-        _crash_fd.flush()
-        sys.__excepthook__(et, ev, tb)
-    sys.excepthook = _crash_hook
-    _has_crash_log = True
-except Exception:
-    _has_crash_log = False
+# 看门狗（--watchdog）是独立进程，其启动/异常不混入主程序日志，因此在初始化前跳过
+_has_crash_log = False
+if "--watchdog" not in sys.argv:
+    _crash_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    _crash_path = os.path.join(_crash_dir, "memwise_crash.log")
+    try:
+        # 启动轮转：日志超过 512KB 时截断保留最近 64KB（防长期运行无限增长）
+        if os.path.getsize(_crash_path) > 512 * 1024:
+            with open(_crash_path, "r", encoding="utf-8", errors="ignore") as f:
+                _tail = f.read()[-64 * 1024:]
+            with open(_crash_path, "w", encoding="utf-8") as f:
+                f.write(_tail)
+    except Exception:
+        pass
+    try:
+        import faulthandler, io
+        _crash_fd = open(_crash_path, "a", encoding="utf-8", buffering=1)
+        _crash_fd.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} · 程序启动 ===\n")
+        faulthandler.enable(_crash_fd, all_threads=True)
+        def _crash_hook(et, ev, tb):
+            import traceback
+            _crash_fd.write("\n--- 未捕获异常 ---\n" + "".join(traceback.format_exception(et, ev, tb)) + "\n")
+            _crash_fd.flush()
+            sys.__excepthook__(et, ev, tb)
+        sys.excepthook = _crash_hook
+        _has_crash_log = True
+    except Exception:
+        _has_crash_log = False
+
+
+def _diag_log(msg):
+    """诊断日志：写入崩溃日志文件（仅主进程，看门狗不写）"""
+    try:
+        if _has_crash_log:
+            _crash_fd.write(f"[诊断] {msg}\n")
+            _crash_fd.flush()
+    except Exception:
+        pass
 
 try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
@@ -59,11 +82,97 @@ import core.config as _config
 def _save_cfg():
     _config.save(CFG)
 
+
+def _normalize_proc_name(raw):
+    """规范化程序名：去空格转小写，自动补 .exe 后缀（进程名统一格式）"""
+    n = str(raw).strip().lower()
+    if n and not n.endswith(".exe"):
+        n += ".exe"
+    return n
+
+
+def _center_geometry(win, w, h, parent=None):
+    """一次性定位窗口到父窗口中央（首次出现即居中，零闪烁），并钳制在屏幕内。
+    替代"先默认位置弹出再移动"的两步 geometry，消除闪现与卡顿时不居中的问题"""
+    parent = parent if parent is not None else win.master
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    try:
+        px, py = parent.winfo_x(), parent.winfo_y()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        if pw < 10:  # 父窗口尚未布局时退化为屏幕居中
+            px = py = 0; pw, ph = sw, sh
+    except Exception:
+        px = py = 0; pw, ph = sw, sh
+    cx = px + (pw - w) // 2
+    cy = py + (ph - h) // 2
+    cx = max(0, min(cx, sw - w))
+    cy = max(0, min(cy, sh - h))
+    win.geometry(f"{w}x{h}+{cx}+{cy}")
+
+
+def _parse_hotkey(spec):
+    """解析 'ctrl+shift+m' / 'alt+f1' 格式热键 → (modifiers, vk, error)
+    严格校验：至少一个修饰键（ctrl/alt/shift）+ 有效按键（单字母/F1-F24）；
+    error 非空表示非法（不返回默认值，由调用方决定回退策略）"""
+    mods = winapi.MOD_NOREPEAT
+    key = None
+    has_mod = False
+    try:
+        parts = [x.strip().lower() for x in str(spec).split("+")]
+    except Exception:
+        return None, None, "无法识别"
+    if not parts or not any(parts):
+        return None, None, "不能为空"
+    key_count = 0
+    for p in parts:
+        if p in ("ctrl", "control"):
+            mods |= winapi.MOD_CONTROL; has_mod = True
+        elif p == "alt":
+            mods |= winapi.MOD_ALT; has_mod = True
+        elif p == "shift":
+            mods |= winapi.MOD_SHIFT; has_mod = True
+        elif len(p) == 1 and p.isalpha():
+            key = ord(p.upper()); key_count += 1
+        elif p.startswith("f") and p[1:].isdigit() and 1 <= int(p[1:]) <= 24:
+            key = 0x70 + int(p[1:]) - 1; key_count += 1
+        else:
+            return None, None, f"无法识别按键「{p}」（需 ctrl/alt/shift + 单字母或 F1-F24）"
+    if key_count > 1:
+        return None, None, "只能包含一个按键（修饰键 + 单字母或 F1-F24）"
+    if not has_mod:
+        return None, None, "至少需要一个修饰键（ctrl/alt/shift）"
+    if key is None:
+        return None, None, "缺少按键（单字母或 F1-F24）"
+    return mods, key, None
+
+
+# ── EFIS 诊断输入辅助（守护周期构造 stats 用，全部现成数据零新增采集）──
+def _prof_theta_mean(learner):
+    ps = [p for p in learner.profiles.values() if p.total_samples >= 2]
+    return sum(p.thompson_theta for p in ps) / len(ps) if ps else 0.3
+
+def _prof_theta_above(learner):
+    ps = [p for p in learner.profiles.values() if p.total_samples >= 2]
+    return sum(1 for p in ps if p.thompson_theta > 0.6) / len(ps) if ps else 0.0
+
+def _drain_pf_delta(judger):
+    v = getattr(judger, "pf_delta_total", 0)
+    judger.pf_delta_total = 0
+    return v
+
 STATE_FILE = get_state_path()
 CFG = _load_cfg()
 
 # 托盘和热键常量
 HOTKEY_ID = 9001
+GAME_HOTKEY_ID = 9002
+
+# 全局热键注册表（统一管理，未来新增热键只需登记一行）
+# name=显示名, key=配置键, default=默认值, id=热键 ID, action=触发动作（_wnd_proc 分发）
+HOTKEYS = [
+    {"name": "手动优化", "key": "hotkey", "default": "ctrl+shift+m", "id": HOTKEY_ID, "action": "hotkey"},
+    {"name": "游戏模式开关", "key": "game_hotkey", "default": "ctrl+shift+g", "id": GAME_HOTKEY_ID, "action": "game"},
+]
 TRAY_UID = 1
 GWLP_WNDPROC = -4
 WM_HOTKEY = 0x0312
@@ -83,11 +192,29 @@ _tray_action = None  # 'left' | 'right' | 'hotkey' | None
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p)
 
+
+def _watchdog_path():
+    """看门狗状态文件路径：exe 模式在 exe 旁，脚本模式在脚本目录"""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "watchdog.json")
+
 @WNDPROC
 def _wnd_proc(hwnd, msg, wp, lp):
     """Win32 窗口过程回调 — 零 Tkinter 调用，仅设置 _tray_action 标志"""
     global _gui_ref, _tray_action
     try:
+        # 系统关机/注销：立即删除 watchdog.json，防止看门狗误判并报错弹窗
+        if msg in (0x0011, 0x0016):  # WM_QUERYENDSESSION / WM_ENDSESSION
+            try:
+                wd = _watchdog_path()
+                if os.path.exists(wd):
+                    os.remove(wd)
+            except Exception:
+                pass
+            return winapi.CallWindowProcW(_orig_wndproc, hwnd, msg, wp, lp)
         if msg == winapi.WM_TRAYICON and _gui_ref is not None:
             if lp in (0x201, 0x202, 0x203):
                 _tray_action = 'left'
@@ -96,6 +223,9 @@ def _wnd_proc(hwnd, msg, wp, lp):
             return 0
         if msg == WM_HOTKEY and wp == HOTKEY_ID and _gui_ref is not None:
             _tray_action = 'hotkey'
+            return 0
+        if msg == WM_HOTKEY and wp == GAME_HOTKEY_ID and _gui_ref is not None:
+            _tray_action = 'game'
             return 0
     except Exception:
         pass
@@ -140,47 +270,131 @@ class ToolTip:
             self._tw.destroy(); self._tw = None
 
 
+# ═══ 看门狗入口 — 无 GUI，纯监控 + 崩溃重启 ═══
+if "--watchdog" in sys.argv:
+    wd_path = _watchdog_path()
+    _ = __name__  # noqa
+    def _watchdog_loop():
+        import json
+        exe = sys.executable
+        crash_history = []  # [(timestamp, ...)]
+        while True:
+            time.sleep(5)
+            # 系统正在关机？立即退出，不做任何重启尝试
+            if ctypes.windll.user32.GetSystemMetrics(0x2000):  # SM_SHUTTINGDOWN
+                break
+            if not os.path.exists(wd_path):
+                break
+            try:
+                with open(wd_path, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            pid = d.get("pid", 0)
+            if pid <= 0:
+                continue
+            # 检查父进程是否存活（OpenProcess 失败=进程对象已销毁=已死，走重启路径）
+            h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not h:
+                alive = False
+            else:
+                alive = ctypes.windll.kernel32.WaitForSingleObject(h, 0) != 0  # WAIT_OBJECT_0=0
+                ctypes.windll.kernel32.CloseHandle(h)
+            if alive:
+                continue
+            # 父进程已死 → 检查崩溃计数
+            now = time.time()
+            crash_history = [t for t in crash_history if now - t < 180]
+            crash_history.append(now)
+            if len(crash_history) >= 3:
+                try: os.remove(wd_path)
+                except Exception: pass
+                break
+            # 重启前再次确认文件仍在（防止 wndproc 在检测死亡和重启之间删除）
+            if not os.path.exists(wd_path):
+                break
+            # 重启
+            try:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW
+                si.wShowWindow = 0        # SW_HIDE
+                # DETACHED_PROCESS + 错误重定向：抑制关机时的 C 层错误弹窗
+                if getattr(sys, "frozen", False):
+                    _cmd = [exe, "--restored"]
+                else:
+                    _cmd = [exe, os.path.abspath(__file__), "--restored"]
+                p = subprocess.Popen(_cmd,
+                    startupinfo=si, creationflags=0x08000008,  # CREATE_NO_WINDOW | DETACHED_PROCESS
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # 更新 watchdog.json 为新 PID（保留崩溃前的守护状态，供恢复分支判断）
+                with open(wd_path, "w", encoding="utf-8") as f:
+                    json.dump({"pid": p.pid, "ts": now, "crash_count": len(crash_history),
+                               "daemon": d.get("daemon", False)}, f)
+            except Exception:
+                continue
+    _watchdog_loop()
+    sys.exit(0)
+
+
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.1.5_SingleInstance"
+
+
 class MemWiseGUI:
     def __init__(self):
         global _gui_ref
         _gui_ref = self
 
+        # 单实例检测 — 已有实例运行则激活后退出
+        self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
+        if ctypes.windll.kernel32.GetLastError() == 0xB7:  # ERROR_ALREADY_EXISTS
+            # 激活已有窗口
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.1.5")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            self._mutex = None
+            sys.exit(0)
+        
+        # 崩溃恢复检测
+        self._restored = "--restored" in sys.argv
+
         self.root = tk.Tk()
-        self.root.title("MemWise v1.7")
+        self.root.title("MemWise v3.1.5")
         # --minimized 模式：立即隐藏窗口，不等 800ms，避免开机闪烁
         if "--minimized" in sys.argv:
             self.root.withdraw()
             self._minimized_to_tray = True
-        self.root.geometry("1060x700")
         self.root.resizable(True, False)
-        self.root.update_idletasks()
-        cx = (self.root.winfo_screenwidth() - 1060) // 2
-        cy = (self.root.winfo_screenheight() - 700) // 2
-        self.root.geometry(f"1060x700+{cx}+{cy}")
+        _center_geometry(self.root, 1060, 700)
 
         # 窗口图标 — 用 MemWise 自定义 HICON（直接内存创建，不走 .ico 文件）
-        # 托盘已用 create_memwise_icon() 验证可行，此处直接发 WM_SETICON
+        # winfo_id 是 Tk 的 client 窗口，标题栏图标必须发给 wrapper 顶层；
+        # 窗口层级在 mainloop 后才完整，故延迟 100ms 设置（过早 GetParent 返回 0 导致图标失效）
+        self.root.after(100, self._set_main_window_icon)
+
+    def _set_main_window_icon(self):
+        """设置主窗口图标到顶层 wrapper（标题栏），client 双设兜底"""
         try:
-            # 生成大图标(32x32)给任务栏，小图标(16x16)给标题栏
             big_h = winapi.create_memwise_icon(32)
             sml_h = winapi.create_memwise_icon(16)
-            # 通过 tkinter 内部句柄获取顶级窗口 HWND
-            hwnd = None
-            try:
-                hwnd = ctypes.windll.user32.GetAncestor(
-                    ctypes.windll.user32.GetParent(self.root.winfo_id()), 2)
-            except Exception:
-                pass
-            if not hwnd:
-                hwnd = self.root.winfo_id()
-            if big_h:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, big_h)  # WM_SETICON ICON_BIG
-                ctypes.windll.user32.SetClassLongPtrW(hwnd, -14, big_h)
-            if sml_h:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, sml_h)  # WM_SETICON ICON_SMALL
-                ctypes.windll.user32.SetClassLongPtrW(hwnd, -34, sml_h)
-        except Exception:
-            pass
+            if not big_h or not sml_h:
+                _diag_log(f"主图标生成失败 big={big_h} sml={sml_h}")
+                return
+            wid = int(self.root.winfo_id())
+            # wrapper = client 的父/祖先（标题栏所在）；GetAncestor 失败时退化到自身
+            top = ctypes.windll.user32.GetAncestor(wid, 2) or ctypes.windll.user32.GetParent(wid) or wid
+            for t in (top, wid):
+                if not t:
+                    continue
+                ctypes.windll.user32.SendMessageW(t, 0x0080, 1, big_h)   # WM_SETICON ICON_BIG
+                ctypes.windll.user32.SendMessageW(t, 0x0080, 0, sml_h)   # WM_SETICON ICON_SMALL
+            # 类图标：设到顶层类（TkTopLevel），所有弹窗自动继承
+            ctypes.windll.user32.SetClassLongPtrW(top, -14, big_h)
+            ctypes.windll.user32.SetClassLongPtrW(top, -34, sml_h)
+            _check = ctypes.windll.user32.SendMessageW(top, 0x007F, 1, 0)
+            _diag_log(f"主图标: top={top} wid={wid} 自检一致:{_check == big_h}")
+        except Exception as e:
+            _diag_log(f"主图标设置异常: {e!r}")
 
         self._custom_hicon = None
         self._icon_cache = {}  # name -> HICON
@@ -188,31 +402,47 @@ class MemWiseGUI:
 
         self.learner = Learner.load(STATE_FILE)
         jcfg = {"kp":CFG.get("kp",0.6),"ki":CFG.get("ki",0.15),"kd":CFG.get("kd",0.1),
-                "target_usage":CFG.get("target_usage",60),"never":CFG.get("never",[])}
+                "target_usage":CFG.get("target_usage",60),"never":CFG.get("never",[]),
+                "efis_params":CFG.get("efis_params",{})}
         self.judger = Judger(self.learner, jcfg)
         self.cleaner = Cleaner(self.judger)
         self.efis = EfisController(STATE_FILE)
+        # 启动即用 EFIS 持久化参数对齐运行时消费方（config.yaml 可能滞后于 efis_state.json）
+        self.judger.cfg["efis_params"] = self.efis.get_params()
+        # kalman_r 同步：新画像的 Kalman 观测噪声与 EFIS 调参结果一致（原只在调参轮生效，重启后回默认）
+        self.learner._kalman_r = self.efis.get_params().get('kalman_r', 5.0)
         self.sniffer = Sniffer()
         self.daemon_running = False; self.daemon_thread = None
         self._tray_icon_handle = None
         self._minimized_to_tray = False
         # 柱图状态
-        self._chart_data = deque(maxlen=20)
+        self._chart_data = deque(maxlen=60)
         self._chart_last_freed = 0.0
         self._prev_trim_count = 0
         self._prev_fail_count = 0
-        self._mem_pct_for_chart = 0
-        self._new_cycle_event = threading.Event()
         self._msg_queue = queue.Queue()  # 线程安全消息队列
         self._mem_pct = 0
-        self._eff_data = deque(maxlen=20)  # 效率折线数据
+        self._eff_data = deque(maxlen=60)  # 效率折线数据
+        self._eff_factors = deque(maxlen=60)  # 效率主导因子
         self._chart_lock = threading.Lock()
-        self._eris_sub = {"total": 50}  # 初始效率值（首个chart点用）
+        self._eris_lock = threading.Lock()  # ERIS 分位数窗读写互斥锁
+        self._chart_cycle_meta = deque(maxlen=60)  # 每轮元数据(seq,trimmed,failed,mem_pct,failed_weight,partial)
+        self._chart_eris_last_seq = -1  # 最后进入ERIS的轮次序列号（替代绝对索引，防maxlen边界bug）
+        self._chart_bar_seq = 0  # 全局轮次序列号（daemon递增）
+        self._load_eris_ewma()  # 在 daemon 或 chart 首次调用 _compute_eris 前完成加载
 
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v1.7 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        self._log(f"MemWise v3.1.5 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        # 看门狗：spawn 子进程监控崩溃
+        if not self._restored:
+            self._spawn_watchdog()
+        else:
+            self._log("🔄 检测到上次崩溃，已自动恢复")
+            # 恢复守护模式（仅当崩溃前守护运行中；否则保持空闲，尊重用户意图）
+            # 延迟触发，让窗口完全初始化后再启动
+            self.root.after(800, self._maybe_restore_daemon)
         if winapi.is_elevated():
             winapi.enable_reduct_privileges()
         # 启动消息队列轮询（每 100ms 检查一次，主线程安全）
@@ -237,15 +467,50 @@ class MemWiseGUI:
         hwnd = int(self.root.winfo_id())
         # 子类化窗口过程
         _orig_wndproc = winapi.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ctypes.cast(_wnd_proc, ctypes.c_void_p))
-        # 注册热键 Ctrl+Shift+M
-        winapi.register_hotkey(hwnd, HOTKEY_ID, winapi.MOD_CONTROL | winapi.MOD_SHIFT | winapi.MOD_NOREPEAT, ord('M'))
+        # 注册全部全局热键（统一入口：解析/冲突/占用检测，失败提示不阻断运行）
+        self._apply_hotkeys(initial=True)
         hIcon = self._get_colored_icon("idle", ICO_IDLE)
         self._tray_icon_handle = hIcon
         ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, "MemWise — 智能内存看护")
         if not ok:
             self._log("⚠ 托盘图标添加失败，重试...")
-            import time; time.sleep(0.5)
+            time.sleep(0.5)
             ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, "MemWise — 智能内存看护")
+
+    def _apply_hotkeys(self, initial=False):
+        """按配置重注册全部全局热键（统一入口：注销→逐项解析→冲突检测→逐个注册）。
+        非法/冲突/被占用时本次使用默认值并提示，不写回 CFG（保留用户配置下次启动再试）；
+        initial=True 为启动路径，静默细节差异"""
+        try:
+            hwnd = int(self.root.winfo_id())
+            for hk in HOTKEYS:
+                winapi.unregister_hotkey(hwnd, hk["id"])
+            # 逐项解析（非法 → 本次用默认）
+            pairs = []
+            for hk in HOTKEYS:
+                spec = CFG.get(hk["key"], hk["default"])
+                mods, vk, err = _parse_hotkey(spec)
+                if err:
+                    self._log(f"⚠ {hk['name']}热键配置无效（{err}），本次使用默认 {hk['default']}")
+                    mods, vk, _ = _parse_hotkey(hk["default"])
+                pairs.append([hk, mods, vk])
+            # 冲突检测（后注册者本次用默认）
+            for i in range(len(pairs)):
+                for j in range(i + 1, len(pairs)):
+                    if pairs[i][1] == pairs[j][1] and pairs[i][2] == pairs[j][2]:
+                        self._log(f"⚠ {pairs[j][0]['name']}热键与{pairs[i][0]['name']}冲突，本次使用默认 {pairs[j][0]['default']}")
+                        pairs[j][1], pairs[j][2], _ = _parse_hotkey(pairs[j][0]["default"])
+            # 逐个注册
+            for hk, mods, vk in pairs:
+                if winapi.register_hotkey(hwnd, hk["id"], mods, vk):
+                    if not initial:
+                        self._log(f"{hk['name']}热键已设为 {CFG.get(hk['key'], hk['default'])}")
+                else:
+                    self._log(f"⚠ {hk['name']}热键注册失败（可能被其他程序占用）: {CFG.get(hk['key'], hk['default'])}")
+                    dm, dv, _ = _parse_hotkey(hk["default"])
+                    winapi.register_hotkey(hwnd, hk["id"], dm, dv)
+        except Exception:
+            pass
 
     def _update_tray_status(self, pct):
         """根据内存使用率和守护状态更新托盘图标颜色（4档匹配内存条）"""
@@ -276,6 +541,13 @@ class MemWiseGUI:
             else:
                 icon = self._get_colored_icon("idle", ICO_IDLE)
                 tip = f"内存 {pct}%"
+        # 释放旧图标防止 GDI 泄漏（长期运行崩溃根因）
+        try:
+            if pct_icon_handle and hasattr(self, '_prev_pct_icon'):
+                ctypes.windll.user32.DestroyIcon(self._prev_pct_icon)
+            self._prev_pct_icon = pct_icon_handle
+        except Exception:
+            pass
         self._tray_icon_handle = icon
         winapi.tray_modify(self.root.winfo_id(), TRAY_UID, icon, f"MemWise — {tip}")
 
@@ -336,14 +608,65 @@ class MemWiseGUI:
                 self.root.deiconify()
             self.root.lift()
             self._minimized_to_tray = False
-        except Exception:
-            pass
+            # 立即使窗口完成映射，触发 <Configure> → _on_chart_configure(50ms) 自动渲染
+            self.root.update_idletasks()
+            # 兜底：极端情况下 <Configure> 未触发，500ms 后强制绘制
+            self._drawing_chart = False
+            if self._chart_redraw_id is not None:
+                self.root.after_cancel(self._chart_redraw_id)
+            self._chart_redraw_id = self.root.after(500, self._draw_chart)
+        except Exception as e:
+            import sys; print(f"[MemWise] _show_window 异常: {e}", file=sys.stderr)
 
     def _on_hotkey(self):
         """Ctrl+Shift+M → 执行一键优化"""
         self._show_window()
         self._on_optimize()
 
+    def _on_toggle_game(self):
+        """Ctrl+Shift+G → 手动切换游戏模式"""
+        game = not self.cleaner.game_mode
+        action = "启用" if game else "关闭"
+        # 自定义确认弹窗
+        dlg = tk.Toplevel(self.root)
+        self._apply_icon(dlg)
+        dlg.title("游戏模式")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.focus_set()
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        _center_geometry(dlg, 400, 180)
+        ttk.Label(dlg, text=f"确认{action}游戏模式？", font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(pady=(18, 2))
+        desc1 = "启用后将对游戏进程实施绝对保护，" if game else "关闭后将恢复正常清理策略，"
+        desc2 = "非游戏进程将被激进清理以腾出内存。" if game else "游戏进程不再受额外保护。"
+        ttk.Label(dlg, text=desc1,
+                  background="#1c1c1c", foreground="#aaa").pack()
+        ttk.Label(dlg, text=desc2,
+                  background="#1c1c1c", foreground="#aaa").pack()
+        btn_frame = ttk.Frame(dlg, style="Dark.TFrame"); btn_frame.pack(pady=12)
+        s = ttk.Style()
+        s.configure("Dark.TFrame", background="#1c1c1c")
+        result = {"value": False}
+        def on_yes():
+            result["value"] = True; dlg.destroy()
+        def on_no():
+            dlg.destroy()
+        ttk.Button(btn_frame, text="确认", command=on_yes).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="取消", command=on_no).pack(side="left", padx=6)
+        dlg.wait_window()
+        if not result["value"]:
+            return
+        self.cleaner.game_mode = game
+        self.cleaner.judger.game_mode = game
+        self.cleaner._game_mode_manual = True  # 手动设置后模式由用户持有，自动检测不再覆盖
+        if game:
+            self._log("🎮 游戏模式已手动启用 · 游戏进程受保护")
+        else:
+            self._log("🎮 游戏模式已手动关闭 · 恢复正常清理")
+            self.cleaner.judger._game_proc_set.clear()
+            self.cleaner.judger._game_pid_set.clear()
     # ---- UI 构建 ----
 
     def _add_tip(self, w, txt):
@@ -359,13 +682,13 @@ class MemWiseGUI:
         self.mem_bar_text = self.mem_canvas.create_text(8, 11, anchor="w", text="--%", font=("Segoe UI", 9, "bold"), fill="#fff")
         self._add_tip(self.mem_canvas,
             "内存条颜色指示当前物理内存使用率：\n"
-            "  • 绿(<60%) 空闲·健康\n"
-            "  • 黄(60~74%) 注意·可考虑清理\n"
-            "  • 橙(75~89%) 偏高·建议清理\n"
-            "  • 红(≥90%) 紧张·内存不够用了\n"
+            "  · 绿色 — 低于 60%，内存充裕\n"
+            "  · 黄色 — 60~74%，建议关注\n"
+            "  · 橙色 — 75~89%，偏高，建议清理\n"
+            "  · 红色 — 90% 以上，内存紧张\n"
             "\n"
-            "如果一直红色说明物理内存不足，考虑加内存条或关掉一些程序。\n"
-            "守护模式下蓝色(空闲·无压力)表示内存低于55%无需操作。")
+            "长期处于红色说明物理内存不足\n"
+            "建议关闭部分程序或考虑增加内存。")
         info = ttk.Frame(f); info.pack(fill="x")
         self.lbl_total = ttk.Label(info, text="总: -- GB"); self.lbl_total.pack(side="left", padx=(0,12))
         self.lbl_used = ttk.Label(info, text="已用: -- GB"); self.lbl_used.pack(side="left", padx=(0,12))
@@ -377,103 +700,88 @@ class MemWiseGUI:
         self.btn_opt = ttk.Button(bf, text="⚡ 优化", command=self._on_optimize)
         self.btn_opt.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_opt,
-            "⚡ 一键释放内存（8 步内核管线 · <10ms · 零等待）\n"
+            "⚡ 按当前选择的清理模式立即执行一次优化\n"
             "\n"
-            "系统级清理（全部 8 项内核操作）：\n"
-            "  · MemoryEmptyWorkingSets — 全进程 WS 清空\n"
-            "  · Standby List + 低优先 Standby 清空 — 最关键操作\n"
-            "  · Modified Page 写回 + 内存压缩触发\n"
-            "  · 系统文件缓存 + 卷缓存 + 注册表缓存\n"
+            "四种力度由轻到重：\n"
+            "  · quick — 仅系统级清理，零卡顿，适合随手一点\n"
+            "  · normal — 进程级 + 系统级清理，日常使用无副作用\n"
+            "  · deep — 追加文件缓存清理和深层重复回收\n"
+            "  · full — 极限释放，关闭大量程序后效果最好\n"
             "\n"
-            "进程级清理（Layer2+Layer3）：\n"
-            "  · Thompson×Kalman×因果联合排序选进程\n"
-            "  · 自适应多轮 EmptyWorkingSet + PF 反馈验证\n"
-            "  · 快车道高回填进程额外高频修剪\n"
+            "进程级清理由智能评分引擎决定优先清理谁，\n"
+            "并通过清理前后的缺页变化来验证效果。\n"
+            "游戏模式下游戏进程受绝对保护，其余进程被持续智能清理。\n"
             "\n"
-            "⚠ 缓存清理需管理员权限\n"
-            "⚠ deep/full 清 standby 后打开大文件可能慢几秒")
-        self.btn_dae = ttk.Button(bf, text="▶ 守护", command=self._on_daemon)
+            "守护运行中点击：改为即时执行一次轻量系统清理\n"
+            "（游戏进行中会跳过，保障流畅）\n"
+            "\n"
+            "⚠ 缓存类清理需要管理员权限\n"
+            "⚠ deep/full 清文件缓存后，打开大文件可能短暂变慢")
+        self.btn_dae = ttk.Button(bf, text="⛨ 守护", command=self._on_daemon)
         self.btn_dae.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_dae,
-            "▶ 后台守护模式（固定 60s 日志输出 · 轻量持续+全量收割）\n"
+            "⛨ 后台守护模式，每 60 秒输出一轮清理结果\n"
             "\n"
-            "PID 压力自适应目标 · Thompson×Kalman×因果联合评分\n"
-            "EFIS 每 5 周期自适应调参，全自动运行。\n"
+            "持续交替执行轻量压制与全量收割：\n"
+            "  · 轻量阶段 — 系统级清理，高频温和，不影响使用\n"
+            "  · 收割阶段 — 按你选的清理模式全力释放进程内存\n"
             "\n"
-            "持续优化架构：\n"
-            "  · gap-fill 轻量模式: standby purge + modified flush 持续压制\n"
-            "  · harvest 全量模式: 系统级 WS 全清 + 深度 standby 收割\n"
-            "  · 快车道高回填进程额外高频修剪\n"
-            "  · 泄漏检测双阈值 + Beta 时间遗忘(>1h 无反馈遗忘)\n"
+            "内置自适应调参，自动根据系统状态调整清理策略。\n"
+            "游戏模式自动检测或手动开启，保护游戏性能。\n"
+            "程序意外崩溃后自动恢复。\n"
             "\n"
-            "EFIS v3 因果诊断调参(每 5 周期)：\n"
-            "  · 9 参数联动(deepen_θ/layer3_gate/PID/target/interval/…)\n"
-            "  · 场景参数记忆(游戏/开发/浏览/通用互不干扰)\n"
-            "  · 症状积累确认(连续 2 次同方向才执行调整)\n"
-            "\n"
-            "游戏模式：自动检测 70+ 游戏+全屏检测\n"
-            "  θ 门槛降低，激进清理后台进程，游戏本体更强保护\n"
-            "\n"
-            "⚠ 缓存清理需管理员权限\n"
-            "⚠ 进程级 EmptyWorkingSet 和内存优先级不受管理员限制")
-        self.btn_stop = ttk.Button(bf, text="■ 停止", command=self._stop_daemon, state="disabled")
+            "⚠ 缓存类清理需要管理员权限\n"
+            "⚠ 进程级清理无需管理员权限即可生效")
+        self.btn_stop = ttk.Button(bf, text="▶ 停止", command=self._stop_daemon, state="disabled")
         self.btn_stop.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_stop,
-            "■ 停止后台自动清理\n"
+            "▶ 停止后台自动清理\n"
             "\n"
-            "停止守护模式后，已采集的学习数据(Thompson画像/refill_ewma/清理历史)\n"
-            "会自动保存到 memwise_state.json，下次启动接着用，不会丢失。\n"
-            "守护期间累积的统计(清理次数/释放量)会保留在界面上。")
+            "停止后已学习的数据（各进程的行为画像、清理历史、释放量统计）\n"
+            "会自动保存，下次启动继续使用，不会丢失。\n"
+            "守护期间累积的统计数字会保留在界面上。")
         self.btn_excl = ttk.Button(bf, text="⚙ 排除", command=self._edit_exclusion_list)
         self.btn_excl.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_excl,
             "⚙ 进程排除列表\n"
             "\n"
-            "在这里添加不想被清理的程序(输入进程名如 chrome.exe)。\n"
-            "添加后该进程将被跳过：\n"
-            "  · 不做EmptyWorkingSet\n"
-            "  · 不设低内存优先级/EcoQoS\n"
-            "  · 不参与Probe试探\n"
+            "在这里添加不想被清理的程序（输入程序名如 chrome，不带后缀自动补全）。\n"
+            "添加后该进程将被完全跳过：\n"
+            "  · 不释放其闲置内存\n"
+            "  · 不设低内存优先级\n"
+            "  · 不参与试探性清理\n"
             "\n"
-            "适合添加：正在用的浏览器、开发工具、IDE、播放器\n"
+            "适合添加：正在用的浏览器、开发工具、播放器\n"
             "\n"
-            "⚠ 注意：排除太多程序会明显降低释放效果\n"
-            "⚠ 排除不影响安全白名单(系统进程自动保护)")
+            "⚠ 排除太多程序会明显降低释放效果\n"
+            "⚠ 系统核心进程始终受自动保护，不受排除列表影响")
         self.btn_set = ttk.Button(bf, text="☰ 设置", command=self._open_settings)
         self.btn_set.pack(side="left")
         self._add_tip(self.btn_set,
             "☰ 打开详细设置面板\n"
             "\n"
-            "\u8bbe\u7f6e\u9879\u5305\u62ec\uff1a\n"
-            "  \u542f\u52a8\uff1a\u5f00\u673a\u81ea\u542f / \u7ba1\u7406\u5458\u6743\u9650\u542f\u52a8 / \u81ea\u52a8\u5b88\u62a4 / \u6700\u5c0f\u5316\u5230\u6258\u76d8\n"
-            "  \u5173\u95ed\u6309\u94ae\u884c\u4e3a\uff1a\u6700\u5c0f\u5316\u5230\u6258\u76d8 / \u76f4\u63a5\u9000\u51fa / \u6bcf\u6b21\u8be2\u95ee\n"
-            "  \u6e05\u7406\uff1a\u5355\u72ec\u5f00\u5173\u6bcf\u79cd\u64cd\u4f5c\u2014\u2014\n"
-            "    \u00b7 EmptyWorkingSet(\u8fdb\u7a0b\u95f2\u7f6e\u9875\u91ca\u653e)\n"
-            "    \u00b7 Standby List\u6e05\u7406(\u7cfb\u7edf\u7f13\u5b58)\n"
-            "    \u00b7 Modified Page\u5199\u56de(\u810f\u9875\u5237\u76d8)\n"
-            "    \u00b7 \u5185\u5b58\u538b\u7f29\u89e6\u53d1(\u7d27\u7f29\u538b\u7f29\u5b58\u50a8)\n"
-            "    \u00b7 \u7cfb\u7edf\u6587\u4ef6\u7f13\u5b58\n"
-            "    \u00b7 \u5377\u7f13\u5b58\u5237\u65b0 / \u6ce8\u518c\u8868\u7f13\u5b58 / \u5185\u5b58\u5408\u5e76\n"
-            "  \u89e6\u53d1\u4e0e\u65e5\u5fd7\uff1a\u7d27\u6025\u9608\u503c / \u6258\u76d8\u5de6\u952e / \u6587\u4ef6\u65e5\u5fd7 / \u6e05\u7406\u6df1\u5ea6\n"
+            "可配置的内容：\n"
+            "  清理操作 — 8 种操作独立开关\n"
+            "  触发与日志 — 紧急阈值、守护间隔、托盘行为、文件日志、清理深度\n"
+            "  游戏模式 — 管理自定义游戏进程名单\n"
+            "  关闭行为 — 窗口关闭时最小化或退出\n"
             "\n"
-            "\u6e05\u7406\u6a21\u5f0f\u5728\u4e3b\u754c\u9762\u4e0b\u62c9\u6846\u5207\u6362(quick/normal/deep/full)")
-        self.btn_log = ttk.Button(bf, text="📊 学习日志", command=self._show_learn_log)
+            "清理模式在主界面下拉框切换（quick / normal / deep / full）")
+        self.btn_log = ttk.Button(bf, text="📜 学习日志", command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_log,
-            "📊 查看每个进程的详细学习数据\n"
+            "📜 查看每个进程的详细学习数据\n"
             "\n"
-            "核心指标：\n"
-            "  · θ (Thompson评分 0~1) — 越高越值得清理\n"
-            "     上下文增强Thompson：Beta×σ(w·f)，5维特征评分\n"
-            "  · α/β — Beta分布参数，控制探索vs利用平衡\n"
-            "  · ROI — 收益EWMA/成本EWMA，预期性价比\n"
-            "  · z-score — 工作集标准差偏离，>3.0为异常\n"
-            "  · 趋势斜率 — 30点最小二乘回归，正数=内存增长\n"
-            "  · 泄漏嫌疑 — 持续2倍增长超过5个采样点\n"
-            "  · refill_ewma — WS再填充速率，影响trim重试间隔\n"
-            "  · 清理历史 — clean_count/probe_ok/probe_fail\n"
+            "各列含义：\n"
+            "  · α / β — 历史成功与失败的累计次数，决定可信度评分\n"
+            "  · 可信度 — 越高越值得清理，综合了历史表现和预期收益\n"
+            "  · 收益比 — 预期释放量 vs 性能代价，性价比参考\n"
+            "  · 偏差 — 内存用量的异常波动程度，越大越反常\n"
+            "  · 趋势 — 内存增长斜率，正数表示内存在持续增长\n"
+            "  · 泄漏 — 是否疑似内存泄漏（持续增长且清完很快回涨）\n"
+            "  · 清理 — 累计被清理次数 / 试探成功 / 试探失败\n"
             "\n"
-            "这些数据帮您判断哪些进程值得清理、哪些清完很快又涨回来")
+            "这些数据帮你判断哪些进程值得清理、哪些清完很快又涨回来")
 
         # 状态文字单独放一行，避免按钮被挤出
         self.lbl_st = ttk.Label(bf, text="就绪 · Ctrl+Shift+M")
@@ -487,40 +795,56 @@ class MemWiseGUI:
                                         values=["quick","normal","deep","full"], state="readonly")
         self.mode_combo.pack(side="left", padx=(4,0))
         self._add_tip(self.mode_combo,
-            "选不同的清理力度，守护和优化按钮共用此设置：\n"
+            "选择清理力度，优化按钮和守护模式共用此设置：\n"
             "\n"
-            "  quick(快速) — 系统级 7 步管线 + 进程 EmptyWorkingSet\n"
-            "    适合：快速释放，不想有卡顿感\n"
+            "  quick — 仅系统级清理，几秒完成，零卡顿\n"
+            "    适合：随手一点，不想有任何感知\n"
             "\n"
-            "  normal(标准) — quick + Layer3 深度聚合(agg≥0.3 触发)\n"
-            "    适合：日常使用，兼顾效果和流畅度\n"
+            "  normal — 进程级 + 系统级清理，日常使用无副作用\n"
+            "    适合：日常使用，兼顾效果与流畅\n"
             "\n"
-            "  deep(深度) — 全速 8 步管线 + Layer3 始终运行\n"
-            "    适合：内存偏紧时需要多释放一些\n"
+            "  deep — 追加文件缓存清理和深层重复回收\n"
+            "    适合：内存偏紧，接受文件打开短暂变慢\n"
             "\n"
-            "  full(全量) — 全速 8 步 + 进程 + standby + 压缩 + 多轮深度\n"
-            "    适合：内存严重不足时最大释放\n"
+            "  full — 极限释放，关闭大量程序后效果最好\n"
+            "    适合：清出极限空间\n"
             "\n"
-            "默认清理操作(7种)：\n"
-            "· ws EmptyWorkingSet\n"
-            "· standby 系统杂项\n"
-            "· modified 脏页写回\n"
-            "· compress 内存压缩\n"
-            "· filecache 文件缓存\n"
-            "· volume 卷缓存\n"
-            "· registry 注册表缓存\n"
+            "⚠ 切换后守护模式即时生效，无需重启")
+        # 自动持久化清理模式选择
+        def _on_mode_change(*args):
+            global CFG
+            new_mode = self.mode_var.get()
+            last_mode = getattr(self, '_last_logged_mode', '')
+            if new_mode != last_mode:
+                self._log(f"调整清理模式为：{new_mode}")
+                self._last_logged_mode = new_mode
+            CFG["clean_mode"] = new_mode
+            _save_cfg()
+        self.mode_var.trace_add("write", _on_mode_change)
+        self.btn_game = ttk.Button(mf, text="🎮 游戏模式", command=self._on_toggle_game)
+        self.btn_game.pack(side="left", padx=(6,0))
+        self._add_tip(self.btn_game,
+            "🎮 手动开启或关闭游戏模式\n"
             "\n"
-            "⚠ 模式切换后守护模式即时生效，无需重启")
-        self.btn_rank = ttk.Button(mf, text="进程排行", command=self._show_process_rank)
+            "开启后：\n"
+            "  · 游戏进程受绝对保护，不被触碰\n"
+            "  · 非游戏进程被持续智能清理，为游戏腾出内存\n"
+            "  · 跳过全系统缓存清理，避免拖慢磁盘\n"
+            "  · 最大化游戏可用内存\n"
+            "\n"
+            "热键：Ctrl+Shift+G（可在设置 → 全局热键中更改）\n"
+            "⚠ 游戏进程名需先在设置 → 游戏模式中添加\n"
+            "⚠ 按程序名自动识别运行中的实例，同名程序的所有实例都会被保护\n"
+            "⚠ 常用辅助程序（语音、游戏平台）若受影响，可加入排除列表")
+        self.btn_rank = ttk.Button(mf, text="📊 进程排行", command=self._show_process_rank)
         self.btn_rank.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_rank,
-            "查看当前所有进程的内存占用排行\n"
+            "📊 查看当前所有进程的内存占用排行\n"
             "\n"
-            "按内存占用从大到小排列：\n"
-            "  · 实时刷新当前快照数据\n"
-            "  · 快速定位哪些进程最占内存\n"
+            "按内存占用从大到小排列，实时快照。\n"
+            "快速定位哪些进程最占内存。\n"
             "\n"
-            "点击标题列可切换排序方式")
+            "点击列标题可切换排序方式")
         ttk.Label(mf, text="  ").pack(side="left")
 
         # 统计
@@ -528,47 +852,41 @@ class MemWiseGUI:
         sf.pack(fill="x", padx=12, pady=4)
         self.lbl_sb = ttk.Label(sf, text="系统杂项: 0"); self.lbl_sb.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_sb,
-            "系统杂项清理总次数(7 种操作)\n"
+            "系统级清理操作的总次数\n"
             "\n"
-            "包括：Standby 清空/低优先 Standby/Modified Page 写回/内存压缩触发\n"
-            "文件缓存清除/卷缓存刷新/注册表缓存(Win8.1+)\n"
-            "全部操作通过 NtSetSystemInformation 内核调用\n"
+            "包括：待机缓存清空、脏页写回、内存压缩、\n"
+            "文件缓存清除、卷缓存刷新、注册表缓存等。\n"
             "\n"
             "⚠ 需要管理员权限才生效\n"
-            "⚠ 清理后打开大文件可能慢一会儿(缓存重建)")
+            "⚠ 清理后打开大文件可能短暂变慢")
         self.lbl_tr = ttk.Label(sf, text="进程: 0"); self.lbl_tr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_tr,
-            "进程EmptyWorkingSet清理总次数\n"
+            "进程闲置内存清理的总次数\n"
             "\n"
-            "每成功清理一个进程计1次(含多轮深度清理)\n"
-            "清理前还会对该进程设内存优先级+EcoQoS\n"
+            "每成功清理一个进程计 1 次（含多轮深度清理）。\n"
+            "清理前还会降低该进程的内存优先级。\n"
             "\n"
-            "⚠ 数字大不一定释放得多——多次清小进程也会计数\n"
-            "⚠ 参考释放量(MB)更有意义")
+            "⚠ 数字大不一定释放得多——多次清理小进程也会累加\n"
+            "⚠ 参考释放量（MB）更有意义")
         self.lbl_fr = ttk.Label(sf, text="释放: 0 MB"); self.lbl_fr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_fr,
             "累计释放内存总量\n"
             "\n"
-            "包括所有清理操作释放的内存：\n"
-            "  · 进程EmptyWorkingSet + 内存优先级/EcoQoS回收\n"
-            "  · Standby/Modified Page/文件缓存清理\n"
-            "  · 内存压缩+渐进式压缩(三步异步链)\n"
+            "包括进程闲置内存回收、系统缓存清理、\n"
+            "内存压缩等所有操作释放的总和。\n"
             "\n"
-            "释放后可用内存会立即上涨，但系统很快会重新分配\n"
-            "给活跃程序使用，这是正常的内存管理行为\n"
-            "参考柱状图可看到每次清理的实时释放量")
+            "释放后可用内存会立即上涨，但系统很快会\n"
+            "重新分配给活跃程序——这是正常的内存管理行为。\n"
+            "参考下方柱状图可看到每轮的实时释放量。")
         self.lbl_lr = ttk.Label(sf, text="已学习: 0"); self.lbl_lr.pack(side="right")
         self._add_tip(self.lbl_lr,
-            "已学习的进程画像数\n"
+            "已学习的进程数量\n"
             "\n"
-            "程序持续观察每个进程的内存使用习惯：\n"
-            "  · EWMA基线(Z-score)/波动率/趋势斜率\n"
-            "  · refill_ewma再填充速率\n"
-            "  · 上下文增强Thompson(5维特征评分)\n"
+            "程序持续观察每个进程的内存使用习惯，\n"
+            "包括变化趋势、波动幅度、填充速度等。\n"
             "\n"
-            "样本越多，θ评分越准确。\n"
-            "超过30天无活跃+样本<10的低价值画像自动清理\n"
-            "防止state.json无限膨胀")
+            "学习越久，清理决策越精准。\n"
+            "超过 7 天无活动的进程会被自动清除。")
 
         # 日志 — 上半文本 + 下半实时柱图
         lf = ttk.LabelFrame(self.root, text="日志", padding=4)
@@ -577,7 +895,9 @@ class MemWiseGUI:
         # 下半：柱图 Canvas（守护模式下显示实时优化柱图）
         self.chart_canvas = tk.Canvas(lf, height=200, bg="#1e1e1e", highlightthickness=0)
         self.chart_canvas.pack(side="bottom", fill="x")
-        self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
+        self._chart_redraw_id = None  # debounce ID
+        self._drawing_chart = False   # re-entrancy guard
+        self.chart_canvas.bind("<Configure>", self._on_chart_configure)
         # 占位
         self._draw_chart_placeholder()
 
@@ -591,33 +911,39 @@ class MemWiseGUI:
     # ---- 设置对话框 ----
 
     def _apply_icon(self, win):
+        """弹窗窗口图标：延迟到层级完整后设置到顶层 wrapper（winfo_id 是 client 窗口）。
+        类图标由主窗口设置一次，所有弹窗自动继承。"""
         try:
-            hwnd = win.winfo_id()
-            # 尝试发送到 Toplevel 本身
-            sml_h = winapi.create_memwise_icon(16)
-            if sml_h:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, sml_h)
-                ctypes.windll.user32.SetClassLongPtrW(hwnd, -34, sml_h)
-            big_h = winapi.create_memwise_icon(32)
-            if big_h:
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, big_h)
-                ctypes.windll.user32.SetClassLongPtrW(hwnd, -14, big_h)
-        except:
+            wid = int(win.winfo_id())
+            if not hasattr(self, '_dlg_icon_sml'):
+                self._dlg_icon_sml = winapi.create_memwise_icon(16)
+                self._dlg_icon_big = winapi.create_memwise_icon(32)
+            sml_h = self._dlg_icon_sml
+            big_h = self._dlg_icon_big
+            if not sml_h and not big_h:
+                return
+            def _set():
+                try:
+                    top = ctypes.windll.user32.GetAncestor(wid, 2) or ctypes.windll.user32.GetParent(wid) or wid
+                    if big_h:
+                        ctypes.windll.user32.SendMessageW(top, 0x0080, 1, big_h)
+                    if sml_h:
+                        ctypes.windll.user32.SendMessageW(top, 0x0080, 0, sml_h)
+                except Exception:
+                    pass
+            win.after(100, _set)
+        except Exception:
             pass
 
     def _open_settings(self):
         win = tk.Toplevel(self.root)
         self._apply_icon(win)
         win.title("MemWise 设置")
-        win.geometry("520x500")
         win.resizable(False, True)
         win.transient(self.root)
         win.focus_set()
         win.lift()
-        win.update_idletasks()
-        cx = self.root.winfo_x() + (self.root.winfo_width() - 520) // 2
-        cy = self.root.winfo_y() + (self.root.winfo_height() - 600) // 2
-        win.geometry(f"520x600+{cx}+{cy}")
+        _center_geometry(win, 520, 600)
 
         # # ─── 启动设置 ───
         canvas = tk.Canvas(win, width=502, highlightthickness=0)
@@ -646,6 +972,10 @@ class MemWiseGUI:
                 args = os.path.abspath(__file__); wd = base
             if en:
                 winapi.set_auto_start("MemWise", target, args + " --minimized" if args else "--minimized", wd)
+                # 互斥：启用普通自启时移除管理员自启任务（避免开机双启动）
+                winapi.remove_auto_start_admin("MemWise")
+                CFG["auto_start_admin"] = False
+                asa_var.set(False)
                 self._log("开机自启已启用")
             else:
                 winapi.remove_auto_start("MemWise")
@@ -677,8 +1007,9 @@ class MemWiseGUI:
                 ok = winapi.set_auto_start_admin("MemWise", target, args + " --minimized" if args else "--minimized")
                 if ok:
                     winapi.remove_auto_start("MemWise")
-                    ast_var.set(True)
-                    CFG["auto_start"] = True
+                    # 语义：管理员自启替换普通自启，普通自启配置如实置关
+                    ast_var.set(False)
+                    CFG["auto_start"] = False
                     self._log("管理员权限开机自启已启用")
                 else:
                     asa_var.set(False)
@@ -692,17 +1023,15 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text="管理员权限启动", variable=asa_var,
                         command=on_autostart_admin).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "通过Windows计划任务以最高权限(管理员)开机启动\n"
+            "以最高权限自动开机启动\n"
             "\n"
-            "优势：\n"
-            "  · 系统缓存清理(Standby/文件缓存)需要管理员权限\n"
-            "  · 以最高权限启动后，所有清理操作都能完整执行\n"
+            "通过 Windows 计划任务实现。\n"
+            "系统缓存类清理需要管理员权限，以最高权限启动后\n"
+            "所有清理操作都能完整执行。\n"
             "\n"
-            "前提：\n"
-            "  · 需先以管理员身份运行一次本程序\n"
-            "  · 非管理员时设置会失败\n"
+            "需先以管理员身份运行过一次本程序才能启用。\n"
             "\n"
-            "⚠ 启用后会替换普通开机自启(二选一)")
+            "⚠ 启用后会替换普通开机自启，两者只能选一个")
 
         asd_var = tk.BooleanVar(value=CFG.get("auto_start_daemon", False))
         def on_auto_daemon():
@@ -713,9 +1042,9 @@ class MemWiseGUI:
         self._add_tip(sf.winfo_children()[-1],
             "程序启动后立即自动进入守护模式\n"
             "\n"
-            "无需手动点击「守护」按钮，程序一打开就在后台运行。\n"
-            "固定60秒日志输出，持续满负载优化(连续循环+gap fill)。\n"
-            "配合「启动后最小化到托盘」使用效果更佳。")
+            "无需手动点击守护按钮，程序一打开就在后台运行。\n"
+            "每 60 秒输出一轮结果，持续自动优化。\n"
+            "配合启动后最小化到托盘使用效果更佳。")
 
         asm_var = tk.BooleanVar(value=CFG.get("auto_start_minimize", False))
         def on_minimize():
@@ -754,47 +1083,48 @@ class MemWiseGUI:
 
         def toggle_op(op_name, var):
             if var.get():
-                CFG.setdefault("clean_operations", [])
+                if "clean_operations" not in CFG:
+                    CFG["clean_operations"] = []
                 if op_name not in CFG["clean_operations"]:
                     CFG["clean_operations"].append(op_name)
             else:
                 if CFG.get("clean_operations"):
                     CFG["clean_operations"] = [o for o in CFG["clean_operations"] if o != op_name]
+            _save_cfg()
 
         ops = CFG.get("clean_operations", []) or []
-        ws_var = tk.BooleanVar(value=not ops or "ws" in ops)
-        sb_var = tk.BooleanVar(value=not ops or "standby" in ops)
+        ws_var = tk.BooleanVar(value="ws" in ops)
+        sb_var = tk.BooleanVar(value="standby" in ops)
         mp_var = tk.BooleanVar(value="modified" in ops)
         fc_var = tk.BooleanVar(value="filecache" in ops)
         vl_var = tk.BooleanVar(value="volume" in ops)
-        cp_var = tk.BooleanVar(value="compress" in ops or not ops)
+        cp_var = tk.BooleanVar(value="compress" in ops)
+        rg_var = tk.BooleanVar(value="registry" in ops)
 
         ops_frame = ttk.Frame(cf); ops_frame.pack(fill="x")
-        cb_ews = ttk.Checkbutton(ops_frame, text="EmptyWorkingSet", variable=ws_var,
+        cb_ews = ttk.Checkbutton(ops_frame, text="释放进程闲置内存", variable=ws_var,
                                   command=lambda: toggle_op("ws", ws_var))
         cb_ews.pack(anchor="w")
-        self._add_tip(cb_ews, "对非自身进程调用 EmptyWorkingSet，释放闲置物理页到 pagefile。\n"
-                      "中度内存压力(agg≥0.35)时也会清理前台进程。\n"
-                      "清理前还会对该进程设内存优先级+EcoQoS。\n"
+        self._add_tip(cb_ews, "释放各个进程当前未使用的闲置内存。\n"
+                      "内存压力较大时也会清理前台进程。\n"
                       "\n"
-                      "⚠ 切回被清理的后台程序时可能多几百毫秒加载（页面从 pagefile 调回）\n"
-                      "⚠ 但系统按需自动调回，不影响程序正常运行")
-        cb_sb = ttk.Checkbutton(ops_frame, text="Standby List 清理", variable=sb_var,
+                      "⚠ 切回被清理的后台程序时可能多几百毫秒加载\n"
+                      "⚠ 系统会自动按需调回，不影响程序正常运行")
+        cb_sb = ttk.Checkbutton(ops_frame, text="待机缓存清理", variable=sb_var,
                                 command=lambda: toggle_op("standby", sb_var))
         cb_sb.pack(anchor="w")
-        self._add_tip(cb_sb, "清空系统的 Standby 缓存页(Windows 缓存的最近读取数据)，释放大量内存。\n"
-                      "配合系统级 MemoryEmptyWorkingSets 全量收割。\n"
+        self._add_tip(cb_sb, "清空系统已缓存但暂未使用的内存页，释放量较大。\n"
                       "\n"
                       "⚠ 需要管理员权限\n"
-                      "⚠ 清理后首次打开大文件可能慢一会儿(缓存重建)")
-        cb_mp = ttk.Checkbutton(ops_frame, text="Modified Page 写回", variable=mp_var,
+                      "⚠ 清理后首次打开大文件可能短暂变慢")
+        cb_mp = ttk.Checkbutton(ops_frame, text="脏页写回", variable=mp_var,
                                 command=lambda: toggle_op("modified", mp_var))
         cb_mp.pack(anchor="w")
-        self._add_tip(cb_mp, "将已修改的脏页写回磁盘，释放其占用的物理内存。\n"
+        self._add_tip(cb_mp, "将已修改但未保存的缓存页写回磁盘后释放。\n"
                       "写回后页面变为干净页，系统可回收重用。\n"
                       "每次系统级清理均执行，不受压力阈值限制。\n"
                       "\n"
-                      "⚠ 少量磁盘写入，对 SSD 几乎无影响")
+                      "⚠ 少量磁盘写入，对固态硬盘几乎无影响")
         cb_cp = ttk.Checkbutton(ops_frame, text="内存压缩触发", variable=cp_var,
                                 command=lambda: toggle_op("compress", cp_var))
         cb_cp.pack(anchor="w")
@@ -805,7 +1135,7 @@ class MemWiseGUI:
         cb_fc = ttk.Checkbutton(ops_frame, text="系统文件缓存", variable=fc_var,
                                 command=lambda: toggle_op("filecache", fc_var))
         cb_fc.pack(anchor="w")
-        self._add_tip(cb_fc, "清空系统文件缓存（SetSystemFileCacheSize）。\n"
+        self._add_tip(cb_fc, "清空系统文件读取缓存。\n"
                       "会降低文件操作速度直到缓存重建。\n"
                       "每次系统级清理均执行，确保最大释放效果。\n"
                       "\n"
@@ -814,12 +1144,47 @@ class MemWiseGUI:
         cb_vc = ttk.Checkbutton(ops_frame, text="卷缓存刷新", variable=vl_var,
                                 command=lambda: toggle_op("volume", vl_var))
         cb_vc.pack(anchor="w")
-        self._add_tip(cb_vc, "刷新各卷(如C:、D:)的写入缓存缓冲区，释放被占用的物理内存页。\n"
-                      "通过 CreateFileW+FlushFileBuffers 实现。\n"
+        self._add_tip(cb_vc, "刷新各磁盘分区的写入缓存，释放占用的内存。\n"
                       "\n"
-                      "⚠ 每次刷新所有NTFS卷，约耗时50~200ms\n"
-                      "⚠ 磁盘繁忙时可能稍慢，但不丢失数据")
-                # ─── 关閉按鈕行为 ───
+                      "\n"
+                      "⚠ 每次刷新所有分区，短暂耗时但不丢失数据\n"
+                      "⚠ ")
+        cb_cb_var = tk.BooleanVar(value="combine" in ops)
+        cb_cb = ttk.Checkbutton(ops_frame, text="内存合并", variable=cb_cb_var,
+                                command=lambda: toggle_op("combine", cb_cb_var))
+        cb_cb.pack(anchor="w")
+        self._add_tip(cb_cb, "触发系统合并内容相同的物理内存页，节省内存占用。\n"
+                      "多虚拟机或容器场景效果明显。\n"
+                      "适合多虚拟机或容器场景——相同 OS 文件可在物理内存中共享页面。\n"
+                      "\n"
+                      "⚠ 部分系统版本对页合并的支持有限\n"
+                      "⚠ 合并后不影响程序正常运行")
+        cb_rg = ttk.Checkbutton(ops_frame, text="注册表缓存清理", variable=rg_var,
+                                command=lambda: toggle_op("registry", rg_var))
+        cb_rg.pack(anchor="w")
+        self._add_tip(cb_rg, "清空系统注册表的读写缓存。\n"
+                      "\n"
+                      "无磁盘读写操作，不影响任何程序运行。\n"
+                      "守护模式下始终执行，取消勾选后完全跳过。")
+                # ─── 关闭按钮行为 ───
+        # ─── 游戏模式 ───
+        gmf = ttk.LabelFrame(inner_frame, text="游戏模式", padding=8)
+        gmf.pack(fill="x", padx=12, pady=4)
+        gmf_btns = ttk.Frame(gmf); gmf_btns.pack(fill="x")
+        manage_btn = ttk.Button(gmf_btns, text="管理游戏进程", command=self._manage_game_procs)
+        manage_btn.pack(side="left", padx=(0,6))
+        self._add_tip(manage_btn,
+            "管理需要识别的游戏程序名\n"
+            "\n"
+            "在一个窗口内完成：\n"
+            "  · 查看 — 列出全部自定义条目\n"
+            "  · 添加 — 逗号分隔批量输入，如 cities, stellaris\n"
+            "  · 删除 — 选中后删除，写错/误加/不想要随时移除\n"
+            "\n"
+            "不带后缀会自动补全，改动即时保存，守护模式检测到后自动开启游戏保护。\n"
+            "内置名单为程序自带，不可修改。\n"
+            "\n"
+            "⚠ 同名程序的所有实例都会被识别")
         ttk.Label(ops_frame, text="（留空 = 按模式自动选择）",
                   foreground="#888").pack(anchor="w")
 
@@ -857,22 +1222,76 @@ class MemWiseGUI:
             global CFG
             CFG["log_to_file"] = lg_var.get()
             _save_cfg()
-        lg_cb = ttk.Checkbutton(ef2, text="记录清理日志到文件 (memwise.log)",
+        lg_cb = ttk.Checkbutton(ef2, text="记录清理日志到文件",
                                 variable=lg_var, command=set_log)
         lg_cb.pack(anchor="w")
-        self._add_tip(lg_cb, "将每轮释放量追加写入 memwise.log，\n用于长期趋势追踪。")
+        self._add_tip(lg_cb, "将每轮释放量追加写入日志文件，\n用于长期趋势追踪。")
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):
             global CFG
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
-        ps_lbl = ttk.Label(ef2, text=f"进程清理深度: {passes_val.get()} pass", foreground="#555")
+        ps_lbl = ttk.Label(ef2, text=f"进程清理深度: {passes_val.get()} 轮", foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(ps_lbl, "进程 WS 清理的遍历次数(2-6, 默认4)。\n越高释放越彻底，但耗时越长。\n低配机器建议 2-3，高性能可设 5-6。")
+        self._add_tip(ps_lbl, "每个进程反复清理的轮数（2~6，默认 4）。\n越高释放越彻底，但耗时越长。\n低配电脑建议 2~3，高性能可设 5~6。")
         ps_sl = ttk.Scale(ef2, from_=2, to=6, variable=passes_val, orient="horizontal",
-                         command=lambda v: (set_passes(v), ps_lbl.config(text=f"进程清理深度: {int(float(v))} pass")))
+                         command=lambda v: (set_passes(v), ps_lbl.config(text=f"进程清理深度: {int(float(v))} 轮")))
         ps_sl.pack(fill="x", pady=(0,6))
 
+        gap_val = tk.IntVar(value=CFG.get("gap_seconds", 12))
+        def set_gap(v):
+            global CFG
+            CFG["gap_seconds"] = int(float(v))
+            _save_cfg()
+        gp_lbl = ttk.Label(ef2, text=f"守护清理间隔: {gap_val.get()} 秒", foreground="#555")
+        gp_lbl.pack(anchor="w", pady=(6,0))
+        self._add_tip(gp_lbl, "守护模式每轮周期内的清理频率（8~20 秒，默认 12）。\n"
+                         "用于控制周期内清理操作的密集程度。\n"
+                         "间隔越短，同周期内清理次数越多，释放效果越彻底，\n"
+                         "但对性能的消耗也越高。\n"
+                         "低配电脑建议 15~20，高性能可设 8~10。")
+        gp_sl = ttk.Scale(ef2, from_=8, to=20, variable=gap_val, orient="horizontal",
+                         command=lambda v: (set_gap(v), gp_lbl.config(text=f"守护清理间隔: {int(float(v))} 秒")))
+        gp_sl.pack(fill="x", pady=(0,6))
+
+        # ─── 全局热键（独立栏，汇总所有热键） ───
+        hkf = ttk.LabelFrame(inner_frame, text="全局热键", padding=8)
+        hkf.pack(fill="x", padx=12, pady=4)
+        ttk.Label(hkf, text="格式：修饰键+按键，如 ctrl+shift+m / alt+f1 / shift+f5",
+                  foreground="#888").pack(anchor="w")
+        for hk in HOTKEYS:
+            row = ttk.Frame(hkf); row.pack(fill="x", pady=(4,0))
+            ttk.Label(row, text=f"{hk['name']}：", width=12).pack(side="left")
+            e = ttk.Entry(row, width=22)
+            e.insert(0, CFG.get(hk["key"], hk["default"]))
+            e.pack(side="left")
+            st = ttk.Label(row, text="", foreground="#c00"); st.pack(side="left", padx=(6,0))
+            def commit(event=None, hk=hk, e=e, st=st):
+                spec = e.get().strip().lower()
+                mods, vk, err = _parse_hotkey(spec)
+                if err:
+                    st.config(text=err)  # 非法：标红提示，不保存（保留旧值）
+                    return
+                for hk2 in HOTKEYS:  # 冲突检测
+                    if hk2 is hk:
+                        continue
+                    m2, v2, _ = _parse_hotkey(CFG.get(hk2["key"], hk2["default"]))
+                    if m2 == mods and v2 == vk:
+                        st.config(text=f"与「{hk2['name']}」冲突")
+                        return
+                CFG[hk["key"]] = spec
+                _save_cfg()
+                st.config(text="已生效")
+                self._apply_hotkeys()
+            e.bind("<FocusOut>", commit)
+            e.bind("<Return>", commit)
+            tip = (f"{hk['name']}全局快捷键\n\n"
+                   f"按此组合：{'立即执行一次优化' if hk['action'] == 'hotkey' else '切换游戏模式（含确认弹窗）'}\n"
+                   f"格式：修饰键+按键，如 {hk['default']}\n\n"
+                   "⚠ 至少包含一个修饰键（ctrl/alt/shift）\n"
+                   "⚠ 不能与其他热键相同\n"
+                   "⚠ 输入后点击其他位置或按回车生效，被占用时会提示")
+            self._add_tip(e, tip)
 
         def save_and_close():
             CFG["clean_mode"] = self.mode_var.get()
@@ -883,15 +1302,11 @@ class MemWiseGUI:
         win = tk.Toplevel(self.root)
         self._apply_icon(win)
         win.title("进程排除列表")
-        win.geometry("460x460")
         win.resizable(False, True)
         win.transient(self.root)
         win.focus_set()
         win.lift()
-        win.update_idletasks()
-        cx = self.root.winfo_x() + (self.root.winfo_width() - 460) // 2
-        cy = self.root.winfo_y() + (self.root.winfo_height() - 460) // 2
-        win.geometry(f"460x460+{cx}+{cy}")
+        _center_geometry(win, 460, 460)
 
         lb = tk.Listbox(win, width=40, height=12)
         lb.pack(fill="both", expand=True, padx=12, pady=(12,4))
@@ -899,76 +1314,35 @@ class MemWiseGUI:
         for n in never: lb.insert("end", n)
 
         def add_excl():
-            name = simpledialog.askstring("添加排除", "输入进程名 (如 chrome.exe):", parent=win)
+            name = simpledialog.askstring("添加排除", "输入程序名（不带后缀自动补全）:", parent=win)
             if name:
-                lb.insert("end", name)
-                if name not in never: never.append(name)
+                nm = _normalize_proc_name(name)
+                if nm in never:
+                    messagebox.showwarning("已存在", f"「{nm}」已在排除列表中", parent=win)
+                    return
+                lb.insert("end", nm)
+                never.append(nm)
+                CFG["never"] = list(never)
+                _save_cfg()
         def remove_excl():
             sel = lb.curselection()
             if sel:
                 name = lb.get(sel[0])
                 lb.delete(sel[0])
-                if name in never: never.remove(name)
+                if name in never:
+                    never.remove(name)
+                    CFG["never"] = list(never)
+                    _save_cfg()
 
         bf = ttk.Frame(win); bf.pack(fill="x", padx=12, pady=4)
         ttk.Button(bf, text="+ 添加", command=add_excl).pack(side="left", padx=(0,6))
         ttk.Button(bf, text="− 删除", command=remove_excl).pack(side="left")
 
-        # ─── 紧急触发阈值 & 托盘行为 & 日志 ───
-        ef2 = ttk.LabelFrame(inner_frame, text="触发与日志", padding=8)
-
-        ef2.pack(fill="x", padx=12, pady=4)
-        def set_emerg(v):
-            global CFG
-            CFG["emergency_threshold"] = int(float(v))
-            _save_cfg()
-        em_val = tk.IntVar(value=CFG.get("emergency_threshold", 80))
-        em_lbl = ttk.Label(ef2, text=f"紧急触发阈值: {em_val.get()}%", foreground="#555")
-        self._add_tip(em_lbl, "内存使用率达到此百分比时，跳过等待立即执行全量优化。\n范围 50-99%，默认 80%。\n降低可更及时响应，提高可减少清理频率。")
-        em_lbl.pack(anchor="w")
-        em_sl = ttk.Scale(ef2, from_=50, to=99, variable=em_val, orient="horizontal",
-                         command=lambda v: (set_emerg(v), em_lbl.config(text=f"紧急触发阈值: {int(float(v))}%")))
-        em_sl.pack(fill="x", pady=(0,6))
-        ta_lbl = ttk.Label(ef2, text="托盘左键行为：")
-        ta_lbl.pack(anchor="w")
-        map_vals = {"显示窗口":"show","一键清理":"clean","无操作":"none"}
-        ta_combo = ttk.Combobox(ef2, values=list(map_vals.keys()), state="readonly", width=20)
-        ta_cur = {v:k for k,v in map_vals.items()}.get(CFG.get("tray_left_action","show"), "显示窗口")
-        ta_combo.set(ta_cur)
-        ta_combo.pack(fill="x", pady=(0,6))
-        self._add_tip(ta_combo, "托盘左键单击行为：\n· 显示窗口 — 恢复主界面（默认）\n· 一键清理 — 立即执行优化\n· 无操作 — 忽略点击")
-        def set_tray_act(e):
-            global CFG
-            CFG["tray_left_action"] = map_vals.get(ta_combo.get(), "show")
-            _save_cfg()
-        ta_combo.bind("<<ComboboxSelected>>", set_tray_act)
-        lg_var = tk.BooleanVar(value=CFG.get("log_to_file", False))
-        def set_log():
-            global CFG
-            CFG["log_to_file"] = lg_var.get()
-            _save_cfg()
-        lg_cb = ttk.Checkbutton(ef2, text="记录清理日志到文件 (memwise.log)",
-                                variable=lg_var, command=set_log)
-        lg_cb.pack(anchor="w")
-        self._add_tip(lg_cb, "将每轮释放量追加写入 memwise.log，\n用于长期趋势追踪。")
-        passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
-        def set_passes(v):
-            global CFG
-            CFG["clean_passes"] = int(float(v))
-            _save_cfg()
-        ps_lbl = ttk.Label(ef2, text=f"进程清理深度: {passes_val.get()} pass", foreground="#555")
-        ps_lbl.pack(anchor="w", pady=(6,0))
-        ps_sl = ttk.Scale(ef2, from_=2, to=6, variable=passes_val, orient="horizontal",
-                         command=lambda v: (set_passes(v), ps_lbl.config(text=f"进程清理深度: {int(float(v))} pass")))
-        ps_sl.pack(fill="x", pady=(0,6))
-        self._add_tip(ps_sl, "进程 WS 清理的遍历次数(2-6, 默认4)。\n越高释放越彻底，但耗时越长。\n低配机器建议 2-3，高性能可设 5-6。")
-
-
-        def save_and_close():
-            CFG["never"] = never
+        def close_excl():
+            CFG["never"] = list(never)
             _save_cfg()
             win.destroy()
-        ttk.Button(win, text="关闭", command=save_and_close).pack(pady=8)
+        ttk.Button(win, text="关闭", command=close_excl).pack(pady=8)
 
     def _show_learn_log(self):
         info_data = []
@@ -986,21 +1360,17 @@ class MemWiseGUI:
         win = tk.Toplevel(self.root)
         self._apply_icon(win)
         win.title(f"学习日志 — {len(info_data)} 个进程")
-        win.geometry("1000x650")
         win.transient(self.root)
         win.focus_set()
         win.lift()
-        win.update_idletasks()
-        cx = self.root.winfo_x() + (self.root.winfo_width() - 1000) // 2
-        cy = self.root.winfo_y() + (self.root.winfo_height() - 650) // 2
-        win.geometry(f"1000x650+{cx}+{cy}")
-        cols = ("进程", "α", "β", "样本", "可信度", "收益比", "偏差", "趋势", "泄漏", "清理", "试探OK", "试探失败")
+        _center_geometry(win, 1000, 650)
+        cols = ("进程", "α", "β", "样本", "可信度", "收益比", "偏差", "趋势", "泄漏", "清理", "试探成功", "试探失败")
         tree = ttk.Treeview(win, columns=cols, show="headings", height=20)
         for c in cols:
             tree.heading(c, text=c)
             if c in ("进程",):
                 tree.column(c, width=200)
-            elif c in ("α","β","样本","清理","试探OK","试探失败"):
+            elif c in ("α","β","样本","清理","试探成功","试探失败"):
                 tree.column(c, width=65, anchor="center")
             elif c in ("可信度","收益比","偏差","趋势"):
                 tree.column(c, width=75, anchor="center")
@@ -1016,30 +1386,117 @@ class MemWiseGUI:
 
     # ---- 进程内存排行 ----
 
+    def _manage_game_procs(self):
+        """一体化游戏进程管理：列出/添加/删除自定义条目，内置名单只读展示"""
+        win = tk.Toplevel(self.root)
+        self._apply_icon(win)
+        win.title("游戏进程管理")
+        win.resizable(True, True)
+        win.transient(self.root)
+        win.focus_set()
+        win.lift()
+        _center_geometry(win, 460, 480)
+
+        import core.cleaner as _cm
+        builtin = sorted(_cm.GAME_PROCESSES)
+        games = [g for g in (CFG.get("game_processes", []) or [])]
+
+        # ── 自定义条目列表 ──
+        ttk.Label(win, text="自定义游戏进程（可添加/删除）：").pack(anchor="w", padx=12, pady=(12,2))
+        listf = ttk.Frame(win); listf.pack(fill="both", expand=True, padx=12)
+        lb = tk.Listbox(listf, width=46, height=8, font=("Microsoft YaHei", 10),
+                        selectbackground="#419EF3", activestyle="none")
+        scroll = ttk.Scrollbar(listf, orient="vertical", command=lb.yview)
+        lb.configure(yscrollcommand=scroll.set)
+        lb.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        for g in games:
+            lb.insert("end", g)
+
+        # ── 添加区 ──
+        addf = ttk.Frame(win); addf.pack(fill="x", padx=12, pady=6)
+        entry = ttk.Entry(addf, width=32)
+        entry.pack(side="left")
+        ttk.Label(addf, text="逗号分隔，不带后缀自动补全").pack(side="left", padx=(6,0))
+
+        def add():
+            raw = [_normalize_proc_name(n) for n in entry.get().split(",") if n.strip()]
+            if not raw:
+                return
+            existing = [n.lower() for n in (CFG.get("game_processes", []) or [])]
+            new_names = []
+            dup = []
+            for n in raw:
+                if n in existing:
+                    dup.append(n)
+                else:
+                    new_names.append(n)
+            if dup:
+                messagebox.showwarning("已存在", f"以下进程已在名单中：\n{', '.join(dup)}", parent=win)
+            if not new_names:
+                entry.delete(0, "end")
+                return
+            CFG["game_processes"] = existing + new_names
+            _save_cfg()
+            for n in new_names:
+                lb.insert("end", n)
+            entry.delete(0, "end")
+            info.config(text=f"自定义 {len(lb.get(0, 'end'))} 款 · 内置 {len(builtin)} 款（内置不可修改）")
+        ttk.Button(addf, text="添加", command=add).pack(side="left", padx=(6,0))
+        entry.bind("<Return>", lambda e: add())
+        entry.focus_set()
+
+        # ── 删除区 ──
+        delf = ttk.Frame(win); delf.pack(fill="x", padx=12, pady=(0,4))
+        def remove():
+            sel = lb.curselection()
+            if not sel:
+                return
+            name = lb.get(sel[0])
+            if not messagebox.askyesno("删除游戏进程",
+                    f"确定从自定义名单中移除「{name}」吗？\n\n内置名单不受影响。", parent=win):
+                return
+            lb.delete(sel[0])
+            cur = CFG.get("game_processes", []) or []
+            CFG["game_processes"] = [g for g in cur if g.lower() != name.lower()]
+            _save_cfg()
+            info.config(text=f"自定义 {len(lb.get(0, 'end'))} 款 · 内置 {len(builtin)} 款（内置不可修改）")
+        ttk.Button(delf, text="删除选中", command=remove).pack(side="left")
+
+        # ── 内置名单只读展示 ──
+        info = ttk.Label(win, text=f"自定义 {len(games)} 款 · 内置 {len(builtin)} 款（内置不可修改）",
+                         foreground="#888")
+        info.pack(anchor="w", padx=12, pady=(4,2))
+        bf2 = ttk.Frame(win); bf2.pack(fill="x", padx=12, pady=(0,12))
+        lbl_builtin = tk.Text(bf2, height=4, width=56, font=("Microsoft YaHei", 9),
+                              state="disabled", wrap="word", bg="#f5f5f5")
+        lbl_builtin.pack(fill="both")
+        lbl_builtin.configure(state="normal")
+        lbl_builtin.insert("end", "  " + ", ".join(builtin[:25]))
+        if len(builtin) > 25:
+            lbl_builtin.insert("end", f"  ... 及其他 {len(builtin) - 25} 款")
+        lbl_builtin.configure(state="disabled")
+    
     def _show_process_rank(self):
         """弹出进程内存占用排行榜"""
         win = tk.Toplevel(self.root)
         self._apply_icon(win)
         win.title("进程内存排行")
-        win.geometry("900x650")
         win.resizable(True, True)
         win.transient(self.root)
         win.focus_set()
         win.lift()
-        win.update_idletasks()
-        cx = (win.winfo_screenwidth() - 900) // 2
-        cy = (win.winfo_screenheight() - 700) // 2
-        win.geometry(f"900x650+{cx}+{cy}")
+        _center_geometry(win, 900, 650)
 
-        cols = ("进程", "PID", "内存", "CPU", "学习")
+        cols = ("进程", "进程号", "内存占用", "CPU占用", "学习")
         tree = ttk.Treeview(win, columns=cols, show="headings", height=25)
         for c in cols:
             tree.heading(c, text=c, command=lambda _c=c: _sort_tree(_c))
             if c in ("进程",):
                 tree.column(c, width=250)
-            elif c == "PID":
+            elif c == "进程号":
                 tree.column(c, width=70, anchor="center")
-            elif c == "CPU":
+            elif c == "CPU占用":
                 tree.column(c, width=70, anchor="center")
             elif c == "学习":
                 tree.column(c, width=60, anchor="center")
@@ -1052,7 +1509,7 @@ class MemWiseGUI:
         vsb.pack(side="right", fill="y", pady=(12,4))
 
         # 排序状态变量（默认按内存降序）
-        _sort_col = "内存"
+        _sort_col = "内存占用"
         _sort_rev = True
 
         def _sort_key_c(v):
@@ -1107,7 +1564,7 @@ class MemWiseGUI:
                 else:
                     messagebox.showerror("失败", f"无法终止进程「{name}」\n可能权限不足或进程已退出", parent=win)
 
-        tree.bind("<<TreeviewSelect>>", _on_item_click)
+        tree.bind("<Double-1>", _on_item_click)  # 单击仅选中，双击才询问终止（防误触）
 
         # 鼠标悬浮高亮
         tree.tag_configure("hover", background="#3a3a3a")
@@ -1179,45 +1636,33 @@ class MemWiseGUI:
 
     # ---- 日志 / 状态 ----
 
-    def _log_should_clear(self, extra_lines=1):
-        """判断继续输出是否会溢出日志界面"""
-        try:
-            line_count = int(self.log.index('end-1c').split('.')[0])
-            if line_count <= 1:
-                return False
-            dli = self.log.dlineinfo("1.0")
-            if dli:
-                line_height = dli[3]
-            else:
-                import tkinter.font as tkfont
-                f = tkfont.Font(font=self.log['font'])
-                line_height = f.metrics('linespace')
-            visible_height = self.log.winfo_height()
-            visible_lines = max(3, visible_height // line_height)
-            return line_count + extra_lines > visible_lines
-        except Exception:
-            return False
-
-    def _clear_log(self):
-        self.log.configure(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.configure(state="disabled")
-
     def _log_op(self, m):
-        self._new_cycle_event.clear()
         self.log.configure(state="normal")
-        if self._log_should_clear():
-            self.log.delete("1.0", "end")
         self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n"); self.log.see("end")
         self.log.configure(state="disabled")
 
-    def _log(self, m):
+    def _log_batch(self, msgs):
+        """周期末批量输出：当前行数+批量>7则清旧，再逐条输出"""
         self.log.configure(state="normal")
-        if self._new_cycle_event.is_set():
-            if self._log_should_clear():
-                self.log.delete("1.0", "end")
-            self._new_cycle_event.clear()
-        elif self._log_should_clear():
+        try:
+            cur_lines = int(self.log.index('end-1c').split('.')[0])
+        except Exception:
+            cur_lines = 0
+        if cur_lines + len(msgs) > 7:
+            self.log.delete("1.0", "end")
+        for m in msgs:
+            self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _log(self, m):
+        """实时日志：>7行则清旧再输出"""
+        self.log.configure(state="normal")
+        try:
+            cur_lines = int(self.log.index('end-1c').split('.')[0])
+        except Exception:
+            cur_lines = 0
+        if cur_lines > 7:
             self.log.delete("1.0", "end")
         self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n"); self.log.see("end")
         self.log.configure(state="disabled")
@@ -1235,6 +1680,8 @@ class MemWiseGUI:
                     self._show_tray_menu()
                 elif action == 'hotkey':
                     self._on_hotkey()
+                elif action == 'game':
+                    self._on_toggle_game()
         except Exception:
             pass
         # ── 消息队列 ──
@@ -1242,9 +1689,14 @@ class MemWiseGUI:
             while True:
                 action, args = self._msg_queue.get_nowait()
                 if action == 'log': self._log(args)
+                elif action == 'log_batch': self._log_batch(args)
                 elif action == 'log_op': self._log_op(args)
-                elif action == 'efis': self._log('[EFIS] ' + args)
-                elif action == 'chart': self._draw_chart()
+                elif action == 'chart':
+                    self._drawing_chart = False  # 异常恢复：防止标志永锁
+                    if self._chart_redraw_id is not None:
+                        self.root.after_cancel(self._chart_redraw_id)
+                        self._chart_redraw_id = None
+                    self._draw_chart()
                 elif action == 'upd_ui': self._upd_dae_ui(*args)
                 elif action == 'opt_done': self._opt_done(args)
                 elif action == 'dae_stopped': self._dae_stopped()
@@ -1259,23 +1711,33 @@ class MemWiseGUI:
         self.lbl_lr.config(text=f"已学习: {len(self.learner.profiles)}")
 
     def _refresh_mem(self):
-        m = winapi.get_memory_status()
-        if m:
-            pct = m["pct"]
-            # 更新彩色条
-            cw = self.mem_canvas.winfo_width() or 400
-            bar_w = max(1, int(cw * pct / 100))
-            color = "#4caf50" if pct < 60 else ("#ffc107" if pct < 75 else ("#ff9800" if pct < 90 else "#f44336"))
-            self.mem_canvas.coords(self.mem_bar_rect, 0, 0, bar_w, 22)
-            self.mem_canvas.itemconfig(self.mem_bar_rect, fill=color)
-            self.mem_canvas.itemconfig(self.mem_bar_text, text=f"{pct}%")
-            self.lbl_total["text"] = f"总: {m['total']/(1<<30):.1f}G"
-            self.lbl_used["text"] = f"已用: {m['used']/(1<<30):.1f}G"
-            self.lbl_avail["text"] = f"可用: {m['avail']/(1<<30):.1f}G"
-            self.lbl_pct["text"] = f"{pct}%"
-            self._mem_pct = pct
-            self._update_tray_status(pct)
-        self.root.after(2000, self._refresh_mem)
+        try:
+            m = winapi.get_memory_status()
+            if m:
+                pct = m["pct"]
+                self._mem_pct = pct
+                # 托盘图标每5s更新一次（GDI渲染管线功耗大，降低频率省电~8%）
+                now_ts = time.time()
+                if now_ts - getattr(self, '_last_tray_update', 0) >= 5:
+                    self._update_tray_status(pct)
+                    self._last_tray_update = now_ts
+                # Canvas/Label 操作仅在窗口可见时执行
+                try:
+                    if self.root.winfo_viewable():
+                        cw = self.mem_canvas.winfo_width() or 400
+                        bar_w = max(1, int(cw * pct / 100))
+                        color = "#4caf50" if pct < 60 else ("#ffc107" if pct < 75 else ("#ff9800" if pct < 90 else "#f44336"))
+                        self.mem_canvas.coords(self.mem_bar_rect, 0, 0, bar_w, 22)
+                        self.mem_canvas.itemconfig(self.mem_bar_rect, fill=color)
+                        self.mem_canvas.itemconfig(self.mem_bar_text, text=f"{pct}%")
+                        self.lbl_total["text"] = f"总: {m['total']/(1<<30):.1f}G"
+                        self.lbl_used["text"] = f"已用: {m['used']/(1<<30):.1f}G"
+                        self.lbl_avail["text"] = f"可用: {m['avail']/(1<<30):.1f}G"
+                        self.lbl_pct["text"] = f"{pct}%"
+                except Exception as e:
+                    import sys; print(f"[MemWise] _refresh_mem UI异常: {e}", file=sys.stderr)
+        finally:
+            self.root.after(2000, self._refresh_mem)
 
     def _upd_stats(self):
         s = self.cleaner.summary()
@@ -1300,106 +1762,237 @@ class MemWiseGUI:
     BAR_W = 14   # 每柱宽度 px
     BAR_GAP = 3  # 柱间距 px
 
-    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5, probe_ok=0, probe_total=0):
+    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5, probe_ok=0, probe_total=0, update_state=True):
+        """ERIS v5: IQR分位数归一化五维加权和（80±60×(raw−p50)/IQR）。
+        50轮滚动窗，均值~80%，可破100%，可破60%。
+        返回 {"total": eff, "factors": ["↑预测精准","↓PF偏高"]}"""
         if not data:
-            return {"capability": 0, "adaptivity": 0, "precision": 0,
-                    "momentum": 0, "context": 0, "total": 50}
+            return {"total": 0, "factors": ["冷启动"]}
         visible = list(data)
-        # total_attempts 只计 trim（probe 是探索，不算失败）
-        total_attempts = trimmed_cnt + failed_cnt
-        nonzero_vals = [v for v in visible if v > 0]
-        his_peak = max(visible)
-        recent_n = min(5, len(visible))
-        recent_perf = sum(visible[-recent_n:]) / recent_n
+        learner = self.learner
+        profiles = learner.profiles
+        cycle_freed = visible[-1] if visible else 1
         
-        if len(nonzero_vals) >= 3:
-            baseline = sum(nonzero_vals[-10:]) / min(len(nonzero_vals[-10:]), 10)
+        # ── 分位数窗初始化 / 趋势列表初始化 ──
+        # 窗口长度按维度特异性分配：raw2(释放)需要长窗应对幂律，raw4(EFIS)短窗够用
+        _WINDOWS = [25, 25, 20, 8, 20]
+        if not hasattr(self, '_eris_bufs'):
+            from collections import deque
+            self._eris_bufs = [deque(maxlen=_WINDOWS[j]) for j in range(5)]
+            self._eris_p50_ewma = [0.0] * 5  # p50 平滑（λ=0.15）
+        if not hasattr(self, '_eris_iqr_ewma'):
+            self._eris_iqr_ewma = [0.0] * 5
+        if not hasattr(self, '_eris_ewma_trend'):
+            self._eris_ewma_trend = []
+        
+        # ── 维度1 raw: Kalman 预测精准度 ──
+        kalman_errors = []
+        for p in profiles.values():
+            if p.clean_count < 1 and p.total_samples < 1:
+                continue
+            if p.gain_ewma <= 0:
+                continue
+            k_freed, _ = p.kalman.predict()
+            if k_freed > 0:
+                kalman_errors.append(abs(k_freed - p.gain_ewma) / p.gain_ewma)
+        if kalman_errors:
+            raw1 = 1.0 - sorted(kalman_errors)[len(kalman_errors)//2]
         else:
-            baseline = his_peak
-        baseline = max(baseline, 5.0)
-        if len(visible) <= 2:
-            baseline = max(baseline, 200.0)
+            raw1 = 0.50
         
-        n = len(visible)
-        w = 5 if n < 5 else n
-        learn_progress = min(w / 5.0, 1.0)
+        # ── 维度2 raw: 单进程释放效率 (MB/trim) — log10 压缩幂律分布 ──
+        trimmed_n = max(trimmed_cnt, 1)
+        raw2 = math.log10(max(1.0, cycle_freed / trimmed_n))
         
-        base_r = min(recent_perf / baseline, 1.0)
-        peak_r = min(recent_perf / max(his_peak, 1), 1.0)
-        cap_a = (0.6 * base_r + 0.4 * peak_r) * learn_progress
+        # ── 维度3 raw: 副作用控制 (trim+1)/(fail+1) ──
+        raw3 = (trimmed_cnt + 1.0) / max(failed_cnt + 1.0, 1.0)
         
-        if len(visible) >= 3:
-            mean_v = sum(visible) / len(visible)
-            sd = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5
-            if total_attempts == 0:
-                adapt_b = 0.6
-            else:
-                adapt_raw = min(sd / max(mean_v, 1), 1.0)
-                adapt_b = 0.3 + 0.7 * adapt_raw
+        # ── 维度4 raw: EFIS 参数稳定度 ──
+        efis = getattr(self, 'efis', None)
+        if efis:
+            cycle = getattr(efis, '_cycle', 0)
+            adjust_log = getattr(efis, '_adjust_log', [])
+            recent_adjusts = sum(1 for a in adjust_log[-15:] if a.get("cycle", 0) > cycle - 15)
+            raw4 = max(0.0, 1.0 - recent_adjusts / 5.0)
         else:
-            adapt_b = 0.6
+            raw4 = 0.50
         
-        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2)
-        if len(visible) >= 3:
-            cv = sd / max(mean_v, 1)
-            consistency_c = 1.0 - min(cv * 0.3, 0.5)
+        # ── 维度5 raw: 探索完备度 ──
+        never_tried = sum(1 for p in profiles.values() if p.clean_count == 0 and p.last_feedback_time == 0)
+        raw5 = 1.0 - never_tried / max(len(profiles), 1)
+        
+        raws = [raw1, raw2, raw3, raw4, raw5]
+        
+        # ── 游戏模式切换检测：重置受影响维度的分位数窗（防虚高/低谷）──
+        # ── IQR 归一化 v6: trimmed IQR + 内插分位 + p50平滑 + 幂律压缩 + 维级窗口 ──
+        with self._eris_lock:
+            if update_state:
+                cur_gm = getattr(getattr(self, 'cleaner', None), 'game_mode', False)
+                last_gm = getattr(self, '_last_eris_game_mode', None)
+                if last_gm is not None and cur_gm != last_gm:
+                    from collections import deque
+                    self._eris_bufs[1] = deque(maxlen=_WINDOWS[1])
+                    self._eris_bufs[2] = deque(maxlen=_WINDOWS[2])
+                    # 用当前 raw 预填充 p50，避免切换后首轮从中性 80 起步
+                    self._eris_p50_ewma[1] = raws[1]
+                    self._eris_p50_ewma[2] = raws[2]
+                self._last_eris_game_mode = cur_gm
+            
+            dims = []
+            for j in range(5):
+                if update_state:
+                    self._eris_bufs[j].append(raws[j])
+                L = sorted(list(self._eris_bufs[j]))
+                nL = len(L)
+                if nL >= 4:
+                    # ── trimmed IQR: 去头去尾各1个，防单异常值主导四分位 ──
+                    T = L[1:-1]; nT = len(T)
+                    # p50: 内插中位数（偶数时两中点平均）
+                    if nT % 2 == 0:
+                        p50_raw = (T[nT//2 - 1] + T[nT//2]) / 2.0
+                    else:
+                        p50_raw = T[nT//2]
+                    # Q1: 线性内插 (n+1)*0.25
+                    h25 = (nT + 1) * 0.25; lo25 = int(h25) - 1; hi25 = min(lo25 + 1, nT - 1)
+                    frac25 = h25 - int(h25)
+                    q1 = T[lo25] * (1 - frac25) + T[hi25] * frac25
+                    # Q3: 线性内插 (n+1)*0.75
+                    h75 = (nT + 1) * 0.75; lo75 = int(h75) - 1; hi75 = min(lo75 + 1, nT - 1)
+                    frac75 = h75 - int(h75)
+                    q3 = T[lo75] * (1 - frac75) + T[hi75] * frac75
+                    actual_iqr = q3 - q1
+                    # p50 EWMA 平滑 (λ=0.15)
+                    if update_state:
+                        self._eris_p50_ewma[j] = 0.15 * p50_raw + 0.85 * self._eris_p50_ewma[j]
+                    p50 = self._eris_p50_ewma[j] if self._eris_p50_ewma[j] > 0 else p50_raw
+                    # IQR EWMA (λ=0.30), 前5轮不积累(防冷启动噪声)
+                    if update_state and actual_iqr > 0 and nL >= 5:
+                        lam_iqr = 0.30
+                        self._eris_iqr_ewma[j] = lam_iqr * actual_iqr + (1.0 - lam_iqr) * self._eris_iqr_ewma[j]
+                    floor_iqr = max(p50_raw * 0.10, self._eris_iqr_ewma[j] * 0.20)
+                    iqr = max(actual_iqr, floor_iqr, 0.01)
+                    dim = 80.0 + 40.0 * (raws[j] - p50) / iqr
+                elif nL >= 2:
+                    p50_raw = L[nL//2]
+                    if update_state:
+                        self._eris_p50_ewma[j] = 0.15 * p50_raw + 0.85 * self._eris_p50_ewma[j]
+                    p50 = self._eris_p50_ewma[j] if self._eris_p50_ewma[j] > 0 else p50_raw
+                    dim = 80.0 + 40.0 * (raws[j] - p50) / max(abs(raws[j] - p50), 0.01)
+                else:
+                    dim = 80.0
+                dims.append(max(1.0, min(130.0, dim)))
+        
+        weights = [0.25, 0.25, 0.20, 0.15, 0.15]
+        eff = sum(d * w for d, w in zip(dims, weights))
+        eff = max(0.0, eff)
+        
+        dim_pairs = [("↑预测精准","↓预测偏差"), ("↑释放改善","↓释放退步"),
+                     ("↑副作用低","↓副作用高"), ("↑参数稳定","↓频繁调参"),
+                     ("↑覆盖广泛","↓覆盖狭窄")]
+        
+        # ── 因子选择（含防振荡：同维正负不来回跳）──
+        prev = getattr(self, '_eris_prev', None)
+        prev_f_dim = getattr(self, '_eris_prev_factor_dim', -1)
+        prev_f_pos = getattr(self, '_eris_prev_factor_pos', None)
+        if len(visible) <= 3:
+            factors = ["影响因素分析中…"]
+        elif eff >= 100.0:
+            best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
+            factors = [dim_pairs[best_i][0]]
+            # 防振荡：同维+上一轮方向不是True（即上次是负面或未记录）→ 跳到候选2
+            if prev_f_dim == best_i and prev_f_pos is not None and prev_f_pos is not True:
+                ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
+                best_i = ranked[1] if len(ranked) > 1 else best_i
+                factors = [dim_pairs[best_i][0]]
+            factors.append("🚀效率超常")
+            if update_state:
+                # 99 标记极性轮，打断趋势连续性
+                self._eris_ewma_trend.append(99)
+                self._eris_prev_factor_dim = best_i
+                self._eris_prev_factor_pos = True
+        elif eff <= 60.0:
+            best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
+            factors = [dim_pairs[best_i][1]]
+            # 防振荡：同维+上一轮方向不是False（即上次是正面或未记录）→ 跳到候选2
+            if prev_f_dim == best_i and prev_f_pos is not None and prev_f_pos is not False:
+                ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
+                best_i = ranked[1] if len(ranked) > 1 else best_i
+                factors = [dim_pairs[best_i][1]]
+            factors.append("⚠效率异常")
+            if update_state:
+                # -99 标记极性轮，打断趋势连续性
+                self._eris_ewma_trend.append(-99)
+                self._eris_prev_factor_dim = best_i
+                self._eris_prev_factor_pos = False
+        elif prev and isinstance(prev, dict) and "eff" in prev and abs(eff - prev["eff"]) >= 2.0:
+            is_pos = eff > prev["eff"]
+            best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
+            factors = [dim_pairs[best_i][0]] if is_pos else [dim_pairs[best_i][1]]
+            # 防振荡：同维+方向与上次反转 → 跳到候选2
+            if prev_f_dim == best_i and prev_f_pos is not None and prev_f_pos != (factors[0].startswith("↑")):
+                ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
+                best_i = ranked[1] if len(ranked) > 1 else ranked[0]
+                factors = [dim_pairs[best_i][0]] if factors[0].startswith("↑") else [dim_pairs[best_i][1]]
+            if update_state:
+                is_pos = factors[0].startswith("↑")
+                self._eris_ewma_trend.append(1 if is_pos else -1)
+                self._eris_prev_factor_dim = best_i
+                self._eris_prev_factor_pos = is_pos
+            if len(self._eris_ewma_trend) >= 3 and len(set(self._eris_ewma_trend[-3:])) == 1:
+                last_val = self._eris_ewma_trend[-1]
+                if last_val == 1:
+                    factors.append("🔥持续改善")
+                elif last_val == -1:
+                    factors.append("⚠持续下滑")
         else:
-            consistency_c = 0.8
-        if total_attempts == 0:
-            satur_c = 1.0
-        else:
-            zs = 0
-            for v in reversed(visible):
-                if v == 0: zs += 1
-                else: break
-            satur_c = max(0.3, 1.0 - zs / 10.0)
-        preci_c = success_r * consistency_c * satur_c
+            factors = ["相对平稳"]
+            if update_state:
+                self._eris_ewma_trend.append(0)
+                # 平稳期重置防振荡状态：旧方向不应影响后续活跃期的判断
+                self._eris_prev_factor_dim = -1
+                self._eris_prev_factor_pos = None
+        if update_state and len(self._eris_ewma_trend) > 10:
+            self._eris_ewma_trend = self._eris_ewma_trend[-10:]
         
-        if len(visible) >= 6:
-            n = min(6, len(visible))
-            ys = visible[-n:]; xs = list(range(n))
-            xm = sum(xs)/n; ym = sum(ys)/n
-            num = sum((x-xm)*(y-ym) for x,y in zip(xs,ys))
-            den = sum((x-xm)**2 for x in xs)
-            slope = num/den if den else 0
-            rg = slope/max(ym,1) if ym else 0
-            momen_d = 1.0/(1.0 + math.exp(-rg * 5.0))
-        else:
-            momen_d = 0.6
-        
-        pressure_e = min(mem_pct / 80.0, 1.0)
-        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2), 1.0)
-        coverage_e = max(min(trimmed_cnt / 30.0, 1.0), 0.3) if total_attempts == 0 else min(trimmed_cnt / 30.0, 1.0)
-        ctx_e = 0.3 * pressure_e + 0.4 * effort_e + 0.3 * coverage_e
-        
-        ref_fixed = 200.0
-        n = len(visible)
-        if n <= 5:
-            prev_nz = [v for v in visible[:-1] if v > 0]
-            dyn_base = sum(prev_nz) / len(prev_nz) if prev_nz else ref_fixed
-            mix = {1: (1.0, 0.0), 2: (0.5, 0.5), 3: (0.33, 0.67), 4: (0.25, 0.75), 5: (0.15, 0.85)}
-            fix_r, dyn_r = mix[n]
-            ref = fix_r * ref_fixed + dyn_r * dyn_base
-        else:
-            all_prev = [v for v in visible[:-1] if v > 0]
-            ref = sum(all_prev) / len(all_prev) if all_prev else ref_fixed
-        latest_val = visible[-1]
-        overflow_bonus = 0.30 * (1.0 - 1.0 / (latest_val / ref)) if latest_val > ref else 0.0
-        
-        eff = (cap_a * 0.25 + adapt_b * 0.20 + preci_c * 0.20 + momen_d * 0.15 + ctx_e * 0.20 + overflow_bonus) * 100.0
-        eff = max(0.0, min(100.0, eff))
-        return {
-            "capability": cap_a, "adaptivity": adapt_b, "precision": preci_c,
-            "momentum": momen_d, "context": ctx_e, "total": eff,
-        }
+        if update_state:
+            self._eris_prev = {"eff": eff, "dims": dims}
+        return {"total": eff, "factors": factors}
+
+    def _on_chart_configure(self, event):
+        """防抖：合并短时间内的多次 Configure 事件，延迟 120ms 统一重绘"""
+        if self._chart_redraw_id is not None:
+            self.root.after_cancel(self._chart_redraw_id)
+        # 强制复位：如果上次绘制异常退出导致 _drawing_chart 未复位，此处恢复
+        self._drawing_chart = False
+        self._chart_redraw_id = self.root.after(50, self._draw_chart)
 
     def _draw_chart(self):
         """在 Canvas 上绘制固定宽度滚动柱图 + 统计指标"""
+        self._chart_redraw_id = None
+        if self._drawing_chart:
+            return  # 嵌套事件循环触发二次进入，跳过避免 delete("all") 踩踏
         c = self.chart_canvas
-        if not c.winfo_width() or not c.winfo_height():
-            return
+        self._drawing_chart = True
+        try:
+            self._do_draw_chart()
+        except Exception as e:
+            import sys, traceback
+            print(f"[MemWise] 图表渲染异常: {e}", file=sys.stderr)
+            # 同时输出到日志面板，便于 EXE 环境下诊断
+            try:
+                self._log(f"⚠ 图表异常: {e}")
+            except Exception:
+                pass
+        finally:
+            self._drawing_chart = False
+
+    def _do_draw_chart(self):
+        c = self.chart_canvas
         c.delete("all")
-        data = list(self._chart_data)
+        with self._chart_lock:
+            data = list(self._chart_data)
+            total_points = len(data)
+            meta_list = list(self._chart_cycle_meta)
         if not data:
             self._draw_chart_placeholder()
             return
@@ -1408,138 +2001,44 @@ class MemWiseGUI:
         px0 = pad_left; px1 = cw - pad_right
         py0 = pad_top; py1 = ch - pad_bottom
         pw = px1 - px0; ph = py1 - py0
-        max_val = max(data)
-        latest = data[-1] if data else 0
-        if max_val <= 0:
-            max_val = 1
         step = self.BAR_W + self.BAR_GAP
         max_fit = pw // step
         visible = data[-max_fit:] if len(data) > max_fit else data
-        recent_n = min(5, len(visible))
-        recent_perf = sum(visible[-recent_n:]) / recent_n if recent_n > 0 else 0
+        latest = visible[-1] if visible else 0
+        max_val = max(visible) if visible else 1  # Y轴上限仅取可见数据
         avg_val = sum(visible) / len(visible) if visible else 0
         peak_val = max_val
-        mem_pct = getattr(self, "_mem_pct_for_chart", 50)
-        pressure = 0.3 + 0.7 * (mem_pct / 100.0)
-        trimmed_cnt = getattr(self, "_cycle_trimmed", 0)
-        failed_cnt = getattr(self, "_cycle_failed", 0)
-        total_attempts = trimmed_cnt + failed_cnt
         failed_weight = getattr(self, "_failed_weight", 0.5)
-        his_peak = max(visible) if visible else 1
         
-        # ── ERIS: 五维几何平均效率评分 ──
-        
-        # 共用：基线
-        nonzero_vals = [v for v in visible if v > 0]
-        if len(nonzero_vals) >= 3:
-            baseline = sum(nonzero_vals[-10:]) / min(len(nonzero_vals[-10:]), 10)
-        else:
-            baseline = his_peak
-        baseline = max(baseline, 5.0)
-        # 前2个数据点时用最小基线区分释放量大小
-        if len(visible) <= 2:
-            baseline = max(baseline, 200.0)
-        
-        # ── A. 能力 (0~1) ──
-        base_r = min(recent_perf / baseline, 1.0)
-        peak_r = min(recent_perf / max(his_peak, 1), 1.0)
-        # 学习进度：前30周期线性增长
-        n = len(visible)
-        if n == 1:
-            w = 5
-        elif n == 2:
-            w = 5
-        elif n == 3:
-            w = 5
-        elif n == 4:
-            w = 5
-        else:
-            w = n
-        learn_progress = min(w / 5.0, 1.0)
-        cap_a = (0.6 * base_r + 0.4 * peak_r) * learn_progress
-        
-        # ── B. 自适应力 (0~1) ──
-        # 用数据本身的波动推断：高低值越分散→可能在不同条件下都有产出
-        if len(visible) >= 3:
-            mean_v = sum(visible) / len(visible)
-            if total_attempts == 0:
-                adapt_b = 0.6
-            else:
-                sd = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5
-                adapt_raw = min(sd / max(mean_v, 1), 1.0)
-                adapt_b = 0.3 + 0.7 * adapt_raw
-        else:
-            adapt_b = 0.6
-        
-        # ── C. 精准度 (0~1) ──
-        success_r = 1.0 if total_attempts == 0 else (trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2)
-        if len(visible) >= 3:
-            cv = (sum((v - mean_v)**2 for v in visible) / len(visible))**0.5 / max(mean_v, 1)
-            consistency_c = 1.0 - min(cv * 0.3, 0.5)
-        else:
-            consistency_c = 0.8
-        # 连续零释放感知（休息期 skip：无操作不算故障）
-        if total_attempts == 0:
-            satur_c = 1.0
-        else:
-            zero_streak = 0
-            for v in reversed(visible):
-                if v == 0:
-                    zero_streak += 1
-                else:
-                    break
-            satur_c = max(0.3, 1.0 - zero_streak / 10.0)
-        preci_c = success_r * consistency_c * satur_c
-        
-        # ── D. 动量 (0~1) ──
-        if len(visible) >= 6:
-            n = min(6, len(visible))
-            ys = visible[-n:]
-            xs = list(range(n))
-            xm = sum(xs) / n; ym = sum(ys) / n
-            numer = sum((x - xm) * (y - ym) for x, y in zip(xs, ys))
-            denom = sum((x - xm)**2 for x in xs)
-            slope = numer / denom if denom > 0 else 0
-            rel_gain = slope / max(ym, 1) if ym > 0 else 0
-            # sigmoid 映射到 0~1
-            momen_d = 1.0 / (1.0 + math.exp(-rel_gain * 5.0))
-        else:
-            momen_d = 0.6
-        
-        # ── E. 上下文 (0~1) ──
-        pressure_e = min(mem_pct / 80.0, 1.0)
-        effort_e = 1.0 if total_attempts == 0 else min((trimmed_cnt + failed_cnt * failed_weight + 1) / (total_attempts + 2), 1.0)
-        coverage_e = max(min(trimmed_cnt / 30.0, 1.0), 0.3) if total_attempts == 0 else min(trimmed_cnt / 30.0, 1.0)
-        ctx_e = 0.3 * pressure_e + 0.4 * effort_e + 0.3 * coverage_e
-        
-        # 超出基线赋分（前 5 轮混合基线，第 6 轮起全动态）
-        ref_fixed = 200.0
-        n = len(visible)
-        if n <= 5:
-            prev_nz = [v for v in visible[:-1] if v > 0]
-            dyn_base = sum(prev_nz) / len(prev_nz) if prev_nz else ref_fixed
-            mix = {1: (1.0, 0.0), 2: (0.5, 0.5), 3: (0.33, 0.67), 4: (0.25, 0.75), 5: (0.15, 0.85)}
-            fix_r, dyn_r = mix[n]
-            ref = fix_r * ref_fixed + dyn_r * dyn_base
-        else:
-            all_prev = [v for v in visible[:-1] if v > 0]
-            ref = sum(all_prev) / len(all_prev) if all_prev else ref_fixed
-        overflow_bonus = 0.30 * (1.0 - 1.0 / (latest / ref)) if latest > ref else 0.0
-        # ── 加权算术平均：五维度独立贡献，互不影响 ──
-        eff = (cap_a * 0.25 + adapt_b * 0.20 + preci_c * 0.20 + momen_d * 0.15 + ctx_e * 0.20 + overflow_bonus) * 100.0
-        eff = max(0.0, min(100.0, eff))
-        eff_text = f"{eff:.0f}%"
-        self._eris_sub = {
-            "capability": cap_a, "adaptivity": adapt_b, "precision": preci_c,
-            "momentum": momen_d, "context": ctx_e, "total": eff,
-        }
-        # 回填 _eff_data 末尾，使折点与底部文字同值
-        if self._eff_data:
-            last_list = list(self._eff_data)
-            if last_list and abs(last_list[-1] - eff) > 0.5:
-                with self._chart_lock:
-                    self._eff_data.pop()
-                    self._eff_data.append(eff)
+        # ── ERIS 单线入口：处理未进入分位数窗的新图表点，更新状态 + 填充 _eff_data/_eff_factors ──
+        # data/total_points/meta_list 已在上面同一把锁内获取，不再重复加锁
+        # 用序列号定位新点：找到 meta 中 seq > _chart_eris_last_seq 的项，从那里开始处理
+        last_seq = self._chart_eris_last_seq
+        # 每点是否收割未完成（供悬浮提示如实标注；partial 周期同样真实进 ERIS）
+        partial_all = [meta_list[i][5] if len(meta_list[i]) > 5 else False for i in range(total_points)]
+        for idx in range(total_points):
+            seq, t, f, mp, fw, partial = meta_list[idx]
+            if seq <= last_seq:
+                continue
+            try:
+                chunk = data[:idx+1]
+                result = self._compute_eris(chunk, t, f, mp, fw, update_state=True)
+                self._eff_data.append(result["total"])
+                if not hasattr(self, '_eff_factors'):
+                    self._eff_factors = deque(maxlen=60)
+                self._eff_factors.append(result.get("factors", ["冷启动"]))
+                last_seq = seq
+            except Exception:
+                self._eff_data.append(80.0)
+                if not hasattr(self, '_eff_factors'):
+                    self._eff_factors = deque(maxlen=60)
+                self._eff_factors.append(["计算异常"])
+                last_seq = seq
+        self._chart_eris_last_seq = last_seq
+
+        # 当前显示使用最新 eff/factors（供悬浮提示与底部指标）
+        eff_list = list(self._eff_data)
+        eff = eff_list[-1] if eff_list else 50
         # Y 轴标注 & 网格
         for i, lbl_v in [(0, 0), (1, max_val//2), (2, max_val)]:
             if i == 0:
@@ -1575,32 +2074,85 @@ class MemWiseGUI:
             # 补齐较短的情况
             n_pts = min(len(eff_visible), len(visible))
             eff_pts = eff_visible[-n_pts:]
-            coords = []
+            # 全局索引：前3个数据点永久虚线
+            eff_start_idx = len(eff_data) - n_pts
+            # 折线：全局前3个数据点(索引0,1,2)间线段虚线，其余实线
+            if n_pts >= 2:
+                # early_end_local = 全局索引2在可见窗口中的局部位置
+                early_end_local = 2 - eff_start_idx
+                if early_end_local >= 1:
+                    # 虚线: 从点0到点early_end_local（最多到点2）
+                    dash_end = min(early_end_local, n_pts - 1)
+                    dash_coords = []
+                    for i in range(dash_end + 1):
+                        cx = px0 + i * step2 + self.BAR_W // 2
+                        cy = py1 - (min(eff_pts[i], 100.0) / 100.0) * ph
+                        dash_coords.extend([cx, cy])
+                    if len(dash_coords) >= 4:
+                        c.create_line(*dash_coords, fill="#4488CC", width=2,
+                                      smooth=False, dash=(4, 3), tags="eff_line")
+                    # 实线: 从dash_end开始，与虚线终点重叠保证连续
+                    solid_start = dash_end
+                    if n_pts > solid_start + 1:
+                        solid_coords = []
+                        for i in range(solid_start, n_pts):
+                            cx = px0 + i * step2 + self.BAR_W // 2
+                            cy = py1 - (min(eff_pts[i], 100.0) / 100.0) * ph
+                            solid_coords.extend([cx, cy])
+                        if len(solid_coords) >= 4:
+                            c.create_line(*solid_coords, fill="#4488CC", width=2,
+                                          smooth=False, tags="eff_line")
+                else:
+                    # 早期点已全部滚出屏幕，全部实线
+                    solid_coords = []
+                    for i in range(n_pts):
+                        cx = px0 + i * step2 + self.BAR_W // 2
+                        cy = py1 - (min(eff_pts[i], 100.0) / 100.0) * ph
+                        solid_coords.extend([cx, cy])
+                    if len(solid_coords) >= 4:
+                        c.create_line(*solid_coords, fill="#4488CC", width=2,
+                                      smooth=False, tags="eff_line")
+            # 再画折点
             for i, e_val in enumerate(eff_pts):
                 cx = px0 + i * step2 + self.BAR_W // 2
-                cy = py1 - (e_val / 100.0) * ph
-                coords.extend([cx, cy])
-                # 折点圆（奶白描边，显示在柱子上方）
+                over_100 = e_val > 100.0
+                cy = py1 - (min(e_val, 100.0) / 100.0) * ph
                 r = 4
-                c.create_oval(cx - r, cy - r, cx + r, cy + r,
-                              outline="#FFF8E0", width=1, fill="#4488CC", tags="eff_dot")
-            if len(coords) >= 4:
-                c.create_line(*coords, fill="#4488CC", width=2, smooth=False, tags="eff_line")
+                if over_100:
+                    dot_fill = "#D4A017"
+                elif e_val <= 60.0:
+                    dot_fill = "#FF6B6B"
+                else:
+                    dot_fill = "#4488CC"
+                orig_idx = eff_start_idx + i
+                is_early = orig_idx < 3
+                if is_early:
+                    c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                  outline="", fill=dot_fill, tags="eff_dot")
+                    for seg_start in range(0, 360, 60):
+                        c.create_arc(cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1,
+                                     start=seg_start, extent=45, style="arc",
+                                     outline="#FFF8E0", width=1, dash=(3, 3), tags="eff_dot")
+                else:
+                    c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                  outline="#FFF8E0", width=1, fill=dot_fill, tags="eff_dot")
 
-        # ── 鼠标悬浮提示 ──
-        for i, v in enumerate(visible):
-            tag = f"barhit_{i}"
-            x0 = px0 + i * step
-            x1 = x0 + self.BAR_W
-            c.create_rectangle(x0, py0, x1, py1,
-                               fill="", outline="", tags=tag)
-            eff_val = eff_pts[i] if eff_pts and i < len(eff_pts) else 50
+        # ── 鼠标悬浮提示（单一 Motion 命中，无需逐柱命中区对象）──
 
         # 存储当前可见数据供 Motion handler 使用
         self._chart_motion_visible = list(visible)
         self._chart_motion_eff = list(eff_pts) if eff_pts else []
+        # 因子也对齐到可见柱：取与 visible 等长的尾部切片
+        factors_all = list(getattr(self, '_eff_factors', deque())) if hasattr(self, '_eff_factors') else []
+        f_visible = factors_all[-len(visible):] if len(factors_all) > len(visible) else factors_all
+        n_f = min(len(f_visible), len(visible))
+        self._chart_motion_factors = f_visible[-n_f:] if n_f else []
+        # 收割标记也对齐到可见柱（与 visible 等长，供悬浮提示如实标注）
+        p_all = partial_all[-len(visible):] if len(partial_all) > len(visible) else partial_all
+        self._chart_motion_partial = list(p_all)
         self._chart_motion_px0 = px0
         self._chart_motion_step = step
+        self._chart_motion_bar_w = self.BAR_W
         # 坐标轴
         c.create_line(px0, py0, px0, py1, fill="#666")
         c.create_line(px0, py1, px1, py1, fill="#666")
@@ -1609,31 +2161,124 @@ class MemWiseGUI:
                       anchor="center", fill="#ccc", font=("微软雅黑", 9))
         # 底部三指标
         metrics_y = ch - 6
+        avg_eff = sum(eff_data) / len(eff_data) if eff_data else 50
+        avg_eff_text = f"{avg_eff:.0f}%"
         c.create_text(px0 + pw//2, metrics_y,
-                      text=f"平均 {self._fmt_label(avg_val)}    最高 {self._fmt_label(peak_val)}    效率 {eff_text}",
+                      text=f"平均 {self._fmt_label(avg_val)}    最高 {self._fmt_label(peak_val)}    平均效率 {avg_eff_text}",
                       anchor="s", fill="#aaa", font=("Consolas", 8))
         # 单一 Motion 绑定（替代多柱 Enter/Leave，消除事件竞争）
         c.tag_unbind("all", "<Enter>")
         c.tag_unbind("all", "<Leave>")
         c.bind("<Motion>", self._chart_on_motion)
         c.bind("<Leave>", self._chart_hide_tip)
+
+    def _save_eris_ewma(self):
+        """持久化 ERIS IQR 分位数窗（原子写入）"""
+        try:
+            import json, os
+            bufs = getattr(self, '_eris_bufs', None)
+            if bufs and any(bufs):
+                data = {"bufs": [list(b) for b in bufs],
+                        "iqr_ewma": getattr(self, "_eris_iqr_ewma", [0.0]*5),
+                        "p50_ewma": getattr(self, "_eris_p50_ewma", [0.0]*5)}
+                path = os.path.join(os.path.dirname(STATE_FILE), "memwise_eris_ewma.json")
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+                os.replace(tmp, path)
+        except Exception:
+            pass
+    
+    def _load_eris_ewma(self):
+        """加载 ERIS 分位数窗（热重启保留/冷启动重建），严格校验"""
+        import math
+        # 若已有数据（热重启：daemon 重开但程序未退出），保留不重建
+        if hasattr(self, '_eris_bufs') and any(self._eris_bufs):
+            self._eris_prev = None
+            self._eris_prev_factor_dim = -1
+            self._eris_prev_factor_pos = None
+            self._eris_ewma_trend = []
+            self._last_eris_game_mode = getattr(getattr(self, 'cleaner', None), 'game_mode', False)
+            return
+        _WINDOWS = [25, 25, 20, 8, 20]
+        loaded_ok = False
+        try:
+            import json, os
+            from collections import deque
+            path = os.path.join(os.path.dirname(STATE_FILE), "memwise_eris_ewma.json")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and isinstance(data.get("bufs"), list) and len(data["bufs"]) == 5:
+                    bufs_raw = data["bufs"]
+                    iqr_ewma = data.get("iqr_ewma", [0.0]*5)
+                    p50_ewma = data.get("p50_ewma", [0.0]*5)
+                    if (isinstance(iqr_ewma, list) and len(iqr_ewma) == 5 and
+                        isinstance(p50_ewma, list) and len(p50_ewma) == 5):
+                        ok = True
+                        for j, b in enumerate(bufs_raw):
+                            if not isinstance(b, list) or len(b) > _WINDOWS[j]:
+                                ok = False; break
+                            for v in b + [iqr_ewma[j], p50_ewma[j]]:
+                                if not isinstance(v, (int, float)) or not math.isfinite(v):
+                                    ok = False; break
+                            if not ok: break
+                        if ok:
+                            self._eris_bufs = [deque(b, maxlen=_WINDOWS[j]) for j, b in enumerate(bufs_raw)]
+                            self._eris_iqr_ewma = [float(v) for v in iqr_ewma]
+                            self._eris_p50_ewma = [float(v) for v in p50_ewma]
+                            loaded_ok = True
+        except Exception:
+            pass
+        if not loaded_ok:
+            from collections import deque
+            self._eris_bufs = [deque(maxlen=_WINDOWS[j]) for j in range(5)]
+            self._eris_iqr_ewma = [0.0] * 5
+            self._eris_p50_ewma = [0.0] * 5
+        # 重置因子状态
+        self._eris_prev = None
+        self._eris_prev_factor_dim = -1
+        self._eris_prev_factor_pos = None
+        self._eris_ewma_trend = []
+        self._last_eris_game_mode = getattr(getattr(self, 'cleaner', None), 'game_mode', False)
+
     # ── 图表悬浮提示 ──
 
-    def _chart_show_tip(self, event, freed_mb, eff_pct, idx):
+    def _chart_show_tip(self, x, freed_mb, eff_pct, idx):
         c = self.chart_canvas
         self._chart_hide_tip(None)
-        x = event.x
         # 限制 tooltip 不超出左右边界
         cw = c.winfo_width() or 400
         x = max(66, min(cw - 66, x))
         tip_y0 = 22
-        c.create_rectangle(x - 60, tip_y0 - 8, x + 60, tip_y0 + 28,
-                           fill="#2d2d2d", outline="#4488CC", width=1,
-                           tags="chart_tip")
-        c.create_text(x, tip_y0 + 10,
-                      text=f"释放 {self._fmt_label(freed_mb)}\n效率 {eff_pct:.0f}%",
+        factor_str = ""
+        if hasattr(self, '_chart_motion_factors'):
+            factors = getattr(self, '_chart_motion_factors', [])
+            if idx < len(factors) and factors[idx]:
+                factor_str = "\n" + " ".join(factors[idx])
+        # 收割未完成周期如实标注（效率与因子仍按真实数据计算）
+        partial_note = ""
+        partials = getattr(self, '_chart_motion_partial', [])
+        if idx < len(partials) and partials[idx]:
+            partial_note = "\n本轮收割未完成"
+        # 先画文字获取包围盒
+        text_full = f"释放 {self._fmt_label(freed_mb)}\n效率 {eff_pct:.0f}%{factor_str}{partial_note}"
+        tid = c.create_text(x, tip_y0 + 20,
+                      text=text_full,
                       fill="#eee", font=("Consolas", 8),
-                      justify="center", tags="chart_tip")
+                      justify="center", tags="chart_tip_text")
+        # 自适应蓝框（包围盒 + 边距）
+        bbox = c.bbox(tid)
+        if bbox:
+            px_margin = 8; py_margin = 6
+            c.create_rectangle(bbox[0] - px_margin, bbox[1] - py_margin,
+                               bbox[2] + px_margin, bbox[3] + py_margin,
+                               fill="#2d2d2d", outline="#4488CC", width=1,
+                               tags="chart_tip_rect")
+            c.tag_lower("chart_tip_rect", tid)
+        # 合并标签便于统一删除
+        c.addtag_withtag("chart_tip", "chart_tip_rect")
+        c.addtag_withtag("chart_tip", "chart_tip_text")
 
     def _fmt_label(self, v):
         if abs(v) >= 1000:
@@ -1649,18 +2294,24 @@ class MemWiseGUI:
         self.chart_canvas.delete("chart_tip")
 
     def _chart_on_motion(self, event):
-        """单一 Motion 悬浮处理：计算列索引，不再依赖多个 Enter/Leave 绑定"""
+        """单一 Motion 悬浮处理：计算列索引，列不变跳过重绘"""
         visible = getattr(self, '_chart_motion_visible', [])
         if not visible:
             return
         px0 = getattr(self, '_chart_motion_px0', 0)
         step = getattr(self, '_chart_motion_step', 17)
         col = (event.x - px0) // step
+        if col == getattr(self, '_last_hover_col', -1):
+            return  # 同一列，不重复重绘
         if 0 <= col < len(visible):
+            self._last_hover_col = col
             eff_data = getattr(self, '_chart_motion_eff', [])
             eff_val = eff_data[col] if col < len(eff_data) else 50
-            self._chart_show_tip(event, visible[col], eff_val, col)
+            # 计算柱条中心 x，tooltip 固定居中于此
+            cx = px0 + int(col * step + getattr(self, '_chart_motion_bar_w', 8) // 2)
+            self._chart_show_tip(cx, visible[col], eff_val, col)
         else:
+            self._last_hover_col = -1
             self._chart_hide_tip(None)
 
     # ---- 优化 ----
@@ -1668,42 +2319,76 @@ class MemWiseGUI:
     def _on_optimize(self):
         if self._optimizing:
             return
+        if self.daemon_running:
+            # 守护运行中：一键清理转为即时轻量系统清理（游戏进行中跳过，不打断游戏）
+            if self.cleaner.game_mode:
+                self._log("游戏进行中，跳过手动清理以保障流畅")
+                return
+            threading.Thread(target=self._opt_quick_light, daemon=True).start()
+            return
         self._optimizing = True
         self.btn_opt.configure(state="disabled"); self.lbl_st["text"] = "优化中..."
         self._log_op("开始优化...")
         threading.Thread(target=self._opt_worker, daemon=True).start()
 
+    def _opt_quick_light(self):
+        """守护运行中的即时轻量清理（无进程决策，避免与守护周期竞态）"""
+        if getattr(self, '_quick_light_running', False):
+            return
+        self._quick_light_running = True
+        try:
+            if self.cleaner.game_mode:
+                return
+            self.cleaner._layer1_memreduct(full=False, ops={"standby","standby_low","modified","registry"}, clean_self=False)
+            m = winapi.get_memory_status()
+            self._msg_queue.put(('log', f"⚡ 已执行即时轻量清理（可用内存 {m['pct'] if m else '?'}%）"))
+        except Exception:
+            import traceback; traceback.print_exc()
+        finally:
+            self._quick_light_running = False
+
     def _opt_worker(self):
         mode = self.mode_var.get()
-        snaps = []
-        for i in range(3):
-            snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
-            if i < 2: time.sleep(2)
-        self._msg_queue.put(('log', f"观察到 {len(snaps)} 个进程"))
-        m0 = winapi.get_memory_status()
-        total_freed = 0
-        for round_idx in range(3):
-            if round_idx == 0:
-                r = self.cleaner.optimize(snaps, self.learner, mode)
-            else:
+        ops = CFG.get("clean_operations")
+        try:
+            snaps = []
+            for i in range(3):
                 snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
-                r = self.cleaner.optimize(snaps, self.learner, "deep")
-            total_freed += sum(t[2] for t in r.get("layer2", []) if t[1])
-            total_freed += sum(p[2] for p in r.get("probe", []) if p[1])
-            if round_idx < 2:
-                time.sleep(2)
-        self.learner.save(STATE_FILE)
-        m1 = winapi.get_memory_status()
-        self._msg_queue.put(('log', f"📊 三轮优化合计释放 {total_freed/(1<<20):.1f} MB，可用内存 {m0['pct']}%→{m1['pct']}%"))
-        self._msg_queue.put(('log_op', f"优化完成 · 三轮合计释放 {total_freed/(1<<20):.1f} MB"))
+                if i < 2: time.sleep(2)
+            self._msg_queue.put(('log', f"观察到 {len(snaps)} 个进程"))
+            m0 = winapi.get_memory_status()
+            all_l2 = []; all_probe = []
+            total_net = 0
+            freed0 = self.cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
+            for round_idx in range(3):
+                if round_idx == 0:
+                    r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                else:
+                    snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                    r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                all_l2.extend(r.get("layer2", []))
+                all_probe.extend(r.get("probe", []))
+                total_net += r.get("net_freed", 0)
+                if round_idx < 2:
+                    time.sleep(2)
+            self.learner.save(STATE_FILE)
+            m1 = winapi.get_memory_status()
+            freed1 = self.cleaner.summary()['freed_mb']
+            released = max(0.0, freed1 - freed0)  # 三轮释放量标量总和
+            pct_str = f"，可用内存 {m0['pct']}%→{m1['pct']}%" if m0 and m1 else ""
+            self._msg_queue.put(('log', f"📊 三轮优化合计释放 {released:.1f} MB · 内存净下降 {total_net/(1<<20):.1f} MB{pct_str}"))
+            self._msg_queue.put(('log_op', f"优化完成 · 三轮合计释放 {released:.1f} MB（净下降 {total_net/(1<<20):.1f} MB）"))
+            self._msg_queue.put(('opt_done', {
+                "mode": mode, "layer2": all_l2, "probe": all_probe}))
+        except Exception:
+            import traceback; traceback.print_exc()
+            self._msg_queue.put(('log', "⚠ 手动优化异常，已自动恢复"))
+            self._msg_queue.put(('opt_done', {
+                "mode": mode, "layer2": [], "probe": []}))
 
-        self._msg_queue.put(('opt_done', r))
     def _opt_done(self, result):
         s = self.cleaner.summary()
         trimmed = [t for t in result.get("layer2", []) if t[1]]
-        # 本次优化增量（从 result 中汇总，非累计）
-        inc_freed = sum(t[2] for t in trimmed) + sum(p[2] for p in result.get("probe", []) if p[1])
-        inc_mb = inc_freed / (1 << 20)
         for snap, ok, freed, reason in trimmed[:10]:
             self._log(f"  ✓ {snap.name} (PID={snap.pid}) {freed/(1<<20):.0f}MB — {reason}")
         # 统计栏始终显示程序运行以来累计总量
@@ -1711,16 +2396,15 @@ class MemWiseGUI:
         self._upd_stats()
         self._optimizing = False
         self.btn_opt.configure(state="normal")
-        if self.daemon_running:
-            self._chart_last_freed = float(s['freed_mb'])
-            self.lbl_st["text"] = "🟢 守护中 · 手动优化完成"
-        else:
-            self.lbl_st["text"] = "就绪 · Ctrl+Shift+M"
+        self.lbl_st["text"] = "就绪 · Ctrl+Shift+M"
 
     # ---- 守护 ----
 
     def _on_daemon(self):
         if self.daemon_running: return
+        if self._optimizing:
+            self._log_op("手动优化进行中，请等待完成后再启动守护")
+            return
         self.daemon_running = True
         self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
         self.lbl_st["text"] = "守护运行中"; self._log_op("守护模式启动")
@@ -1730,6 +2414,11 @@ class MemWiseGUI:
         self._prev_fail_count = s['failed_feedback']
         self._chart_data.clear()
         self._eff_data.clear()
+        self._eff_factors.clear()
+        self._chart_cycle_meta.clear()
+        self._chart_eris_last_seq = -1
+        self._chart_bar_seq = 0
+        self._load_eris_ewma()  # 恢复 EWMA 基线
         self._last_sys_ops = 0
         self._cycle_trimmed = 0
         self._cycle_failed = 0
@@ -1737,6 +2426,7 @@ class MemWiseGUI:
         self.daemon_thread.start()
 
     def _dae_worker(self):
+        h_low = h_high = None
         try:
             # 创建内存通知对象（事件驱动取代轮询）
             h_low = winapi.create_memory_resource_notification(
@@ -1746,34 +2436,32 @@ class MemWiseGUI:
             use_event_driver = (h_low is not None and h_high is not None)
             
             interval = CFG.get("interval",30)
-            last_efis_time = 0
             last_cfg_check = 0
-            last_pri_refresh = 0
             last_save = 0
-            last_chart_ts = time.time()
-            chart_accum = 0
             startup_logged = False
+            overtime_debt = 0  # 累计超时债务（秒），下一轮 deadline 中扣除
             
             while self.daemon_running:
                 tick_start = time.time()
+                # 60s 完整周期从等待开始计（pre_wait 计入周期，防长期漂移）
+                cycle_start = tick_start
                 
-                # 事件驱动等待：内存变化或超时
+                # 事件驱动等待：内存变化或超时（仅短等待，由 deadline 控制总周期）
+                pre_wait = max(3, interval // 15)
                 if use_event_driver:
-                    for _ in range(interval):
+                    for _ in range(pre_wait):
                         if not self.daemon_running:
                             return
                         ret = winapi.wait_for_object(h_low, 1000)
                         if ret == "signaled":
                             break
                 else:
-                    for _ in range(interval):
+                    for _ in range(pre_wait):
                         if not self.daemon_running:
                             return
                         time.sleep(1)
                 
-                # 重置计时起点 — 60s 周期从工作阶段开始计算
-                cycle_start = time.time()
-                
+                # 60s 周期从工作阶段继续计算（等待已计入 cycle_start）
                 m = winapi.get_memory_status()
                 if not m: time.sleep(interval); continue
                 snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
@@ -1784,7 +2472,11 @@ class MemWiseGUI:
                 if not startup_logged:
                     self._msg_queue.put(('log', f"🧠 观察到 {len(snaps)} 个进程 · 已有 {learned} 个画像"))
                     startup_logged = True
-                self._new_cycle_event.set()
+                self._cycle_log_buffer = []  # 本轮周期末批量输出缓存
+                agg_first = self.judger.aggressiveness
+                agg_max = agg_first  # 本轮峰值
+                layer3_ran_start = self.cleaner.summary().get("layer3_ran", 0)
+                deep_triggered = False  # 本轮是否触发过深度清理
 
                 # 清理
                 mode = self.mode_var.get()
@@ -1795,33 +2487,73 @@ class MemWiseGUI:
                 if m_emerg and m_emerg.get("pct", 0) >= CFG.get("emergency_threshold", 80):
                     agg_emerg = self.judger.update_pressure(m_emerg["pct"])
                     self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg)
-                    self._log("⚠ 紧急触发清理(full模式)")
-                deadline = time.time() + interval - 3
+                    self._msg_queue.put(('log', "⚠ 紧急触发清理(full模式)"))
+                interval = 60  # 固定 60s 日志/图表周期
+                deadline = time.time() + interval - 3 - overtime_debt
                 l2_all = []; probe_all = []
-                gap = 15.0
+                gap_base = max(8, min(20, CFG.get("gap_seconds", 12)))
+                gap = gap_base
+                if self.cleaner.game_mode:
+                    gap = gap_base * 1.5  # 游戏模式：降低操作密度，减少对磁盘I/O的竞争
                 prev_per_proc = 0.0
                 while time.time() < deadline - 6:
                     gap_end = min(time.time() + gap, deadline - 6)
+                    snap_skip = 0
                     while time.time() < gap_end:
-                        self.cleaner._layer1_memreduct(full=False)
-                        # Fast-track: 对高回填率进程追加轻量 WS 清空
-                        for ft_pid in list(self.cleaner._fast_track):
-                            try:
-                                winapi.empty_ws(ft_pid)
-                            except Exception:
-                                self.cleaner._fast_track.discard(ft_pid)
-                        snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                        # 快照降频：每3s采集一次（节省~20% CPU/功耗，进程列表在gap期间变化极小）
+                        if snap_skip <= 0:
+                            snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                            snap_skip = 6
+                            # 游戏模式：快照后实时检测启动/退出（检测零开销），
+                            # 周期内启动又退出时，两条日志按序进入周期末打包通道
+                            game_now = self.cleaner._is_user_game_running(snaps)
+                            if self.cleaner._game_mode_manual:
+                                # 手动模式：实时刷新 PID 保护集，不自动切换模式
+                                if game_now:
+                                    self.cleaner.judger._game_pid_set = {
+                                        s.pid for s in snaps if s.name.lower() in self.cleaner._get_user_game_procs()}
+                            elif not self.cleaner.game_mode and game_now:
+                                self.cleaner.game_mode = True
+                                self.cleaner.judger.game_mode = True
+                                self.cleaner.judger._game_proc_set = set()
+                                self.cleaner.judger._game_pid_set = {
+                                    s.pid for s in snaps if s.name.lower() in self.cleaner._get_user_game_procs()}
+                                self._cycle_log_buffer.append("🎮 检测到游戏运行 · 启用 游戏模式")
+                            elif self.cleaner.game_mode and not game_now:
+                                self.cleaner.game_mode = False
+                                self.cleaner.judger.game_mode = False
+                                self.cleaner.judger._game_proc_set.clear()
+                                self.cleaner.judger._game_pid_set.clear()
+                                self._cycle_log_buffer.append("🎮 游戏已退出 · 恢复正常模式")
+                            # 高频压制只做注册表缓存（零磁盘 I/O）；standby/脏页写回由 gap 末
+                            # optimize 与 harvest 统一清理——standby 需要累积时间才有释放量，
+                            # 高频清空只会让文件缓存持续失效并反复写盘
+                            if not self.cleaner.game_mode:
+                                self.cleaner._layer1_memreduct(full=False, ops={"registry"}, clean_self=False)
+                                if mode != "quick":
+                                    for ft_pid in list(self.cleaner._fast_track):
+                                        if not self.cleaner.quick_retrim(ft_pid):
+                                            self.cleaner._fast_track.discard(ft_pid)
+                        snap_skip -= 1
                         m2 = winapi.get_memory_status()
                         if m2:
                             agg = self.judger.update_pressure(m2["pct"]); m = m2
-                    s_pre = self.cleaner.summary()
-                    result = self.cleaner.optimize(snaps, self.learner, "normal", operations=ops, aggressiveness=agg)
-                    s_post = self.cleaner.summary()
+                            agg_max = max(agg_max, agg)
+                        # 节奏控制：0.5s 间隔保持高频温和压制，杜绝忙循环空转烧 CPU
+                        time.sleep(0.5)
+                    # gap-fill 天花板：quick 保持 quick，其余统一用 normal（deep/full 的重操作留给 harvest）
+                    gap_fill_mode = "quick" if mode == "quick" else "normal"
+                    if self.cleaner.game_mode:
+                        # 游戏模式：gap 期间不清理（避免周期性缺页卡顿），只维持周期节奏
+                        result = {"mode": gap_fill_mode, "aggressiveness": agg, "layer2": [], "probe": [], "net_freed": 0}
+                    else:
+                        result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg, allow_layer3=False)
                     agg = result.get("aggressiveness", agg)
                     l2_all.extend(result.get("layer2", []))
                     probe_all.extend(result.get("probe", []))
                     trimmed_n = len([t for t in result.get("layer2", []) if t[1]])
-                    release = s_post["freed_mb"] - s_pre["freed_mb"]
+                    # gap 自适应：纯进程释放口径（系统级释放不稀释每进程收益）
+                    release = sum(t[2] for t in result.get("layer2", []) if t[1])
                     per_proc = release / max(trimmed_n, 1)
                     if prev_per_proc > 0 and trimmed_n > 0:
                         if per_proc > prev_per_proc * 1.3:
@@ -1830,15 +2562,53 @@ class MemWiseGUI:
                             gap = min(25.0, gap + 3)
                     prev_per_proc = per_proc
                 while time.time() < deadline - 4:
-                    self.cleaner._layer1_memreduct(full=False)
-                result = self.cleaner.optimize(snaps, self.learner, mode, operations=ops, aggressiveness=agg)
+                    if mode != "quick" and not self.cleaner.game_mode:
+                        self.cleaner._layer1_memreduct(full=False, ops={"registry"}, clean_self=False)
+                    time.sleep(1.5)
+                # harvest：每轮完整收割（游戏进程由 PID 保护、系统缓存由 game_mode 跳过，
+                # 非游戏进程清理不影响游戏流畅；图表每轮保持真实数据）
+                harvest_future = self.cleaner._trim_executor.submit(
+                    self.cleaner.optimize, snaps, self.learner, mode,
+                    operations=ops, aggressiveness=agg)
+                result = None
+                try:
+                    result = harvest_future.result(timeout=30)
+                except concurrent.futures.TimeoutError:
+                    result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
+                              "net_freed": 0, "_partial": True}
+                    self._cycle_log_buffer.append("⏱ harvest 超时(30s)·跳过本轮诊断")
+                except Exception:
+                    result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
+                              "net_freed": 0, "_partial": True}
+                if result is None:
+                    result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
+                              "net_freed": 0, "_partial": True}
+                harvest_partial = result.get("_partial", False)
                 agg = result.get("aggressiveness", agg)
+                self.judger.aggressiveness = agg  # 同步入 judger，下一周期 agg_first 正确
+                agg_max = max(agg_max, agg)  # 捕获全量模式强制的 agg 峰值
+                # harvest 后刷新内存状态：日志/图表/EFIS 输入用最新值（harvest 最长 30s，旧值会滞后一轮）
+                m_fresh = winapi.get_memory_status()
+                if m_fresh:
+                    m = m_fresh
                 l2_all.extend(result.get("layer2", []))
                 probe_all.extend(result.get("probe", []))
                 l2_results = l2_all
                 probe_results = probe_all
-                interval = 60  # 固定 60s 日志/图表周期
                 s = self.cleaner.summary()
+                # 计算本周期 delta
+                cur_trim = s['ws_trim']
+                cur_fail = s.get('failed_feedback', 0)
+                self._cycle_trimmed = cur_trim - self._prev_trim_count
+                self._cycle_failed = cur_fail - self._prev_fail_count
+                cycle_standby = (s.get("standby",0) + s.get("modified",0) + s.get("filecache",0)
+                                 + s.get("compress",0) + s.get("combine",0)
+                                 + s.get("registry",0) + s.get("volume",0)) - self._last_sys_ops
+                self._last_sys_ops = (s.get("standby",0) + s.get("modified",0) + s.get("filecache",0)
+                                     + s.get("compress",0) + s.get("combine",0)
+                                     + s.get("registry",0) + s.get("volume",0))
+                self._prev_trim_count = cur_trim
+                self._prev_fail_count = cur_fail
                 now = time.time()
                 # 配置热加载：每秒检查一次 config.yaml 是否变更
                 if now - last_cfg_check > 5:
@@ -1849,6 +2619,10 @@ class MemWiseGUI:
                             self._cfg_mtime = mtime
                             _config.load()
                             CFG.update(_config.load())
+                            # 同步 judger 运行配置（排除列表/清理深度/EFIS 参数守护期间即时生效）
+                            self.judger.cfg["never"] = CFG.get("never", [])
+                            self.judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
+                            self.judger.cfg["efis_params"] = CFG.get("efis_params", {})
                     except Exception as e:
                         import sys; print(f"[MemWise] 配置加载异常: {e}", file=sys.stderr)
                 if now - last_save > 30:
@@ -1869,42 +2643,50 @@ class MemWiseGUI:
                 self._failed_weight = sum(ratios) / len(ratios) if ratios else 0.5
                 probe_ok = sum(1 for _, ok, _ in probe_results if ok)
 
-                # 累计图表数据
+                # 累计图表数据 — 每轮必定推送，chart_accum 即本轮净释放
                 cur_freed = float(s['freed_mb'])
                 cycle_freed = cur_freed - self._chart_last_freed
                 self._chart_last_freed = cur_freed
-                chart_accum += max(0.0, cycle_freed)
-                cur_trim = s['ws_trim']
-                cur_fail = s['failed_feedback']
-                self._cycle_trimmed = cur_trim - self._prev_trim_count
-                self._cycle_failed = cur_fail - self._prev_fail_count
-                cycle_standby = s["standby"] + s.get("modified",0) + s.get("filecache",0) + s.get("compress",0) + s.get("combine",0) + s.get("registry",0) + s.get("volume",0) - self._last_sys_ops
-                self._last_sys_ops = s["standby"] + s.get("modified",0) + s.get("filecache",0) + s.get("compress",0) + s.get("combine",0) + s.get("registry",0) + s.get("volume",0)
-                self._mem_pct_for_chart = m['pct']
-                if now - last_chart_ts >= 30:
+                chart_accum = max(0.0, cycle_freed)
+                # 每轮必定推送一个柱，零释放轮也占位，图表与日志严格一一对应
+                self._chart_bar_seq += 1
+                with self._chart_lock:
                     self._chart_data.append(chart_accum)
-                    eff_val = self._compute_eris(list(self._chart_data),
-                        self._cycle_trimmed, self._cycle_failed, m["pct"],
-                        getattr(self, "_failed_weight", 0.5)
-                    ).get("total", 50)
-                    with self._chart_lock:
-                        self._eff_data.append(eff_val)
-                    chart_accum = 0.0
-                    last_chart_ts = now
-                self._prev_trim_count = cur_trim
-                self._prev_fail_count = cur_fail  # 始终追加保持时间轴连续
-
-                # EFIS 效率反馈（每 30 tick）
-                if hasattr(self, 'efis'):
-                    eris = getattr(self, '_eris_sub', {})
+                    self._chart_cycle_meta.append((self._chart_bar_seq, self._cycle_trimmed,
+                        self._cycle_failed, m["pct"], getattr(self, "_failed_weight", 0.5), harvest_partial))
+                # 每周期无条件清零 PF 计数（harvest 超时/游戏降频周期也丢弃，防跨周期污染诊断窗口）
+                pf_delta_cycle = _drain_pf_delta(self.judger)
+                # Layer3 周期增量基线（累计口径会让诊断误判"持续触发"，导致 gate 持续爬升）
+                l3_ran_cur = s.get('layer3_ran', 0)
+                l3_extra_cur = s.get('layer3_extra', 0)
+                l3_ran_delta = max(0, l3_ran_cur - getattr(self, '_last_l3_ran', 0))
+                l3_extra_delta = max(0, l3_extra_cur - getattr(self, '_last_l3_extra', 0))
+                self._last_l3_ran = l3_ran_cur
+                self._last_l3_extra = l3_extra_cur
+                if hasattr(self, 'efis') and not harvest_partial:
+                    # 场景检测（game/browser/development/general）先于调参诊断
+                    self.efis.detect_scene(snaps, winapi.is_foreground_fullscreen(), m['pct'])
                     stats = {
                         'mem_pct': m['pct'],
+                        'mode': mode,
                         'trimmed_cnt': self._cycle_trimmed,
                         'failed_cnt': self._cycle_failed,
                         'total_attempts': self._cycle_trimmed + self._cycle_failed,
                         'cycle_freed': cycle_freed,
                         'snaps': snaps,
                         'fore_fullscreen': winapi.is_foreground_fullscreen(),
+                        # ── EFIS 诊断输入全量补齐（11 字段，调参分支获得真实数据）──
+                        'theta_mean': _prof_theta_mean(self.learner),
+                        'theta_above_06': _prof_theta_above(self.learner),
+                        'agg': agg,
+                        'pf_delta': pf_delta_cycle,
+                        'cycle_duration': max(1.0, time.time() - cycle_start),
+                        'deepen_cnt': s.get('deepen_cnt', 0),
+                        'deepen_extra': s.get('deepen_extra', 0),
+                        'layer3_ran': l3_ran_delta,
+                        'layer3_extra': l3_extra_delta,
+                        'cooldown_cnt': sum(1 for t in self.judger.cooldown.values() if t > time.time()),
+                        'repeat_fail': len(failed),
                     }
                     efis_msg = self.efis.tick(stats)
                     if efis_msg:
@@ -1914,29 +2696,40 @@ class MemWiseGUI:
                         CFG['efis_params'] = params
                         self.judger.cfg['efis_params'] = params
                         self.judger.cfg['clean_passes'] = CFG.get('clean_passes', 4)
+                        _save_cfg()  # EFIS 调参落盘：重启后消费方与引擎参数一致
+                        # 同步 Kalman 超参数到 learner
+                        if hasattr(self, 'learner'):
+                            self.learner._kalman_r = params.get('kalman_r', 5.0)
                     if efis_msg:
-                        self._msg_queue.put(('efis', efis_msg))
+                        self._cycle_log_buffer.append('[EFIS] ' + efis_msg)
 
-                # 元认知
-                meta_stats = {
-                    'mem_pct': m['pct'],
-                    'trimmed_cnt': self._cycle_trimmed,
-                    'failed_cnt': self._cycle_failed,
-                    'total_attempts': self._cycle_trimmed + self._cycle_failed,
-                    'cycle_freed': cycle_freed,
-                    'snaps': snaps,
-                    'fore_fullscreen': winapi.is_foreground_fullscreen(),
-                }
-                self.learner.meta.tick(meta_stats)
+                # 元认知（harvest 超时时跳过，避免零数据污染诊断）
+                if not harvest_partial:
+                    meta_stats = {
+                        'mem_pct': m['pct'],
+                        'trimmed_cnt': self._cycle_trimmed,
+                        'failed_cnt': self._cycle_failed,
+                        'total_attempts': self._cycle_trimmed + self._cycle_failed,
+                        'cycle_freed': cycle_freed,
+                        'snaps': snaps,
+                        'fore_fullscreen': winapi.is_foreground_fullscreen(),
+                    }
+                    meta_findings = self.learner.meta.tick(meta_stats)
+                    if meta_findings:
+                        for finding in meta_findings:
+                            self._cycle_log_buffer.append(finding)
 
                 # ── 收集并显示算法日志消息 ──
+                # 游戏检测消息改走批量通道，防被 _log_batch 清屏擦除
+                for msg in self.cleaner.pop_game_msgs():
+                    self._cycle_log_buffer.append(msg)
                 for msg in self.learner.pop_info():
-                    self._msg_queue.put(('log', msg))
+                    self._cycle_log_buffer.append(msg)
                 for msg in self.cleaner.pop_info():
-                    self._msg_queue.put(('log', msg))
+                    self._cycle_log_buffer.append(msg)
                 if hasattr(self.judger, '_info_msgs') and self.judger._info_msgs:
                     for msg in self.judger._info_msgs:
-                        self._msg_queue.put(('log', msg))
+                        self._cycle_log_buffer.append(msg)
                     self.judger._info_msgs.clear()
 
                 # 文件日志
@@ -1945,15 +2738,45 @@ class MemWiseGUI:
                         import datetime
                         with open("memwise.log", "a", encoding="utf-8") as lf:
                             lf.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {cycle_freed:.1f}MB\n")
-                    except: pass
+                    except Exception: pass
 
-                self._msg_queue.put(('log_op',
-                        f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · 整理 {self._cycle_trimmed} 进程 · "
-                        f"试探 {len(probe_results)} ({probe_ok}成功) · 画像 {learned} 个 · 样本 {total_samples}"))
+                deep_triggered = self.cleaner.summary().get("layer3_ran", 0) > layer3_ran_start
+                # 合并压力+深度清理日志（与上一周期峰值比较，仅变化时输出）
+                agg_peak = agg_max
+                mem_str = self.judger._mem_label(m['pct'])
+                a_cur = self.judger._agg_label(agg_peak)
+                last_peak = getattr(self, '_last_agg_peak', None)
+                last_mem = getattr(self, '_last_pressure_mem', '')
+                if last_peak is None:
+                    change_str = a_cur  # 首轮直接显示
+                elif a_cur == self.judger._agg_label(last_peak):
+                    change_str = f"维持{a_cur}"
+                else:
+                    change_str = f"{self.judger._agg_label(last_peak)}→{a_cur}"
+                deep_changed = deep_triggered != getattr(self, '_last_deep_triggered', False)
+                if last_mem != mem_str or change_str != getattr(self, '_last_pressure_chg', '') or deep_changed:
+                    deep_str = " · 已触发深度清理" if deep_triggered else ""
+                    self._cycle_log_buffer.append(
+                        f"📈 内存 {m['pct']:.0f}%（{mem_str}）· 清理强度：{change_str}{deep_str}")
+                    self._last_pressure_mem = mem_str
+                    self._last_pressure_chg = change_str
+                    self._last_agg_peak = agg_peak
+                    self._last_deep_triggered = deep_triggered
+                # 周期汇总
+                self._cycle_log_buffer.append(
+                        f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · 整理 {self._fmt_count(self._cycle_trimmed)} 进程 · "
+                        f"试探 {len(probe_results)} ({probe_ok}成功) ")
+                # 批量输出周期末日志
+                self._msg_queue.put(('log_batch', self._cycle_log_buffer))
                 # 状态栏（累计数据）
                 self._msg_queue.put(('upd_ui', (s, m, "🟢 守护中")))
                 self._msg_queue.put(('chart', None))
                 elapsed = time.time() - cycle_start
+                # 周期补偿：超时累积债务，下一轮 deadline 中扣除；提前完成则还债
+                if elapsed > interval:
+                    overtime_debt = min(30, overtime_debt + (elapsed - interval))
+                else:
+                    overtime_debt = max(0, overtime_debt - (interval - elapsed))
                 time.sleep(max(0.5, interval - elapsed))
                 if not self.daemon_running:
                     return  # 停止守护后立即退出，不提交多余回调
@@ -1962,6 +2785,13 @@ class MemWiseGUI:
             self._dae_error = f"{e}\n{traceback.format_exc()}"
             self.daemon_running = False
         finally:
+            try:
+                if h_low:
+                    winapi.close_handle(h_low)
+                if h_high:
+                    winapi.close_handle(h_high)
+            except Exception:
+                pass
             self._msg_queue.put(('dae_stopped', None))
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
@@ -1988,7 +2818,7 @@ class MemWiseGUI:
             del self._dae_error
         else:
             self.lbl_st["text"] = "就绪 · Ctrl+Shift+M"; self._log_op("守护已停止")
-        self.learner.save(STATE_FILE); self._upd_stats(); self._draw_chart()
+        self.learner.save(STATE_FILE); self._save_eris_ewma(); self._upd_stats(); self.root.after(100, self._draw_chart)
 
     # ---- 窗口事件 ----
 
@@ -2006,15 +2836,11 @@ class MemWiseGUI:
         choice = tk.Toplevel(self.root)
         self._apply_icon(choice)
         choice.title("MemWise")
-        choice.geometry("360x150")
         choice.resizable(False, False)
         choice.transient(self.root)
         choice.focus_set()
         choice.lift()
-        choice.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - 360) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - 150) // 2
-        choice.geometry(f"360x150+{x}+{y}")
+        _center_geometry(choice, 360, 150)
         tk.Label(choice, text="点击关闭按钮后的操作：", font=("微软雅黑", 11)).pack(pady=(20, 15))
         result = ["minimize"]
         def pick_minimize():
@@ -2033,9 +2859,54 @@ class MemWiseGUI:
         else:
             self._do_exit()
 
+    def _maybe_restore_daemon(self):
+        """崩溃恢复：仅当 watchdog.json 记录崩溃前守护运行中才自动续守护"""
+        try:
+            import json
+            with open(_watchdog_path(), "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if d.get("daemon", False):
+                self._on_daemon()
+                self._log_op("🔄 从崩溃中恢复 — 守护模式已自动继续")
+        except Exception:
+            pass
+
+    def _spawn_watchdog(self):
+        """启动看门狗子进程 — 监控主程序崩溃并自动重启"""
+        try:
+            wd_path = _watchdog_path()
+            import json
+            with open(wd_path, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "ts": time.time(), "crash_count": 0,
+                           "daemon": self.daemon_running}, f)
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW
+            si.wShowWindow = 0        # SW_HIDE
+            if getattr(sys, "frozen", False):
+                _cmd = [sys.executable, "--watchdog"]
+            else:
+                _cmd = [sys.executable, os.path.abspath(__file__), "--watchdog"]
+            subprocess.Popen(_cmd,
+                startupinfo=si, creationflags=0x08000000)  # CREATE_NO_WINDOW
+        except Exception:
+            pass
+
     def _do_exit(self):
         """直接退出（无确认）"""
+        # 通知看门狗正常退出
+        try:
+            wd_path = _watchdog_path()
+            if os.path.exists(wd_path):
+                os.remove(wd_path)
+        except Exception:
+            pass
         self.daemon_running = False
+        # 等待 daemon 线程退出（避免销毁窗口后线程访问已销毁控件）
+        try:
+            if getattr(self, 'daemon_thread', None) and self.daemon_thread.is_alive():
+                self.daemon_thread.join(timeout=2)
+        except Exception:
+            pass
         try: winapi.tray_remove(self.root.winfo_id(), TRAY_UID)
         except Exception:
             pass
@@ -2044,6 +2915,9 @@ class MemWiseGUI:
             pass
         _save_cfg()
         try: self.learner.save(STATE_FILE)
+        except Exception:
+            pass
+        try: self._save_eris_ewma()
         except Exception:
             pass
         self.root.destroy()
