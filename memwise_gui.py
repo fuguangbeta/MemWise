@@ -1,5 +1,5 @@
-"""
-MemWise v3.1.5 GUI —— 图形界面
+﻿"""
+MemWise v3.2.6 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -336,7 +336,7 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.1.5_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.2.6_SingleInstance"
 
 
 class MemWiseGUI:
@@ -348,7 +348,7 @@ class MemWiseGUI:
         self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 0xB7:  # ERROR_ALREADY_EXISTS
             # 激活已有窗口
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.1.5")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.2.6")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -359,7 +359,7 @@ class MemWiseGUI:
         self._restored = "--restored" in sys.argv
 
         self.root = tk.Tk()
-        self.root.title("MemWise v3.1.5")
+        self.root.title("MemWise v3.2.6")
         # --minimized 模式：立即隐藏窗口，不等 800ms，避免开机闪烁
         if "--minimized" in sys.argv:
             self.root.withdraw()
@@ -375,7 +375,7 @@ class MemWiseGUI:
     def _set_main_window_icon(self):
         """设置主窗口图标到顶层 wrapper（标题栏），client 双设兜底"""
         try:
-            big_h = winapi.create_memwise_icon(32)
+            big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)  # 任务栏专用：提亮+锐化增强清晰度，仅此一处
             sml_h = winapi.create_memwise_icon(16)
             if not big_h or not sml_h:
                 _diag_log(f"主图标生成失败 big={big_h} sml={sml_h}")
@@ -434,7 +434,7 @@ class MemWiseGUI:
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v3.1.5 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        self._log(f"MemWise v3.2.6 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -459,7 +459,7 @@ class MemWiseGUI:
     def _get_colored_icon(self, name, color):
         """缓存获取或创建指定颜色的 HICON"""
         if name not in self._icon_cache:
-            self._icon_cache[name] = winapi.create_memwise_icon(32, color)
+            self._icon_cache[name] = winapi.create_memwise_icon(32, color, shadow=False, gradient=0.12)
         return self._icon_cache[name]
 
     def _setup_hotkey_and_tray(self):
