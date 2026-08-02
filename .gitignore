@@ -11,6 +11,7 @@ config/config.yaml
 # Local tooling
 .mcp.json
 .codegraph/
+scripts/release_*.py
 
 # Build artifacts
 build/
