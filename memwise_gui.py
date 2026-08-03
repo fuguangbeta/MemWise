@@ -1203,12 +1203,6 @@ class MemWiseGUI:
             rb.pack(anchor="w")
             if v in tips_ca:
                 self._add_tip(rb, tips_ca[v])
-        self._add_tip(sf.winfo_children()[-1],
-            "程序启动后自动最小化到系统托盘\n"
-            "\n"
-            "窗口不显示，只在托盘区域显示图标。\n"
-            "双击托盘图标恢复窗口，右键弹出菜单。\n"
-            "适合搭配「启动时自动守护」使用，实现开机静默运行。")
 
         # ─── 清理设置 ───
         cf = ttk.LabelFrame(inner_frame, text="清理", padding=8)
