@@ -1,4 +1,4 @@
-﻿# MemWise v3.2.6
+﻿# MemWise v3.3.10
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
@@ -321,6 +321,10 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 主界面右侧为日志区域。每轮输出本轮释放量、系统操作次数、整理进程数、试探/成功数等关键指标。周期内的算法诊断消息（元认知校准、概念漂移、EFIS 调参等）被缓冲至周期末，与压力强度日志和汇总行批量输出——当前面板行数+批量条数>7 时自动清旧再显示。游戏检测/退出消息实时推送，按钮点击等交互消息走即时通道。
 
 *The log panel outputs per-cycle key metrics — freed amount, system operation count, trimmed process count, and probe success rate. Intra-cycle diagnostic messages (meta-cognitive calibration, concept drift, EFIS tuning, deep-clean triggers) are buffered and flushed at cycle end together with the summary line. When the combined line count of the existing panel plus the new batch exceeds seven, old content is cleared before output, ensuring every message in the batch remains visible for at least one full cycle. Real-time messages (button clicks, game detection) continue to appear immediately.*
+
+**统一运行日志 · Unified Runtime Log**：除界面日志外，程序在可执行文件目录维护统一日志 `memwise.log`，由设置中「记录运行日志到文件」开关总控——开启后按时间线记录运行期间全部有价值信息（启动/退出、每轮清理摘要、游戏模式决策、EFIS 调参、配置保存、未捕获异常与崩溃现场、诊断信息），关闭则不写任何日志。每条带毫秒时间戳与类别标签（`[启动][清理][决策][调参][配置][异常][系统][诊断][界面]`）。容量 2MB×2 份轮转（`memwise.log.1` 保留最近两份，自动删除最旧），线程安全写入不交错，运行时切换开关即时生效。旧版 `memwise_crash.log` 在首次开启时自动并入，历史现场不丢失。
+
+*Besides the on-screen panel, MemWise maintains a unified runtime log `memwise.log` next to the executable, controlled by the 「log to file」toggle in Settings — when enabled, it records every valuable event along a single timeline (startup/shutdown, per-cycle cleanup summaries, game-mode decisions, EFIS tuning, config saves, uncaught exceptions and crash dumps, diagnostics); when disabled, nothing is written. Each line carries a millisecond timestamp and a category tag (`[启动][清理][决策][调参][配置][异常][系统][诊断][界面]`). The file rotates at 2 MB with two generations (`memwise.log.1`), deleting the oldest automatically; writes are thread-safe and the toggle takes effect immediately at runtime. Legacy `memwise_crash.log` content is merged in on first enable, so no history is lost.*
 
 ---
 
