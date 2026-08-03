@@ -20,21 +20,6 @@ class PolicyVoter:
             return scores
         norm = 5.0 / total_w  # 归一化到 [0, 5]
         return [s * self._tree_weights[i] * norm for i, s in enumerate(scores)]
-    
-    def update_weights(self, cycle_freed, baseline_freed=100):
-        """在线权重学习：用本轮释放量更新各树效果估计"""
-        if baseline_freed <= 0:
-            return
-        above = 1.0 if cycle_freed > baseline_freed else -1.0
-        for i, contrib in enumerate(self._last_contribs):
-            if contrib == 0:
-                continue
-            # EWMA 更新：正向贡献+好结果→加分，正向贡献+差结果→减分
-            delta = above * (1.0 if contrib > 0 else -1.0) * 15
-            self._tree_ewma[i] = 0.9 * self._tree_ewma[i] + 0.1 * (50 + delta)
-        total = sum(max(1, w) for w in self._tree_ewma)
-        self._tree_weights = [max(0.2, w / total * 5) for w in self._tree_ewma]
-        self._last_contribs = [0] * 5
 
     def update_weights_per_trim(self, scores, success):
         """每进程粒度的在线权重学习——直接调节各树权重（有界 ±2，慢速 0.05 收敛）。
@@ -139,9 +124,10 @@ class PolicyVoter:
             score += 1
             reasons.append("内存充足,可探索")
         
-        # 树5: 因果好奇 (从未作为反事实被评估过)
-        all_candidates = state.get("candidates", [])
-        if name.lower() not in [c.lower() for c in all_candidates[:5]]:
+        # 树5: 因果好奇 (近期未被评估的进程值得再探)
+        pt = state.get("probe_last_time", {})
+        last_p = pt.get(name.lower(), 0)
+        if last_p == 0 or time.time() - last_p > 1800:
             score += 1
             reasons.append("未充分评估")
         
