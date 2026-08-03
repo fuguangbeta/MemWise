@@ -148,6 +148,7 @@ from core.judger import PareJudger as Judger
 from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
 from core.sniffer import Sniffer
+from core.icon_flat import FLAT_48_PNG  # 任务栏扁平图标（内嵌 PNG 数据，冷启动 exe 兼容）
 
 from core.config import load as _load_cfg
 from core.config import get_state_path
@@ -438,7 +439,7 @@ class MemWiseGUI:
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
         self.root.title("MemWise v3.4.19")
-        # --minimized 模式：保持隐藏（run 时不 deiconify）
+        # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
         self.root.resizable(True, False)
@@ -468,7 +469,7 @@ class MemWiseGUI:
         self.sniffer = Sniffer()
         self.daemon_running = False; self.daemon_thread = None
         self._tray_icon_handle = None
-        self._minimized_to_tray = False
+        # 注意：_minimized_to_tray 已在上方初始化（--minimized/auto_start_minimize 分支），此处不得重复赋值覆盖
         # 柱图状态
         self._chart_data = deque(maxlen=60)
         self._chart_last_freed = 0.0
@@ -513,7 +514,11 @@ class MemWiseGUI:
         幂等：HICON 首次创建后缓存复用（重复调用零 GDI 泄漏）；供映射后重设兜底"""
         try:
             if not hasattr(self, '_icon_big_h') or not self._icon_big_h:
-                self._icon_big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)  # 任务栏专用：提亮+锐化增强清晰度，仅此一处
+                # 任务栏专用：simple_flat_48 扁平成品（GDI+ 内存解码，零临时文件）；失败回退动态立体渲染
+                self._icon_big_h = winapi.create_hicon_from_png(FLAT_48_PNG)
+                if not self._icon_big_h:
+                    _diag_log("扁平图标加载失败，回退动态渲染")
+                    self._icon_big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)
                 self._icon_sml_h = winapi.create_memwise_icon(16)
             big_h = self._icon_big_h
             sml_h = self._icon_sml_h
@@ -1064,7 +1069,7 @@ class MemWiseGUI:
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
                 args = os.path.abspath(__file__); wd = base
             if en:
-                winapi.set_auto_start("MemWise", target, args + " --minimized" if args else "--minimized", wd)
+                winapi.set_auto_start("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""), wd)
                 # 互斥：启用普通自启时移除管理员自启任务（避免开机双启动）
                 winapi.remove_auto_start_admin("MemWise")
                 CFG["auto_start_admin"] = False
@@ -1097,7 +1102,7 @@ class MemWiseGUI:
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
                 args = os.path.abspath(__file__); wd = base
             if en:
-                ok = winapi.set_auto_start_admin("MemWise", target, args + " --minimized" if args else "--minimized")
+                ok = winapi.set_auto_start_admin("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""))
                 if ok:
                     winapi.remove_auto_start("MemWise")
                     # 语义：管理员自启替换普通自启，普通自启配置如实置关

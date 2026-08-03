@@ -32,7 +32,6 @@ DEFAULT_CFG = {
     "interval": 30, "never": [], "clean_mode": "normal",
     "auto_start": False, "auto_start_daemon": False,
     "auto_start_admin": False, "auto_start_minimize": False,
-    "daemon_trim_every_ticks": 3, "scheduled_clean": None,
     "gap_seconds": 12, "clean_passes": 4,
     "hotkey": "ctrl+shift+m", "game_hotkey": "ctrl+shift+g", "game_processes": [],
     "clean_operations": ["ws", "standby", "modified", "volume", "registry"],
