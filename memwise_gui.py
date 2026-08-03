@@ -1,5 +1,5 @@
 ﻿"""
-MemWise v3.3.10 GUI —— 图形界面
+MemWise v3.4.19 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -111,7 +111,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v3.3.10 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v3.4.19 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -410,7 +410,7 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.3.10_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.4.19_SingleInstance"
 
 
 class MemWiseGUI:
@@ -424,7 +424,7 @@ class MemWiseGUI:
         self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 0xB7:  # ERROR_ALREADY_EXISTS
             # 激活已有窗口
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.3.10")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.4.19")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -437,7 +437,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v3.3.10")
+        self.root.title("MemWise v3.4.19")
         # --minimized 模式：保持隐藏（run 时不 deiconify）
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -449,30 +449,7 @@ class MemWiseGUI:
         # 窗口层级在 mainloop 后才完整，故延迟 100ms 设置（过早 GetParent 返回 0 导致图标失效）
         self.root.after(100, self._set_main_window_icon)
 
-    def _set_main_window_icon(self):
-        """设置主窗口图标到顶层 wrapper（标题栏），client 双设兜底"""
-        try:
-            big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)  # 任务栏专用：提亮+锐化增强清晰度，仅此一处
-            sml_h = winapi.create_memwise_icon(16)
-            if not big_h or not sml_h:
-                _diag_log(f"主图标生成失败 big={big_h} sml={sml_h}")
-                return
-            wid = int(self.root.winfo_id())
-            # wrapper = client 的父/祖先（标题栏所在）；GetAncestor 失败时退化到自身
-            top = ctypes.windll.user32.GetAncestor(wid, 2) or ctypes.windll.user32.GetParent(wid) or wid
-            for t in (top, wid):
-                if not t:
-                    continue
-                ctypes.windll.user32.SendMessageW(t, 0x0080, 1, big_h)   # WM_SETICON ICON_BIG
-                ctypes.windll.user32.SendMessageW(t, 0x0080, 0, sml_h)   # WM_SETICON ICON_SMALL
-            # 类图标：设到顶层类（TkTopLevel），所有弹窗自动继承
-            ctypes.windll.user32.SetClassLongPtrW(top, -14, big_h)
-            ctypes.windll.user32.SetClassLongPtrW(top, -34, sml_h)
-            _check = ctypes.windll.user32.SendMessageW(top, 0x007F, 1, 0)
-            _diag_log(f"主图标: top={top} wid={wid} 自检一致:{_check == big_h}")
-        except Exception as e:
-            _diag_log(f"主图标设置异常: {e!r}")
-
+        # ── 主界面初始化（原错挂在 _set_main_window_icon 的 after 回调内，移回 __init__ 保证确定性）──
         self._custom_hicon = None
         self._icon_cache = {}  # name -> HICON
         self._optimizing = False  # 防止并发优化
@@ -511,7 +488,7 @@ class MemWiseGUI:
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v3.3.10 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        self._log(f"MemWise v3.4.19 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -530,6 +507,37 @@ class MemWiseGUI:
                 self._on_daemon()  # 自启动：立即守护，不等待
             else:
                 self.root.after(300, self._on_daemon)
+
+    def _set_main_window_icon(self):
+        """设置主窗口图标到顶层 wrapper（标题栏），client 双设兜底。
+        幂等：HICON 首次创建后缓存复用（重复调用零 GDI 泄漏）；供映射后重设兜底"""
+        try:
+            if not hasattr(self, '_icon_big_h') or not self._icon_big_h:
+                self._icon_big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)  # 任务栏专用：提亮+锐化增强清晰度，仅此一处
+                self._icon_sml_h = winapi.create_memwise_icon(16)
+            big_h = self._icon_big_h
+            sml_h = self._icon_sml_h
+            if not big_h or not sml_h:
+                _diag_log(f"主图标生成失败 big={big_h} sml={sml_h}")
+                return
+            wid = int(self.root.winfo_id())
+            # wrapper = client 的父/祖先（标题栏所在）；GetAncestor 失败时退化到自身
+            top = ctypes.windll.user32.GetAncestor(wid, 2) or ctypes.windll.user32.GetParent(wid) or wid
+            for t in (top, wid):
+                if not t:
+                    continue
+                ctypes.windll.user32.SendMessageW(t, 0x0080, 1, big_h)   # WM_SETICON ICON_BIG
+                ctypes.windll.user32.SendMessageW(t, 0x0080, 0, sml_h)   # WM_SETICON ICON_SMALL
+            # 类图标：设到顶层类（TkTopLevel），所有弹窗自动继承
+            ctypes.windll.user32.SetClassLongPtrW(top, -14, big_h)
+            ctypes.windll.user32.SetClassLongPtrW(top, -34, sml_h)
+            _check = ctypes.windll.user32.SendMessageW(top, 0x007F, 1, 0)
+            # 强制重绘边框：任务栏按钮图标可能不随 WM_SETICON 主动刷新（SWP_FRAMECHANGED）
+            ctypes.windll.user32.SetWindowPos(top, 0, 0, 0, 0, 0,
+                                              0x0001 | 0x0002 | 0x0004 | 0x0020)  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+            _diag_log(f"主图标: top={top} wid={wid} 自检一致:{_check == big_h}")
+        except Exception as e:
+            _diag_log(f"主图标设置异常: {e!r}")
 
     # ---- 窗口过程 + 热键 + 托盘 ----
 
@@ -876,6 +884,7 @@ class MemWiseGUI:
         self.mode_var = tk.StringVar(value=CFG.get("clean_mode", "normal"))
         self.mode_combo = ttk.Combobox(mf, textvariable=self.mode_var, width=12,
                                         values=["quick","normal","deep","full"], state="readonly")
+        self.mode_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
         self.mode_combo.pack(side="left", padx=(4,0))
         self._add_tip(self.mode_combo,
             "选择清理力度，优化按钮和守护模式共用此设置：\n"
@@ -1182,7 +1191,6 @@ class MemWiseGUI:
         mp_var = tk.BooleanVar(value="modified" in ops)
         fc_var = tk.BooleanVar(value="filecache" in ops)
         vl_var = tk.BooleanVar(value="volume" in ops)
-        cp_var = tk.BooleanVar(value="compress" in ops)
         rg_var = tk.BooleanVar(value="registry" in ops)
 
         ops_frame = ttk.Frame(cf); ops_frame.pack(fill="x")
@@ -1209,13 +1217,6 @@ class MemWiseGUI:
                       "每次系统级清理均执行，不受压力阈值限制。\n"
                       "\n"
                       "⚠ 少量磁盘写入，对固态硬盘几乎无影响")
-        cb_cp = ttk.Checkbutton(ops_frame, text="内存压缩触发", variable=cp_var,
-                                command=lambda: toggle_op("compress", cp_var))
-        cb_cp.pack(anchor="w")
-        self._add_tip(cb_cp, "主动触发 Windows 内置内存压缩。\n"
-                      "单轮 flush+purge 管线，纯操作系统级操作，零副作用。\n"
-                      "\n"
-                      "⚠ 不增加 CPU 负担，Windows 自动管理解压时机")
         cb_fc = ttk.Checkbutton(ops_frame, text="系统文件缓存", variable=fc_var,
                                 command=lambda: toggle_op("filecache", fc_var))
         cb_fc.pack(anchor="w")
@@ -1233,16 +1234,6 @@ class MemWiseGUI:
                       "\n"
                       "⚠ 每次刷新所有分区，短暂耗时但不丢失数据\n"
                       "⚠ ")
-        cb_cb_var = tk.BooleanVar(value="combine" in ops)
-        cb_cb = ttk.Checkbutton(ops_frame, text="内存合并", variable=cb_cb_var,
-                                command=lambda: toggle_op("combine", cb_cb_var))
-        cb_cb.pack(anchor="w")
-        self._add_tip(cb_cb, "触发系统合并内容相同的物理内存页，节省内存占用。\n"
-                      "多虚拟机或容器场景效果明显。\n"
-                      "适合多虚拟机或容器场景——相同 OS 文件可在物理内存中共享页面。\n"
-                      "\n"
-                      "⚠ 部分系统版本对页合并的支持有限\n"
-                      "⚠ 合并后不影响程序正常运行")
         cb_rg = ttk.Checkbutton(ops_frame, text="注册表缓存清理", variable=rg_var,
                                 command=lambda: toggle_op("registry", rg_var))
         cb_rg.pack(anchor="w")
@@ -1292,6 +1283,7 @@ class MemWiseGUI:
         ta_lbl.pack(anchor="w")
         map_vals = {"显示窗口":"show","一键清理":"clean","无操作":"none"}
         ta_combo = ttk.Combobox(ef2, values=list(map_vals.keys()), state="readonly", width=20)
+        ta_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
         ta_cur = {v:k for k,v in map_vals.items()}.get(CFG.get("tray_left_action","show"), "显示窗口")
         ta_combo.set(ta_cur)
         ta_combo.pack(fill="x", pady=(0,6))
@@ -1613,10 +1605,12 @@ class MemWiseGUI:
         _sort_rev = True
 
         def _sort_key_c(v):
-            """排序键提取：支持 "X MB" 格式转数字"""
+            """排序键提取：支持 "X MB"/"X%" 格式转数字"""
             v = v.strip()
             if v.endswith(" MB"):
                 v = v[:-3]
+            elif v.endswith("%"):
+                v = v[:-1]
             try:
                 return float(v)
             except ValueError:
@@ -1744,8 +1738,9 @@ class MemWiseGUI:
         if CFG.get("log_to_file"):
             _log_write("界面", m)
 
-    def _log_batch(self, msgs):
-        """周期末批量输出：当前行数+批量>7则清旧，再逐条输出"""
+    def _log_batch(self, msgs, to_file=True):
+        """周期末批量输出：当前行数+批量>7则清旧，再逐条输出。
+        to_file=False 为纯显示模式（周期摘要/EFIS 消息已有 [清理]/[调参] 直写，避免双通道重复落盘）"""
         self.log.configure(state="normal")
         try:
             cur_lines = int(self.log.index('end-1c').split('.')[0])
@@ -1757,7 +1752,7 @@ class MemWiseGUI:
             self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n")
         self.log.see("end")
         self.log.configure(state="disabled")
-        if CFG.get("log_to_file"):
+        if to_file and CFG.get("log_to_file"):
             for m in msgs:
                 _log_write("界面", m)
 
@@ -1798,6 +1793,7 @@ class MemWiseGUI:
                 action, args = self._msg_queue.get_nowait()
                 if action == 'log': self._log(args)
                 elif action == 'log_batch': self._log_batch(args)
+                elif action == 'display': self._log_batch(args, to_file=False)  # 仅显示：内容已有 [清理]/[调参] 直写落盘
                 elif action == 'log_op': self._log_op(args)
                 elif action == 'chart':
                     self._drawing_chart = False  # 异常恢复：防止标志永锁
@@ -1849,7 +1845,7 @@ class MemWiseGUI:
 
     def _upd_stats(self):
         s = self.cleaner.summary()
-        self.lbl_sb["text"] = f"系统杂项: {self._fmt_count(s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('compress',0) + s.get('combine',0) + s.get('registry',0) + s.get('volume',0))}"
+        self.lbl_sb["text"] = f"系统杂项: {self._fmt_count(s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('registry',0) + s.get('volume',0))}"
         self.lbl_tr["text"] = f"进程: {self._fmt_count(s['ws_trim'])}"
         fm = s['freed_mb']
         self.lbl_fr["text"] = f"释放: {fm/1024.0:.1f}GB" if fm >= 1000 else f"释放: {fm:.1f}MB"
@@ -1871,8 +1867,8 @@ class MemWiseGUI:
     BAR_GAP = 3  # 柱间距 px
 
     def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5, probe_ok=0, probe_total=0, update_state=True):
-        """ERIS v5: IQR分位数归一化五维加权和（80±60×(raw−p50)/IQR）。
-        50轮滚动窗，均值~80%，可破100%，可破60%。
+        """ERIS v6: IQR分位数归一化五维加权和（80±40×(raw−p50)/IQR，trimmed IQR + 维级窗口）。
+        维级窗口 [25,25,20,8,20]，均值~80%，可破100%，可破60%。
         返回 {"total": eff, "factors": ["↑预测精准","↓PF偏高"]}"""
         if not data:
             return {"total": 0, "factors": ["冷启动"]}
@@ -2113,7 +2109,9 @@ class MemWiseGUI:
         max_fit = pw // step
         visible = data[-max_fit:] if len(data) > max_fit else data
         latest = visible[-1] if visible else 0
-        max_val = max(visible) if visible else 1  # Y轴上限仅取可见数据
+        max_val = max(visible) if visible else 1
+        if max_val <= 0:
+            max_val = 1  # 全零释放轮：按 0 高占位柱渲染，避免除零
         avg_val = sum(visible) / len(visible) if visible else 0
         peak_val = max_val
         failed_weight = getattr(self, "_failed_weight", 0.5)
@@ -2447,7 +2445,10 @@ class MemWiseGUI:
         try:
             if self.cleaner.game_mode:
                 return
-            self.cleaner._layer1_memreduct(full=False, ops={"standby","standby_low","modified","registry"}, clean_self=False)
+            ops = set(CFG.get("clean_operations") or [])
+            use = {"standby", "standby_low", "modified", "registry"} & ops
+            if use:
+                self.cleaner._layer1_memreduct(full=False, ops=use, clean_self=False)
             m = winapi.get_memory_status()
             self._msg_queue.put(('log', f"⚡ 已执行即时轻量清理（可用内存 {m['pct'] if m else '?'}%）"))
         except Exception:
@@ -2532,6 +2533,7 @@ class MemWiseGUI:
         self._cycle_failed = 0
         self.daemon_thread = threading.Thread(target=self._dae_worker, daemon=True)
         self.daemon_thread.start()
+        self._update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _dae_worker(self):
         h_low = h_high = None
@@ -2553,6 +2555,16 @@ class MemWiseGUI:
                 tick_start = time.time()
                 # 60s 完整周期从等待开始计（pre_wait 计入周期，防长期漂移）
                 cycle_start = tick_start
+
+                # 收尾上一轮超时的 harvest（尽力等待，避免双份 trim 叠加）
+                ph = getattr(self, '_pending_harvest', None)
+                if ph is not None:
+                    try:
+                        if not ph.done():
+                            ph.result(timeout=5)
+                    except Exception:
+                        pass
+                    self._pending_harvest = None
                 
                 # 事件驱动等待：内存变化或超时（仅短等待，由 deadline 控制总周期）
                 pre_wait = max(3, interval // 15)
@@ -2682,10 +2694,12 @@ class MemWiseGUI:
                 try:
                     result = harvest_future.result(timeout=30)
                 except concurrent.futures.TimeoutError:
+                    self._pending_harvest = harvest_future  # 下轮开头收尾，避免任务叠加
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
                     self._cycle_log_buffer.append("⏱ harvest 超时(30s)·跳过本轮诊断")
                 except Exception:
+                    self._pending_harvest = harvest_future
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
                 if result is None:
@@ -2710,10 +2724,8 @@ class MemWiseGUI:
                 self._cycle_trimmed = cur_trim - self._prev_trim_count
                 self._cycle_failed = cur_fail - self._prev_fail_count
                 cycle_standby = (s.get("standby",0) + s.get("modified",0) + s.get("filecache",0)
-                                 + s.get("compress",0) + s.get("combine",0)
                                  + s.get("registry",0) + s.get("volume",0)) - self._last_sys_ops
                 self._last_sys_ops = (s.get("standby",0) + s.get("modified",0) + s.get("filecache",0)
-                                     + s.get("compress",0) + s.get("combine",0)
                                      + s.get("registry",0) + s.get("volume",0))
                 self._prev_trim_count = cur_trim
                 self._prev_fail_count = cur_fail
@@ -2810,7 +2822,7 @@ class MemWiseGUI:
                         if hasattr(self, 'learner'):
                             self.learner._kalman_r = params.get('kalman_r', 5.0)
                     if efis_msg:
-                        self._cycle_log_buffer.append('[EFIS] ' + efis_msg)
+                        self._msg_queue.put(('display', ['[EFIS] ' + efis_msg]))  # 仅显示：[调参] 已直写落盘
 
                 # 元认知（harvest 超时时跳过，避免零数据污染诊断）
                 if not harvest_partial:
@@ -2865,12 +2877,13 @@ class MemWiseGUI:
                     self._last_pressure_chg = change_str
                     self._last_agg_peak = agg_peak
                     self._last_deep_triggered = deep_triggered
-                # 周期汇总（按钮 log_to_file 开启时落盘：清理日志受设置控制）
+                # 周期汇总：文件侧由 [清理] 直写（毫秒时间戳+独立类别）；GUI 仅显示不重复落盘
+                summary_line = (f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · "
+                                f"整理 {self._fmt_count(self._cycle_trimmed)} 进程 · "
+                                f"试探 {len(probe_results)} ({probe_ok}成功)")
                 if CFG.get("log_to_file"):
-                    _log_write("清理", f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · 整理 {self._fmt_count(self._cycle_trimmed)} 进程 · 试探 {len(probe_results)} ({probe_ok}成功)")
-                self._cycle_log_buffer.append(
-                        f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · 整理 {self._fmt_count(self._cycle_trimmed)} 进程 · "
-                        f"试探 {len(probe_results)} ({probe_ok}成功) ")
+                    _log_write("清理", summary_line)
+                self._msg_queue.put(('display', [summary_line]))
                 # 批量输出周期末日志
                 self._msg_queue.put(('log_batch', self._cycle_log_buffer))
                 # 状态栏（累计数据）
@@ -2882,7 +2895,11 @@ class MemWiseGUI:
                     overtime_debt = min(30, overtime_debt + (elapsed - interval))
                 else:
                     overtime_debt = max(0, overtime_debt - (interval - elapsed))
-                time.sleep(max(0.5, interval - elapsed))
+                # 分段睡眠：停止守护即时生效（不阻塞最长一个周期）
+                remaining = max(0.5, interval - elapsed)
+                while remaining > 0 and self.daemon_running:
+                    time.sleep(min(0.5, remaining))
+                    remaining -= 0.5
                 if not self.daemon_running:
                     return  # 停止守护后立即退出，不提交多余回调
         except Exception as e:
@@ -2900,7 +2917,7 @@ class MemWiseGUI:
             self._msg_queue.put(('dae_stopped', None))
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
-        self.lbl_sb["text"] = f"系统杂项: {self._fmt_count(s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('compress',0) + s.get('combine',0) + s.get('registry',0) + s.get('volume',0))}"
+        self.lbl_sb["text"] = f"系统杂项: {self._fmt_count(s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('registry',0) + s.get('volume',0))}"
         self.lbl_tr["text"] = f"进程: {self._fmt_count(s['ws_trim'])}"
         fm = s['freed_mb']
         self.lbl_fr["text"] = f"释放: {fm/1024.0:.1f}GB" if fm >= 1000 else f"释放: {fm:.1f}MB"
@@ -2914,6 +2931,7 @@ class MemWiseGUI:
 
     def _dae_stopped(self):
         self.daemon_running = False
+        self._update_watchdog_daemon(False)  # 守护已停止：崩溃恢复不应续守护
         self.btn_dae.configure(state="normal"); self.btn_stop.configure(state="disabled")
         err = getattr(self, '_dae_error', None)
         if err:
@@ -2978,6 +2996,33 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    def _update_watchdog_daemon(self, flag):
+        """同步 watchdog.json 的守护标志（守护启动/停止时更新，崩溃恢复据此判断）。
+        os.replace 偶发被杀软瞬时锁文件：重试 3 次，仍失败则清理 tmp 放弃（不影响主功能）"""
+        try:
+            import json
+            p = _watchdog_path()
+            if not os.path.isfile(p):
+                return
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            d["daemon"] = flag
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+            for _ in range(3):
+                try:
+                    os.replace(tmp, p)
+                    return
+                except OSError:
+                    time.sleep(0.2)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _spawn_watchdog(self):
         """启动看门狗子进程 — 监控主程序崩溃并自动重启"""
         try:
@@ -3032,7 +3077,11 @@ class MemWiseGUI:
 
     def run(self):
         if not self._minimized_to_tray:
+            # 映射前同步设置图标：任务栏按钮在首次显示时创建并缓存图标，必须在此之前就绪
+            self._set_main_window_icon()
             self.root.deiconify()  # 首次映射即已居中，零闪烁
+            # 兜底：映射完成后重设（幂等，缓存复用零泄漏）
+            self.root.after(150, self._set_main_window_icon)
         self.root.mainloop()
 
 if __name__ == "__main__":
