@@ -148,7 +148,20 @@ from core.judger import PareJudger as Judger
 from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
 from core.sniffer import Sniffer
-from core.icon_flat import FLAT_48_PNG  # 任务栏扁平图标（内嵌 PNG 数据，冷启动 exe 兼容）
+from core.icon_flat import FLAT_48_PNG, decode_png  # 任务栏扁平图标（内嵌 PNG，冷启动 exe 兼容）
+
+# ── user32 图标/窗口句柄 API：必须声明 64 位位宽，否则 HICON 句柄被 c_int 截断 → WM_SETICON 静默失效（v3.4.19 图标失效根因）──
+_Usr32 = ctypes.windll.user32
+_Usr32.SendMessageW.restype = ctypes.c_void_p
+_Usr32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+_Usr32.SetClassLongPtrW.restype = ctypes.c_void_p
+_Usr32.SetClassLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+_Usr32.GetAncestor.restype = ctypes.c_void_p
+_Usr32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+_Usr32.GetParent.restype = ctypes.c_void_p
+_Usr32.GetParent.argtypes = [ctypes.c_void_p]
+_Usr32.SetWindowPos.restype = ctypes.c_int
+_Usr32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
 
 from core.config import load as _load_cfg
 from core.config import get_state_path
@@ -514,8 +527,13 @@ class MemWiseGUI:
         幂等：HICON 首次创建后缓存复用（重复调用零 GDI 泄漏）；供映射后重设兜底"""
         try:
             if not hasattr(self, '_icon_big_h') or not self._icon_big_h:
-                # 任务栏专用：simple_flat_48 扁平成品（GDI+ 内存解码，零临时文件）；失败回退动态立体渲染
-                self._icon_big_h = winapi.create_hicon_from_png(FLAT_48_PNG)
+                # 任务栏专用：simple_flat_48 扁平成品（PNG 解码 → CreateIconIndirect 同动态通道）；失败回退动态立体渲染
+                try:
+                    pw, ph, rgba = decode_png(FLAT_48_PNG)
+                    self._icon_big_h = winapi.create_hicon_from_rgba(pw, ph, rgba)
+                except Exception as exc:
+                    self._icon_big_h = None
+                    _diag_log(f"扁平图标解码异常: {exc!r}")
                 if not self._icon_big_h:
                     _diag_log("扁平图标加载失败，回退动态渲染")
                     self._icon_big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)
@@ -536,11 +554,11 @@ class MemWiseGUI:
             # 类图标：设到顶层类（TkTopLevel），所有弹窗自动继承
             ctypes.windll.user32.SetClassLongPtrW(top, -14, big_h)
             ctypes.windll.user32.SetClassLongPtrW(top, -34, sml_h)
-            _check = ctypes.windll.user32.SendMessageW(top, 0x007F, 1, 0)
+            _check = _Usr32.SendMessageW(top, 0x007F, 1, 0)
             # 强制重绘边框：任务栏按钮图标可能不随 WM_SETICON 主动刷新（SWP_FRAMECHANGED）
-            ctypes.windll.user32.SetWindowPos(top, 0, 0, 0, 0, 0,
-                                              0x0001 | 0x0002 | 0x0004 | 0x0020)  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
-            _diag_log(f"主图标: top={top} wid={wid} 自检一致:{_check == big_h}")
+            _Usr32.SetWindowPos(top, 0, 0, 0, 0, 0,
+                                0x0001 | 0x0002 | 0x0004 | 0x0020)  # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+            _diag_log(f"主图标: top={top} wid={wid} 自检一致:{int(_check or 0) == int(big_h or 0)}")
         except Exception as e:
             _diag_log(f"主图标设置异常: {e!r}")
 

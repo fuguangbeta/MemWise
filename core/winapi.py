@@ -1313,6 +1313,37 @@ def _sharpen_bgra(buf, size, amount=0.8):
                 buf[i + c] = max(0, min(255, int(v + amount * lap / len(nb))))
 
 
+def create_hicon_from_rgba(width, height, rgba):
+    """BGRA 像素 → HICON（CreateDIBSection + CreateIconIndirect，与动态渲染同通道。
+    替代 GDI+ 解码：GDI+ HICON 句柄经 ctypes c_int 截断后 WM_SETICON 无效（v3.4.19 图标失效根因）"""
+    bmi = BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = width
+    bmi.bmiHeader.biHeight = -height
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = 32
+    bmi.bmiHeader.biCompression = 0
+    bits_ptr = ctypes.c_void_p()
+    hColor = CreateDIBSection(None, ctypes.byref(bmi), 0, ctypes.byref(bits_ptr), None, 0)
+    if not hColor:
+        return None
+    ctypes.memmove(bits_ptr.value, rgba, width * height * 4)
+    mask_row = ((width + 15) // 16) * 2  # 1bpp scanline aligned to WORD
+    mask_bits = (ctypes.c_ubyte * (mask_row * height))()  # all zeros = 不透明
+    hMask = CreateBitmap(width, height, 1, 1, mask_bits)
+    if not hMask:
+        DeleteObject(hColor)
+        return None
+    ii = ICONINFO()
+    ii.fIcon = 1
+    ii.hbmMask = hMask
+    ii.hbmColor = hColor
+    hIcon = CreateIconIndirect(ctypes.byref(ii))
+    DeleteObject(hColor)
+    DeleteObject(hMask)
+    return hIcon
+
+
 def create_memwise_icon(size=32, bg_color=(45,45,50), shadow=True, gradient=0.47, force_large=False, sharpen=False):
     """在内存中创建 MemWise 图标，bg_color 为 (R,G,B) 自动转 BGRA
     默认深灰(45,45,50)，托盘和大图标都清晰。
