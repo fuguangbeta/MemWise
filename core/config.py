@@ -35,7 +35,7 @@ DEFAULT_CFG = {
     "daemon_trim_every_ticks": 3, "scheduled_clean": None,
     "gap_seconds": 12, "clean_passes": 4,
     "hotkey": "ctrl+shift+m", "game_hotkey": "ctrl+shift+g", "game_processes": [],
-    "clean_operations": ["ws", "standby", "modified", "volume", "compress", "registry"],
+    "clean_operations": ["ws", "standby", "modified", "volume", "registry"],
 }
 
 
