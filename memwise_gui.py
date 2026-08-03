@@ -1231,9 +1231,11 @@ class MemWiseGUI:
         cb_vc.pack(anchor="w")
         self._add_tip(cb_vc, "刷新各磁盘分区的写入缓存，释放占用的内存。\n"
                       "\n"
+                      "写入缓存是系统暂存磁盘写入的区域，\n"
+                      "刷新后相应内存可被系统回收重用。\n"
                       "\n"
-                      "⚠ 每次刷新所有分区，短暂耗时但不丢失数据\n"
-                      "⚠ ")
+                      "⚠ 需要管理员权限\n"
+                      "⚠ 每次刷新所有分区，短暂耗时但不丢失数据")
         cb_rg = ttk.Checkbutton(ops_frame, text="注册表缓存清理", variable=rg_var,
                                 command=lambda: toggle_op("registry", rg_var))
         cb_rg.pack(anchor="w")
