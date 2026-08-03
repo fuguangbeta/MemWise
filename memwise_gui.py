@@ -1,5 +1,5 @@
 ﻿"""
-MemWise v3.4.19 GUI —— 图形界面
+MemWise v3.5.14 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -111,7 +111,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v3.4.19 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v3.5.14 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -424,7 +424,7 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.4.19_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.5.14_SingleInstance"
 
 
 class MemWiseGUI:
@@ -438,7 +438,7 @@ class MemWiseGUI:
         self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 0xB7:  # ERROR_ALREADY_EXISTS
             # 激活已有窗口
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.4.19")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.5.14")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -451,7 +451,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v3.4.19")
+        self.root.title("MemWise v3.5.14")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -502,7 +502,7 @@ class MemWiseGUI:
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v3.4.19 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        self._log(f"MemWise v3.5.14 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -546,6 +546,14 @@ class MemWiseGUI:
             wid = int(self.root.winfo_id())
             # wrapper = client 的父/祖先（标题栏所在）；GetAncestor 失败时退化到自身
             top = ctypes.windll.user32.GetAncestor(wid, 2) or ctypes.windll.user32.GetParent(wid) or wid
+            # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
+            if not top or top == wid:
+                try:
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.5.14")
+                    if fw:
+                        top = fw
+                except Exception:
+                    pass
             for t in (top, wid):
                 if not t:
                     continue
@@ -714,16 +722,21 @@ class MemWiseGUI:
             # 先隐藏 → 重新居中 → 显示（恢复位置可能被系统重置，避免错位闪烁）
             self.root.withdraw()
             _center_geometry(self.root, 1060, 700)
+            # 图标必须早于窗口映射就绪：任务栏按钮在首次映射时缓存图标，此后 WM_SETICON 不刷新按钮
+            # （标题栏会刷新、任务栏不会——v3.4.19 --minimized/自启场景任务栏立绘根因）
+            self._set_main_window_icon()
             self.root.deiconify()
             if self.root.state() == "iconic":
                 self.root.deiconify()
             self.root.lift()
             self._minimized_to_tray = False
+            # 先完成映射（wrapper 创建）再设置图标：deiconify 前 wrapper 不存在，设置会落到 client 无效
+            self.root.update_idletasks()
             # 图标重设：--minimized/托盘期间窗口未映射，wrapper 未创建；恢复后必须重设到 wrapper（幂等缓存句柄零泄漏）
             # 否则标题栏回退 Tk 默认黑色羽毛、任务栏回退 exe 资源立体图标（v3.4.19 重启自启场景根因）
             self._set_main_window_icon()
             self.root.after(150, self._set_main_window_icon)
-            # 立即使窗口完成映射，触发 <Configure> → _on_chart_configure(50ms) 自动渲染
+            # 触发 <Configure> → _on_chart_configure(50ms) 自动渲染
             self.root.update_idletasks()
             # 兜底：极端情况下 <Configure> 未触发，500ms 后强制绘制
             self._drawing_chart = False
@@ -3105,10 +3118,14 @@ class MemWiseGUI:
         self.root.destroy()
 
     def run(self):
+        # 全部启动路径先设图标（映射前/隐藏期；wrapper 未创建时幂等，后续重设）
+        self._set_main_window_icon()
         if not self._minimized_to_tray:
-            # 映射前同步设置图标：任务栏按钮在首次显示时创建并缓存图标，必须在此之前就绪
-            self._set_main_window_icon()
             self.root.deiconify()  # 首次映射即已居中，零闪烁
+            # 同步重设：wrapper 在首次映射时创建，按钮图标在映射瞬间缓存，
+            # 必须在按钮创建后立即重设 + SWP_FRAMECHANGED（窗口已映射才生效）刷新任务栏
+            self.root.update_idletasks()
+            self._set_main_window_icon()
             # 兜底：映射完成后重设（幂等，缓存复用零泄漏）
             self.root.after(150, self._set_main_window_icon)
         self.root.mainloop()
