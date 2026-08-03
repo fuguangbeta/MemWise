@@ -232,7 +232,7 @@ class PareJudger:
         theta = self.learner.thompson_score(name, mem_pct=getattr(self, '_last_mem_pct', 50), is_fg=getattr(snap, "fg", False))
         profile = self.learner.get_profile(name)
         if profile and profile.total_samples >= 5 and theta < 0.2:
-            # 低θ进程并非永久禁止：超过 30 分钟未被 probe 则重新给机会
+            # 低θ进程并非永久禁止：超过 10 分钟（600s）未被 probe 则重新给机会
             last = self._probe_last_time.get(name, 0)
             if last > 0 and time.time() - last < 600:return False
             # 冷却已过 → 允许重新 probe
@@ -240,7 +240,8 @@ class PareJudger:
         # 策略加速：高分进程缩短探测间隔
         boost = 1.0
         if hasattr(self, 'learner') and hasattr(self.learner, 'policy'):
-            state = {"mem_pct": getattr(self, '_last_mem_pct', 50), "mem_trend": getattr(self, '_mem_trend', 0.0)}
+            state = {"mem_pct": getattr(self, '_last_mem_pct', 50), "mem_trend": getattr(self, '_mem_trend', 0.0),
+                     "probe_last_time": self._probe_last_time}
             ok, _ = self.learner.policy.should_probe(name, snap.ws, state, self.learner)
             boost = 0.3 if ok else 1.0
         dynamic_interval = int(getattr(self, '_probe_dynamic_interval', 120) * boost)
