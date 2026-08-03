@@ -1,10 +1,10 @@
-﻿# MemWise v3.3.10
+# MemWise v3.4.19
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表、内存压缩等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与压缩。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 13.3 MB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 12.7 MB），零外部依赖。
 
-*Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, modified page lists, and memory compression — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~13.3 MB executable.*
+*Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~12.7 MB executable.*
 
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、三树投票等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
@@ -58,20 +58,18 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 2.1 Layer1 — 系统级内核清理 · *System-Level Kernel Reclamation*
 
-系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 8 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5），由 `ops` 集合参数按模式控制启用数量（quick 3 步、normal 5 步、deep/full 8 步），零 sleep，<10ms。
+系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），零 sleep，<10ms。
 
-*System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The complete eight-step pipeline executes as a contiguous sequence with zero deliberate sleep and sub-10ms total latency.*
+*System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles are authoritative: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). Zero deliberate sleep, sub-10ms total latency.*
 
 | 操作 | 配置键 | 默认 | Win32 API | 说明 |
 |------|--------|:----:|-----------|------|
 | 进程闲置页释放 | `ws` | 开 | `EmptyWorkingSet` | 释放非活跃物理页，是唯一不需要管理员的进程级操作 · *Release idle physical pages; the only operation that does not require elevation* |
 | Standby List 清理 | `standby` | 开 | `NtSetSystemInformation(80, info=4)` | 清空系统缓存页 · *Purge the system cache page list* |
 | Modified Page 写回 | `modified` | 开 | `NtSetSystemInformation(80, info=3)` | 脏页写回磁盘后回收 · *Flush dirty pages to disk before reclaiming* |
-| 内存压缩触发 | `compress` | 开 | `NtSetSystemInformation(80, info=5)` | 触发 OS 内存压缩引擎 · *Trigger the OS memory compression engine* |
 | 系统文件缓存 | `filecache` | 关 | `SetSystemFileCacheSize` | 清空文件系统缓存，会降低文件操作速度直到重建 · *Clear the file system cache; reduces file I/O performance until cache rebuilds* |
 | 卷缓存刷新 | `volume` | 开 | `CreateFileW+FlushFileBuffers` | 卷级别缓存刷新 · *Per-volume write buffer flush* |
 | 注册表缓存 | `registry` | 开 | `NtSetSystemInformation(81)` | 清除注册表缓存页 · *Clear registry cache pages* |
-| 内存合并 | `combine` | 关 | `NtSetSystemInformation(80, info=3)` | 触发系统合并相同物理页 · *Trigger page combining for identical physical pages* |
 
 守护模式下的高频阶段仅执行注册表缓存清理（零磁盘影响），standby 与脏页写回由 gap 末 optimize 统一执行——缓存有累积时间，单次释放量更大。为控制功耗，卷缓存冲刷等重量级操作仅在 optimize 全量收割阶段执行。
 
@@ -81,8 +79,10 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 |------|:--:|:--:|:--:|:--:|:--:|------|
 | quick | ❌ | ❌ | ❌ | ❌ | 3步 | 临时快速释放，零感知 |
 | normal | ✅ | ✅ | ❌ | 高压触发 | 5步 | 日常极致优化，无副作用 |
-| deep | ✅ | ✅ | ✅ | 始终 | 8步 | 重度使用后深度清扫 |
-| full | ✅ | ✅ | ✅ | 强制 | 8步+回弹二轮 | 极限释放 |
+| deep | ✅ | ✅ | ✅* | 始终 | 8步 | 重度使用后深度清扫 |
+| full | ✅ | ✅ | ✅* | 强制 | 8步+回弹二轮 | 极限释放 |
+
+* 需在设置中勾选「系统文件缓存」；各模式实际操作数随开关勾选变化（开关优先）。
 
 *High-frequency suppression touches only the registry cache (zero disk impact); standby and dirty-page flush are batched into each gap-end optimize pass so the cache accumulates before each purge. Heavyweight operations such as volume flush run only during full-harvest optimize passes.*
 
@@ -92,8 +92,10 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 |------|:--:|:--:|:--:|:--:|:--:|------|
 | quick | ❌ | ❌ | ❌ | ❌ | 3 | Instant, imperceptible |
 | normal | ✅ | ✅ | ❌ | pressure-gated | 5 | Daily, zero side effects |
-| deep | ✅ | ✅ | ✅ | always | 8 | Deep post heavy use |
-| full | ✅ | ✅ | ✅ | forced | 8+rebound | Maximum release |
+| deep | ✅ | ✅ | ✅* | always | 8 | Deep post heavy use |
+| full | ✅ | ✅ | ✅* | forced | 8+rebound | Maximum release |
+
+*Requires the File Cache toggle in Settings; actual op count follows the toggles (toggles are authoritative).
 
 ### 2.2 Layer2 — 进程级闲置页释放 · *Per-Process Idle Page Reclamation*
 
@@ -119,13 +121,13 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
-- 压缩 + 脏页写回 · *Compression + dirty page flush*
+- 深度待机回收预处理（脏页写回 + 待机清空）· *Deep standby prepass (dirty page flush + standby purge)*
 - 全量 Standby List 收割（低优先→全量→冲刷脏页三层）· *Full standby reclamation in three tiers*
-- 文件缓存 / 卷缓存 / 注册表 / 内存合并（按设置）· *File, volume, and registry cache plus page combining as configured*
+- 文件缓存 / 卷缓存 / 注册表（按设置）· *File, volume, and registry cache as configured*
 - WS 回弹率筛选：从 Layer2 未清理的进程中选出高回弹进程追加一次清理 · *High-rebound process selection from Layer 2 bypasses for additional trim*
 - 深度清理净增量追踪，用于 EFIS 判断 Layer3 的价值 · *Net delta tracking for EFIS to evaluate Layer 3 effectiveness*
 
-*Executed during the final optimize pass in deep mode and throughout full mode: compression + dirty page flush; full standby reclamation in three tiers; file, volume, and registry cache plus page combining as configured; high-rebound process selection from Layer 2 bypasses for additional trim; and net delta tracking for EFIS to evaluate Layer 3 effectiveness.*
+*Executed during the final optimize pass in deep mode and throughout full mode: deep standby prepass (dirty page flush + standby purge); full standby reclamation in three tiers; file, volume, and registry cache as configured; high-rebound process selection from Layer 2 bypasses for additional trim; and net delta tracking for EFIS to evaluate Layer 3 effectiveness.*
 
 ### 2.4 持续优化架构 · *Continuous Optimization Architecture*
 
@@ -300,9 +302,9 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 
 *Minimize to tray (daemon continues), exit immediately, or ask each time (default).*
 
-**清理操作 · Operations**：8 种操作独立开关：ws、standby、modified、compress、filecache、volume、combine、registry。前七项默认开启，文件缓存与内存合并默认关闭。
+**清理操作 · Operations**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启。
 
-*Eight independent toggles: ws, standby, modified, compress, filecache, volume, combine, registry. The first six default on; file cache and combine default off.*
+*Six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache.*
 
 **游戏模式 · Game Mode**：管理自定义游戏进程名单（一体化窗口：列出/添加/删除，逗号分隔批量输入、重复项提示、删除带确认，内置名单只读展示）。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
@@ -351,7 +353,7 @@ python memwise.py [command] [options]
 | 键 | 类型 | 默认值 | 说明 |
 |------|------|:------|------|
 | `clean_mode` | str | `"normal"` | 清理模式 |
-| `clean_operations` | list | `[ws,standby,modified,volume,compress,registry]` | 启用的操作 |
+| `clean_operations` | list | `[ws,standby,modified,volume,registry]` | 启用的操作 |
 | `auto_start` | bool | `false` | 开机自启 |
 | `auto_start_admin` | bool | `false` | 管理员权限开机自启 |
 | `auto_start_daemon` | bool | `false` | 启动后自动守护 |
