@@ -67,6 +67,17 @@ class EfisController:
             self._symptoms = efis.get("symptoms", {})
             # 清理旧版残留的 0 值 symptoms（v2.4 用 =0 而非 pop）
             self._symptoms = {k: v for k, v in self._symptoms.items() if v != 0}
+            # 顶格症状清洗：参数已到边界且症状方向与之矛盾时无调整空间，残留症状直接清除
+            # （此前曾见 pid_kd+ 残留 264：参数顶格后该方向不再触发，清除逻辑永不执行）
+            for k in list(self._symptoms.keys()):
+                base = k[:-1]
+                if base not in PARAMS:
+                    self._symptoms.pop(k, None)
+                    continue
+                if k.endswith("+") and self.params.get(base, 0) >= PARAMS[base]["max"] - 1e-9:
+                    self._symptoms.pop(k, None)
+                elif k.endswith("-") and self.params.get(base, 0) <= PARAMS[base]["min"] + 1e-9:
+                    self._symptoms.pop(k, None)
         except Exception:
             self.params = {k: v["default"] for k, v in PARAMS.items()}
 
@@ -128,7 +139,8 @@ class EfisController:
         if diag:
             self._apply(diag)
             self.save()
-        return self._format_log()
+            return self._format_log()
+        return ""  # 无调整不播报：避免重复显示上一条调整记录
 
     def _diagnose(self):
         w = list(self._window)
