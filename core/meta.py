@@ -7,7 +7,7 @@ import math
 from collections import deque
 
 class MetaCognition:
-    """四维监控: 校准度 / 概念漂移 / 探索覆盖 / 后悔度"""
+    """两维监控: 概念漂移 / 探索覆盖"""
     
     def __init__(self, learner):
         self.learner = learner
