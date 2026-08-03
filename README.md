@@ -48,9 +48,9 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.3 命令行 · *Command Line*
 
-程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）等子命令。
+程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）、auto-start（开机自启开关）、service（计划任务服务安装/移除）、reset（恢复出厂设置）等子命令。
 
-*A CLI is available via `memwise.py`, supporting status, optimize, daemon, profile, and learn subcommands.*
+*A CLI is available via `memwise.py`, supporting status, optimize, daemon, profile, learn, auto-start, service, and reset subcommands.*
 
 ---
 
@@ -173,7 +173,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ### 3.4 分层先验 · *Hierarchical Prior*
 
-十余个预定义类别按进程名关键词自动分类。新进程从同类经验池继承初始 θ，避免从零基础开始。
+10 个预定义类别按进程名关键词自动分类。新进程从同类经验池继承初始 θ，避免从零基础开始。
 
 *Over a dozen predefined categories auto-classify processes by name keyword. New processes inherit the average θ of their category, avoiding a cold start from the default prior.*
 
@@ -217,8 +217,8 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 | `layer3_agg_gate` | 0.60 | 0.30-0.70 | 深度聚合触发阈值（仅 normal 模式寻优） |
 | `pid_kp` | 0.60 | 0.30-2.00 | PID 比例增益（对内存偏差的响应速度） |
 | `pid_kd` | 0.10 | 0.05-0.50 | PID 微分增益（抑制震荡） |
-| `target_usage` | 30% | 25-65% | PID 控制目标内存占用百分比 |
-| `cooloff_base` | 300s | 60-360s | 失败冷却基准时长 |
+| `target_usage` | 60% | 35-65% | PID 控制目标内存占用百分比 |
+| `cooloff_base` | 360s | 60-360s | 失败冷却基准时长 |
 | `learning_rate` | 0.30 | 0.05-0.40 | 反馈学习速率（保留参数，不参与自动调参） |
 | `composite_kalman_w` | 0.30 | 0.10-0.50 | 复合评分中 Kalman 分量的权重 |
 | `kalman_r` | 5.0 | 1.0-20.0 | 卡尔曼观测噪声——值越大对新观测越不敏感 |
@@ -343,6 +343,9 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | 单次优化（支持 quick/normal/deep/full） |
 | `daemon [--mode MODE]` | CLI 守护模式 |
 | `profile <PID>` | 查看指定进程的完整学习画像 |
+| `auto-start on\|off` | 开机自启（启动文件夹快捷方式） |
+| `service [remove]` | 安装/移除计划任务服务（系统启动自动运行，需管理员） |
+| `reset` | 恢复出厂设置（备份并移除配置与画像） |
 
 ---
 
@@ -354,6 +357,9 @@ python memwise.py [command] [options]
 |------|------|:------|------|
 | `clean_mode` | str | `"normal"` | 清理模式 |
 | `clean_operations` | list | `[ws,standby,modified,volume,registry]` | 启用的操作 |
+| `kp` | float | `1.0` | PID 比例系数（`efis_params.pid_kp` 优先） |
+| `ki` | float | `0.15` | PID 积分系数 |
+| `kd` | float | `0.1` | PID 微分系数（`efis_params.pid_kd` 优先） |
 | `auto_start` | bool | `false` | 开机自启 |
 | `auto_start_admin` | bool | `false` | 管理员权限开机自启 |
 | `auto_start_daemon` | bool | `false` | 启动后自动守护 |
@@ -400,8 +406,7 @@ MemWise/
 │   ├── sniffer.py              # 进程快照采集 · Process Snapshot Collector
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   ├── test_v2.6.py             # 回归测试（37 项断言）· Regression Suite
-│   └── _validate.py             # 历史构建验证脚本（已标注废弃，回归请用 test_v2.6.py）· Legacy Validator
+│   └── test_v2.6.py             # 回归测试（37 项断言）· Regression Suite
 ```
 
 ---
