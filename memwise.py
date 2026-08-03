@@ -1,5 +1,5 @@
 ﻿"""
-MemWise v3.3.10 PARES —— 智能内存看护
+MemWise v3.4.19 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -101,7 +101,7 @@ def cmd_optimize(args):
     net = result.get("net_freed", 0)
     released = max(0.0, stats['freed_mb'] - freed0)
     print(f"\n本次释放: {released:.0f} MB · 内存净下降: {_mb(net):.0f} MB | 累计释放: {stats['freed_mb']} MB")
-    print(f"待机缓存={stats['standby']} 已修改页={stats['modified']} 压缩={stats['compress']} "
+    print(f"待机缓存={stats['standby']} 已修改页={stats['modified']} "
           f"文件缓存={stats['filecache']} | "
           f"整理={stats['ws_trim']} | Probe={stats['probe']} | 反馈异常={stats['failed_feedback']}")
     if trimmed:
@@ -157,7 +157,7 @@ def cmd_daemon(args):
             stats = cleaner.summary()
             sys.stdout.write(f"\r内存 {m['pct']}% | 清理强度={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
                              f"释放 {stats['freed_mb']}MB | SB={stats['standby']} MP={stats['modified']} "
-                             f"压缩={stats['compress']} 文件缓存={stats['filecache']} | "
+                             f"文件缓存={stats['filecache']} | "
                              f"整理 {stats['ws_trim']} | {tick*interval}s")
             sys.stdout.flush()
             elapsed = time.time() - tick_start
@@ -243,7 +243,7 @@ def cmd_profile(args):
 
 def main():
     if len(sys.argv) < 2:
-        print("MemWise v3.3.10 PARES —— 智能内存看护")
+        print("MemWise v3.4.19 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
         print("  status                    内存状态")
         print("  learn [分钟]              学习进程行为 (默认10分钟)")
