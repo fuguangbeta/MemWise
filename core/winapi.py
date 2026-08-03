@@ -760,6 +760,70 @@ def _com_vtbl_call(iface_ptr, vtbl_idx, restype, argtypes, *args):
 _ole32 = ctypes.windll.ole32
 _COM_INITIALIZED = False  # 标记 COM 是否已初始化
 
+# ── GDI+：内存 PNG → HICON（任务栏扁平图标用，零临时文件）──
+_gdiplus = ctypes.WinDLL("gdiplus")
+_gdiplus.GdiplusStartup.argtypes = [ctypes.POINTER(w.ULONG), ctypes.c_void_p, ctypes.c_void_p]
+_gdiplus.GdiplusStartup.restype = w.INT
+_gdiplus.GdipCreateBitmapFromStream.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+_gdiplus.GdipCreateBitmapFromStream.restype = w.INT
+_gdiplus.GdipCreateHICONFromBitmap.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.HANDLE)]
+_gdiplus.GdipCreateHICONFromBitmap.restype = w.INT
+_gdiplus.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+_gdiplus.GdipDisposeImage.restype = w.INT
+_gdiplus.GdiplusShutdown.argtypes = [w.ULONG]
+_gdiplus.GdiplusShutdown.restype = None
+_gdiplus_token = None  # GDI+ 启动令牌（模块级缓存，进程内一次初始化）
+# IStream vtbl: QI=0, AddRef=1, Release=2, Read=3, Write=4, Seek=5
+
+def create_hicon_from_png(png_bytes):
+    """GDI+ 从内存 PNG 字节解码创建 HICON（纯 Win32，无临时文件）。
+    失败返回 None，调用方自行兜底。"""
+    global _gdiplus_token
+    try:
+        if _gdiplus_token is None:
+            # GdiplusStartupInput{ GdiplusVersion=1, DebugEventCallback=NULL,
+            #   SuppressBackgroundThread=FALSE, SuppressExternalCodecs=FALSE }
+            si = (ctypes.c_uint32 * 4)(1, 0, 0, 0)
+            so = ctypes.c_void_p()
+            tok = w.ULONG()
+            if _gdiplus.GdiplusStartup(ctypes.byref(tok), si, ctypes.byref(so)) != 0:
+                return None
+            _gdiplus_token = tok
+        # 全局内存流（fDeleteOnRelease=TRUE，流释放时自动回收）
+        pstream = ctypes.c_void_p()
+        if _ole32.CreateStreamOnHGlobal(None, True, ctypes.byref(pstream)) != 0 or not pstream:
+            return None
+        try:
+            buf = ctypes.create_string_buffer(png_bytes)
+            written = w.ULONG()
+            # IStream::Write(pv, cb, pcbWritten) — vtbl 4
+            hr = _com_vtbl_call(pstream.value, 4, w.HRESULT,
+                                [ctypes.c_void_p, w.ULONG, ctypes.POINTER(w.ULONG)],
+                                buf, len(png_bytes), ctypes.byref(written))
+            if hr != 0:
+                return None
+            # IStream::Seek(0, STREAM_SEEK_SET=0, NULL) — vtbl 5，回到流头
+            _com_vtbl_call(pstream.value, 5, w.HRESULT,
+                           [ctypes.c_int64, w.DWORD, ctypes.c_void_p], 0, 0, None)
+            bitmap = ctypes.c_void_p()
+            if _gdiplus.GdipCreateBitmapFromStream(pstream, ctypes.byref(bitmap)) != 0 or not bitmap:
+                return None
+            try:
+                hicon = w.HANDLE()
+                if _gdiplus.GdipCreateHICONFromBitmap(bitmap, ctypes.byref(hicon)) != 0 or not hicon:
+                    return None
+                return hicon
+            finally:
+                _gdiplus.GdipDisposeImage(bitmap)
+        finally:
+            # IStream::Release — vtbl 2
+            try:
+                _com_vtbl_call(pstream.value, 2, w.HRESULT, [])
+            except Exception:
+                pass
+    except Exception:
+        return None
+
 # IShellLinkW vtbl indices: QueryInterface=0, AddRef=1, Release=2,
 # GetPath=3, GetIDList=4, SetIDList=5, GetDescription=6, SetDescription=7,
 # GetWorkingDirectory=8, SetWorkingDirectory=9, GetArguments=10, SetArguments=11,
