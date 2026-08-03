@@ -81,8 +81,7 @@ class Profile:
         # 清理统计
         self.clean_count = 0
         self.refill_ewma = 0.0  # WS 再填充速率 (增长 bytes/s 的 EWMA)
-        # 上下文 Thompson 权重: [bias, norm_ws, norm_vol, norm_pf, conf]
-        # 批量梯度累积
+        # Kalman 连续值估计（EFIS 可调观测噪声 r）
         self.kalman = KalmanProfile(r=kalman_r)
         self._info_msgs = []  # 泄漏检测等消息缓冲
         self.timeout_count = 0  # 超时累计（仅内存，不持久化）
