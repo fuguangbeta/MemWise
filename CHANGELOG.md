@@ -3,60 +3,40 @@
 > **MemWise** — Windows 智能内存看护工具。不杀进程、不挂起线程、不注入、不联网。
 > 纯 ctypes Win32 API，零外部依赖。
 
-## v3.4.19 (2026年8月)
+## v3.5.14 (2026年8月)
 
-> v3.3.10 发布后的维护增量：清理操作开关全面生效并移除两个实测无效的伪功能；守护链路可靠性加固（崩溃恢复续守护/停止即时/harvest 与 trim 排队防叠加防误罚）；日志去重与 EFIS 诊断播报修正；主窗口与任务栏图标修复。共 19 项维护，回归测试 37 项全绿。
+> v3.4.19 发布后的维护增量：图标体系三处解耦（任务栏/标题栏平面、桌面/资源管理器立绘）并修复多层失效根因（句柄截断、托盘恢复时序、exe 资源图标机制）；清理图标测试遗留死代码与死配置键。共 14 项维护，回归测试 37 项全绿。
 
-### 清理操作与伪功能移除
+### 图标体系三处解耦
 
-> 系统级清理此前按模式硬编码操作集，设置面板开关形同虚设；「内存压缩触发」「内存合并」经实测（Win11 26100 内核拒绝 opcode 7/9/11 与页合并控制接口 172）为伪功能，原实现分别与待机缓存清理、脏页写回重复执行。
+> 实测证明 Win11 任务栏按钮图标取自 exe 资源图标，`WM_SETICON` 对任务栏按钮完全无效（红色注入实验：按钮不随窗口图标变化）——此前窗口图标链路只能管标题栏，任务栏图标一直回退 exe 资源立绘图标。
 
-- 修复了系统级清理无视设置面板开关的问题（`_layer1_ops` 键映射：开关优先，quick/normal/deep/full 与守护中即时清理全部按勾选执行；normal 改 `full=False` 杜绝误触发系统级全清 WS）
-- 移除了「内存压缩触发」开关（实测系统无手动压缩 API，原为低优先待机清理重复调用；连带移除 `trigger_memory_compression`/`clean_compress` 及统计键）
-- 移除了「内存合并」开关（实测页合并控制接口不存在，原为脏页写回重复调用；连带移除 `combine_memory_lists`/`clean_combine_lists` 及统计键）
-- 优化了 Layer3 深度预处理归属（`deep_compress` 由 modified/standby 开关共同控制，默认行为不变）
+- 优化了任务栏按钮图标为平面图标：exe 资源图标改为混合多尺寸 ICO，`16/24/32/48` 帧用平面图、`64/128/256` 帧用立绘图，explorer 按请求尺寸就近取帧（任务栏 40px 取 48 帧平面、桌面 60px 取 64 帧立绘）
+- 修复了桌面/资源管理器图标被平面化（立绘帧保留在 `64/128/256`，桌面大图标与快捷方式不受影响）
+- 修复了标题栏图标回退 Tk 默认黑色羽毛（窗口图标链路独立生效，与资源图标解耦）
 
----
+### 窗口图标链路根因修复
 
-### 守护链路可靠性
+> 图标失效共三层根因：GDI+ 生成的 HICON 句柄经 ctypes 默认 `c_int`（32 位）传参被截断导致 `WM_SETICON` 静默失败；`--minimized` 自启/托盘恢复场景 wrapper 窗口从未被设置图标；启动早期 wrapper 未创建时 `GetAncestor` 返回自身。
 
-> 崩溃恢复后守护不自动续跑、停止守护最长延迟 60 秒、harvest 超时任务与下一轮清理叠加、trim/probe 排队任务超时被误罚、图表全零释放轮除零崩溃——守护链路五处缺陷本轮集中修复。
+- 修复了 GDI+ HICON 句柄截断（改 PNG zlib 解码 → BGRA → `CreateDIBSection` + `CreateIconIndirect`，与动态渲染同通道；新增 `core/icon_flat.py` 内嵌 PNG，exe 冷启动零外部文件）
+- 修复了 user32 图标/窗口 API 句柄位宽（`SendMessageW`/`SetClassLongPtrW`/`GetAncestor`/`FindWindowExW`/`SetWindowPos` 全量声明 64 位 `c_void_p`）
+- 修复了 `--minimized` 自启/托盘恢复场景图标未设置（`_show_window` 在 `deiconify` 前设置图标，任务栏按钮在首次映射时缓存图标，此后 `WM_SETICON` 不再刷新按钮）
+- 修复了启动早期 wrapper 不可寻（`GetAncestor` 退化时用 `FindWindowExW` 按类名 `TkTopLevel` 兜底查找隐藏窗口）
+- 优化了普通启动映射后同步重设（`deiconify` → `update_idletasks` → 立即重设 + `SWP_FRAMECHANGED`，窗口已映射时才真正刷新）
 
-- 修复了崩溃恢复后守护模式不自动续跑（`watchdog.json` 的 `daemon` 标志在守护启动/停止时同步，此前恒 false；`os.replace` 加 3 次重试抗杀软瞬时锁）
-- 修复了停止守护最长延迟 60 秒（周期末睡眠改 0.5s 分段 + `daemon_running` 即时检查）
-- 修复了 harvest 超时任务与下一轮清理叠加（超时 future 挂 `_pending_harvest`，下轮开头尽力收尾）
-- 修复了 trim/probe 排队任务超时被误罚（`_bounded_submit` 滑动窗口分批，超时判定基于任务真实执行时长，排队不计时；异常任务降级不再炸穿优化流程）
-- 修复了图表全零释放轮除零崩溃（`max_val` 保护，零释放轮正常渲染占位柱）
-- 修复了进程排行 CPU 列按字符串排序（`_sort_key_c` 支持 `%` 数值解析）
-- 优化了主界面初始化结构（learner/judger/UI 构建从 `after(100)` 回调错挂移回 `__init__`，消除半初始化空窗）
+### 行为与配置
 
----
+> 手动启动被错误最小化到托盘；卷缓存 tooltip 残缺；两个历史死配置键无任何消费方。
 
-### 认知决策与诊断
+- 修复了手动启动最小化到托盘（`auto_start_minimize` 仅开机自启联动 `--minimized` 参数，双击启动正常显示窗口）
+- 补全了卷缓存刷新 tooltip 残缺内容（原 `"⚠ "` 空结尾）
+- 移除了死配置键 `daemon_trim_every_ticks`/`scheduled_clean`（零消费方，文档本就不承认）
 
-> 试探决策树5「因果好奇」因 `candidates` 从未传入恒加分；EFIS 无调整轮重复播报上次调参记录造成"反复调参"假象；顶格参数的历史症状残留无限累积。
+### 清理与构建
 
-- 修复了试探决策树5"因果好奇"恒加分失效（改按 `_probe_last_time` 近期未评估真实判定）
-- 修复了 EFIS 无调整轮重复播报上次调参记录（`_format_log` 移入 `if diag` 内）
-- 修复了 EFIS 顶格症状残留累积（`load()` 清洗顶格/未知参数症状，清除 `pid_kd+` 264 类历史残留）
+> 图标测试阶段遗留 GDI+ 解码实现（`create_hicon_from_png` + GDI+ 绑定）在通道切换后零调用者，属死代码；图标生成源文件（`simple_flat_*.png`、`icon_original_stereo.ico`）保留供再生成。
 
----
-
-### 日志与界面
-
-> 周期摘要与 EFIS 消息经"直写 + 批量"双通道各落盘一次形成重复；主窗口/任务栏图标在窗口映射后失效显示默认图标。
-
-- 修复了运行日志双通道重复落盘（周期摘要/[EFIS] 消息只保留 `[清理]`/`[调参]` 直写一条，GUI 日志区改纯显示 `_log_batch(to_file=False)`）
-- 修复了主窗口/任务栏图标失效（映射前同步设置 + HICON 幂等缓存零泄漏 + 映射后兜底 + `SWP_FRAMECHANGED` 强制刷新）
-- 移除了 8 处无调用方死代码（`PolicyVoter.update_weights`、`trim_batch`、`get_process_private_ws`、`load_app_icon`、`clean_standby`、`clean_standby_low`、`_clear_registry_cache`、`_layer1_light`）
-- 修正了五处过时注释与 docstring（ERIS v6 公式 40/维级窗口、probe PF 阈值 120、can_probe 冷却 10 分钟、meta 两维、learner 旧 Thompson 注释）
-
----
-
-### 构建
-
-- 版本号 v3.3.10 → v3.4.19（Mutex/窗口标题/CLI/README/测试同步，新 mutex 避免与旧版互斥冲突）
-- 发布版 exe = 冷启动默认配置（`datas=[]` 不打包本机 config.yaml，首次运行回退 `DEFAULT_CFG`）
-- README 全量同步（2.1 节开关优先语义、操作表删两行、模式表注记、设置面板 6 开关、配置默认值，中英双语）
-- PyInstaller 6.21.0，Python 3.14.0
+- 移除了 GDI+ 死代码（`create_hicon_from_png` 及 `_gdiplus` 绑定，零调用方；`_com_vtbl_call`/`_ole32` 仍被快捷方式 COM 使用故保留）
+- 版本号 v3.4.19 → v3.5.14（Mutex/窗口标题/FindWindowW/FindWindowExW/CLI/README/测试同步，新 mutex 避免与旧版互斥冲突）
 - 37 项回归测试全绿，零编译错误

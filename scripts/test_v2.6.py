@@ -1,5 +1,5 @@
 ﻿"""
-MemWise v3.4.19 全量单元测试 — 15 模块全覆盖
+MemWise v3.5.14 全量单元测试 — 15 模块全覆盖
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -1,4 +1,4 @@
-# MemWise v3.4.19
+# MemWise v3.5.14
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
@@ -404,6 +404,7 @@ MemWise/
 │   ├── prior.py                # 分层先验 · Hierarchical Prior
 │   ├── winapi.py               # Win32 API 绑定（70+ 函数）· Win32 API Bindings
 │   ├── sniffer.py              # 进程快照采集 · Process Snapshot Collector
+│   ├── icon_flat.py            # 任务栏扁平图标内嵌 PNG（base64）· Flat Icon Data
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
 │   └── test_v2.6.py             # 回归测试（37 项断言）· Regression Suite
