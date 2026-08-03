@@ -1,53 +1,127 @@
 ﻿"""
-MemWise v3.2.6 GUI —— 图形界面
+MemWise v3.3.10 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
-import os, sys, time, threading, tkinter as tk, math, queue, subprocess, concurrent.futures
+import os, sys, time, threading, tkinter as tk, math, queue, subprocess, concurrent.futures, datetime, atexit
 from collections import deque
 from tkinter import ttk, simpledialog, messagebox
 import ctypes
 import ctypes.wintypes as w
 
-# ── 崩溃诊断：所有未捕获异常写入 crash.log，faulthandler 捕获 C 层崩溃 ──
-# 看门狗（--watchdog）是独立进程，其启动/异常不混入主程序日志，因此在初始化前跳过
-_has_crash_log = False
-if "--watchdog" not in sys.argv:
-    _crash_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
-    _crash_path = os.path.join(_crash_dir, "memwise_crash.log")
+# ── 统一运行日志：单一时间线、线程安全、2MB×2 轮转 ──
+# 记录运行期间全部有价值信息（生命周期/清理/决策/调参/配置/异常/系统/诊断）
+# 看门狗（--watchdog）为独立进程，不混入主程序日志
+_LOG_LOCK = threading.Lock()
+_LOG_FD = None
+_LOG_DIR = None
+_LOG_MAX = 2 * 1024 * 1024  # 2MB/份
+
+
+def _log_ts():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _migrate_old_logs(path):
+    """首启迁移：旧 memwise_crash.log 并入统一日志（仅一次；旧 memwise.log 即日志本体，append 天然连续）"""
     try:
-        # 启动轮转：日志超过 512KB 时截断保留最近 64KB（防长期运行无限增长）
-        if os.path.getsize(_crash_path) > 512 * 1024:
-            with open(_crash_path, "r", encoding="utf-8", errors="ignore") as f:
-                _tail = f.read()[-64 * 1024:]
-            with open(_crash_path, "w", encoding="utf-8") as f:
-                f.write(_tail)
+        p = os.path.join(_LOG_DIR, "memwise_crash.log")
+        if not (os.path.exists(p) and os.path.getsize(p) > 0):
+            return
+        with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            data = f.read()
+        if not data.strip():
+            return
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n──── 迁移自 memwise_crash.log ────\n{data.rstrip()}\n")
     except Exception:
         pass
+
+
+def _log_rotate():
+    """锁内调用：memwise.log → memwise.log.1（删除最旧），重开 fd 并重绑 faulthandler"""
+    global _LOG_FD
     try:
-        import faulthandler, io
-        _crash_fd = open(_crash_path, "a", encoding="utf-8", buffering=1)
-        _crash_fd.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} · 程序启动 ===\n")
-        faulthandler.enable(_crash_fd, all_threads=True)
+        p0 = os.path.join(_LOG_DIR, "memwise.log")
+        p1 = os.path.join(_LOG_DIR, "memwise.log.1")
+        if _LOG_FD is not None:
+            try:
+                _LOG_FD.close()
+            except Exception:
+                pass
+        if os.path.exists(p1):
+            os.remove(p1)
+        os.replace(p0, p1)
+        _LOG_FD = open(p0, "a", encoding="utf-8", buffering=1)
+        import faulthandler
+        try:
+            faulthandler.enable(_LOG_FD, all_threads=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _log_write(cat, msg):
+    """线程安全写入一行：[时间] [类别] 内容；受「记录运行日志到文件」开关总控（关=不写），超上限自动轮转"""
+    cfg = globals().get('CFG')
+    if cfg is None or not cfg.get('log_to_file') or _LOG_FD is None:
+        return
+    try:
+        with _LOG_LOCK:
+            try:
+                if _LOG_FD.tell() > _LOG_MAX:
+                    _log_rotate()
+            except Exception:
+                pass
+            _LOG_FD.write(f"[{_log_ts()}][{cat}] {msg}\n")
+            _LOG_FD.flush()
+    except Exception:
+        pass
+
+
+def _log_close():
+    """退出时关闭日志 fd（atexit 兜底）"""
+    global _LOG_FD
+    with _LOG_LOCK:
+        if _LOG_FD is not None:
+            try:
+                _LOG_FD.close()
+            except Exception:
+                pass
+            _LOG_FD = None
+
+
+def _log_open():
+    """按开关打开统一日志（幂等；主进程；看门狗跳过）；关闭状态不调用"""
+    global _LOG_FD, _LOG_DIR
+    if _LOG_FD is not None or "--watchdog" in sys.argv:
+        return
+    _LOG_DIR = os.environ.get("MEMWISE_LOG_DIR") or (os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(_LOG_DIR, "memwise.log")
+    try:
+        _migrate_old_logs(path)  # 旧 crash log 并入（若存在），旧 memwise.log 继续 append
+        _LOG_FD = open(path, "a", encoding="utf-8", buffering=1)
+        import faulthandler
+        faulthandler.enable(_LOG_FD, all_threads=True)
+
         def _crash_hook(et, ev, tb):
             import traceback
-            _crash_fd.write("\n--- 未捕获异常 ---\n" + "".join(traceback.format_exception(et, ev, tb)) + "\n")
-            _crash_fd.flush()
+            _log_write("异常", "未捕获异常\n" + "".join(traceback.format_exception(et, ev, tb)))
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
-        _has_crash_log = True
+        atexit.register(_log_close)
+        _log_write("启动", f"MemWise v3.3.10 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
-        _has_crash_log = False
+        _LOG_FD = None
+
+
+# 注意：_log_open 由 GUI __init__ 调用（CFG 就绪后按开关决定是否开启）
 
 
 def _diag_log(msg):
-    """诊断日志：写入崩溃日志文件（仅主进程，看门狗不写）"""
-    try:
-        if _has_crash_log:
-            _crash_fd.write(f"[诊断] {msg}\n")
-            _crash_fd.flush()
-    except Exception:
-        pass
+    """诊断日志：写入统一运行日志"""
+    _log_write("诊断", msg)
 
 try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
@@ -336,11 +410,13 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.2.6_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.3.10_SingleInstance"
 
 
 class MemWiseGUI:
     def __init__(self):
+        if CFG.get("log_to_file"):
+            _log_open()  # 统一日志：按「记录运行日志到文件」开关开启（关=完全不写）
         global _gui_ref
         _gui_ref = self
 
@@ -348,7 +424,7 @@ class MemWiseGUI:
         self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 0xB7:  # ERROR_ALREADY_EXISTS
             # 激活已有窗口
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.2.6")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.3.10")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -357,12 +433,13 @@ class MemWiseGUI:
         
         # 崩溃恢复检测
         self._restored = "--restored" in sys.argv
+        self._minimized_to_tray = False  # 显式初始化（--minimized 分支下方覆盖为 True）
 
         self.root = tk.Tk()
-        self.root.title("MemWise v3.2.6")
-        # --minimized 模式：立即隐藏窗口，不等 800ms，避免开机闪烁
+        self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
+        self.root.title("MemWise v3.3.10")
+        # --minimized 模式：保持隐藏（run 时不 deiconify）
         if "--minimized" in sys.argv:
-            self.root.withdraw()
             self._minimized_to_tray = True
         self.root.resizable(True, False)
         _center_geometry(self.root, 1060, 700)
@@ -434,7 +511,7 @@ class MemWiseGUI:
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
-        self._log(f"MemWise v3.2.6 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
+        self._log(f"MemWise v3.3.10 启动\u00b7 当前是否管理员权限:{"✓" if winapi.is_elevated() else "✗"}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -603,6 +680,9 @@ class MemWiseGUI:
     def _show_window(self):
         """恢复主窗口 — 在 Tkinter 事件循环中安全调用"""
         try:
+            # 先隐藏 → 重新居中 → 显示（恢复位置可能被系统重置，避免错位闪烁）
+            self.root.withdraw()
+            _center_geometry(self.root, 1060, 700)
             self.root.deiconify()
             if self.root.state() == "iconic":
                 self.root.deiconify()
@@ -629,6 +709,7 @@ class MemWiseGUI:
         action = "启用" if game else "关闭"
         # 自定义确认弹窗
         dlg = tk.Toplevel(self.root)
+        dlg.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(dlg)
         dlg.title("游戏模式")
         dlg.resizable(False, False)
@@ -655,12 +736,14 @@ class MemWiseGUI:
             dlg.destroy()
         ttk.Button(btn_frame, text="确认", command=on_yes).pack(side="left", padx=6)
         ttk.Button(btn_frame, text="取消", command=on_no).pack(side="left", padx=6)
+        dlg.deiconify()
         dlg.wait_window()
         if not result["value"]:
             return
         self.cleaner.game_mode = game
         self.cleaner.judger.game_mode = game
         self.cleaner._game_mode_manual = True  # 手动设置后模式由用户持有，自动检测不再覆盖
+        _log_write("决策", f"游戏模式手动{'启用' if game else '关闭'}")
         if game:
             self._log("🎮 游戏模式已手动启用 · 游戏进程受保护")
         else:
@@ -937,6 +1020,7 @@ class MemWiseGUI:
 
     def _open_settings(self):
         win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title("MemWise 设置")
         win.resizable(False, True)
@@ -1222,9 +1306,17 @@ class MemWiseGUI:
             global CFG
             CFG["log_to_file"] = lg_var.get()
             _save_cfg()
-        lg_cb = ttk.Checkbutton(ef2, text="记录清理日志到文件",
+            # 开关即时生效：开 → 打开统一日志；关 → 关闭并停止写入
+            if lg_var.get():
+                _log_open()
+            else:
+                _log_close()
+        lg_cb = ttk.Checkbutton(ef2, text="记录运行日志到文件",
                                 variable=lg_var, command=set_log)
         lg_cb.pack(anchor="w")
+        self._add_tip(lg_cb, "开启后，运行期间的全部信息写入日志文件（memwise.log）：\n"
+                      "每轮清理摘要、界面日志消息、启动/退出、异常、调参、游戏模式切换等。\n"
+                      "关闭则不记录任何日志。日志自动轮转保留最近两份，无需手动清理。")
         self._add_tip(lg_cb, "将每轮释放量追加写入日志文件，\n用于长期趋势追踪。")
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):
@@ -1297,9 +1389,11 @@ class MemWiseGUI:
             CFG["clean_mode"] = self.mode_var.get()
             _save_cfg()
             win.destroy()
+        win.deiconify()  # 全部控件就绪，居中后一次显示
 
     def _edit_exclusion_list(self):
         win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title("进程排除列表")
         win.resizable(False, True)
@@ -1343,6 +1437,7 @@ class MemWiseGUI:
             _save_cfg()
             win.destroy()
         ttk.Button(win, text="关闭", command=close_excl).pack(pady=8)
+        win.deiconify()  # 全部控件就绪，居中后一次显示
 
     def _show_learn_log(self):
         info_data = []
@@ -1358,6 +1453,7 @@ class MemWiseGUI:
             messagebox.showinfo("学习日志", "还没有学习到任何数据，先运行一会儿优化再来看", parent=self.root)
             return
         win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(f"学习日志 — {len(info_data)} 个进程")
         win.transient(self.root)
@@ -1382,6 +1478,7 @@ class MemWiseGUI:
         vsb.pack(side="right", fill="y", pady=(12,4))
         for row in info_data:
             tree.insert("", "end", values=row)
+        win.deiconify()  # 全部控件就绪，居中后一次显示
 
 
     # ---- 进程内存排行 ----
@@ -1389,6 +1486,7 @@ class MemWiseGUI:
     def _manage_game_procs(self):
         """一体化游戏进程管理：列出/添加/删除自定义条目，内置名单只读展示"""
         win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title("游戏进程管理")
         win.resizable(True, True)
@@ -1476,10 +1574,12 @@ class MemWiseGUI:
         if len(builtin) > 25:
             lbl_builtin.insert("end", f"  ... 及其他 {len(builtin) - 25} 款")
         lbl_builtin.configure(state="disabled")
-    
+        win.deiconify()  # 全部控件就绪，居中后一次显示
+
     def _show_process_rank(self):
         """弹出进程内存占用排行榜"""
         win = tk.Toplevel(self.root)
+        win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title("进程内存排行")
         win.resizable(True, True)
@@ -1632,6 +1732,7 @@ class MemWiseGUI:
             win.after(10, _restore_hover)
 
         _refresh()
+        win.deiconify()  # 全部控件就绪，居中后一次显示
 
 
     # ---- 日志 / 状态 ----
@@ -1640,6 +1741,8 @@ class MemWiseGUI:
         self.log.configure(state="normal")
         self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n"); self.log.see("end")
         self.log.configure(state="disabled")
+        if CFG.get("log_to_file"):
+            _log_write("界面", m)
 
     def _log_batch(self, msgs):
         """周期末批量输出：当前行数+批量>7则清旧，再逐条输出"""
@@ -1654,6 +1757,9 @@ class MemWiseGUI:
             self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+        if CFG.get("log_to_file"):
+            for m in msgs:
+                _log_write("界面", m)
 
     def _log(self, m):
         """实时日志：>7行则清旧再输出"""
@@ -1666,6 +1772,8 @@ class MemWiseGUI:
             self.log.delete("1.0", "end")
         self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {m}\n"); self.log.see("end")
         self.log.configure(state="disabled")
+        if CFG.get("log_to_file"):
+            _log_write("界面", m)
 
     def _poll_msg_queue(self):
         # ── 托盘事件 — 从 wndproc 标志安全分发（零 Tkinter 调用于 wndproc）──
@@ -2697,6 +2805,7 @@ class MemWiseGUI:
                         self.judger.cfg['efis_params'] = params
                         self.judger.cfg['clean_passes'] = CFG.get('clean_passes', 4)
                         _save_cfg()  # EFIS 调参落盘：重启后消费方与引擎参数一致
+                        _log_write("调参", efis_msg)  # 调参决策入统一日志
                         # 同步 Kalman 超参数到 learner
                         if hasattr(self, 'learner'):
                             self.learner._kalman_r = params.get('kalman_r', 5.0)
@@ -2732,13 +2841,7 @@ class MemWiseGUI:
                         self._cycle_log_buffer.append(msg)
                     self.judger._info_msgs.clear()
 
-                # 文件日志
-                if CFG.get("log_to_file"):
-                    try:
-                        import datetime
-                        with open("memwise.log", "a", encoding="utf-8") as lf:
-                            lf.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {cycle_freed:.1f}MB\n")
-                    except Exception: pass
+                # 周期日志（已并入统一日志常开落盘，此处旧逻辑移除）
 
                 deep_triggered = self.cleaner.summary().get("layer3_ran", 0) > layer3_ran_start
                 # 合并压力+深度清理日志（与上一周期峰值比较，仅变化时输出）
@@ -2762,7 +2865,9 @@ class MemWiseGUI:
                     self._last_pressure_chg = change_str
                     self._last_agg_peak = agg_peak
                     self._last_deep_triggered = deep_triggered
-                # 周期汇总
+                # 周期汇总（按钮 log_to_file 开启时落盘：清理日志受设置控制）
+                if CFG.get("log_to_file"):
+                    _log_write("清理", f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · 整理 {self._fmt_count(self._cycle_trimmed)} 进程 · 试探 {len(probe_results)} ({probe_ok}成功)")
                 self._cycle_log_buffer.append(
                         f"本轮释放 {self._fmt_label(cycle_freed)} · 系统杂项 {self._fmt_count(cycle_standby)} · 整理 {self._fmt_count(self._cycle_trimmed)} 进程 · "
                         f"试探 {len(probe_results)} ({probe_ok}成功) ")
@@ -2834,6 +2939,7 @@ class MemWiseGUI:
             return
         # ask mode: 弹窗询问
         choice = tk.Toplevel(self.root)
+        choice.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(choice)
         choice.title("MemWise")
         choice.resizable(False, False)
@@ -2852,6 +2958,7 @@ class MemWiseGUI:
         ttk.Button(bf, text="最小化到托盘", width=20, command=pick_minimize).pack(side="left", padx=10)
         ttk.Button(bf, text="退出程序", width=20, command=pick_exit).pack(side="left", padx=10)
         choice.protocol("WM_DELETE_WINDOW", pick_minimize)
+        choice.deiconify()  # 全部控件就绪，居中后一次显示
         self.root.wait_window(choice)
         if result[0] == "minimize":
             self._minimized_to_tray = True
@@ -2893,6 +3000,7 @@ class MemWiseGUI:
 
     def _do_exit(self):
         """直接退出（无确认）"""
+        _log_write("系统", "程序退出")
         # 通知看门狗正常退出
         try:
             wd_path = _watchdog_path()
@@ -2922,7 +3030,10 @@ class MemWiseGUI:
             pass
         self.root.destroy()
 
-    def run(self): self.root.mainloop()
+    def run(self):
+        if not self._minimized_to_tray:
+            self.root.deiconify()  # 首次映射即已居中，零闪烁
+        self.root.mainloop()
 
 if __name__ == "__main__":
     MemWiseGUI().run()
