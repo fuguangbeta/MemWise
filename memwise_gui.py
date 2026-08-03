@@ -719,6 +719,10 @@ class MemWiseGUI:
                 self.root.deiconify()
             self.root.lift()
             self._minimized_to_tray = False
+            # 图标重设：--minimized/托盘期间窗口未映射，wrapper 未创建；恢复后必须重设到 wrapper（幂等缓存句柄零泄漏）
+            # 否则标题栏回退 Tk 默认黑色羽毛、任务栏回退 exe 资源立体图标（v3.4.19 重启自启场景根因）
+            self._set_main_window_icon()
+            self.root.after(150, self._set_main_window_icon)
             # 立即使窗口完成映射，触发 <Configure> → _on_chart_configure(50ms) 自动渲染
             self.root.update_idletasks()
             # 兜底：极端情况下 <Configure> 未触发，500ms 后强制绘制
