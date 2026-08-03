@@ -313,38 +313,6 @@ def empty_standby():
 
 
 
-def get_process_private_ws(pid):
-    """Private WS via QueryWorkingSetEx. Returns (private_ws, total_ws) or (None,None)."""
-    h = None
-    try:
-        h = OpenProcess(0x0400, False, pid)
-        if not h:
-            return None, None
-        buf_size = 16 << 20  # 16MB (1M pages max)
-        buf = (ctypes.c_ubyte * buf_size)()
-        if not psapi.QueryWorkingSetEx(h, ctypes.c_void_p(ctypes.addressof(buf)), buf_size):
-            return None, None
-        priv = 0; total = 0; n = 0
-        for off in range(0, buf_size, 16):
-            n += 1
-            if n > 200000:  # max 200K pages (~800MB)
-                break
-            vp = ctypes.c_size_t.from_buffer(buf, off).value
-            if vp == 0:
-                break
-            total += 4096
-            attr = ctypes.c_size_t.from_buffer(buf, off + 8).value
-            if not (attr & 0x8000):
-                priv += 4096
-        return priv, total
-    except Exception:
-        return None, None
-    finally:
-        if h:
-            try: k32.CloseHandle(h)
-            except Exception: pass
-
-
 # SYSTEM_PROCESS_INFORMATION 布局候选（x64）：(pid_off, ws_off, priv_off)
 # 微软可能增删字段改变布局（实测 Win11 24H2+ 为 0x50/0x90/0xB8，旧版为 0x68/0x1F8/0x210），
 # 用自身进程交叉校验动态选表，跨版本兼容
@@ -677,24 +645,6 @@ def clear_system_file_cache():
     """清理系统文件缓存 (SetSystemFileCacheSize)"""
     try:
         return bool(SetSystemFileCacheSize(ctypes.c_size_t(-1), ctypes.c_size_t(-1), 0))
-    except Exception:
-        return False
-
-def combine_memory_lists():
-    """冲刷 Modified 列表以合并物理内存 — MemoryFlushModifiedList = 3 (PHNT standard)"""
-    try:
-        _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(3)  # MemoryFlushModifiedList = 3 (PHNT standard)
-        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
-    except Exception:
-        return False
-
-def trigger_memory_compression():
-    """触发 Win10+ 内存压缩 — MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)"""
-    try:
-        _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(5)  # MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)
-        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
     except Exception:
         return False
 
@@ -1277,26 +1227,6 @@ def create_memwise_ico(path, size=32):
         f.write(bgra)
         f.write(and_mask)
     return True
-
-def load_app_icon():
-    """加载 exe 内嵌图标：遍历资源 ID，LoadImageW 从模块句柄加载"""
-    import sys as _sys
-    hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
-    if not hInstance:
-        return None
-    # PyInstaller --icon 会将图标嵌入为 IDI_APPLICATION(32512)
-    # 也有可能作为资源 ID 1 嵌入；遍历所有常见 ID
-    for rid in (32512, 1, 101, 201):
-        hIcon = ctypes.windll.user32.LoadImageW(
-            hInstance, ctypes.c_void_p(rid), 1,  # IMAGE_ICON, MAKEINTRESOURCE(rid)
-            16, 16,  # 托盘标准小图标尺寸
-            0  # 无特殊标志
-        )
-        if hIcon:
-            return hIcon
-    # Ultimate fallback: GDI MemWise icon (never returns None)
-    return create_memwise_icon(16)
-
 
 def _sharpen_bgra(buf, size, amount=0.8):
     """Unsharp 锐化（拉普拉斯 4 邻域）：只处理不透明像素，透明邻域不参与，避免边缘发暗。
