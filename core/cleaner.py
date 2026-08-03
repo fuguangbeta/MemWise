@@ -1,10 +1,10 @@
 """
 PARES Cleaner — 3 层清理引擎
-Layer 1: 系统级 (Standby/Modified/FileCache/Combine)
+Layer 1: 系统级 (Standby/Modified/FileCache)
 Layer 2: 进程级 (EmptyWorkingSet with Thompson/ROI/Probe)
 Layer 3: 深度聚合 (高压力时重复执行)
 """
-import time, concurrent.futures, threading, os
+import time, concurrent.futures, threading, os, functools
 from . import winapi
 from .learner import SYSTEM_CORE
 
@@ -90,7 +90,7 @@ class PareCleaner:
         prev_freed = self.stats.get("freed_bytes", 0) if hasattr(self, 'stats') else 0
         self.stats = {
             "standby": 0, "modified": 0, "filecache": 0,
-            "compress": 0, "combine": 0, "ws_trim": 0, "probe": 0,
+            "ws_trim": 0, "probe": 0,
             "skipped": 0, "failed_feedback": 0,
             "freed_bytes": prev_freed,
             "deepen_cnt": 0, "deepen_extra": 0,
@@ -123,18 +123,6 @@ class PareCleaner:
 
     # ── Layer 1: 系统级清理 ──
 
-    def clean_standby(self):
-        ok = winapi.empty_standby()
-        if ok:
-            self.stats["standby"] += 1
-        return ok
-
-    def clean_standby_low(self):
-        ok = winapi.purge_low_priority_standby()
-        if ok:
-            self.stats["standby"] += 1
-        return ok
-
     def clean_modified_pages(self):
         ok = winapi.flush_modified_pages()
         if ok:
@@ -145,24 +133,6 @@ class PareCleaner:
         ok = winapi.clear_system_file_cache()
         if ok:
             self.stats["filecache"] += 1
-        return ok
-
-    def clean_compress(self):
-        ok = winapi.trigger_memory_compression()
-        if ok:
-            self.stats["compress"] += 1
-        return ok
-
-    def clean_combine_lists(self):
-        ok = winapi.combine_memory_lists()
-        if ok:
-            self.stats["combine"] += 1
-        return ok
-
-    def _clear_registry_cache(self):
-        ok = winapi.clear_registry_cache()
-        if ok:
-            self.stats["registry"] = self.stats.get("registry", 0) + 1
         return ok
 
     def _flush_volume_cache(self):
@@ -176,7 +146,6 @@ class PareCleaner:
         ok = winapi.empty_standby_deep()
         if ok:
             self.stats["standby"] += 2  # 多轮，计数加2
-            self.stats["combine"] += 1
         return ok
 
     def quick_retrim(self, pid):
@@ -193,18 +162,26 @@ class PareCleaner:
             self.stats["freed_bytes"] += freed
         return 1
 
-    def _layer1_light(self, aggressiveness):
-        """Lightweight system ops for gap fill: compress + modified, no standby"""
-        try:
-            if aggressiveness > 0.4:
-                winapi.deep_compress()
-            else:
-                winapi.trigger_memory_compression()
-            winapi.flush_modified_pages()
-            self.stats["compress"] = self.stats.get("compress", 0) + 1
-            self.stats["modified"] = self.stats.get("modified", 0) + 1
-        except Exception:
-            pass
+    @staticmethod
+    def _layer1_ops(ops_filter):
+        """用户清理操作开关 → Layer1 内核操作集（键映射；None=全量）。
+        开关优先：用户取消勾选的操作绝不执行；ws_all 仅由 full=True 调用方（deep/full）启用。"""
+        if ops_filter is None:
+            return None
+        use = set()
+        if "ws" in ops_filter:
+            use.add("ws_all")  # 系统级全清 WS（仅 full=True 时实际执行）
+        if "standby" in ops_filter:
+            use.add("standby"); use.add("standby_low")
+        if "modified" in ops_filter:
+            use.add("modified")
+        if "filecache" in ops_filter:
+            use.add("filecache"); use.add("filecache_ex")
+        if "volume" in ops_filter:
+            use.add("volume")
+        if "registry" in ops_filter:
+            use.add("registry")
+        return use
 
     def _layer1_memreduct(self, full=True, total_procs=0, game_mode=False, ops=None, clean_self=True):
         """系统级内核清理 — 无 sleep，<10ms
@@ -248,8 +225,6 @@ class PareCleaner:
                 self.stats["volume"] = self.stats.get("volume", 0) + 1
             if "registry" in use and _capture(winapi.clear_registry_cache):
                 self.stats["registry"] = self.stats.get("registry", 0) + 1
-            if not game_mode and "compress" in use and _capture(winapi.trigger_memory_compression):
-                self.stats["compress"] = self.stats.get("compress", 0) + 1
             if not game_mode and "filecache" in use and _capture(winapi.clear_system_file_cache):
                 self.stats["filecache"] = self.stats.get("filecache", 0) + 1
             # 清自身工作集（~0.2s，释放 MemWise 自身占用的几十 MB；高频路径可传 clean_self=False 关闭）
@@ -285,8 +260,7 @@ class PareCleaner:
         pf_after = mem["pf"]
         pf_delta = max(0, pf_after - pf_before) if pf_before is not None else 0
         freed = max(0, ws_before - ws_after)
-        # 允许的 PF：至少 30，或每释放 1MB 允许 10 个 PF（同 trim 逻辑）
-        # Probe 本身会产生 ~30-50 PF（EmptyWorkingSet 的开销）
+        # 允许的 PF：至少 120（EmptyWorkingSet 自身开销 ~30-50 PF），或每释放 1MB 允许 10 个 PF（同 trim 逻辑）
         # freed=0 时也视作有效观测（进程无可释放页本身就是信息）
         allowed_pf = max(120, int(freed / (1 << 20) * 10))
         ok = True if pf_before is None else pf_delta <= allowed_pf
@@ -452,6 +426,48 @@ class PareCleaner:
                 0.2 * min(ws / (500 << 20), 1.0) +
                 0.2 * min(regrowth, 2.0) +
                 bonus)
+    @staticmethod
+    def _bounded_submit(executor, fn, items, max_inflight, per_task_timeout):
+        """滑动窗口分批提交：在途 ≤ max_inflight；超时判定基于任务的真实执行时长
+        （排队等待不计时——排队任务保留在窗口直到开始执行，杜绝无辜进程排队超时被惩罚）。
+        返回 [(item, result)]；超时/异常任务的 result 为 None（任务自然跑完，结果丢弃）。"""
+        out = []
+        inflight = {}
+        started = {}
+        idx = 0
+        n = len(items)
+        while idx < n or inflight:
+            while idx < n and len(inflight) < max_inflight:
+                item = items[idx]; idx += 1
+
+                def _tracked(it=item):
+                    started[it] = time.time()  # 入口打时间戳：区分执行中与排队
+                    return fn(it)
+
+                inflight[executor.submit(_tracked)] = item
+            if not inflight:
+                break
+            done, not_done = concurrent.futures.wait(
+                inflight, timeout=per_task_timeout,
+                return_when=concurrent.futures.FIRST_COMPLETED)
+            for f in done:
+                item = inflight.pop(f)
+                started.pop(item, None)
+                try:
+                    r = f.result()
+                except Exception:
+                    r = None
+                out.append((item, r))
+            if not_done:
+                # 只标记"已开始且执行超预算"的任务；排队中的继续留在窗口（不计时）
+                expired = [f for f in list(not_done)
+                           if time.time() - started.get(inflight[f], time.time()) >= per_task_timeout]
+                for f in expired:
+                    item = inflight.pop(f)
+                    started.pop(item, None)
+                    out.append((item, None))
+        return out
+
     def _layer2_process(self, snaps, learner):
         """进程级清理 — 游戏检测 + Thompson/ROI 选进程 + 内存优先级"""
         # ── 检测游戏模式 ──
@@ -559,18 +575,19 @@ class PareCleaner:
         else:
             self.judger._probe_dynamic_interval = 120
 
-        # Probe — 并行执行（时间预算制，剩余进程下一轮重排后继续）
+        # Probe — 滑动窗口并行（在途 ≤ 池×2，排队不计时；剩余进程下一轮重排后继续）
         probe_results = []
         if probe_list:
-            fut = {self._probe_executor.submit(self._probe_process, s, learner): s for s in probe_list}
-            for f in concurrent.futures.as_completed(fut):
-                s = fut[f]
-                try:
-                    ok, freed, pf_delta = f.result(timeout=4)
-                except concurrent.futures.TimeoutError:
-                    ok, freed, pf_delta = False, 0, 0
+            fn = functools.partial(self._probe_process, learner=learner)
+            for s, r in self._bounded_submit(self._probe_executor, fn, probe_list,
+                                             max_inflight=self._max_workers * 2,
+                                             per_task_timeout=4):
+                if r is None:
+                    ok, freed = False, 0
                     with self._lock:
                         self.stats["skipped"] += 1
+                else:
+                    ok, freed, _pf = r
                 probe_results.append((s, ok, freed))
 
         # ── 预判式清理：对快速增长中的进程增加排序优先级 ──
@@ -610,12 +627,12 @@ class PareCleaner:
         candidates.sort(key=lambda s: -self._composite_score_v2(s, learner) - getattr(s, '_growth_bonus', 0))
         results = []
         if candidates:
-            fut = {self._trim_executor.submit(self._trim_process, s, learner): s for s in candidates}
-            for f in concurrent.futures.as_completed(fut):
-                s = fut[f]
-                try:
-                    ok, freed, pf_delta, reason = f.result(timeout=8)
-                except concurrent.futures.TimeoutError:
+            fn = functools.partial(self._trim_process, learner=learner)
+            for s, r in self._bounded_submit(self._trim_executor, fn, candidates,
+                                             max_inflight=self._max_workers * 2,
+                                             per_task_timeout=8):
+                if r is None:
+                    # 执行超时（排队不计时）：递增冷却 + Thompson 惩罚，与历史超时处理一致
                     ok, freed, pf_delta, reason = False, 0, 0, "超时"
                     with self._lock:
                         self.stats["skipped"] += 1
@@ -627,6 +644,8 @@ class PareCleaner:
                         self.judger.mark_failed(s.name.lower(), fail_count=tc)
                         # Thompson 惩罚：beta+1，Kalman q 提升以增加不确定性
                         learner.record_clean_result(s.name.lower(), ok=False)
+                else:
+                    ok, freed, pf_delta, reason = r
                 results.append((s, ok, freed, reason))
 
         self._last_layer2_results = results
@@ -655,7 +674,8 @@ class PareCleaner:
         # 预处理：使用简化的 deep_compress（无 sleep 管线）；游戏模式跳过——
         # deep_compress 内部 flush_modified(3)+purge_standby(4)，与阶段 C 一样会打断游戏读盘
         if not self.game_mode:
-            if ops_filter is None or "compress" in ops_filter:
+            # 深度预处理由 modified/standby 开关共同控制（取消两者则不执行）
+            if ops_filter is None or "modified" in ops_filter or "standby" in ops_filter:
                 _capture(winapi.deep_compress)
             if ops_filter is None or "modified" in ops_filter:
                 _capture(self.clean_modified_pages)
@@ -671,9 +691,6 @@ class PareCleaner:
             if ops_filter is None or "filecache" in ops_filter:
                 _capture(self.clear_file_cache)
                 _capture(winapi.clear_system_file_cache_ex)
-            if ops_filter is None or "combine" in ops_filter:
-                # 独立条件（原挂在 standby 下，只勾内存合并时不执行）
-                _capture(self.clean_combine_lists)
         if freed_l3 > 0:
             self.stats["freed_bytes"] += freed_l3
         # Track Layer3 standby release（EFIS 诊断专用：Layer3 整体净增量）
@@ -729,7 +746,7 @@ class PareCleaner:
         operations: 可选列表，限制允许的清理操作，如 ["ws","standby","modified","filecache"]
         aggressiveness: 可选，预计算的 aggressiveness 值（daemon 模式避免 PID 双重更新）
         allow_layer3: 高频路径（gap-fill）传 False，Layer3 深度操作只在 harvest 执行
-        注: compress 键无独立分支——内存压缩触发与 standby_low 同为内核操作码 5，由后者覆盖
+        注: standby 开关同时覆盖低优先与全量两级待机页回收
         """
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
@@ -750,16 +767,19 @@ class PareCleaner:
             return r
 
         if mode == "quick":
-            # 仅 3 步轻量系统清理，不碰进程，零卡顿
-            self._layer1_memreduct(full=False, ops={"standby","modified","registry"})
+            # 仅系统级轻量清理，不碰进程，零卡顿（用户勾选 ∩ 3 步轻量集，未勾选则跳过）
+            use = {"standby", "modified", "registry"} & (ops_filter or set())
+            if use:
+                self._layer1_memreduct(full=False, ops=use)
             return _mk_result([], [])
         
         elif mode == "normal":
-            # 完整进程 trim + 5 步系统清理（无文件缓存），游戏横扫
+            # 完整进程 trim + 系统级清理（按用户开关映射；无文件缓存），游戏横扫
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
             pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
-            self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
-                                   ops={"standby","standby_low","modified","volume","compress","registry"})
+            # full=False：normal 不做系统级全清 WS（ws_all 仅 deep/full 启用）
+            self._layer1_memreduct(full=False, total_procs=len(snaps), game_mode=self.game_mode,
+                                   ops=self._layer1_ops(ops_filter))
             pipeline_ctx["layer1_done"] = True
             # Layer3 门槛由 EFIS layer3_agg_gate 自适应控制（无参数时兜底 0.3）；
             # 高频 gap-fill 路径传 allow_layer3=False，深度操作只在 harvest 执行
@@ -770,19 +790,21 @@ class PareCleaner:
             return _mk_result(l2_results, probe_results)
         
         elif mode == "deep":
-            # normal 基础 + 文件缓存清除 + standby 三层深度 + 强制 Layer3
+            # normal 基础 + 系统级全清 WS + 强制 Layer3（文件缓存/各操作按用户开关）
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
             pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
-            self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode)
+            self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
+                                   ops=self._layer1_ops(ops_filter))
             pipeline_ctx["layer1_done"] = True
             self._layer3_deep(snaps, learner, agg, ops_filter)
             return _mk_result(l2_results, probe_results)
         
         elif mode == "full":
-            # deep 基础 + 进程回弹二轮 + 强制高 agg Layer3
+            # deep 基础 + 进程回弹二轮 + 强制高 agg Layer3（各操作按用户开关）
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
             pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
-            self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode)
+            self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
+                                   ops=self._layer1_ops(ops_filter))
             pipeline_ctx["layer1_done"] = True
             self._layer3_deep(snaps, learner, max(agg, 0.6), ops_filter)
             agg = max(agg, 0.6)  # full 模式强制 agg ≥0.6，同步返回结果
@@ -800,10 +822,6 @@ class PareCleaner:
             self._layer1_memreduct()
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
             return _mk_result(l2_results, probe_results)
-    def trim_batch(self, snaps, learner):
-        """给 daemon 用的轻量批量整理"""
-        results, _ = self._layer2_process(snaps, learner)
-        return results
 
     # ── 统计 ──
 
@@ -816,7 +834,7 @@ class PareCleaner:
         prev_freed = self.stats.get("freed_bytes", 0) if hasattr(self, 'stats') else 0
         self.stats = {
             "standby": 0, "modified": 0, "filecache": 0,
-            "compress": 0, "combine": 0, "ws_trim": 0, "probe": 0,
+            "ws_trim": 0, "probe": 0,
             "skipped": 0, "failed_feedback": 0,
             "freed_bytes": prev_freed,
             "deepen_cnt": 0, "deepen_extra": 0,
