@@ -2,7 +2,7 @@
 PARES Judger — PID 压力控制器 + Thompson Sampling 联合判定
 """
 import time
-import sys
+import os, sys
 from .learner import _is_system_core
 
 # frozen windowed 下 sys.stderr 为 None，统一兜底（防异常路径 print 自身崩溃）
