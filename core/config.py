@@ -1,6 +1,9 @@
 """共享配置 — 加载/保存 config.yaml，统一双方 CFG"""
 import os, sys, threading
 
+# frozen windowed 下 sys.stderr 为 None，统一兜底（防 print(file=sys.stderr) 自身崩溃）
+_ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
+
 try:
     import yaml
 except ImportError:
@@ -29,7 +32,7 @@ if getattr(sys, "frozen", False):
 
 DEFAULT_CFG = {
     "kp": 1.0, "ki": 0.15, "kd": 0.1, "target_usage": 45,
-    "interval": 30, "never": [], "clean_mode": "normal",
+    "interval": 60, "never": [], "clean_mode": "normal",
     "auto_start": False, "auto_start_daemon": False,
     "auto_start_admin": False, "auto_start_minimize": False,
     "gap_seconds": 12, "clean_passes": 4,
@@ -53,7 +56,8 @@ def get_state_path():
 def load():
     """加载 config.yaml，缺失字段用 DEFAULT_CFG 兜底。
     exe 旁无配置时回退打包内模板（_MEIPASS），保证独立部署首次运行即有完整配置"""
-    d = DEFAULT_CFG.copy()
+    # 深拷贝列表默认值：防消费方 append 污染 DEFAULT_CFG（曾见 clean_operations 被 toggle_op 追加）
+    d = {k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULT_CFG.items()}
     path = CONFIG_PATH
     if not os.path.isfile(path) and _TEMPLATE_PATH:
         path = _TEMPLATE_PATH
@@ -73,7 +77,7 @@ def load():
                 return d
         d.update(u)
     except Exception as e:
-        import sys; print(f"[MemWise] 配置加载失败: {e}", file=sys.stderr)
+        print(f"[MemWise] 配置加载失败: {e}", file=_ERR)
     return d
 
 # 写锁：EFIS 调参（daemon 线程）与 GUI 设置（主线程）可能并发写同一 tmp 文件，加锁防交错损坏
@@ -91,4 +95,4 @@ def save(cfg):
                 yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
             os.replace(tmp, CONFIG_PATH)
         except Exception as e:
-            import sys; print(f"[MemWise] 配置保存失败: {e}", file=sys.stderr)
+            print(f"[MemWise] 配置保存失败: {e}", file=_ERR)

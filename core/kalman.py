@@ -23,11 +23,11 @@ class KalmanProfile:
         now = time.time()
         dt = max(1.0, now - self.last_update) if self.last_update > 0 else 1.0
         self.last_update = now
-        
-        if dt > 60:
-            decay = min(2.0, dt / 60)
-            self.p_freed *= decay
-            self.p_cost *= decay
+
+        # 时间更新：标准 (1-k)p + q·dt 已含时间项；长间隔仅允许 p 有界增长（上限 400，
+        # 原乘性 ×2 无界膨胀会让增益 k→1、单次观测完全覆盖估计，丧失平滑）
+        self.p_freed = min(400.0, self.p_freed)
+        self.p_cost = min(400.0, self.p_cost)
         
         k_freed = self.p_freed / (self.p_freed + self.r * dt)
         k_cost = self.p_cost / (self.p_cost + self.r * dt)
@@ -38,8 +38,8 @@ class KalmanProfile:
         self.x_freed += k_freed * innov_freed
         self.x_cost += k_cost * innov_cost
         
-        self.p_freed = (1 - k_freed) * self.p_freed + self.q * dt
-        self.p_cost = (1 - k_cost) * self.p_cost + self.q * dt
+        self.p_freed = min(400.0, (1 - k_freed) * self.p_freed + self.q * dt)
+        self.p_cost = min(400.0, (1 - k_cost) * self.p_cost + self.q * dt)
         
         # 自适应 q: 新息大→加速跟踪, 新息小→稳定滤波
         if freed > 0:
@@ -68,12 +68,17 @@ class KalmanProfile:
     
     @classmethod
     def from_dict(cls, d):
+        def _num(v, default):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
         k = cls()
-        k.x_freed = d.get("x_freed", 0.0)
-        k.x_cost = d.get("x_cost", 0.0)
-        k.p_freed = d.get("p_freed", 100.0)
-        k.p_cost = d.get("p_cost", 100.0)
-        k.q = d.get("q", 0.1)
-        k.r = d.get("r", 5.0)
-        k.last_update = d.get("last_update", 0.0)
+        k.x_freed = max(0.0, _num(d.get("x_freed", 0.0), 0.0))
+        k.x_cost = max(0.0, _num(d.get("x_cost", 0.0), 0.0))
+        k.p_freed = max(0.0, min(400.0, _num(d.get("p_freed", 100.0), 100.0)))
+        k.p_cost = max(0.0, min(400.0, _num(d.get("p_cost", 100.0), 100.0)))
+        k.q = max(0.001, min(5.0, _num(d.get("q", 0.1), 0.1)))
+        k.r = max(0.1, min(50.0, _num(d.get("r", 5.0), 5.0)))
+        k.last_update = max(0.0, _num(d.get("last_update", 0.0), 0.0))
         return k

@@ -4,19 +4,16 @@ MetaCognition — 元认知层
 """
 import time
 import math
-from collections import deque
 
 class MetaCognition:
     """两维监控: 概念漂移 / 探索覆盖"""
     
     def __init__(self, learner):
         self.learner = learner
-        self.history = deque(maxlen=200)  # 每tick记录
     
     def tick(self, stats):
         """每 tick 调用"""
         now = time.time()
-        self.history.append(stats)
         findings = []
         
         # ── 2. 概念漂移: EWMA快慢速比 ──

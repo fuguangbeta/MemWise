@@ -10,13 +10,11 @@ from .meta import MetaCognition
 from collections import deque
 
 WINDOW = 20  # 趋势窗口大小
-EWMA_LAMBDA = 0.5  # EWMA 衰减因子 (高=更快适应新数据)
+EWMA_LAMBDA = 0.5  # EWMA 衰减因子 (高=更快适应新数据)；EFIS learning_rate 可逐进程覆盖
 Z_SCORE_THRESHOLD = 3.0  # Z-score 异常阈值
 MIN_SAMPLES = 3  # 最小样本数 (更快对新进程做出决策)
 TREND_SAMPLES = 3  # 趋势线使用的采样数（原6。缩短窗口让预判式清理更快响应）
-BETA_DECAY_RATE = 0.002  # Beta 分布衰减率（每次 feed 向先验收缩）
-# 1. 学习率↑10倍：从0.03→0.3（sign-based更新可承受更大的基础lr）
-CTX_LR_BASE = 0.5  # 上下文权重基础学习率（原0.3，再↑让上下文修正更快见效）
+# 注：BETA_DECAY_RATE / CTX_LR_BASE 已随 Beta 衰减迁移至 record_clean 时间感知遗忘、上下文修正固定 0.15，此处不再保留常量
 
 SYSTEM_CORE = {
     "system", "system idle process", "registry", "smss", "csrss", "wininit",
@@ -28,11 +26,20 @@ SYSTEM_CORE = {
     "runtimebroker", "backgroundtaskhost", "wmiprvse", "wudfhost",
     "audiodg", "spoolsv", "mpdefendercoreservice",
 }
+# 进程名来自 PROCESSENTRY32W.szExeFile（必带 .exe），派生带后缀集合供快照名直接比较
+SYSTEM_CORE_EXE = {n + ".exe" for n in SYSTEM_CORE}
+
+def _is_system_core(name):
+    """快照进程名（可能带 .exe）是否系统核心保护名单成员（统一入口，勿再直接比较 SYSTEM_CORE）"""
+    n = str(name or "").lower()
+    if not n:
+        return False
+    return n in SYSTEM_CORE_EXE or n in SYSTEM_CORE
 
 class Profile:
     """进程画像 — 每个进程一个"""
     __slots__ = ("name", "alpha", "beta", "_theta_cache", "_theta_dirty", "ws_deque",
-                 "gain_ewma", "cost_ewma", "vol_ewma",
+                 "gain_ewma", "cost_ewma",
                  "gain_ewma_fast", "gain_ewma_slow",
                  "cost_ewma_fast", "cost_ewma_slow",
                  "ws_ewma_mu", "ws_ewma_sigma",
@@ -61,7 +68,6 @@ class Profile:
         self.gain_ewma_slow = 0.0
         self.cost_ewma_fast = 0.0
         self.cost_ewma_slow = 0.0
-        self.vol_ewma = 0.0       # 波动率 (WS 变化率)
         # Z-score 基线
         self.ws_ewma_mu = 0.0
         self.ws_ewma_sigma = 0.0
@@ -91,11 +97,7 @@ class Profile:
         self.ws_deque.append(ws)
         prev_seen = self.last_seen
         self.last_seen = time.time()
-        # 波动率 (WS 变化率)
-        if self.last_ws > 0 and ws > 0:
-            rate = abs(ws - self.last_ws) / max(self.last_ws, 1)
-            self.vol_ewma = EWMA_LAMBDA * rate + (1 - EWMA_LAMBDA) * self.vol_ewma
-        # refill_ewma: WS 增长速率 (bytes/s)，仅在 WS 增长时更新
+        # 波动率已并入 Z-score sigma（ws_ewma_sigma），vol_ewma 历史字段不再维护
         if self.last_ws > 0 and ws > self.last_ws and prev_seen > 0:
             dt = max(time.time() - prev_seen, 1)
             growth = (ws - self.last_ws) / dt
@@ -118,8 +120,8 @@ class Profile:
                 # 双阈值：相对斜率（按进程WS缩放）>0.005 + Z>2.0 → 中等泄漏
                 slope = self._calc_slope()
                 ws_avg = sum(self.ws_deque) / max(len(self.ws_deque), 1)
-                ws_scale = max(1.0, ws_avg / (1 << 20))  # 按 MB 缩放
-                rel_slope = slope / ws_scale if ws_scale > 0 else 0.0
+                # 相对斜率：增长率 / 当前 WS 均值（无单位比率，0.005 = 0.5%/tick）
+                rel_slope = slope / max(ws_avg, 1.0)
                 if rel_slope > 0.005 and z > 2.0:
                     self.leak_tick_count += 1
                     if self.leak_tick_count >= 2:
@@ -191,13 +193,15 @@ class Profile:
                 self.beta = 1 + (self.beta - 1) * (1 - forget)
             self._theta_dirty = True
         
-        # 更新收益/成本 EWMA（无论成败都记录）
+        # 更新收益/成本 EWMA（无论成败都记录）；EFIS learning_rate 可覆盖全局 λ（lr 大=反馈适应更快）
+        lam = lr if lr is not None else EWMA_LAMBDA
+        lam = max(0.01, min(0.99, lam))
         if freed > 0:
-            self.gain_ewma = EWMA_LAMBDA * freed + (1 - EWMA_LAMBDA) * self.gain_ewma
+            self.gain_ewma = lam * freed + (1 - lam) * self.gain_ewma
             self.gain_ewma_fast = 0.6 * freed + 0.4 * self.gain_ewma_fast
             self.gain_ewma_slow = 0.1 * freed + 0.9 * self.gain_ewma_slow
         if pf_delta >= 0:
-            self.cost_ewma = EWMA_LAMBDA * pf_delta + (1 - EWMA_LAMBDA) * self.cost_ewma
+            self.cost_ewma = lam * pf_delta + (1 - lam) * self.cost_ewma
             self.cost_ewma_fast = 0.6 * pf_delta + 0.4 * self.cost_ewma_fast
             self.cost_ewma_slow = 0.1 * pf_delta + 0.9 * self.cost_ewma_slow
         # 更新 Kalman (仅在有实际释放量时更新，防止零值把估计拉到0)
@@ -239,8 +243,9 @@ class Profile:
     def record_probe(self, ok, lr=None, freed=0):
         """记录微型试探结果 — 连续反馈"""
         self.last_feedback_time = time.time()
-        # 试探也更新 Kalman (freed=0 也算观测)
-        self.kalman.update(freed, 0)
+        # 试探仅在确有释放时更新 Kalman（与 record_clean 同口径；0 观测会把预期释放拉向 0）
+        if freed > 0:
+            self.kalman.update(freed, 0)
         if ok:
             self.probe_ok += 1
             # 释放越多 → 奖励越多
@@ -260,10 +265,10 @@ class Profile:
 
     @property
     def roi(self):
-        """成本收益比"""
+        """成本收益比（MB/PF，与 KalmanProfile.roi 同量纲）"""
         cost = max(self.cost_ewma, 1)
         gain = max(self.gain_ewma, 0)
-        return gain / cost if cost > 0 else 0.0
+        return (gain / (1 << 20)) / cost if cost > 0 else 0.0
 
     @property
     def gain_accelerating(self):
@@ -304,7 +309,6 @@ class Profile:
             "gain_ewma": self.gain_ewma, "cost_ewma": self.cost_ewma,
             "gain_ewma_fast": self.gain_ewma_fast, "gain_ewma_slow": self.gain_ewma_slow,
             "cost_ewma_fast": self.cost_ewma_fast, "cost_ewma_slow": self.cost_ewma_slow,
-            "vol_ewma": self.vol_ewma,
             "ws_ewma_mu": self.ws_ewma_mu, "ws_ewma_sigma": self.ws_ewma_sigma,
             "last_ok": self.last_ok,
             "ok_cnt": self.ok_cnt, "fail_cnt": self.fail_cnt,
@@ -321,36 +325,44 @@ class Profile:
 
     @classmethod
     def from_dict(cls, d):
-        p = cls(d["name"])
-        p.alpha = max(d.get("alpha", 1), 0.5)
-        p.beta = max(d.get("beta", 1), 0.5)
+        def _num(v, default=0.0):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+        p = cls(str(d.get("name", "unknown")))
+        p.alpha = max(_num(d.get("alpha", 1), 1), 0.5)
+        p.beta = max(_num(d.get("beta", 1), 1), 0.5)
         p._theta_cache = None
         p._theta_dirty = True
-        p.ws_deque = deque(d.get("ws", []), maxlen=WINDOW)
-        p.gain_ewma = d.get("gain_ewma", 0.0)
-        p.cost_ewma = d.get("cost_ewma", 0.0)
-        p.gain_ewma_fast = d.get("gain_ewma_fast", 0.0)
-        p.gain_ewma_slow = d.get("gain_ewma_slow", 0.0)
-        p.cost_ewma_fast = d.get("cost_ewma_fast", 0.0)
-        p.cost_ewma_slow = d.get("cost_ewma_slow", 0.0)
-        p.vol_ewma = d.get("vol_ewma", 0.0)
-        p.ws_ewma_mu = d.get("ws_ewma_mu", 0.0)
-        p.ws_ewma_sigma = d.get("ws_ewma_sigma", 0.0)
-        p.last_ok = d.get("last_ok", True)
-        p.ok_cnt = d.get("ok_cnt", 0)
-        p.fail_cnt = d.get("fail_cnt", 0)
-        p.last_seen = d.get("last_seen", 0.0)
-        p.last_feedback_time = d.get("last_feedback_time", 0.0)
-        p.last_ws = d.get("last_ws", 0)
-        p.probe_ok = d.get("probe_ok", 0)
-        p.probe_fail = d.get("probe_fail", 0)
-        p.leak_suspect = d.get("leak_suspect", False)
-        p.leak_tick_count = d.get("leak_tick_count", 0)
-        p.clean_count = d.get("clean_count", 0)
-        p.refill_ewma = d.get("refill_ewma", 0.0)
+        ws_raw = d.get("ws", [])
+        p.ws_deque = deque([_num(x) for x in ws_raw if isinstance(x, (int, float))][-WINDOW:], maxlen=WINDOW)
+        p.gain_ewma = max(0.0, _num(d.get("gain_ewma", 0.0)))
+        p.cost_ewma = max(0.0, _num(d.get("cost_ewma", 0.0)))
+        p.gain_ewma_fast = max(0.0, _num(d.get("gain_ewma_fast", 0.0)))
+        p.gain_ewma_slow = max(0.0, _num(d.get("gain_ewma_slow", 0.0)))
+        p.cost_ewma_fast = max(0.0, _num(d.get("cost_ewma_fast", 0.0)))
+        p.cost_ewma_slow = max(0.0, _num(d.get("cost_ewma_slow", 0.0)))
+        p.ws_ewma_mu = _num(d.get("ws_ewma_mu", 0.0))
+        p.ws_ewma_sigma = max(0.0, _num(d.get("ws_ewma_sigma", 0.0)))
+        p.last_ok = bool(d.get("last_ok", True))
+        p.ok_cnt = max(0, int(_num(d.get("ok_cnt", 0))))
+        p.fail_cnt = max(0, int(_num(d.get("fail_cnt", 0))))
+        p.last_seen = _num(d.get("last_seen", 0.0))
+        p.last_feedback_time = _num(d.get("last_feedback_time", 0.0))
+        p.last_ws = max(0, int(_num(d.get("last_ws", 0))))
+        p.probe_ok = max(0, int(_num(d.get("probe_ok", 0))))
+        p.probe_fail = max(0, int(_num(d.get("probe_fail", 0))))
+        p.leak_suspect = bool(d.get("leak_suspect", False))
+        p.leak_tick_count = max(0, int(_num(d.get("leak_tick_count", 0))))
+        p.clean_count = max(0, int(_num(d.get("clean_count", 0))))
+        p.refill_ewma = max(0.0, _num(d.get("refill_ewma", 0.0)))
         kalman_d = d.get("kalman")
-        if kalman_d:
-            p.kalman = KalmanProfile.from_dict(kalman_d)
+        if isinstance(kalman_d, dict):
+            try:
+                p.kalman = KalmanProfile.from_dict(kalman_d)
+            except Exception:
+                pass
         if p.kalman.x_freed == 0 and p.gain_ewma > 0:
             p.kalman.x_freed = p.gain_ewma
             p.kalman.p_freed = 50.0
@@ -427,7 +439,7 @@ class PareLearner:
     def thompson_score(self, name, mem_pct=None, is_fg=None):
         """t — mem_pct/is_fg 由调用方传入真实上下文，修正取实际桶；未传时回退 _ctx/默认值"""
         key = name.lower()
-        if key in SYSTEM_CORE:
+        if _is_system_core(key):
             return 0.0
         p = self.profiles.get(key)
         if not p or p.total_samples < 2:
@@ -496,16 +508,25 @@ class PareLearner:
 
     @classmethod
     def load(cls, path):
+        """加载画像：单个坏画像只跳过该条（不再整体丢弃），解析失败返回空学习器"""
         learner = cls()
         if not path or not os.path.isfile(path):
             return learner
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for k, v in data.get("profiles", {}).items():
-                learner.profiles[k] = Profile.from_dict(v)
         except Exception:
-            pass
+            return learner
+        profiles = data.get("profiles", {})
+        if not isinstance(profiles, dict):
+            return learner
+        for k, v in profiles.items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                learner.profiles[k] = Profile.from_dict(v)
+            except Exception:
+                continue  # 坏条目跳过，保留其余画像
         return learner
 
     # ── 反饋 ──
