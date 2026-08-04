@@ -1,5 +1,5 @@
 ﻿"""
-MemWise v3.5.14 GUI —— 图形界面
+MemWise v3.6.47 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -114,7 +114,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v3.5.14 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v3.6.47 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -425,7 +425,7 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.5.14_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.6.47_SingleInstance"
 
 
 class MemWiseGUI:
@@ -442,7 +442,7 @@ class MemWiseGUI:
         _mutex_err = ctypes.windll.kernel32.GetLastError()
         if _mutex_err in (0xB7, 5):
             # 激活已有窗口（0xB7 权威；5 且句柄空时以窗口存在性兜底验证）
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.5.14")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.6.47")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -460,7 +460,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v3.5.14")
+        self.root.title("MemWise v3.6.47")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -513,7 +513,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v3.5.14 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v3.6.47 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -560,7 +560,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.5.14")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.6.47")
                     if fw:
                         top = fw
                 except Exception:
