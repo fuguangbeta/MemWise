@@ -1,4 +1,4 @@
-# MemWise v3.5.14
+# MemWise v3.6.47
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
@@ -7,7 +7,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 *Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~12.7 MB executable.*
 
 
-系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、三树投票等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
+系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 *MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization at 60-second intervals in daemon mode. A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and three-tree policy voting builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.*
 
@@ -158,8 +158,8 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 *Two independent scalar Kalman filters per process track expected freed bytes and expected page-fault cost, capturing continuous magnitudes and uncertainties more effectively than Beta alone.*
 
 - 自适应过程噪声：根据新息大小动态调整跟踪速度与稳定性的平衡 · *Adaptive process noise adjusts tracking speed vs. stability based on innovation magnitude*
-- 时间衰减：长时间未观测的估计值协方差异步膨胀，保证重新遇到该进程时能快速收敛 · *Stale covariance asynchronously inflates after extended idle periods for rapid re-convergence*
-- 观测噪声纳入 EFIS 自动调参范围，系统可根据实际预测误差自动寻优 · *Observation noise is exposed as an EFIS-tunable parameter for autonomous optimization against actual prediction error*
+- 时间衰减：长时间未观测的估计值协方差有界增长（上限 400），保证重新遇到该进程时能快速收敛且不被单次观测完全覆盖 · *Stale covariance grows with a hard cap (400) after extended idle periods for rapid re-convergence without letting a single observation fully overwrite the estimate*
+- 观测噪声作为 EFIS 参数开放配置（`kalman_r`，1.0-20.0），可通过界面/配置调整对新观测的敏感度 · *Observation noise is exposed as an EFIS parameter (kalman_r, 1.0-20.0) tunable via UI/config to control sensitivity to new observations*
 
 预测值在进入决策前经过在线学习的上下文修正——基于内存压力、前台状态和时段的三维查找表，自动学习当前条件下的实际释放量与 Kalman 基线的偏差比例，使 LP (低压) 和 HP (高压) 场景下的估值精确度大幅提升。
 
@@ -177,7 +177,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 *Over a dozen predefined categories auto-classify processes by name keyword. New processes inherit the average θ of their category, avoiding a cold start from the default prior.*
 
-### 3.5 三树投票策略 · *Three-Tree Policy Voting*
+### 3.5 五树投票框架（启用 3 树）· *Five-Tree Policy Voting (3 Active)*
 
 替代单一门槛的多维综合决策：
 
@@ -205,7 +205,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ## 5. EFIS v3 全程序智能调参 · *System-Wide Intelligent Parameter Tuning*
 
-EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数闭环调参引擎。
+EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调参引擎，8 参数自动寻优（`deepen_theta`/`layer3_agg_gate`/`pid_kp`/`pid_kd`/`target_usage`/`cooloff_base`/`learning_rate`/`composite_kalman_w`）+ `kalman_r` 配置可调。
 
 *EFIS is a 9-parameter closed-loop tuning engine spanning the entire system.*
 
@@ -282,7 +282,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 
 ## 10. 学习日志 · *Learning Log*
 
-点击"学习日志"按钮弹出独立窗口，按进程名排序显示所有已学习进程的完整画像数据：θ 值、ROI、Kalman 预测值、EWMA、回弹率、清理次数、成功率等。支持排序和滚动浏览。
+点击"学习日志"按钮弹出独立窗口，按进程名排序显示所有已学习进程的完整画像数据：θ 值、ROI（MB/PF）、Kalman 预测值、EWMA、回弹率、清理次数、成功率等。支持排序和滚动浏览。
 
 *A standalone window displays the complete profile of every learned process — θ, ROI, Kalman predictions, EWMA values, refill rate, clean count, and success rate — sorted by process name with sortable columns and scroll navigation.*
 
@@ -399,15 +399,16 @@ MemWise/
 │   ├── judger.py               # 判定器 + PID 控制器 · Judger + PID
 │   ├── efis.py                 # EFIS v3 全程序智能调参 · EFIS Parameter Tuner
 │   ├── meta.py                 # 元认知自我监控 · Meta-Cognitive Monitor
-│   ├── policy.py               # 三树投票策略 · Policy Voter
+│   ├── policy.py               # 五树投票策略（启用 3 树）· Policy Voter (5-tree, 3 active)
 │   ├── kalman.py               # Kalman 滤波器 · Kalman Filter
 │   ├── prior.py                # 分层先验 · Hierarchical Prior
 │   ├── winapi.py               # Win32 API 绑定（70+ 函数）· Win32 API Bindings
 │   ├── sniffer.py              # 进程快照采集 · Process Snapshot Collector
 │   ├── icon_flat.py            # 任务栏扁平图标内嵌 PNG（base64）· Flat Icon Data
+│   ├── eris.py                 # ERIS 效率评分纯函数（生产/测试共用）· ERIS Pure Functions
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py             # 回归测试（37 项断言）· Regression Suite
+│   └── test_v2.6.py             # 回归测试（69 项断言）· Regression Suite
 ```
 
 ---
