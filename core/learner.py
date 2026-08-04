@@ -464,6 +464,14 @@ class PareLearner:
     def get_profile(self, name):
         return self.profiles.get(name.lower())
 
+    def top(self, n=25):
+        """按 ROI 降序返回前 n 个有学习样本的进程 (name, roi, theta, profile)。
+        CLI learn/profile 使用；无样本进程不参与排名。"""
+        cands = [(name, p.roi, self.thompson_score(name), p)
+                 for name, p in self.profiles.items() if p.total_samples >= 2]
+        cands.sort(key=lambda x: x[1], reverse=True)
+        return cands[:n]
+
     # ── 持久化 ──
 
     def save(self, path):

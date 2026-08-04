@@ -447,33 +447,26 @@ except AttributeError:
 # ── 进程树（父进程查询）──
 
 def get_parent_process_name(pid):
-    """返回给定 PID 的父进程名，或 None"""
+    """返回给定 PID 的父进程名，或 None（复用 PROCESSENTRY32W 结构类，32/64 位全兼容）"""
     try:
-        snapshot = k32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
-        if snapshot and snapshot != w.HANDLE(-1).value:
-            pe32 = (ctypes.c_ubyte * 556)()  # PROCESSENTRY32W size
-            ctypes.memset(pe32, 0, 556)
-            ctypes.cast(ctypes.pointer(pe32), ctypes.POINTER(w.DWORD))[0] = 556
-            if k32.Process32FirstW(snapshot, ctypes.byref(pe32)):
-                while True:
-                    # dwSize[0], cntUsage[4], th32ProcessID[8], th32DefaultHeapID[12],
-                    # th32ModuleID[20], cntThreads[24], th32ParentProcessID[28], pcPriClassBase[32], dwFlags[36], szExeFile[40]
-                    entry_pid = ctypes.cast(ctypes.pointer(pe32) + 8, ctypes.POINTER(w.DWORD))[0]
-                    entry_parent = ctypes.cast(ctypes.pointer(pe32) + 28, ctypes.POINTER(w.DWORD))[0]
-                    if entry_pid == pid:
-                        name_wchar = ctypes.c_wchar_p(ctypes.addressof(pe32) + 40)
-                        name = name_wchar.value
-                        k32.CloseHandle(snapshot)
-                        return name
-                    if not k32.Process32NextW(snapshot, ctypes.byref(pe32)):
-                        break
-            k32.CloseHandle(snapshot)
-    except Exception:
+        snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == INVALID_HANDLE_VALUE:
+            return None
         try:
-            k32.CloseHandle(snapshot)
-        except Exception:
-            pass
-    return None
+            pe = PROCESSENTRY32W()
+            pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not Process32FirstW(snapshot, ctypes.byref(pe)):
+                return None
+            while True:
+                if pe.th32ProcessID == pid:
+                    return str(pe.szExeFile)
+                if not Process32NextW(snapshot, ctypes.byref(pe)):
+                    break
+            return None
+        finally:
+            CloseHandle(snapshot)
+    except Exception:
+        return None
 
 # ── 事件驱动：内存通知 + 等待 ──
 

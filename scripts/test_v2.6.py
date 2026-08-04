@@ -182,6 +182,28 @@ _,d,_,_=sf(75,[85]*5,10,70,pd=0,pp=True); check("same-dir no flip", d==0)
 f,d,p,_=sf(72,[80]*5,10,71); check("stable reset dim", d==-1); check("stable reset pos", p is None)
 
 # ═══════════════════════════════════════════
+# ── 全量审查修复回归（v3.5.14 追加）──
+try:
+    # learner.top(n)：CLI learn 依赖（曾缺失导致 AttributeError 崩溃）
+    lt = PareLearner()
+    for nm, ws, ok in [("aaa.exe", 50 << 20, True), ("bbb.exe", 60 << 20, True), ("ccc.exe", 30 << 20, False)]:
+        p = lt.get(nm)
+        for _ in range(3):
+            p.feed(ws)
+        p.record_clean(ok, 100 << 20, 10)
+    top3 = lt.top(25)
+    check("top returns list", isinstance(top3, list))
+    check("top sorted by roi", top3 == sorted(top3, key=lambda x: x[1], reverse=True))
+    check("top tuple shape", len(top3[0]) == 4 if top3 else True)
+    check("top filters <2 samples", all(p.total_samples >= 2 for _, _, _, p in top3))
+    # get_parent_process_name：64 位偏移兼容（修复前返回垃圾值/None）
+    import os as _os, core.winapi as _wa
+    _pp = _wa.get_parent_process_name(_os.getpid())
+    check("parent name str", isinstance(_pp, str) and len(_pp) > 0)
+    check("parent unknown pid", _wa.get_parent_process_name(99999999) is None)
+except Exception as ex:
+    check("review regression", False, repr(ex))
+
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

@@ -1296,7 +1296,7 @@ class MemWiseGUI:
             "内置名单为程序自带，不可修改。\n"
             "\n"
             "⚠ 同名程序的所有实例都会被识别")
-        ttk.Label(ops_frame, text="（留空 = 按模式自动选择）",
+        ttk.Label(ops_frame, text="（未勾选 = 不执行对应系统清理）",
                   foreground="#888").pack(anchor="w")
 
         # ─── 紧急触发阈值 & 托盘行为 & 日志 ───
@@ -1345,7 +1345,6 @@ class MemWiseGUI:
         self._add_tip(lg_cb, "开启后，运行期间的全部信息写入日志文件（memwise.log）：\n"
                       "每轮清理摘要、界面日志消息、启动/退出、异常、调参、游戏模式切换等。\n"
                       "关闭则不记录任何日志。日志自动轮转保留最近两份，无需手动清理。")
-        self._add_tip(lg_cb, "将每轮释放量追加写入日志文件，\n用于长期趋势追踪。")
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):
             global CFG
@@ -2036,7 +2035,7 @@ class MemWiseGUI:
         prev_f_pos = getattr(self, '_eris_prev_factor_pos', None)
         if len(visible) <= 3:
             factors = ["影响因素分析中…"]
-        elif eff >= 100.0:
+        elif round(eff) >= 100:
             best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
             factors = [dim_pairs[best_i][0]]
             # 防振荡：同维+上一轮方向不是True（即上次是负面或未记录）→ 跳到候选2
@@ -2050,7 +2049,7 @@ class MemWiseGUI:
                 self._eris_ewma_trend.append(99)
                 self._eris_prev_factor_dim = best_i
                 self._eris_prev_factor_pos = True
-        elif eff <= 60.0:
+        elif round(eff) <= 60:
             best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
             factors = [dim_pairs[best_i][1]]
             # 防振荡：同维+上一轮方向不是False（即上次是正面或未记录）→ 跳到候选2
@@ -2257,12 +2256,13 @@ class MemWiseGUI:
             # 再画折点
             for i, e_val in enumerate(eff_pts):
                 cx = px0 + i * step2 + self.BAR_W // 2
-                over_100 = e_val > 100.0
+                r_eff = round(e_val)  # 与显示(.0f)一致的整数判定：99.6 显示"100%"→金色、60.4 显示"60%"→珊瑚红
+                over_100 = r_eff >= 100
                 cy = py1 - (min(e_val, 100.0) / 100.0) * ph
                 r = 4
                 if over_100:
                     dot_fill = "#D4A017"
-                elif e_val <= 60.0:
+                elif r_eff <= 60:
                     dot_fill = "#FF6B6B"
                 else:
                     dot_fill = "#4488CC"
@@ -2919,9 +2919,14 @@ class MemWiseGUI:
                                 f"试探 {len(probe_results)} ({probe_ok}成功)")
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
-                self._msg_queue.put(('display', [summary_line]))
-                # 批量输出周期末日志
-                self._msg_queue.put(('log_batch', self._cycle_log_buffer))
+                # GUI 日志区：summary 与本轮 buffer 一次打包显示（同一清屏判定）。
+                # 曾见 summary 先入队、log_batch 后入队时被后者的清屏抹掉——第二轮周期末统计日志缺失根因
+                batch_display = [summary_line] + list(self._cycle_log_buffer)
+                self._msg_queue.put(('display', batch_display))
+                if CFG.get("log_to_file"):
+                    # buffer 内容（压力/游戏/决策等）直写 [界面]，与 [清理] 分开，去重保持
+                    for m in self._cycle_log_buffer:
+                        _log_write("界面", m)
                 # 状态栏（累计数据）
                 self._msg_queue.put(('upd_ui', (s, m, "🟢 守护中")))
                 self._msg_queue.put(('chart', None))
