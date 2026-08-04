@@ -2,7 +2,11 @@
 PARES Judger — PID 压力控制器 + Thompson Sampling 联合判定
 """
 import time
-from .learner import SYSTEM_CORE
+import sys
+from .learner import _is_system_core
+
+# frozen windowed 下 sys.stderr 为 None，统一兜底（防异常路径 print 自身崩溃）
+_ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
 
 def _mb(b):
     return b / (1 << 20)
@@ -151,7 +155,7 @@ class PareJudger:
             return False, "游戏进程(保护)"
         
         # 安全规则 (不变)
-        if name in SYSTEM_CORE:
+        if _is_system_core(name):
             return False, "系统核心进程"
 
         never = self.cfg.get("never", [])
@@ -211,14 +215,14 @@ class PareJudger:
                 if not ok:
                     return False, f"策略否决({reason})"
         except Exception as e:
-            import sys; print(f"[MemWise] 策略投票异常: {e}", file=sys.stderr)
+            print(f"[MemWise] 策略投票异常: {e}", file=_ERR)
             return False, f"投票异常"
         return True, f"θ={theta:.2f}"
 
     def can_probe(self, snap):
         """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""
         name = snap.name.lower()
-        if name in SYSTEM_CORE:return False
+        if _is_system_core(name):return False
         # 游戏模式：不试探（流畅优先，只做确定性清理）
         if self.game_mode:
             return False

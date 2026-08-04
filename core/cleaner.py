@@ -6,7 +6,7 @@ Layer 3: 深度聚合 (高压力时重复执行)
 """
 import time, concurrent.futures, threading, os, functools
 from . import winapi
-from .learner import SYSTEM_CORE
+from .learner import _is_system_core
 
 # ── 常见游戏进程名单（自动检测用）──
 GAME_PROCESSES = {
@@ -87,12 +87,11 @@ class PareCleaner:
         self._max_workers = min(os.cpu_count() or 2, 8)
         self._probe_executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="memwise-probe")
         self._trim_executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="memwise-trim")
-        prev_freed = self.stats.get("freed_bytes", 0) if hasattr(self, 'stats') else 0
         self.stats = {
             "standby": 0, "modified": 0, "filecache": 0,
             "ws_trim": 0, "probe": 0,
             "skipped": 0, "failed_feedback": 0,
-            "freed_bytes": prev_freed,
+            "freed_bytes": 0,  # 新实例从 0 起（旧 prev_freed 依赖 hasattr(self,'stats') 恒 False，等价 0）
             "deepen_cnt": 0, "deepen_extra": 0,
             "layer3_ran": 0, "layer3_extra": 0,
         }
@@ -427,16 +426,24 @@ class PareCleaner:
                 0.2 * min(regrowth, 2.0) +
                 bonus)
     @staticmethod
-    def _bounded_submit(executor, fn, items, max_inflight, per_task_timeout):
+    def _bounded_submit(executor, fn, items, max_inflight, per_task_timeout, total_budget=60.0):
         """滑动窗口分批提交：在途 ≤ max_inflight；超时判定基于任务的真实执行时长
         （排队等待不计时——排队任务保留在窗口直到开始执行，杜绝无辜进程排队超时被惩罚）。
+        total_budget 总预算：池线程卡死时防止无限循环（超预算丢弃剩余排队项，已提交任务自然完成）。
         返回 [(item, result)]；超时/异常任务的 result 为 None（任务自然跑完，结果丢弃）。"""
         out = []
         inflight = {}
         started = {}
         idx = 0
         n = len(items)
+        deadline = time.time() + total_budget
         while idx < n or inflight:
+            if time.time() > deadline:
+                # 总预算耗尽：剩余未提交项直接标记超时，已提交任务交给线程池自然完成（不阻塞调用方）
+                out.extend((item, None) for item in items[idx:])
+                idx = n
+                inflight.clear()
+                break
             while idx < n and len(inflight) < max_inflight:
                 item = items[idx]; idx += 1
 
@@ -546,7 +553,7 @@ class PareCleaner:
             if s.pid in self._low_pri_pids:
                 continue
             name = s.name.lower()
-            if name in SYSTEM_CORE or name in self.judger.cfg.get("never", []):
+            if _is_system_core(name) or name in self.judger.cfg.get("never", []):
                 continue
             # 前台进程: 保持默认优先级（不需调用API）
             if getattr(s, "fg", False):
@@ -581,7 +588,7 @@ class PareCleaner:
             fn = functools.partial(self._probe_process, learner=learner)
             for s, r in self._bounded_submit(self._probe_executor, fn, probe_list,
                                              max_inflight=self._max_workers * 2,
-                                             per_task_timeout=4):
+                                             per_task_timeout=4, total_budget=20):
                 if r is None:
                     ok, freed = False, 0
                     with self._lock:
@@ -630,7 +637,7 @@ class PareCleaner:
             fn = functools.partial(self._trim_process, learner=learner)
             for s, r in self._bounded_submit(self._trim_executor, fn, candidates,
                                              max_inflight=self._max_workers * 2,
-                                             per_task_timeout=8):
+                                             per_task_timeout=8, total_budget=20):
                 if r is None:
                     # 执行超时（排队不计时）：递增冷却 + Thompson 惩罚，与历史超时处理一致
                     ok, freed, pf_delta, reason = False, 0, 0, "超时"
@@ -654,7 +661,8 @@ class PareCleaner:
     # ── Layer 3: 深度聚合 ──
 
     def _layer3_deep(self, snaps, learner, aggressiveness, ops_filter=None):
-        if ops_filter is not None and "ws" not in ops_filter:
+        # 门控：Layer3 深度操作由 ws/standby/modified 驱动（volume/filecache/registry 单独勾选不触发深度层）
+        if ops_filter is not None and not ({"ws", "standby", "modified"} & set(ops_filter)):
             return
         
         mem_before_layer3 = winapi.get_memory_status()
@@ -701,9 +709,9 @@ class PareCleaner:
                 self.stats["layer3_extra"] += extra_mem  # bytes, consistent with deepen_extra
 
         # 阶段 D: WS 回弹率选进程 (skip already trimmed in Layer2)
+        # 复用滑动窗口分批提交（在途限制 + 总预算），防一次性 submit 堆积拖垮池
         layer2_pids = {t[0].pid for t in getattr(self, "_last_layer2_results", []) if t[1]}
-        pids_trimmed = set()
-        futs = {}
+        d_candidates = []
         for s in snaps:
             if s.pid in layer2_pids:
                 continue  # Already trimmed in Layer2, skip
@@ -712,24 +720,17 @@ class PareCleaner:
             name_lower = s.name.lower()
             bl = self.judger._post_clean_ws.get(name_lower, 0)
             if bl > 0 and s.ws >= bl * 2.0:
-                if s.pid not in pids_trimmed:
-                    pids_trimmed.add(s.pid)
-                    futs[s.pid] = self._trim_executor.submit(self._trim_process, s, learner)
+                d_candidates.append(s)
             elif bl == 0:
                 theta = learner.thompson_score(name_lower, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
                 if theta > 0.5:
-                    if s.pid not in pids_trimmed:
-                        pids_trimmed.add(s.pid)
-                        futs[s.pid] = self._trim_executor.submit(self._trim_process, s, learner)
-
-        # 并行等待所有 layer3 trim
-        for f in concurrent.futures.as_completed(futs.values()):
-            try:
-                f.result(timeout=8)
-            except concurrent.futures.TimeoutError:
-                pass
-            except Exception as e:
-                import sys; print(f"[MemWise] layer3 清理异常: {e}", file=sys.stderr)
+                    d_candidates.append(s)
+        if d_candidates:
+            fn = functools.partial(self._trim_process, learner=learner)
+            for _s, _r in self._bounded_submit(self._trim_executor, fn, d_candidates,
+                                               max_inflight=self._max_workers * 2,
+                                               per_task_timeout=8, total_budget=30):
+                pass  # 结果无需收集（与旧 as_completed 语义一致：只执行不统计）
 
     # ── 统一入口 ──
 

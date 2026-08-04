@@ -7,12 +7,11 @@ import time
 
 class PolicyVoter:
     """五树投票框架: 收益/代价/时机/紧迫/反事实 · 在线权重学习
-    当前启用树 1(收益)/2(压力)/5(反事实)，树 3(时机)/4(紧迫) 预留空实现（加权恒 0，不影响决策）"""
+    should_trim 启用树 1(收益)/2(压力)/5(反事实)；should_probe 用树 1(信息价值)/2(记忆空缺)/3(资源约束)/5(因果好奇)
+    树 4(紧迫) 预留空实现（加权恒 0，不影响决策）"""
     
     def __init__(self):
         self._tree_weights = [1.0] * 5  # 五棵树初始等权重
-        self._tree_ewma = [50.0] * 5   # 每棵树的效果 EWMA
-        self._last_contribs = [0] * 5   # 上一轮的贡献值
         
     def _apply_weights(self, scores):
         """将权重应用于各树得分（加权求和，保持总分范围不变）"""
@@ -72,10 +71,10 @@ class PolicyVoter:
             scores[1] += 1
             reasons.append("内存上升中")
 
-        # 树5: 反事实优势 — 与全体有画像进程的平均预期释放对比（替代不存在的 kalman_advantage）
+        # 树5: 反事实优势 — 与其他有画像进程的平均预期释放对比（排除自身，防均值被自己抬高）
         if p and k_freed > 0:
             peers = [q.kalman.x_freed for q in learner.profiles.values()
-                     if q.kalman.x_freed > 0]
+                     if q is not p and q.kalman.x_freed > 0]
             if peers:
                 adv_mb = (k_freed - sum(peers) / len(peers)) / (1 << 20)
                 if adv_mb > 50:
@@ -84,11 +83,10 @@ class PolicyVoter:
                 elif adv_mb > 20:
                     scores[4] += 1
 
-        self._last_contribs = list(scores)
         # 加权求和决策：权重由 update_weights_per_trim 在线学习（可为负），使学习真正影响投票
         weighted = self._apply_weights(scores)
         return sum(weighted) >= 0, "; ".join(reasons[:3]) if reasons else "", list(scores)
-    
+
     def should_probe(self, name, ws, state, learner):
         """是否试探此进程 → (True/False, 理由)"""
         score = 0

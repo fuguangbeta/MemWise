@@ -13,7 +13,7 @@ PARAMS = {
     "pid_kd":             {"min": 0.05, "max": 0.50, "default": 0.10, "step": 0.05},
     "target_usage":       {"min": 35,   "max": 65,   "default": 60,   "step": 2},
     "cooloff_base":       {"min": 60,   "max": 360,  "default": 360,  "step": 30},
-    "learning_rate":      {"min": 0.05, "max": 0.40, "default": 0.30, "step": 0.02},  # 已传递至 record_clean(lr)，learner 侧暂未启用（待专项实验）
+    "learning_rate":      {"min": 0.10, "max": 0.90, "default": 0.50, "step": 0.05},  # EWMA 反馈学习率（λ）：接入 record_clean 的 gain/cost EWMA 主通道，fast/slow 趋势通道固定
     "composite_kalman_w": {"min": 0.10, "max": 0.50, "default": 0.30, "step": 0.05},
     "kalman_r":           {"min": 1.0,  "max": 20.0,  "default": 5.0,   "step": 1.0},
 }
@@ -98,12 +98,16 @@ class EfisController:
             "last_save": time.time(),
         }}
         tmp = efis_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
         try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, efis_path)
         except Exception:
-            pass
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
 
     def detect_scene(self, snaps, fore_fullscreen, mem_pct):
         names = [s.name.lower() for s in snaps]
@@ -196,6 +200,13 @@ class EfisController:
             results["cooloff_base"] = -1
         elif repeat_fail > max(trimmed_total * 0.05, 2):
             results["cooloff_base"] = +1
+        # 学习率（EWMA λ）：系统振荡大 → 降（平滑反馈，抑制 θ 抖动）；
+        # 稳定 + 压力低于目标 + 释放平庸 → 升（加速适应行为变化）
+        if mem_amp > 0.10 or (agg_change > 0.2 and pf_total / max(cycles_sec, 1) > 80):
+            results["learning_rate"] = -1
+        elif mem_amp < 0.04 and mem_avg < target and trimmed_total > 0 \
+                and freed_total / max(trimmed_total, 1) < 60:
+            results["learning_rate"] = +1
         if trimmed_total > 0 and freed_total / max(trimmed_total, 1) < 20:
             results["composite_kalman_w"] = -1
         elif trimmed_total > 0 and freed_total / max(trimmed_total, 1) > 100:
@@ -250,7 +261,7 @@ class EfisController:
                 })
             self.params[param] = new_val
             self._symptoms.pop(key, None)  # 删除而非置0，防止dict无限膨胀
-            self._last_adjust_cycle = self._cycle
+            self._last_adjust_cycle = self._cycle  # ERIS 用（当前 ERIS 走 _cycle+_adjust_log，字段保留兼容）
             # 内存中保留最近200条，防长期运行无限增长（持久化截取50条在save中）
             if len(self._adjust_log) > 200:
                 self._adjust_log = self._adjust_log[-100:]
@@ -261,6 +272,7 @@ class EfisController:
         PARAM_CN = {"deepen_theta":"深度门槛","layer3_agg_gate":"深层清理","pid_kp":"响应速度",
                     "pid_kd":"抑制震荡","target_usage":"目标内存",
                     "cooloff_base":"失败冷却","composite_kalman_w":"卡尔曼权重",
+                    "learning_rate":"学习速率",
                     "kalman_r":"卡尔曼噪声"}
         last = self._adjust_log[-1]
         cn = PARAM_CN.get(last['param'], last['param'])

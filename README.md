@@ -219,7 +219,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的 9 参数�
 | `pid_kd` | 0.10 | 0.05-0.50 | PID 微分增益（抑制震荡） |
 | `target_usage` | 60% | 35-65% | PID 控制目标内存占用百分比 |
 | `cooloff_base` | 360s | 60-360s | 失败冷却基准时长 |
-| `learning_rate` | 0.30 | 0.05-0.40 | 反馈学习速率（保留参数，不参与自动调参） |
+| `learning_rate` | 0.50 | 0.10-0.90 | EWMA 反馈学习率（接入收益/成本 EWMA：振荡大降、稳定低效升） |
 | `composite_kalman_w` | 0.30 | 0.10-0.50 | 复合评分中 Kalman 分量的权重 |
 | `kalman_r` | 5.0 | 1.0-20.0 | 卡尔曼观测噪声——值越大对新观测越不敏感 |
 
@@ -365,7 +365,7 @@ python memwise.py [command] [options]
 | `auto_start_daemon` | bool | `false` | 启动后自动守护 |
 | `auto_start_minimize` | bool | `false` | 启动后最小化 |
 | `close_action` | str | `"ask"` | 关闭按钮行为 |
-| `interval` | int | `30` | 守护基础周期（秒；daemon 实际固定 60 秒日志/图表周期） |
+| `interval` | int | `60` | 守护周期（秒；daemon 按此调度日志/图表与收割节奏） |
 | `gap_seconds` | int | `12` | 守护清理间隔（秒） |
 | `emergency_threshold` | int | `80` | 紧急触发阈值（%） |
 | `clean_passes` | int | `4` | 进程清理深度（2-6） |

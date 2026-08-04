@@ -33,6 +33,7 @@ def _build_pipeline():
     jcfg = {"kp": CFG.get("kp", 0.6), "ki": CFG.get("ki", 0.15),
             "kd": CFG.get("kd", 0.1), "target_usage": CFG.get("target_usage", 60),
             "never": CFG.get("never",[]),
+            "game_processes": CFG.get("game_processes",[]),
             "efis_params": CFG.get("efis_params",{})}
     judger = Judger(learner, jcfg)
     return learner, judger, Cleaner(judger)
@@ -65,7 +66,7 @@ def cmd_learn(args):
     except KeyboardInterrupt: print("\n中断")
     finally: learner.save(STATE_PATH); print(f"\n学习数据已保存")
     print(f"\n{SEP}")
-    print(f"{'进程名':<24} {'θ':>4} {'WS':>8} {'样本':>5} {'ROI':>6}")
+    print(f"{'进程名':<24} {'θ':>4} {'WS':>8} {'样本':>5} {'ROI(MB/PF)':>10}")
     print(SEP)
     for name, roi, theta, p in learner.top(25):
         ws = _mb(p.ws_deque[-1]) if p.ws_deque else 0
@@ -235,13 +236,18 @@ def cmd_profile(args):
     print(f"  页面错误: {mem['pf']}")
     if p:
         print(f"  Thompson θ: {p.thompson_theta:.2f}")
-        print(f"  ROI:        {p.roi:.2f}")
+        print(f"  ROI:        {p.roi:.2f} MB/PF")
         print(f"  Z-score:    {p.z_score:.2f}")
         print(f"  趋势:       {p.slope:.1f} bytes/tick")
         print(f"  泄漏:       {'⚠ 疑似' if p.leak_suspect else '正常'}")
         print(f"  清理:       {p.clean_count} 次 | Probe: {p.probe_ok}/{p.probe_ok+p.probe_fail}")
 
 def main():
+    # GBK 控制台/重定向时 emoji 输出不崩溃（替换为 ? 而非抛 UnicodeEncodeError）
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
     if len(sys.argv) < 2:
         print("MemWise v3.5.14 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
