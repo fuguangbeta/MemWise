@@ -99,7 +99,7 @@ class PareJudger:
         self._info_msgs = []
         self.pf_before = {}
         self._post_clean_ws = {}  # 进程清理后的 WS 基线
-        self._post_clean_time = {}  # 基线设置时间戳（30分钟过期）
+        self._post_clean_time = {}  # 基线设置时间戳（20分钟填满判定窗口 / 1小时过期清理）
         self._probe_last_time = {}
 
     # ── PID ──
@@ -173,6 +173,7 @@ class PareJudger:
             return False, "工作集太小"
 
         # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──
+        # 判定窗口 1200s（20 分钟）：期间 WS 未填满则不重复清理；窗口过后重新评估（基线本身 1 小时后过期清理）
         now = time.time()
         baseline = self._post_clean_ws.get(name, 0)
         bl_time = self._post_clean_time.get(name, 0)

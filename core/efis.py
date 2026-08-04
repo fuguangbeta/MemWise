@@ -137,10 +137,12 @@ class EfisController:
             return ""
         diag = self._diagnose()
         if diag:
+            n_before = len(self._adjust_log)
             self._apply(diag)
             self.save()
-            return self._format_log()
-        return ""  # 无调整不播报：避免重复显示上一条调整记录
+            if len(self._adjust_log) > n_before:
+                return self._format_log()
+        return ""  # 无实际调整不播报：顶格/症状未满/冲突冻结时不得重播旧记录（曾见 0.60→0.50 连续重播 11 轮）
 
     def _diagnose(self):
         w = list(self._window)

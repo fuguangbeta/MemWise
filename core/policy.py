@@ -6,7 +6,8 @@ import math
 import time
 
 class PolicyVoter:
-    """五树投票: 收益/代价/时机/紧迫/反事实 · 在线权重学习"""
+    """五树投票框架: 收益/代价/时机/紧迫/反事实 · 在线权重学习
+    当前启用树 1(收益)/2(压力)/5(反事实)，树 3(时机)/4(紧迫) 预留空实现（加权恒 0，不影响决策）"""
     
     def __init__(self):
         self._tree_weights = [1.0] * 5  # 五棵树初始等权重
@@ -115,7 +116,7 @@ class PolicyVoter:
             score += 1
             reasons.append("新进程")
         
-        # 树3: 资源约束 (内存压力大时少probe)
+        # 树3: 资源约束 (内存压力大时少probe)（框架预留编号：树1/2 为信息价值与记忆空缺）
         mem_pct = state.get("mem_pct", 50)
         if mem_pct > 80:
             score -= 1
