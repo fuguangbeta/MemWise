@@ -147,6 +147,7 @@ sys.path.insert(0, base)
 
 from core import winapi
 from core.learner import PareLearner as Learner
+from core.learner import _is_system_core  # 系统核心保护名单（进程排行终止保护等）
 from core.judger import PareJudger as Judger
 from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
@@ -1697,8 +1698,8 @@ class MemWiseGUI:
             except (ValueError, TypeError):
                 return
             import os
-            # 保护系统进程和自身
-            if pid <= 4 or pid == os.getpid():
+            # 保护系统进程、自身与核心保护名单（svchost/explorer/dwm 等同样禁止终止，防误杀系统进程）
+            if pid <= 4 or pid == os.getpid() or _is_system_core(name):
                 messagebox.showwarning("禁止终止", "不能终止系统进程或自身", parent=win)
                 return
             ok = messagebox.askyesno("终止进程",
@@ -2461,7 +2462,7 @@ class MemWiseGUI:
             if self.cleaner.game_mode:
                 return
             ops = set(CFG.get("clean_operations") or [])
-            use = {"standby", "standby_low", "modified", "registry"} & ops
+            use = {"standby", "modified", "registry"} & ops
             if use:
                 self.cleaner._layer1_memreduct(full=False, ops=use, clean_self=False)
             m = winapi.get_memory_status()
@@ -2472,7 +2473,7 @@ class MemWiseGUI:
             self._quick_light_running = False
 
     def _opt_worker(self):
-        mode = self.mode_var.get()
+        mode = CFG.get("clean_mode", "normal")  # 读 CFG 镜像（Tk 变量非线程安全，与守护线程同一规则）
         ops = CFG.get("clean_operations")
         try:
             snaps = []

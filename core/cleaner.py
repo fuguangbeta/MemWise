@@ -607,7 +607,8 @@ class PareCleaner:
             p = learner.get_profile(s.name)
             if p and p.total_samples >= 5:
                 slope = p.slope
-                if slope > 0.002 and s.ws > 50 << 20:
+                # 相对增长率 > 0.2%/tick（slope 单位字节/tick；原绝对值 0.002 字节/tick 几乎恒真，注释「快速增长」名不副实）
+                if slope > s.ws * 0.002 and s.ws > 50 << 20:
                     s._growth_bonus = min(0.3, slope * 30)
 
         # ── 进程树感知：同一父进程的子进程批量排序 ──
