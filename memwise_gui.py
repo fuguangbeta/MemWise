@@ -818,6 +818,15 @@ class MemWiseGUI:
     def _add_tip(self, w, txt):
         ToolTip(w, txt)
 
+    def _hk_display(self, key="hotkey"):
+        """热键配置 → 显示文案（如 ctrl+shift+m → Ctrl+Shift+M）"""
+        spec = CFG.get(key, "ctrl+shift+m" if key == "hotkey" else "ctrl+shift+g")
+        return "+".join(p.capitalize() for p in str(spec).split("+"))
+
+    def _interval_display(self):
+        """守护周期显示文案（配置驱动，默认 60）"""
+        return int(CFG.get("interval", 60))
+
     def _build_ui(self):
         # 内存状态 (Canvas 彩色条)
         f = ttk.LabelFrame(self.root, text="内存状态", padding=8)
@@ -866,7 +875,7 @@ class MemWiseGUI:
         self.btn_dae = ttk.Button(bf, text="⛨ 守护", command=self._on_daemon)
         self.btn_dae.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_dae,
-            "⛨ 后台守护模式，每 60 秒输出一轮清理结果\n"
+            f"⛨ 后台守护模式，每 {self._interval_display()} 秒输出一轮清理结果\n"
             "\n"
             "持续交替执行轻量压制与全量收割：\n"
             "  · 轻量阶段 — 系统级清理，高频温和，不影响使用\n"
@@ -930,7 +939,7 @@ class MemWiseGUI:
             "这些数据帮你判断哪些进程值得清理、哪些清完很快又涨回来")
 
         # 状态文字单独放一行，避免按钮被挤出
-        self.lbl_st = ttk.Label(bf, text="就绪 · Ctrl+Shift+M")
+        self.lbl_st = ttk.Label(bf, text=f"就绪 · {self._hk_display()}")
         self.lbl_st.pack(side="bottom", fill="x")
 
         # 模式选择
@@ -979,7 +988,7 @@ class MemWiseGUI:
             "  · 跳过全系统缓存清理，避免拖慢磁盘\n"
             "  · 最大化游戏可用内存\n"
             "\n"
-            "热键：Ctrl+Shift+G（可在设置 → 全局热键中更改）\n"
+            f"热键：{self._hk_display('game_hotkey')}（可在设置 → 全局热键中更改）\n"
             "⚠ 游戏进程名需先在设置 → 游戏模式中添加\n"
             "⚠ 按程序名自动识别运行中的实例，同名程序的所有实例都会被保护\n"
             "⚠ 常用辅助程序（语音、游戏平台）若受影响，可加入排除列表")
@@ -1191,7 +1200,7 @@ class MemWiseGUI:
             "程序启动后立即自动进入守护模式\n"
             "\n"
             "无需手动点击守护按钮，程序一打开就在后台运行。\n"
-            "每 60 秒输出一轮结果，持续自动优化。\n"
+            f"每 {self._interval_display()} 秒输出一轮结果，持续自动优化。\n"
             "配合启动后最小化到托盘使用效果更佳。")
 
         asm_var = tk.BooleanVar(value=CFG.get("auto_start_minimize", False))
@@ -2521,7 +2530,7 @@ class MemWiseGUI:
         self._upd_stats()
         self._optimizing = False
         self.btn_opt.configure(state="normal")
-        self.lbl_st["text"] = "就绪 · Ctrl+Shift+M"
+        self.lbl_st["text"] = f"就绪 · {self._hk_display()}"
 
     # ---- 守护 ----
 
@@ -2982,7 +2991,7 @@ class MemWiseGUI:
             self._log(f"🔍 {err}")
             del self._dae_error
         else:
-            self.lbl_st["text"] = "就绪 · Ctrl+Shift+M"; self._log_op("守护已停止")
+            self.lbl_st["text"] = f"就绪 · {self._hk_display()}"; self._log_op("守护已停止")
         self.learner.save(STATE_FILE); self._save_eris_ewma(); self._upd_stats(); self.root.after(100, self._draw_chart)
 
     # ---- 窗口事件 ----
