@@ -426,20 +426,22 @@ class PareCleaner:
                 0.2 * min(regrowth, 2.0) +
                 bonus)
     @staticmethod
-    def _bounded_submit(executor, fn, items, max_inflight, per_task_timeout, total_budget=60.0):
+    def _bounded_submit(executor, fn, items, max_inflight, per_task_timeout, idle_timeout=60.0):
         """滑动窗口分批提交：在途 ≤ max_inflight；超时判定基于任务的真实执行时长
         （排队等待不计时——排队任务保留在窗口直到开始执行，杜绝无辜进程排队超时被惩罚）。
-        total_budget 总预算：池线程卡死时防止无限循环（超预算丢弃剩余排队项，已提交任务自然完成）。
+        idle_timeout 无进展超时：仅当窗口长时间（默认 60s）既无任务完成也无任务开始时判定
+        池线程卡死并放弃剩余项（防无限循环）；正常慢任务全程等待、零截断——v3.6.47 曾用
+        总预算 20s 硬限导致每轮清理量被截断，恢复全量处理。
         返回 [(item, result)]；超时/异常任务的 result 为 None（任务自然跑完，结果丢弃）。"""
         out = []
         inflight = {}
         started = {}
         idx = 0
         n = len(items)
-        deadline = time.time() + total_budget
+        last_progress = time.time()
         while idx < n or inflight:
-            if time.time() > deadline:
-                # 总预算耗尽：剩余未提交项直接标记超时，已提交任务交给线程池自然完成（不阻塞调用方）
+            if time.time() - last_progress > idle_timeout:
+                # 无进展超时（池卡死）：剩余未提交项标记超时，已提交任务交给线程池自然完成（不阻塞调用方）
                 out.extend((item, None) for item in items[idx:])
                 idx = n
                 inflight.clear()
@@ -457,6 +459,8 @@ class PareCleaner:
             done, not_done = concurrent.futures.wait(
                 inflight, timeout=per_task_timeout,
                 return_when=concurrent.futures.FIRST_COMPLETED)
+            if done:
+                last_progress = time.time()
             for f in done:
                 item = inflight.pop(f)
                 started.pop(item, None)
@@ -473,6 +477,7 @@ class PareCleaner:
                     item = inflight.pop(f)
                     started.pop(item, None)
                     out.append((item, None))
+                    last_progress = time.time()
         return out
 
     def _layer2_process(self, snaps, learner):
@@ -588,7 +593,7 @@ class PareCleaner:
             fn = functools.partial(self._probe_process, learner=learner)
             for s, r in self._bounded_submit(self._probe_executor, fn, probe_list,
                                              max_inflight=self._max_workers * 2,
-                                             per_task_timeout=4, total_budget=20):
+                                             per_task_timeout=4):
                 if r is None:
                     ok, freed = False, 0
                     with self._lock:
@@ -637,7 +642,7 @@ class PareCleaner:
             fn = functools.partial(self._trim_process, learner=learner)
             for s, r in self._bounded_submit(self._trim_executor, fn, candidates,
                                              max_inflight=self._max_workers * 2,
-                                             per_task_timeout=8, total_budget=20):
+                                             per_task_timeout=8):
                 if r is None:
                     # 执行超时（排队不计时）：递增冷却 + Thompson 惩罚，与历史超时处理一致
                     ok, freed, pf_delta, reason = False, 0, 0, "超时"
@@ -729,7 +734,7 @@ class PareCleaner:
             fn = functools.partial(self._trim_process, learner=learner)
             for _s, _r in self._bounded_submit(self._trim_executor, fn, d_candidates,
                                                max_inflight=self._max_workers * 2,
-                                               per_task_timeout=8, total_budget=30):
+                                               per_task_timeout=8):
                 pass  # 结果无需收集（与旧 as_completed 语义一致：只执行不统计）
 
     # ── 统一入口 ──
