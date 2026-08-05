@@ -31,7 +31,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 | 阶段 | 内容 |
 |------|------|
-| 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-25 秒），释放多则缩短、释放少则延长 |
+| 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒），释放多则缩短、释放少则延长 |
 | gap fill 轻量压制 | 高频阶段仅执行注册表缓存清理（零磁盘影响）；standby 与脏页写回由 gap 末 optimize 统一执行——缓存有累积时间，单次释放量更大 |
 | 多次 harvest | 周期内执行 2-3 次完整的 optimize pass（normal 模式），每次含 Layer2 进程修剪 + Layer1 管线（高频 gap 阶段不触发深度聚合） |
 | 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（normal 5 步 / deep 8 步 / full 8 步+回弹二轮）→ Layer3 深度聚合 |
