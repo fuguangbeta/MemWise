@@ -730,8 +730,11 @@ def report_event(source, message, level=EVENTLOG_INFORMATION_TYPE):
 # ── 开机自启（IShellLink 纯 API，不碰 PowerShell / WScript）──
 
 _CLSID_ShellLink = (b"\x01\x14\x02\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46")
-_IID_IShellLinkW = (b"\x92\xca\x80\xee\x42\x74\x11\xd2\xb3\xed\x00\xc0\x4f\x99\x0e\x17")
-_IID_IPersistFile = (b"\x01\x10\x0b\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46")
+# 标准 IID_IShellLinkW = {000214F9-0000-0000-C000-000000000046}（小端字节）
+# 曾误用 {EE80CA92-4274-11D2-B3ED-00C04F990E17} → CoCreateInstance 返回 E_NOINTERFACE → 普通自启静默失效
+_IID_IShellLinkW = (b"\xf9\x14\x02\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46")
+# 标准 IID_IPersistFile = {0000010B-0000-0000-C000-000000000046}（小端字节；曾写反为 01 10 0B 00 → QI 失败）
+_IID_IPersistFile = (b"\x0b\x01\x00\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46")
 
 class GUID(ctypes.Structure):
     _fields_ = [("Data1", w.DWORD), ("Data2", w.WORD), ("Data3", w.WORD),
