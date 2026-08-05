@@ -39,3 +39,7 @@ Thumbs.db
 
 .gh_token
 memwise.log
+
+config/*.bak*
+config/config.yaml
+*.json
