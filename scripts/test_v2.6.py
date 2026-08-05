@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-MemWise v3.6.47 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v3.7.09 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -54,7 +54,7 @@ for n,a,b in [("chrome.exe",5,1),("msedge.exe",4,2),("firefox.exe",6,1)]:
 check("peer avg θ>0.35", HierarchicalPrior.initial_theta("brave.exe",profiles)>0.35)
 check("unknown θ=0.35", HierarchicalPrior.initial_theta("x.exe",{})==0.35)
 
-print("\n[3] SYSTEM_CORE 保护名单（v3.6.47 修复：快照名带 .exe，派生集统一入口）")
+print("\n[3] SYSTEM_CORE 保护名单（v3.7.09 修复：快照名带 .exe，派生集统一入口）")
 check("exe 派生集完备", "svchost.exe" in SYSTEM_CORE_EXE and "explorer.exe" in SYSTEM_CORE_EXE)
 check("svchost.exe 命中", _is_system_core("svchost.exe") is True)
 check("无后缀也命中", _is_system_core("svchost") is True)
@@ -224,7 +224,7 @@ check("not dict", not validate_state("string", [0.0]*5, W))
 check("empty bufs ok", validate_state([[]]*5, [0.0]*5, W))
 
 # ═══════════════════════════════════════════
-# ── 全量审查修复回归（v3.6.47 追加）──
+# ── 全量审查修复回归（v3.7.09 追加）──
 try:
     # learner.top(n)：CLI learn 依赖（曾缺失导致 AttributeError 崩溃）
     lt = PareLearner()
