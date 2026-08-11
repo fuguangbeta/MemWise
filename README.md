@@ -14,7 +14,7 @@ MemWise 释放的是"暂时用不到的内存"，它不能让物理内存凭空�
 
 MemWise 不终止进程、不挂起线程、不注入代码、不访问网络，也没有任何附带组件。它仅使用 Windows 公开的 API，代码完全开源。
 
-由于不联网，MemWise 自身无法做到自动更新。当新版本发布时，需要用户自行前往release页面查看与下载。这算是不联网带来的一个小小不便——不过相应地，程序自始至终不会与任何服务器通信，我们可以在个人设备上毫无泄露数据顾虑地使用它。
+由于不联网，MemWise 自身无法做到自动更新。当新版本发布时，需要用户自行前往 Releases 页面查看与下载。这算是不联网带来的一个小小不便——不过相应地，程序自始至终不会与任何服务器通信，我们可以在个人设备上毫无泄露数据顾虑地使用它。
 
 如果你正在为内存紧张而困扰，希望这个工具能帮上一点忙；也欢迎在使用中提出意见，让它变得更好。
 
@@ -30,7 +30,7 @@ MemWise 不终止进程、不挂起线程、不注入代码、不访问网络，
 
 *MemWise terminates no processes, suspends no threads, injects no code, and touches no network, with no bundled components. It uses only public Windows APIs, and the source is fully open.*
 
-*Since MemWise does not connect to the network, it cannot update itself. When a new version is released, users will need to visit the release page and download it themselves. This is a small inconvenience of being offline — in return, the program never communicates with any server, so it can be used on personal devices without any concern about data leakage.*
+*Since MemWise does not connect to the network, it cannot update itself. When a new version is released, users will need to visit the Releases page and download it themselves. This is a small inconvenience of being offline — in return, the program never communicates with any server, so it can be used on personal devices without any concern about data leakage.*
 
 *If memory pressure has been troubling you, I hope this tool helps a little; and if you have suggestions along the way, they would be most welcome.*
 
