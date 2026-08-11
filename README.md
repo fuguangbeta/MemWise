@@ -457,3 +457,15 @@ MemWise/
 ---
 
 > [GitHub Releases](https://github.com/fuguangbeta/MemWise/releases) — 下载最新版本 · *Download Latest Release*
+
+---
+
+## 支持与赞赏 · *Support & Appreciation*
+
+如果你觉得 MemWise 帮上了忙，并且有充足的意愿和赞赏渠道支持这个小小的项目，可以扫一扫下方的微信赞赏码——赞赏本身比钞票面值更有意义！当然，你的使用与反馈本身就是对我最大的支持！
+
+*If MemWise has been helpful, and you have the willingness and means to appreciate this small project, feel free to scan the WeChat reward QR code below — the appreciation itself means more than the amount. Of course, your usage and feedback are already the greatest support.*
+
+<p align="center">
+  <img src="assets/donate.png" width="240" alt="微信赞赏码 · WeChat Reward QR Code">
+</p>
