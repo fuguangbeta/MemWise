@@ -193,7 +193,7 @@ def cmd_auto_start(args):
     else:
         pythonw = sys.executable.replace("python.exe", "pythonw.exe")
         target = pythonw if os.path.isfile(pythonw) else sys.executable
-        arg = os.path.abspath(__file__) + " daemon --minimized"
+        arg = f'"{os.path.abspath(__file__)}" daemon --minimized'  # 引号：脚本路径含空格时快捷方式仍可解析
         wd = os.path.dirname(os.path.abspath(__file__))
     if args[0] == "on":
         ok = winapi.set_auto_start("MemWise", target, arg, wd)

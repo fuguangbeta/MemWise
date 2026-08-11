@@ -860,33 +860,33 @@ class MemWiseGUI:
         self.btn_opt = ttk.Button(bf, text="⚡ 优化", command=self._on_optimize)
         self.btn_opt.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_opt,
-            "⚡ 按当前选择的清理模式立即执行一次优化\n"
+            "按当前选择的清理模式立即执行一次优化\n"
             "\n"
             "四种力度由轻到重：\n"
             "  · quick — 仅系统级清理，零卡顿，适合随手一点\n"
             "  · normal — 进程级 + 系统级清理，日常使用无副作用\n"
             "  · deep — 追加文件缓存清理和深层重复回收\n"
-            "  · full — 极限释放，关闭大量程序后效果最好\n"
+            "  · full — 极限释放，尽最大可能腾出内存空间（含二次回收）\n"
             "\n"
             "进程级清理由智能评分引擎决定优先清理谁，\n"
             "并通过清理前后的缺页变化来验证效果。\n"
             "游戏模式下游戏进程受绝对保护，其余进程被持续智能清理。\n"
             "\n"
-            "守护运行中点击：改为即时执行一次轻量系统清理\n"
+            "守护运行中点击：执行一次即时轻量系统清理\n"
             "（游戏进行中会跳过，保障流畅）\n"
             "\n"
             "⚠ 缓存类清理需要管理员权限\n"
-            "⚠ deep/full 清文件缓存后，打开大文件可能短暂变慢")
+            "⚠ deep/full 清理文件缓存后，打开大文件可能短暂变慢")
         self.btn_dae = ttk.Button(bf, text="⛨ 守护", command=self._on_daemon)
         self.btn_dae.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_dae,
-            f"⛨ 后台守护模式，每 {self._interval_display()} 秒输出一轮清理结果\n"
+            f"后台守护模式，每 {self._interval_display()} 秒输出一轮清理结果\n"
             "\n"
             "持续交替执行轻量压制与全量收割：\n"
             "  · 轻量阶段 — 系统级清理，高频温和，不影响使用\n"
             "  · 收割阶段 — 按你选的清理模式全力释放进程内存\n"
             "\n"
-            "内置自适应调参，自动根据系统状态调整清理策略。\n"
+            "自动调整清理策略，根据系统状态持续优化。\n"
             "游戏模式自动检测或手动开启，保护游戏性能。\n"
             "程序意外崩溃后自动恢复。\n"
             "\n"
@@ -895,7 +895,7 @@ class MemWiseGUI:
         self.btn_stop = ttk.Button(bf, text="▶ 停止", command=self._stop_daemon, state="disabled")
         self.btn_stop.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_stop,
-            "▶ 停止后台自动清理\n"
+            "停止后台自动清理\n"
             "\n"
             "停止后已学习的数据（各进程的行为画像、清理历史、释放量统计）\n"
             "会自动保存，下次启动继续使用，不会丢失。\n"
@@ -903,7 +903,7 @@ class MemWiseGUI:
         self.btn_excl = ttk.Button(bf, text="⚙ 排除", command=self._edit_exclusion_list)
         self.btn_excl.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_excl,
-            "⚙ 进程排除列表\n"
+            "进程排除列表\n"
             "\n"
             "在这里添加不想被清理的程序（输入程序名如 chrome，不带后缀自动补全）。\n"
             "添加后该进程将被完全跳过：\n"
@@ -918,21 +918,22 @@ class MemWiseGUI:
         self.btn_set = ttk.Button(bf, text="☰ 设置", command=self._open_settings)
         self.btn_set.pack(side="left")
         self._add_tip(self.btn_set,
-            "☰ 打开详细设置面板\n"
+            "打开详细设置面板\n"
             "\n"
             "可配置的内容：\n"
-            "  清理操作 — 8 种操作独立开关\n"
+            "  清理操作 — 6 种操作独立开关\n"
             "  触发与日志 — 紧急阈值、守护间隔、托盘行为、文件日志、清理深度\n"
-            "  游戏模式 — 管理自定义游戏进程名单\n"
+            "  游戏模式 — 管理游戏进程名单\n"
             "  关闭行为 — 窗口关闭时最小化或退出\n"
             "\n"
             "清理模式在主界面下拉框切换（quick / normal / deep / full）")
         self.btn_log = ttk.Button(bf, text="📜 学习日志", command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_log,
-            "📜 查看每个进程的详细学习数据\n"
+            "查看每个进程的详细学习数据\n"
             "\n"
             "各列含义：\n"
+            "  · 样本 — 已观察到的数据量，越多判断越可靠\n"
             "  · α / β — 历史成功与失败的累计次数，决定可信度评分\n"
             "  · 可信度 — 越高越值得清理，综合了历史表现和预期收益\n"
             "  · 收益比 — 预期释放量(MB) vs 性能代价(PF)，性价比参考\n"
@@ -967,8 +968,8 @@ class MemWiseGUI:
             "  deep — 追加文件缓存清理和深层重复回收\n"
             "    适合：内存偏紧，接受文件打开短暂变慢\n"
             "\n"
-            "  full — 极限释放，关闭大量程序后效果最好\n"
-            "    适合：清出极限空间\n"
+            "  full — 极限释放，尽最大可能腾出内存空间（含二次回收）\n"
+            "    适合：内存告急，需要立刻腾出最多空间\n"
             "\n"
             "⚠ 切换后守护模式即时生效，无需重启")
         # 自动持久化清理模式选择
@@ -985,7 +986,7 @@ class MemWiseGUI:
         self.btn_game = ttk.Button(mf, text="🎮 游戏模式", command=self._on_toggle_game)
         self.btn_game.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_game,
-            "🎮 手动开启或关闭游戏模式\n"
+            "手动开启或关闭游戏模式\n"
             "\n"
             "开启后：\n"
             "  · 游戏进程受绝对保护，不被触碰\n"
@@ -994,13 +995,13 @@ class MemWiseGUI:
             "  · 最大化游戏可用内存\n"
             "\n"
             f"热键：{self._hk_display('game_hotkey')}（可在设置 → 全局热键中更改）\n"
-            "⚠ 游戏进程名需先在设置 → 游戏模式中添加\n"
+            "⚠ 程序默认不识别任何游戏——需先在设置 → 游戏模式中添加进程名，添加后才自动识别保护\n"
             "⚠ 按程序名自动识别运行中的实例，同名程序的所有实例都会被保护\n"
             "⚠ 常用辅助程序（语音、游戏平台）若受影响，可加入排除列表")
         self.btn_rank = ttk.Button(mf, text="📊 进程排行", command=self._show_process_rank)
         self.btn_rank.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_rank,
-            "📊 查看当前所有进程的内存占用排行\n"
+            "查看当前所有进程的内存占用排行\n"
             "\n"
             "按内存占用从大到小排列，实时快照。\n"
             "快速定位哪些进程最占内存。\n"
@@ -1131,7 +1132,7 @@ class MemWiseGUI:
             else:
                 pythonw = sys.executable.replace("python.exe", "pythonw.exe")
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
-                args = os.path.abspath(__file__); wd = base
+                args = f'"{os.path.abspath(__file__)}"'; wd = base  # 引号：脚本路径含空格时快捷方式仍可解析
             if en:
                 winapi.set_auto_start("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""), wd)
                 # 互斥：启用普通自启时移除管理员自启任务（避免开机双启动）
@@ -1164,7 +1165,7 @@ class MemWiseGUI:
             else:
                 pythonw = sys.executable.replace("python.exe", "pythonw.exe")
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
-                args = os.path.abspath(__file__); wd = base
+                args = f'"{os.path.abspath(__file__)}"'; wd = base  # 引号：脚本路径含空格时快捷方式仍可解析
             if en:
                 ok = winapi.set_auto_start_admin("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""))
                 if ok:
@@ -1317,12 +1318,11 @@ class MemWiseGUI:
             "管理需要识别的游戏程序名\n"
             "\n"
             "在一个窗口内完成：\n"
-            "  · 查看 — 列出全部自定义条目\n"
+            "  · 查看 — 列出全部已配置条目\n"
             "  · 添加 — 逗号分隔批量输入，如 cities, stellaris\n"
             "  · 删除 — 选中后删除，写错/误加/不想要随时移除\n"
             "\n"
             "不带后缀会自动补全，改动即时保存，守护模式检测到后自动开启游戏保护。\n"
-            "内置名单为程序自带，不可修改。\n"
             "\n"
             "⚠ 同名程序的所有实例都会被识别")
         ttk.Label(ops_frame, text="（未勾选 = 不执行对应系统清理）",
@@ -1408,7 +1408,7 @@ class MemWiseGUI:
         # ─── 全局热键（独立栏，汇总所有热键） ───
         hkf = ttk.LabelFrame(inner_frame, text="全局热键", padding=8)
         hkf.pack(fill="x", padx=12, pady=4)
-        ttk.Label(hkf, text="格式：修饰键+按键，如 ctrl+shift+m / alt+f1 / shift+f5",
+        ttk.Label(hkf, text="格式：修饰键+按键\n如 ctrl+shift+m / alt+f1 / shift+f5",
                   foreground="#888").pack(anchor="w")
         for hk in HOTKEYS:
             row = ttk.Frame(hkf); row.pack(fill="x", pady=(4,0))
@@ -1541,7 +1541,7 @@ class MemWiseGUI:
     # ---- 进程内存排行 ----
 
     def _manage_game_procs(self):
-        """一体化游戏进程管理：列出/添加/删除自定义条目，内置名单只读展示"""
+        """一体化游戏进程管理：列出/添加/删除游戏进程条目"""
         win = tk.Toplevel(self.root)
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -1552,12 +1552,10 @@ class MemWiseGUI:
         win.lift()
         _center_geometry(win, 460, 480)
 
-        import core.cleaner as _cm
-        builtin = sorted(_cm.GAME_PROCESSES)
         games = [g for g in (CFG.get("game_processes", []) or [])]
 
-        # ── 自定义条目列表 ──
-        ttk.Label(win, text="自定义游戏进程（可添加/删除）：").pack(anchor="w", padx=12, pady=(12,2))
+        # ── 游戏进程列表 ──
+        ttk.Label(win, text="游戏进程（可添加/删除）：").pack(anchor="w", padx=12, pady=(12,2))
         listf = ttk.Frame(win); listf.pack(fill="both", expand=True, padx=12)
         lb = tk.Listbox(listf, width=46, height=8, font=("Microsoft YaHei", 10),
                         selectbackground="#419EF3", activestyle="none")
@@ -1567,12 +1565,16 @@ class MemWiseGUI:
         scroll.pack(side="right", fill="y")
         for g in games:
             lb.insert("end", g)
+        if not games:
+            ttk.Label(win, text="尚未配置游戏进程——添加进程名后，游戏模式才会自动识别并保护",
+                      foreground="#888").pack(anchor="w", padx=12)
 
         # ── 添加区 ──
-        addf = ttk.Frame(win); addf.pack(fill="x", padx=12, pady=6)
-        entry = ttk.Entry(addf, width=32)
+        addf = ttk.Frame(win); addf.pack(fill="x", padx=12, pady=(6,0))
+        ttk.Label(addf, text="逗号分隔，不带后缀自动补全").pack(anchor="w")
+        row = ttk.Frame(win); row.pack(fill="x", padx=12, pady=(2,6))
+        entry = ttk.Entry(row, width=22)
         entry.pack(side="left")
-        ttk.Label(addf, text="逗号分隔，不带后缀自动补全").pack(side="left", padx=(6,0))
 
         def add():
             raw = [_normalize_proc_name(n) for n in entry.get().split(",") if n.strip()]
@@ -1598,8 +1600,8 @@ class MemWiseGUI:
             for n in new_names:
                 lb.insert("end", n)
             entry.delete(0, "end")
-            info.config(text=f"自定义 {len(lb.get(0, 'end'))} 款 · 内置 {len(builtin)} 款（内置不可修改）")
-        ttk.Button(addf, text="添加", command=add).pack(side="left", padx=(6,0))
+            info.config(text=f"已配置 {len(lb.get(0, 'end'))} 款游戏进程")
+        ttk.Button(row, text="添加", command=add).pack(side="left", padx=(6,0))
         entry.bind("<Return>", lambda e: add())
         entry.focus_set()
 
@@ -1611,7 +1613,7 @@ class MemWiseGUI:
                 return
             name = lb.get(sel[0])
             if not messagebox.askyesno("删除游戏进程",
-                    f"确定从自定义名单中移除「{name}」吗？\n\n内置名单不受影响。", parent=win):
+                    f"确定移除「{name}」吗？", parent=win):
                 return
             lb.delete(sel[0])
             cur = CFG.get("game_processes", []) or []
@@ -1619,22 +1621,13 @@ class MemWiseGUI:
             _save_cfg()
             # 同步 judger 运行时名单
             self.judger.cfg["game_processes"] = list(CFG["game_processes"])
-            info.config(text=f"自定义 {len(lb.get(0, 'end'))} 款 · 内置 {len(builtin)} 款（内置不可修改）")
+            info.config(text=f"已配置 {len(lb.get(0, 'end'))} 款游戏进程")
         ttk.Button(delf, text="删除选中", command=remove).pack(side="left")
 
-        # ── 内置名单只读展示 ──
-        info = ttk.Label(win, text=f"自定义 {len(games)} 款 · 内置 {len(builtin)} 款（内置不可修改）",
+        # ── 配置状态展示 ──
+        info = ttk.Label(win, text=f"已配置 {len(games)} 款游戏进程",
                          foreground="#888")
         info.pack(anchor="w", padx=12, pady=(4,2))
-        bf2 = ttk.Frame(win); bf2.pack(fill="x", padx=12, pady=(0,12))
-        lbl_builtin = tk.Text(bf2, height=4, width=56, font=("Microsoft YaHei", 9),
-                              state="disabled", wrap="word", bg="#f5f5f5")
-        lbl_builtin.pack(fill="both")
-        lbl_builtin.configure(state="normal")
-        lbl_builtin.insert("end", "  " + ", ".join(builtin[:25]))
-        if len(builtin) > 25:
-            lbl_builtin.insert("end", f"  ... 及其他 {len(builtin) - 25} 款")
-        lbl_builtin.configure(state="disabled")
         win.deiconify()  # 全部控件就绪，居中后一次显示
 
     def _show_process_rank(self):

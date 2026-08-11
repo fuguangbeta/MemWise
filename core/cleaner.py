@@ -8,67 +8,9 @@ import time, concurrent.futures, threading, os, functools
 from . import winapi
 from .learner import _is_system_core
 
-# ── 常见游戏进程名单（自动检测用）──
-GAME_PROCESSES = {
-    # Valve / Source
-    "cs2.exe", "csgo.exe", "dota2.exe", "tf2.exe", "left4dead2.exe",
-    "hl2.exe", "portal2.exe", "teamfortress2.exe",
-    # Riot
-    "valorant.exe", "league of legends.exe", "lol.exe", "leagueclient.exe",
-    # Blizzard
-    "wow.exe", "world of warcraft.exe", "overwatch.exe", "hearthstone.exe",
-    "diablo3.exe", "diablo4.exe", "diablo ii.exe", "d2r.exe",
-    "starcraft.exe", "sc2.exe", "heroes of the storm.exe",
-    # Epic / Unreal
-    "rocketleague.exe", "fortnite.exe", "fortniteclient.exe",
-    # EA
-    "bf1.exe", "bf2042.exe", "battlefield.exe", "fifa.exe",
-    "fc24.exe", "fc25.exe", "madden.exe", "sims4.exe",
-    # Ubisoft
-    "forhonor.exe", "rainbowsix.exe", "r6.exe", "ghostrecon.exe",
-    "far cry.exe", "farcry6.exe", "assassins creed.exe", "ac.exe",
-    # Rockstar
-    "gta5.exe", "gtav.exe", "rdr2.exe", "launcher.exe",
-    # Bethesda
-    "skyrim.exe", "skyrimse.exe", "fallout4.exe", "starfield.exe",
-    # FromSoftware
-    "eldenring.exe", "sekiro.exe", "dark souls.exe", "ds.exe",
-    # CD Projekt
-    "cyberpunk2077.exe", "witcher3.exe", "w3.exe",
-    # Other AAA / popular
-    "minecraft.exe",  # MC launcher（Java 版 javaw 为通用运行时名，不列入内置名单防误判，用户可自定义添加）
-    "cities.exe", "cities skylines.exe", "cities2.exe",  # 都市天际线 1/2
-    "monsterhunterworld.exe", "mhw.exe",
-    "streetfighter6.exe", "sf6.exe", "tekken8.exe",
-    "cod.exe", "call of duty.exe", "warzone.exe",
-    "apex_legends.exe", "apex legends.exe",
-    "destiny2.exe", "pathofexile.exe", "poe.exe",
-    "guild wars 2.exe", "gw2.exe", "finalfantasyxiv.exe", "ffxiv.exe",
-    "lost ark.exe", "lostaek.exe",
-    # miHoYo / HoYoverse
-    "honkai3rd.exe", "honkai impact 3rd.exe", "bh3.exe",
-    "genshinimpact.exe", "genshin impact.exe", "yuanshen.exe",
-    "star rail.exe", "hkrpg.exe",
-    "zzz.exe", "zenless zone zero.exe",
-    # 国产游戏
-    "wuxia.exe", "guijian.exe", "xianjian.exe", "pal5.exe", "pal5q.exe", "pal6.exe",
-    "jianwang3.exe", "jx3.exe", "jxsan.exe", "jxs.exe",
-    "wuying.exe", "yunding.exe",
-    "nba2k.exe", "nba2konline.exe",
-    "cf.exe", "crossfire.exe",
-    "dnf.exe", "dnfchina.exe",
-    "lol.exe",  # duplicate but explicit
-    # Steam / general
-    "eurotrucks2.exe", "ats.exe",
-    "terraria.exe", "stardew valley.exe",
-    "hades.exe", "dead cells.exe",
-    "rimworld.exe", "factorio.exe",
-    # UWP / Xbox
-    "forza horizon 4.exe", "forza horizon 5.exe", "forza.exe",
-    "halo infinite.exe", "halo.exe",
-    "gears 5.exe", "gears.exe",
-    "mc.exe", "minecraftuwp.exe",
-}
+# ── 游戏进程名单（2026-08-11：默认不再内置，由用户自行配置——内置通用进程名
+# （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
+GAME_PROCESSES = set()
 
 
 
@@ -394,7 +336,7 @@ class PareCleaner:
         return efis.get("learning_rate", None)
 
     def _get_user_game_procs(self):
-        """合并内置游戏名单 + 用户自定义的游戏进程（统一规范化：小写 + 补 .exe 后缀——
+        """合并游戏进程名单（用户自定义，统一规范化：小写 + 补 .exe 后缀——
         配置中无后缀条目（手改 config/旧数据）也能精准匹配快照进程名）"""
         extra = set()
         for n in self.judger.cfg.get("game_processes", []):
@@ -425,20 +367,12 @@ class PareCleaner:
         return result
 
     def _is_user_game_running(self, snaps):
-        """检测游戏运行（内置名单 + 用户自定义 + 全屏窗口检测）"""
+        """检测游戏运行——仅用户自定义名单匹配（2026-08-11：全屏窗口不再独立触发，
+        视频/远程桌面等全屏误判会误启游戏模式；用户配置什么就识别什么）"""
         all_games = self._get_user_game_procs()
-        game_procs = set()
         for s in snaps:
             if s.name.lower() in all_games:
-                game_procs.add(s.name.lower())
-        if game_procs:
-            return True
-        # 全屏检测：前台窗口覆盖全屏且非已知系统窗口 → 视为游戏
-        try:
-            if winapi.is_foreground_fullscreen():
                 return True
-        except Exception:
-            pass
         return False
 
     # 每 tick 最多清理的进程数，防止串行 sleep 堆积超时

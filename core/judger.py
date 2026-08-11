@@ -18,7 +18,21 @@ DEFAULT_KD = 0.15   # 微分系数 — 抑制震荡 (快速升压时提前响应
 TARGET_USAGE = 30.0  # 目标内存使用率 (%) — 对标 MemReduct 极致优化
 DT = 5.0             # 控制周期 (秒，匹配 daemon tick)
 
-SYSTEM_DIR_PREFIXES = ("c:\\windows\\", "c:\\program files\\", "c:\\program files (x86)\\")
+def _system_path_prefixes():
+    """系统目录前缀（动态获取，非硬编码 C 盘——换机器/系统盘非 C 盘时依然有效）"""
+    if _system_path_prefixes._cache is not None:
+        return _system_path_prefixes._cache
+    prefixes = set()
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    prefixes.add(root.lower() + "\\")
+    for k in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        v = os.environ.get(k)
+        if v:
+            prefixes.add(v.lower() + "\\")
+    _system_path_prefixes._cache = tuple(sorted(prefixes))
+    return _system_path_prefixes._cache
+
+_system_path_prefixes._cache = None
 
 
 class PidController:
@@ -343,7 +357,7 @@ class PareJudger:
         if not path:
             return False
         p = path.lower()
-        return any(p.startswith(prefix) for prefix in SYSTEM_DIR_PREFIXES)
+        return any(p.startswith(prefix) for prefix in _system_path_prefixes())
 
 
 
