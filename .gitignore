@@ -33,7 +33,7 @@ venv/
 *.swp
 *.swo
 
-# ZCode 工作区（个人知识库，含敏感记忆，不进仓库）
+# Local workspace data
 .zcode/
 
 # OS
