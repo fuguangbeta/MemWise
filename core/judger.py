@@ -81,13 +81,10 @@ class PareJudger:
         self.learner = learner
         self.cfg = config
         self.game_mode = False
-        self._game_proc_set = set()  # 当前检测到的游戏进程名集合
         self._game_pid_set = set()  # 当前检测到的游戏进程 PID 集合（精确保护）
         # 游戏模式参数覆盖（游戏本体由 PID 精确保护，前台/冷却与常规一致避免误伤）
         self._game_overrides = {
-            "fg_gate": 0.35,      # 前台非游戏程序保持保护（游戏全屏时前台即游戏，已被 PID 保护）
             "min_ws": 524288,     # 0.5MB（正常 1MB）
-            "cooloff_base": 300,  # 与常规一致：失败进程不快速重试（避免反复清同一批）
         }
         efis_cfg = config.get("efis_params", {})
         self.pid = PidController(
@@ -165,7 +162,7 @@ class PareJudger:
         is_fg = getattr(snap, "fg", False)
 
         # 游戏模式参数覆盖
-        fg_gate = self._game_overrides["fg_gate"] if self.game_mode else 0.35
+        fg_gate = 0.35  # 前台非游戏程序保持保护（游戏全屏时前台即游戏，已被 PID 保护）
         min_ws_gate = self._game_overrides["min_ws"] if self.game_mode else (1 << 20)
         
         efis = self.cfg.get("efis_params", {})
@@ -177,12 +174,23 @@ class PareJudger:
             return False, "工作集太小"
 
         # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──
-        # 判定窗口 1200s（20 分钟）：期间 WS 未填满则不重复清理；窗口过后重新评估（基线本身 1 小时后过期清理）
+        # 判定窗口按回填速率动态化：慢回填拉长重评间隔（避免低效重复清），快回填保持灵敏；
+        # 默认 1200s，范围 [120, 3600]；ws 已超基线时直接放行（不受窗口影响）
         now = time.time()
         baseline = self._post_clean_ws.get(name, 0)
         bl_time = self._post_clean_time.get(name, 0)
-        if baseline > 0 and now - bl_time <= 1200:
-            if snap.ws <= baseline:return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline)})"
+        if baseline > 0:
+            window = 1200
+            p_win = self.learner.get_profile(name)
+            if p_win and p_win.refill_ewma > 0:
+                remain = max(0, baseline - snap.ws)
+                if remain > 0:
+                    est = int(remain / p_win.refill_ewma * 3)  # 预计回填时间 ×3 裕量
+                    window = max(120, min(3600, est))
+                else:
+                    window = 120
+            if now - bl_time <= window:
+                if snap.ws <= baseline:return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline)})"
         # ── 失败冷却检查（仅 mark_failed 设置的）──
         cd = self.cooldown.get(name, 0)
         if now < cd: return False, f"失败冷却中({int(cd-now)}s)"
@@ -277,12 +285,12 @@ class PareJudger:
         """失败冷却: 超时/失败次数越多，冷却越长（最多 4 倍）"""
         name = name.lower()
         efis = self.cfg.get("efis_params", {})
-        cooloff_base = efis.get("cooloff_base", self._game_overrides["cooloff_base"] if self.game_mode else 300)
+        cooloff_base = efis.get("cooloff_base", 300)
         cd = cooloff_base * min(4, fail_count)
-        # 自适应冷却：回填快的进程缩短冷却，回填慢的保持或延长
+        # 自适应冷却：快速回填（>256KB/s）的进程缩短冷却，普通回填保持基准
         if hasattr(self.learner, 'get_profile'):
             p = self.learner.get_profile(name)
-            if p and hasattr(p, 'refill_ewma') and p.refill_ewma > 50:
+            if p and hasattr(p, 'refill_ewma') and p.refill_ewma > (256 << 10):
                 ratio = min(5.0, p.refill_ewma / 100.0)
                 cd = max(60, cd / ratio)
         self.cooldown[name] = time.time() + cd

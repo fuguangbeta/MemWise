@@ -1,16 +1,24 @@
 import time
+import threading
 from . import winapi
 
 class ProcessSnapshot:
-    __slots__ = ("pid","name","ws","pf","priv","cpu","fg","path","_growth_bonus","_tree_scores")
-    def __init__(self, pid, name, ws, pf, priv, cpu, fg, path=None):
+    __slots__ = ("pid","name","ws","pf","priv","cpu","fg","path","parent","_growth_bonus","_tree_scores")
+    def __init__(self, pid, name, ws, pf, priv, cpu, fg, path=None, parent=0):
         self.pid=pid; self.name=name; self.ws=ws; self.pf=pf; self.priv=priv
-        self.cpu=cpu; self.fg=fg; self.path=path
+        self.cpu=cpu; self.fg=fg; self.path=path; self.parent=parent
 
 class Sniffer:
     def __init__(self, collect_path=True):
+        # 跨线程互斥：守护线程（周期快照）与 GUI 线程（进程排行刷新）可能并发
+        # 调用 snapshot——_prev_times/_prev_sys/_path_cache 无锁交错会导致 CPU% 基线错乱
+        self._lock = threading.Lock()
         self._prev_times = {}; self._prev_sys = None
         self._path_cache = {}; self._collect_path = collect_path
+
+    def snapshot(self):
+        with self._lock:
+            return self._snapshot_locked()
 
     def _purge_dead(self, alive_pids):
         alive = set(alive_pids)
@@ -22,7 +30,7 @@ class Sniffer:
                 self._path_cache.pop(pid, None)
                 self._prev_times.pop(pid, None)
 
-    def snapshot(self):
+    def _snapshot_locked(self):
         sys_now = winapi.get_system_times()
         sys_delta = 0
         if sys_now and self._prev_sys:
@@ -32,19 +40,31 @@ class Sniffer:
         procs = winapi.enum_processes()
         self._purge_dead(p for p,_,_ in procs)
         result = []
-        bulk_mem = winapi.get_all_processes_memory()
-        for pid, name, _ in procs:
-            mem = bulk_mem.get(pid) or winapi.get_process_memory(pid)
+        # 批量获取：内存 + CPU 时间 + 创建时间一次系统调用（避免逐进程 OpenProcess，快照开销 ↓~90%）
+        bulk = winapi.get_all_processes_memory()
+        for pid, name, parent in procs:
+            mem = bulk.get(pid) or winapi.get_process_memory(pid)
             if not mem:
                 # 即使无法读取内存信息，也加入列表（进程排行等场景需要完整列表）
                 result.append(ProcessSnapshot(pid=pid, name=name, ws=0, pf=0, priv=0,
-                                              cpu=0.0, fg=(pid==fg_pid), path=None))
+                                              cpu=0.0, fg=(pid==fg_pid), path=None, parent=parent))
                 continue
-            now = winapi.get_process_times(pid)
+            now = None
+            if mem.get("kernel") is not None:
+                now = {"kernel": mem["kernel"], "user": mem["user"], "create": mem.get("create")}
+            else:
+                # 回退路径（bulk 失败逐进程读）：无创建时间，PID 复用检测降级
+                t = winapi.get_process_times(pid)
+                if t:
+                    now = {"kernel": t["kernel"], "user": t["user"], "create": None}
             cpu = 0.0
             if now and sys_delta > 0 and pid in self._prev_times:
                 prev = self._prev_times[pid]
-                cpu = min(100.0, ((now["kernel"]+now["user"])-(prev["kernel"]+prev["user"]))/sys_delta*100.0)
+                # PID 复用防护：创建时间不同 → 旧基线作废（首帧 CPU 归 0，防旧进程时间差虚高）
+                if now.get("create") is not None and prev.get("create") != now["create"]:
+                    prev = None
+                if prev:
+                    cpu = min(100.0, ((now["kernel"]+now["user"])-(prev["kernel"]+prev["user"]))/sys_delta*100.0)
             if now: self._prev_times[pid] = now
             path = None
             if self._collect_path:
@@ -53,6 +73,6 @@ class Sniffer:
                     path = winapi.get_process_path(pid)
                     self._path_cache[pid] = path
             result.append(ProcessSnapshot(pid=pid, name=name, ws=mem["ws"], pf=mem["pf"], priv=mem.get("priv",0),
-                                          cpu=cpu, fg=(pid==fg_pid), path=path))
+                                          cpu=cpu, fg=(pid==fg_pid), path=path, parent=parent))
         self._prev_sys = sys_now
         return result

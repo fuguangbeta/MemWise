@@ -48,6 +48,11 @@ ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
 NtQuerySystemInformation = ntdll.NtQuerySystemInformation
 NtQuerySystemInformation.argtypes = [w.LONG, ctypes.c_void_p, w.ULONG, ctypes.POINTER(w.ULONG)]
 NtQuerySystemInformation.restype = w.LONG
+NtSetSystemInformation = ntdll.NtSetSystemInformation; NtSetSystemInformation.argtypes=[w.INT,ctypes.c_void_p,w.ULONG]; NtSetSystemInformation.restype=w.LONG
+# Nt 直通（2026-08-11 实验：K32 SetProcessInformation 本机全返回 87，EcoQoS/MemoryPriority 原实现静默失效）
+NtSetInformationProcess = ntdll.NtSetInformationProcess
+NtSetInformationProcess.argtypes = [w.HANDLE, w.INT, ctypes.c_void_p, w.ULONG]
+NtSetInformationProcess.restype = w.LONG
 psapi = ctypes.WinDLL("psapi", use_last_error=True)
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 adv32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -79,6 +84,7 @@ SetWindowLongPtrW = u32.SetWindowLongPtrW; SetWindowLongPtrW.argtypes=[w.HANDLE,
 CallWindowProcW = u32.CallWindowProcW; CallWindowProcW.argtypes=[ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p]; CallWindowProcW.restype=ctypes.c_void_p
 SetSystemFileCacheSize = k32.SetSystemFileCacheSize; SetSystemFileCacheSize.argtypes=[ctypes.c_size_t,ctypes.c_size_t,w.DWORD]; SetSystemFileCacheSize.restype=w.BOOL
 SetProcessInformation = k32.SetProcessInformation; SetProcessInformation.argtypes=[w.HANDLE,w.DWORD,ctypes.c_void_p,w.DWORD]; SetProcessInformation.restype=w.BOOL
+GetDriveTypeW = k32.GetDriveTypeW; GetDriveTypeW.argtypes=[w.LPCWSTR]; GetDriveTypeW.restype=w.UINT
 RegisterHotKey = u32.RegisterHotKey; RegisterHotKey.argtypes=[w.HANDLE,w.INT,w.UINT,w.UINT]; RegisterHotKey.restype=w.BOOL
 UnregisterHotKey = u32.UnregisterHotKey; UnregisterHotKey.argtypes=[w.HANDLE,w.INT]; UnregisterHotKey.restype=w.BOOL
 GetLastInputInfo = u32.GetLastInputInfo; GetLastInputInfo.argtypes=[ctypes.c_void_p]; GetLastInputInfo.restype=w.BOOL
@@ -107,6 +113,29 @@ def get_memory_status():
     ms = MEMORYSTATUSEX(); ms.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
     if GlobalMemoryStatusEx(ctypes.byref(ms)):
         return {"pct": ms.dwMemoryLoad, "total": ms.ullTotalPhys, "avail": ms.ullAvailPhys, "used": ms.ullTotalPhys - ms.ullAvailPhys}
+    return None
+
+# ── GetPerformanceInfo（SystemCache 精确测量文件缓存，filecache 释放量统计用）──
+class PERFORMANCE_INFORMATION(ctypes.Structure):
+    _fields_ = [("cb", w.DWORD), ("CommitTotal", ctypes.c_size_t), ("CommitLimit", ctypes.c_size_t),
+        ("CommitPeak", ctypes.c_size_t), ("PhysicalTotal", ctypes.c_size_t),
+        ("PhysicalAvailable", ctypes.c_size_t), ("SystemCache", ctypes.c_size_t),
+        ("KernelTotal", ctypes.c_size_t), ("KernelPaged", ctypes.c_size_t),
+        ("KernelNonpaged", ctypes.c_size_t), ("PageSize", ctypes.c_size_t),
+        ("HandleCount", w.DWORD), ("ProcessCount", w.DWORD), ("ThreadCount", w.DWORD)]
+
+GetPerformanceInfo = psapi.GetPerformanceInfo
+GetPerformanceInfo.argtypes = [ctypes.POINTER(PERFORMANCE_INFORMATION), w.DWORD]
+GetPerformanceInfo.restype = w.BOOL
+
+def get_performance_info():
+    """系统性能信息（PSAPI）：SystemCache 反映文件缓存占用（页数 × page_size 转字节；
+    filecache 释放量精确测量用，不受其他进程内存分配干扰）"""
+    pi = PERFORMANCE_INFORMATION(); pi.cb = ctypes.sizeof(PERFORMANCE_INFORMATION)
+    if GetPerformanceInfo(ctypes.byref(pi), ctypes.sizeof(pi)):
+        ps = pi.PageSize
+        return {"system_cache": pi.SystemCache * ps, "physical_avail": pi.PhysicalAvailable * ps,
+                "page_size": ps}
     return None
 
 def get_process_memory(pid):
@@ -215,7 +244,10 @@ class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
 def set_eco_qos(pid, enable=True):
     """标记进程为 EcoQoS(节能)或恢复正常。
     EcoQoS 让系统更积极回收该进程的物理内存页。
-    纯性能提示，不影响调度正确性。"""
+    纯性能提示，不影响调度正确性。
+    Nt 直通（2026-08-11 实验：K32 SetProcessInformation 本机全返回 ERROR_INVALID_PARAMETER，
+    原 SetProcessInformation 实现静默失效；Nt 类 15 实测可用）。
+    0xC0000048（STATUS_ALREADY_COMPLETE）= 目标状态已达成，同样视为成功"""
     h = OpenProcess(PROCESS_SET_INFORMATION, False, pid)
     if not h:
         return False
@@ -225,7 +257,9 @@ def set_eco_qos(pid, enable=True):
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED if enable else 0
         )
-        return bool(SetProcessInformation(h, 0x0F, ctypes.byref(state), ctypes.sizeof(state)))
+        ret = NtSetInformationProcess(h, 15, ctypes.byref(state), ctypes.sizeof(state))
+        # ALREADY_COMPLETE(0xC0000048) = 目标状态已达成（LONG 有符号返回需掩码比较）
+        return ret == 0 or (ret & 0xFFFFFFFF) == 0xC0000048
     finally:
         CloseHandle(h)
 
@@ -313,33 +347,38 @@ def empty_standby():
 
 
 
-# SYSTEM_PROCESS_INFORMATION 布局候选（x64）：(pid_off, ws_off, priv_off)
+# SYSTEM_PROCESS_INFORMATION 布局候选（x64）：(pid_off, ws_off, priv_off, user_off, kernel_off, create_off)
 # 微软可能增删字段改变布局（实测 Win11 24H2+ 为 0x50/0x90/0xB8，旧版为 0x68/0x1F8/0x210），
-# 用自身进程交叉校验动态选表，跨版本兼容
+# 用自身进程交叉校验动态选表，跨版本兼容；CPU 时间/创建时间偏移（0x28/0x30/0x20）自 Win10 稳定，
+# 仍以自身进程 CPU 时间交叉校验兜底
 _SPI_LAYOUTS = (
-    (0x50, 0x90, 0xB8),   # Win11 24H2+ 实测布局
-    (0x68, 0x1F8, 0x210),  # Win10 2004+ / Win11 早期
-    (0x68, 0x1E8, 0x200),  # Win10 1809-1903 附近
-    (0x68, 0x1C8, 0x1E0),  # 更早版本
+    (0x50, 0x90, 0xB8, 0x28, 0x30, 0x20),   # Win11 24H2+ 实测布局
+    (0x68, 0x1F8, 0x210, 0x28, 0x30, 0x20),  # Win10 2004+ / Win11 早期
+    (0x68, 0x1E8, 0x200, 0x28, 0x30, 0x20),  # Win10 1809-1903 附近
+    (0x68, 0x1C8, 0x1E0, 0x28, 0x30, 0x20),  # 更早版本
 )
 _spi_layout = None  # 模块级缓存：首次自校验后锁定
 
 def _resolve_spi_layout(buf, ret_len):
-    """用自身进程的已知 PID/WS 交叉校验，选定结构布局（失败返回 None，调用方有兜底）"""
+    """用自身进程的已知 PID/WS/CPU 时间交叉校验，选定结构布局（失败返回 None，调用方有兜底）"""
     global _spi_layout
     if _spi_layout:
         return _spi_layout
     import os
     self_pid = os.getpid()
     self_ws = 0
+    self_kt = self_ut = None
     try:
         m = get_process_memory(self_pid)
         self_ws = m["ws"] if m else 0
+        t = get_process_times(self_pid)
+        if t:
+            self_kt, self_ut = t["kernel"], t["user"]
     except Exception:
         pass
     if self_ws <= 0:
         return None
-    for pid_off, ws_off, priv_off in _SPI_LAYOUTS:
+    for pid_off, ws_off, priv_off, user_off, kernel_off, create_off in _SPI_LAYOUTS:
         off = 0
         while off < ret_len.value:
             ne = ctypes.c_uint32.from_buffer(buf, off).value
@@ -347,7 +386,13 @@ def _resolve_spi_layout(buf, ret_len):
             if pid == self_pid:
                 ws = ctypes.c_size_t.from_buffer(buf, off + ws_off).value
                 if abs(ws - self_ws) <= (1 << 20):  # 1MB 容差（两次读取间瞬时抖动）
-                    _spi_layout = (pid_off, ws_off, priv_off)
+                    if self_kt is not None:
+                        # CPU 时间交叉校验（buffer 100ns 单位 → ns；容差 50ms）
+                        kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value * 100
+                        ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value * 100
+                        if abs(kt - self_kt) > 50_000_000 or abs(ut - self_ut) > 50_000_000:
+                            break  # 该候选布局 CPU 偏移不符，试下一个
+                    _spi_layout = (pid_off, ws_off, priv_off, user_off, kernel_off, create_off)
                     return _spi_layout
             if ne == 0:
                 break
@@ -355,7 +400,9 @@ def _resolve_spi_layout(buf, ret_len):
     return None
 
 def get_all_processes_memory():
-    """Returns {pid: {"ws":bytes, "priv":bytes}} for ALL processes via NtQuerySystemInformation.
+    """Returns {pid: {"ws":bytes, "priv":bytes, "pf":0, "kernel":ns, "user":ns, "create":ns}}
+    for ALL processes via NtQuerySystemInformation —— 内存 + CPU 时间 + 创建时间一次批量获取
+    （sniffer 无需再逐进程 OpenProcess 读 CPU 时间；create 供 PID 复用检测）。
     No OpenProcess needed -- works with protected processes like AV.
     布局运行时自校验跨版本兼容；内置重试(×3)和条目上限(8192)。"""
     MAX_RETRIES = 3
@@ -378,7 +425,7 @@ def get_all_processes_memory():
         layout = _resolve_spi_layout(buf, ret_len)
         if not layout:
             continue
-        pid_off, ws_off, priv_off = layout
+        pid_off, ws_off, priv_off, user_off, kernel_off, create_off = layout
         result = {}
         off = 0; items = 0
         while off < ret_len.value and items < MAX_ITEMS:
@@ -387,7 +434,11 @@ def get_all_processes_memory():
             if pid and pid > 4:
                 ws = ctypes.c_size_t.from_buffer(buf, off + ws_off).value
                 priv = ctypes.c_size_t.from_buffer(buf, off + priv_off).value
-                result[pid] = {"ws": ws, "priv": priv, "pf": 0}
+                kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value * 100
+                ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value * 100
+                ct = ctypes.c_ulonglong.from_buffer(buf, off + create_off).value * 100
+                result[pid] = {"ws": ws, "priv": priv, "pf": 0,
+                               "kernel": kt, "user": ut, "create": ct}
             if ne == 0:
                 break
             off += ne
@@ -531,9 +582,12 @@ def purge_low_priority_standby():
         return False
 
 def clear_system_file_cache_ex():
-    """SystemFileCacheInformationEx — 强制 OS 回收文件缓存"""
+    """SystemFileCacheInformationEx — 强制 OS 回收文件缓存。
+    正确序列：查询当前 → Min=Max=PeakSize 强制回收 → 恢复 Min=0/Max=SIZE_MAX 默认上限。
+    2026-08-11 专项排查：原 Min=Max=MAXSIZE 实现返回 0xC000009A（资源不足）从未生效；
+    恢复返回 0x40000002 为警告级（最终状态正确），视为成功。"""
     try:
-        import sys
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
         class _SFCI(ctypes.Structure):
             _fields_ = [
                 ("CurrentSize", ctypes.c_size_t),
@@ -543,11 +597,23 @@ def clear_system_file_cache_ex():
                 ("MaximumWorkingSet", ctypes.c_size_t),
                 ("Unused", ctypes.c_size_t * 4),
             ]
-        sfci = _SFCI()
-        MAXSIZE = ctypes.c_size_t(sys.maxsize)
-        sfci.MinimumWorkingSet = MAXSIZE
-        sfci.MaximumWorkingSet = MAXSIZE
-        return NtSetSystemInformation(0x15, ctypes.byref(sfci), ctypes.sizeof(sfci)) == 0
+        info = _SFCI()
+        ret_len = w.ULONG()
+        # 1. 查询当前（完整字段）
+        if NtQuerySystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(ret_len)) != 0:
+            return False
+        # 2. Min=Max=PeakSize → 强制回收
+        info.MinimumWorkingSet = info.PeakSize
+        info.MaximumWorkingSet = info.PeakSize
+        if NtSetSystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info)) != 0:
+            return False
+        # 3. 恢复默认上限（SIZE_MAX；0x40000002 警告级部分成功，最终状态正确）
+        info2 = _SFCI()
+        if NtQuerySystemInformation(0x15, ctypes.byref(info2), ctypes.sizeof(info2), ctypes.byref(ret_len)) == 0:
+            info2.MinimumWorkingSet = 0
+            info2.MaximumWorkingSet = ctypes.c_size_t(-1).value
+            NtSetSystemInformation(0x15, ctypes.byref(info2), ctypes.sizeof(info2))
+        return True
     except Exception:
         return False
 
@@ -664,17 +730,20 @@ def clear_registry_cache():
         return False
 
 def flush_volume_cache():
-    """冲刷所有卷的待写缓冲区"""
+    """冲刷所有卷的待写缓冲区（仅本地固定/可移动卷——网络盘/光驱冲刷对内存释放无意义且网络卷可能阻塞数秒）"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
         import string, os
         for letter in string.ascii_uppercase:
             vol = f"{letter}:\\"
-            if os.path.exists(vol):
-                h = k32.CreateFileW(vol, 0x40000000, 3, None, 3, 0x80, None)
-                if h and h != INVALID_HANDLE_VALUE:
-                    k32.FlushFileBuffers(h)
-                    k32.CloseHandle(h)
+            if not os.path.exists(vol):
+                continue
+            if GetDriveTypeW(vol) not in (2, 3):  # DRIVE_REMOVABLE / DRIVE_FIXED
+                continue
+            h = k32.CreateFileW(vol, 0x40000000, 3, None, 3, 0x80, None)
+            if h and h != INVALID_HANDLE_VALUE:
+                k32.FlushFileBuffers(h)
+                k32.CloseHandle(h)
         return True
     except Exception:
         return False

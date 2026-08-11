@@ -36,7 +36,7 @@ GAME_PROCESSES = {
     # CD Projekt
     "cyberpunk2077.exe", "witcher3.exe", "w3.exe",
     # Other AAA / popular
-    "minecraft.exe", "javaw.exe",  # MC launcher
+    "minecraft.exe",  # MC launcher（Java 版 javaw 为通用运行时名，不列入内置名单防误判，用户可自定义添加）
     "cities.exe", "cities skylines.exe", "cities2.exe",  # 都市天际线 1/2
     "monsterhunterworld.exe", "mhw.exe",
     "streetfighter6.exe", "sf6.exe", "tekken8.exe",
@@ -102,6 +102,12 @@ class PareCleaner:
         self._info_msgs.clear()
         return msgs
 
+    def _stats_inc(self, key, amount=1):
+        """线程安全统计累加。守护线程与手动轻量清理可能并发写 stats，
+        无锁 `+=` 会因 read-modify-write 交错丢失更新（统计失真）"""
+        with self._lock:
+            self.stats[key] = self.stats.get(key, 0) + amount
+
     def pop_game_msgs(self):
         """实时提取游戏检测/退出消息（其余消息留给 pop_info 批量处理）"""
         game_msgs = [m for m in self._info_msgs if "🎮" in m]
@@ -125,26 +131,26 @@ class PareCleaner:
     def clean_modified_pages(self):
         ok = winapi.flush_modified_pages()
         if ok:
-            self.stats["modified"] += 1
+            self._stats_inc("modified")
         return ok
 
     def clear_file_cache(self):
         ok = winapi.clear_system_file_cache()
         if ok:
-            self.stats["filecache"] += 1
+            self._stats_inc("filecache")
         return ok
 
     def _flush_volume_cache(self):
         ok = winapi.flush_volume_cache()
         if ok:
-            self.stats["volume"] = self.stats.get("volume", 0) + 1
+            self._stats_inc("volume")
         return ok
 
     def clean_deep_standby(self):
         """深度多轮 Standby 清理 — 比单次释放更多"""
         ok = winapi.empty_standby_deep()
         if ok:
-            self.stats["standby"] += 2  # 多轮，计数加2
+            self._stats_inc("standby", 2)  # 多轮，计数加2
         return ok
 
     def quick_retrim(self, pid):
@@ -158,7 +164,7 @@ class PareCleaner:
         mem_post = winapi.get_process_memory(pid)
         if mem_post:
             freed = max(0, mem_pre["ws"] - mem_post["ws"])
-            self.stats["freed_bytes"] += freed
+            self._stats_inc("freed_bytes", freed)
         return 1
 
     @staticmethod
@@ -193,11 +199,20 @@ class PareCleaner:
         game_mode  : 游戏模式时跳过 WS全清+文件缓存+卷冲刷
         """
         use = ops if ops is not None else {"ws_all","filecache_ex","modified","standby","standby_low","volume","registry","filecache"}
-        # 逐操作测量释放量：每个系统操作前后各读一次 avail，标量累加（>0 计入）——
-        # 替代函数级始末差（净变化会漏计：操作释放的同时其他进程分配会吞掉释放量）
+        # 逐操作测量释放量：每个系统操作前后各读一次，标量累加（>0 计入）——
+        # filecache 用 SystemCache 字节差（直接反映文件缓存缩减，不受其他进程分配干扰）；
+        # 其余操作无分项公开 API，沿用 avail 差（物理可用提升口径）
         freed_total = 0
-        def _capture(fn):
+        def _capture(fn, kind=None):
             nonlocal freed_total
+            if kind == "filecache":
+                pre = winapi.get_performance_info()
+                if not fn():
+                    return False
+                post = winapi.get_performance_info()
+                if pre and post:
+                    freed_total += max(0, pre["system_cache"] - post["system_cache"])
+                return True
             pre = winapi.get_memory_status()
             if not fn():
                 return False
@@ -209,29 +224,29 @@ class PareCleaner:
             if full and not game_mode and "ws_all" in use:
                 if _capture(winapi.empty_all_working_sets):
                     if total_procs > 1:
-                        self.stats["ws_trim"] += max(0, total_procs - 1)
+                        self._stats_inc("ws_trim", max(0, total_procs - 1))
             if not game_mode and "filecache_ex" in use:
                 winapi.clear_system_file_cache_ex()
             # 统计按 API 真实成功计数（权限不足时不再虚增）
             # 游戏模式：跳过 standby/脏页写回等磁盘干扰操作（只留注册表缓存与自身工作集）
             if not game_mode and "modified" in use and _capture(winapi.flush_modified_pages):
-                self.stats["modified"] = self.stats.get("modified", 0) + 1
+                self._stats_inc("modified")
             if not game_mode and "standby" in use and _capture(winapi.empty_standby):
-                self.stats["standby"] += 1
+                self._stats_inc("standby")
             if not game_mode and "standby_low" in use and _capture(winapi.purge_low_priority_standby):
-                self.stats["standby"] += 1
+                self._stats_inc("standby")
             if not game_mode and "volume" in use and _capture(winapi.flush_volume_cache):
-                self.stats["volume"] = self.stats.get("volume", 0) + 1
+                self._stats_inc("volume")
             if "registry" in use and _capture(winapi.clear_registry_cache):
-                self.stats["registry"] = self.stats.get("registry", 0) + 1
-            if not game_mode and "filecache" in use and _capture(winapi.clear_system_file_cache):
-                self.stats["filecache"] = self.stats.get("filecache", 0) + 1
+                self._stats_inc("registry")
+            if not game_mode and "filecache" in use and _capture(winapi.clear_system_file_cache, "filecache"):
+                self._stats_inc("filecache")
             # 清自身工作集（~0.2s，释放 MemWise 自身占用的几十 MB；高频路径可传 clean_self=False 关闭）
             if clean_self:
                 try: winapi.empty_ws(os.getpid())
                 except Exception: pass
             if freed_total > 0:
-                self.stats["freed_bytes"] += freed_total
+                self._stats_inc("freed_bytes", freed_total)
             return True
         except Exception:
             return False
@@ -301,8 +316,12 @@ class PareCleaner:
 
         interval = self._trim_interval(learner, name, getattr(self.judger, "_last_mem_pct", 50))
         t_wait = interval * 0.5
+        rounds_done = 0
+        round_freed = []  # 首轮实际释放（低效轮截断判定基准）
+        prev_ws_ck = ws_before
 
         for round_idx in range(passes):
+            rounds_done = round_idx + 1
             if not winapi.empty_ws(pid):
                 with self._lock:
                     if round_idx == 0:
@@ -310,9 +329,19 @@ class PareCleaner:
                 return False, 0, 0, "API失败"
             if round_idx < passes - 1:
                 time.sleep(max(0.05, t_wait))
+            # 轮间轻量测量：二轮起实际释放 < 首轮 3% 视为热页清理（回填不足），提前截断剩余轮
+            # （EmptyWorkingSet 后几百 ms 内回填的是热页，再清收益低 PF 高；阈值 3% 兼顾慢回填进程）
+            m_ck = winapi.get_process_memory(pid)
+            if m_ck:
+                freed_ck = max(0, prev_ws_ck - m_ck["ws"])
+                if round_idx == 0:
+                    round_freed.append(freed_ck)
+                elif round_freed and freed_ck < max(1 << 20, round_freed[0] * 0.03):
+                    break
+                prev_ws_ck = m_ck["ws"]
 
-        # 等待 PF 反馈测量
-        elapsed = interval * 0.5 * (passes - 1)
+        # 等待 PF 反馈测量（按实际执行轮数）
+        elapsed = t_wait * max(0, rounds_done - 1)
         time.sleep(max(0.5, total_wait - elapsed))
         mem = winapi.get_process_memory(pid)
         if mem is None:
@@ -365,11 +394,35 @@ class PareCleaner:
         return efis.get("learning_rate", None)
 
     def _get_user_game_procs(self):
-        """合并内置游戏名单 + 用户自定义的游戏进程"""
+        """合并内置游戏名单 + 用户自定义的游戏进程（统一规范化：小写 + 补 .exe 后缀——
+        配置中无后缀条目（手改 config/旧数据）也能精准匹配快照进程名）"""
         extra = set()
         for n in self.judger.cfg.get("game_processes", []):
-            extra.add(n.lower())
+            n = str(n).strip().lower()
+            if n and not n.endswith(".exe"):
+                n += ".exe"
+            extra.add(n)
         return GAME_PROCESSES | extra
+
+    def _build_game_pid_set(self, snaps):
+        """游戏 PID 集 = 名单匹配进程 ∪ 其全部子进程树（BFS）。
+        反作弊/更新器/渲染子进程等一并绝对保护——游戏流畅性保护以进程树为单位"""
+        all_games = self._get_user_game_procs()
+        children_of = {}
+        direct = set()
+        for s in snaps:
+            children_of.setdefault(s.parent, set()).add(s.pid)
+            if s.name.lower() in all_games:
+                direct.add(s.pid)
+        result = set(direct)
+        stack = list(direct)
+        while stack:
+            pid = stack.pop()
+            for child in children_of.get(pid, ()):
+                if child not in result:
+                    result.add(child)
+                    stack.append(child)
+        return result
 
     def _is_user_game_running(self, snaps):
         """检测游戏运行（内置名单 + 用户自定义 + 全屏窗口检测）"""
@@ -379,7 +432,6 @@ class PareCleaner:
             if s.name.lower() in all_games:
                 game_procs.add(s.name.lower())
         if game_procs:
-            self.judger._game_proc_set = game_procs
             return True
         # 全屏检测：前台窗口覆盖全屏且非已知系统窗口 → 视为游戏
         try:
@@ -401,11 +453,12 @@ class PareCleaner:
         return max(0.3, base * pressure)
 
     def _composite_score_v2(self, s, learner):
-        """四维复合评分（替代单维 θ 排序）"""
+        """多维复合评分（θ/预期释放/WS/回弹/预期PF代价）——替代单维 θ 排序"""
         name = s.name.lower()
         theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
         p = learner.get_profile(name)
         x_freed = p.kalman.x_freed if p and hasattr(p.kalman, 'x_freed') else 0
+        x_cost = p.kalman.x_cost if p and hasattr(p.kalman, 'x_cost') else 0
         # 上下文修正：与 thompson_score 保持一致
         if x_freed > 0 and hasattr(learner, 'ctx_correction'):
             f_corr, _ = learner.ctx_correction(
@@ -423,7 +476,8 @@ class PareCleaner:
         return (tw * min(theta, 1.0) +
                 kw * min(x_freed / (200 << 20), 1.0) +
                 0.2 * min(ws / (500 << 20), 1.0) +
-                0.2 * min(regrowth, 2.0) +
+                0.2 * min(regrowth, 2.0) -
+                0.15 * min(x_cost / 500.0, 1.0) +   # 预期 PF 代价惩罚：同等释放下低代价进程优先
                 bonus)
     @staticmethod
     def _bounded_submit(executor, fn, items, max_inflight, per_task_timeout, idle_timeout=60.0):
@@ -488,13 +542,13 @@ class PareCleaner:
             # 手动模式：模式开关由用户持有，自动检测只做数据维护
             if game_on:
                 self._game_gone_count = 0
+                # 手动模式同样实时刷新保护集（含子进程树）——覆盖游戏期间后启动的子进程/新实例
+                self.judger._game_pid_set = self._build_game_pid_set(snaps)
             elif not game_on and self.game_mode:
                 # 游戏已退出：清空失效 PID 保护集（防 PID 复用误保护），模式保持手动开启
                 self.judger._game_pid_set.clear()
-                self.judger._game_proc_set.clear()
         elif game_on and not self.game_mode:
             self._info_msgs.append("🎮 检测到游戏运行 · 启用 游戏模式")
-            self.judger._game_proc_set = getattr(self.judger, '_game_proc_set', set())
             self.game_mode = True
             self.judger.game_mode = True
             self._game_gone_count = 0
@@ -505,7 +559,6 @@ class PareCleaner:
                 self._info_msgs.append("🎮 游戏已退出 · 恢复正常模式")
                 self.game_mode = False
                 self.judger.game_mode = False
-                self.judger._game_proc_set.clear()
                 self.judger._game_pid_set.clear()
                 self._game_gone_count = 0
         else:
@@ -513,10 +566,9 @@ class PareCleaner:
             self.judger.game_mode = game_on
             if game_on:
                 self._game_gone_count = 0
-        # 游戏运行期间每轮刷新 PID 保护集（覆盖游戏内后启动的子进程/新实例）
+        # 游戏运行期间每轮刷新 PID 保护集（覆盖游戏内后启动的子进程/新实例——含子进程树）
         if game_on:
-            all_games = self._get_user_game_procs()
-            self.judger._game_pid_set = {s.pid for s in snaps if s.name.lower() in all_games}
+            self.judger._game_pid_set = self._build_game_pid_set(snaps)
 
         candidates = []
         probe_list = []
@@ -544,6 +596,7 @@ class PareCleaner:
         if self._pri_refresh_counter >= 30:
             self._low_pri_pids.clear()
             self._pri_refresh_counter = 0
+        _all_games = self._get_user_game_procs()  # 循环外取一次（并集构建开销）
         for s in snaps:
             # 游戏进程（含此前被降级的）：恢复默认优先级/EcoQoS，确保不被 OS 优先回收
             if self.game_mode and hasattr(self.judger, '_game_pid_set') and s.pid in self.judger._game_pid_set:
@@ -560,10 +613,14 @@ class PareCleaner:
             name = s.name.lower()
             if _is_system_core(name) or name in self.judger.cfg.get("never", []):
                 continue
-            # 前台进程: 保持默认优先级（不需调用API）
+            # 游戏名单进程跳过 EcoQoS 降级：Nt PowerThrottling 实测每进程一经设置即不可撤销
+            # （二次设置恒 ALREADY_COMPLETE）——游戏运行时需保持默认节能状态，从源头避免被降级
+            if name in _all_games:
+                continue
+            # 前台进程: 保持默认优先级（不需调用API，且不入 _low_pri_pids——
+            # 入集合会被误判"已降级"而跳过后续重评，转后台后降级滞后数分钟）
             if getattr(s, "fg", False):
                 winapi.set_eco_qos(s.pid, False)
-                self._low_pri_pids.add(s.pid)
                 continue
             # 游戏进程分支已提前处理（恢复默认优先级），此处不再重复
             theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
@@ -571,9 +628,15 @@ class PareCleaner:
                 level = 0   # VERY_LOW for proven processes
             else:
                 level = 1   # LOW for all else (OS reclaims proactively)
-            if winapi.set_memory_priority(s.pid, level):
-                winapi.set_eco_qos(s.pid, True)
-                self._low_pri_pids.add(s.pid)
+            # MemoryPriority 尽力而为（部分系统 K32 通道失效）；EcoQoS 独立设置不阻断
+            # （2026-08-11 实验：K32 SetProcessInformation 全失效 → EcoQoS 已改 Nt 直通，实测可靠）
+            winapi.set_memory_priority(s.pid, level)
+            # EcoQoS 只对高价值大进程启用（θ≥0.5 且 WS≥100MB）：系统会对标记进程的冷页做
+            # 压缩驻留（压缩池计入"正在使用"），全量启用实测使内存使用率升高 4-8%；
+            # 限定范围后压缩池可控，大进程的回收收益保留
+            if theta >= 0.5 and s.ws >= (100 << 20):
+                if winapi.set_eco_qos(s.pid, True):
+                    self._low_pri_pids.add(s.pid)
         # 清除已退出的 PID
         alive = {s.pid for s in snaps}
         self._low_pri_pids &= alive
@@ -641,8 +704,12 @@ class PareCleaner:
         results = []
         if candidates:
             fn = functools.partial(self._trim_process, learner=learner)
+            # 并发平滑降级：高压（agg>0.6）全速 2×workers，低压力 1.5×（避免吞吐减半——
+            # 使用率常态 <60% 时 agg≈0，恒 1× 会致每轮覆盖进程数减半）
+            _agg = getattr(self.judger, 'aggressiveness', 0.5)
+            max_inflight = int(self._max_workers * (1.5 + 0.5 * min(_agg / 0.6, 1.0)))
             for s, r in self._bounded_submit(self._trim_executor, fn, candidates,
-                                             max_inflight=self._max_workers * 2,
+                                             max_inflight=max_inflight,
                                              per_task_timeout=8):
                 if r is None:
                     # 执行超时（排队不计时）：递增冷却 + Thompson 惩罚，与历史超时处理一致
@@ -672,12 +739,21 @@ class PareCleaner:
             return
         
         mem_before_layer3 = winapi.get_memory_status()
-        self.stats["layer3_ran"] += 1
+        self._stats_inc("layer3_ran")
         # 逐操作测量释放量（与 Layer1 同口径）：阶段 C 系统操作的释放量此前只进 layer3_extra，
         # 图表/统计栏的 freed_bytes 一直缺失这部分（每轮可能漏几百 MB）
         freed_l3 = 0
-        def _capture(fn):
+        def _capture(fn, kind=None):
             nonlocal freed_l3
+            if kind == "filecache":
+                # 同 Layer1 口径：SystemCache 字节差精确反映文件缓存缩减
+                pre = winapi.get_performance_info()
+                if not fn():
+                    return False
+                post = winapi.get_performance_info()
+                if pre and post:
+                    freed_l3 += max(0, pre["system_cache"] - post["system_cache"])
+                return True
             pre = winapi.get_memory_status()
             if not fn():
                 return False
@@ -703,27 +779,38 @@ class PareCleaner:
             if ops_filter is None or "volume" in ops_filter:
                 _capture(self._flush_volume_cache)
             if ops_filter is None or "filecache" in ops_filter:
-                _capture(self.clear_file_cache)
-                _capture(winapi.clear_system_file_cache_ex)
+                _capture(self.clear_file_cache, "filecache")
+                _capture(winapi.clear_system_file_cache_ex, "filecache")
         if freed_l3 > 0:
-            self.stats["freed_bytes"] += freed_l3
+            self._stats_inc("freed_bytes", freed_l3)
         # Track Layer3 standby release（EFIS 诊断专用：Layer3 整体净增量）
         mem_after_standby = winapi.get_memory_status()
         if mem_before_layer3 and mem_after_standby:
             extra_mem = mem_after_standby["avail"] - mem_before_layer3["avail"]
             if extra_mem > 0:
-                self.stats["layer3_extra"] += extra_mem  # bytes, consistent with deepen_extra
+                self._stats_inc("layer3_extra", extra_mem)  # bytes, consistent with deepen_extra
 
         # 阶段 D: WS 回弹率选进程 (skip already trimmed in Layer2)
+        # 开关优先：用户取消 ws 勾选时阶段 D 不得清理进程（阶段 A-C 系统操作仍按开关执行）
+        if ops_filter is not None and "ws" not in ops_filter:
+            return
         # 复用滑动窗口分批提交（在途限制 + 总预算），防一次性 submit 堆积拖垮池
         layer2_pids = {t[0].pid for t in getattr(self, "_last_layer2_results", []) if t[1]}
+        never = self.judger.cfg.get("never", []) or []
         d_candidates = []
         for s in snaps:
+            if s.pid == os.getpid():
+                continue  # 自身进程不清理（与 Layer2 同规则）
             if s.pid in layer2_pids:
                 continue  # Already trimmed in Layer2, skip
             if self.game_mode and s.pid in getattr(self.judger, '_game_pid_set', set()):
                 continue  # 游戏进程绝对保护，深度聚合同样不碰
             name_lower = s.name.lower()
+            # 与 Layer2 同款硬守卫：系统核心/用户排除列表在深度聚合同样生效
+            if _is_system_core(name_lower):
+                continue
+            if name_lower in never or s.pid in never:
+                continue
             bl = self.judger._post_clean_ws.get(name_lower, 0)
             if bl > 0 and s.ws >= bl * 2.0:
                 d_candidates.append(s)
@@ -733,8 +820,11 @@ class PareCleaner:
                     d_candidates.append(s)
         if d_candidates:
             fn = functools.partial(self._trim_process, learner=learner)
+            # 并发平滑降级（与 Layer2 同规则）
+            _agg = getattr(self.judger, 'aggressiveness', 0.5)
+            max_inflight = int(self._max_workers * (1.5 + 0.5 * min(_agg / 0.6, 1.0)))
             for _s, _r in self._bounded_submit(self._trim_executor, fn, d_candidates,
-                                               max_inflight=self._max_workers * 2,
+                                               max_inflight=max_inflight,
                                                per_task_timeout=8):
                 pass  # 结果无需收集（与旧 as_completed 语义一致：只执行不统计）
 

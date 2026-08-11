@@ -1,6 +1,6 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-MemWise v3.7.09 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v3.8.40 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -144,6 +144,16 @@ j.mark_trimmed("trim.exe", freed=10<<20, ws_before=200<<20, ws_after=150<<20)
 check("timeout_count decayed", p.timeout_count==1)
 j._probe_last_time["dead.exe"]=time.time()-2000; j.purge_expired()
 check("probe time purged", "dead.exe" not in j._probe_last_time)
+# 回填冷却阈值：仅快速回填(>256KB/s)缩短冷却（原 50B/s 阈值过松致几乎全进程命中）
+j4 = PareJudger(l2, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[], "efis_params": {"cooloff_base": 360}})
+p_fast = l2.get("refill_fast.exe"); p_fast.refill_ewma = 512 << 10
+j4.mark_failed("refill_fast.exe", 1)
+cd_fast = j4.cooldown.get("refill_fast.exe", 0) - time.time()
+p_slow = l2.get("refill_slow.exe"); p_slow.refill_ewma = 100
+j4.mark_failed("refill_slow.exe", 1)
+cd_slow = j4.cooldown.get("refill_slow.exe", 0) - time.time()
+check("快速回填冷却缩短", cd_fast < cd_slow)
+check("慢回填冷却保持基准", cd_slow > 300)
 
 print("\n[8] Config")
 cfg=config_load(); check("has clean_passes", "clean_passes" in cfg); check("has gap_seconds", "gap_seconds" in cfg)

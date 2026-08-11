@@ -1,5 +1,5 @@
-﻿"""
-MemWise v3.7.09 PARES —— 智能内存看护
+"""
+MemWise v3.8.40 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -124,6 +124,7 @@ def cmd_daemon(args):
     i = 0
     while i < len(args):
         if args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
+        elif args[i] == "--minimized": pass  # 自启兼容参数（CLI 无窗口，忽略）
         i += 1
     tick = 0
     try:
@@ -172,9 +173,10 @@ def cmd_daemon(args):
 def cmd_reset(_):
     print("恢复出厂设置...")
     from core.config import CONFIG_PATH
+    stamp = time.strftime("%Y%m%d%H%M%S")
     for p in [STATE_PATH, CONFIG_PATH]:
         if os.path.isfile(p):
-            bak = p + ".bak"
+            bak = f"{p}.bak-{stamp}"  # 时间戳备份：多次重置互不覆盖
             os.replace(p, bak)
             print(f"  已备份: {os.path.basename(bak)}")
     print("完成。下次启动使用默认配置。")
@@ -249,7 +251,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print("MemWise v3.7.09 PARES —— 智能内存看护")
+        print("MemWise v3.8.40 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
         print("  status                    内存状态")
         print("  learn [分钟]              学习进程行为 (默认10分钟)")

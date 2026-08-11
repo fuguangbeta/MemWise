@@ -1,5 +1,5 @@
-﻿"""
-MemWise v3.7.09 GUI —— 图形界面
+"""
+MemWise v3.8.40 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -114,7 +114,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v3.7.09 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v3.8.40 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -295,8 +295,9 @@ def _wnd_proc(hwnd, msg, wp, lp):
     """Win32 窗口过程回调 — 零 Tkinter 调用，仅设置 _tray_action 标志"""
     global _gui_ref, _tray_action
     try:
-        # 系统关机/注销：立即删除 watchdog.json，防止看门狗误判并报错弹窗
-        if msg in (0x0011, 0x0016):  # WM_QUERYENDSESSION / WM_ENDSESSION
+        # 系统关机确认阶段（WM_ENDSESSION）：立即删除 watchdog.json，防止看门狗误判并报错弹窗。
+        # 不在询问阶段（WM_QUERYENDSESSION）删除——关机可能被其他程序取消，删早会使看门狗失效
+        if msg == 0x0016:  # WM_ENDSESSION
             try:
                 wd = _watchdog_path()
                 if os.path.exists(wd):
@@ -426,7 +427,7 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.7.09_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_v3.8.40_SingleInstance"
 
 
 class MemWiseGUI:
@@ -443,7 +444,7 @@ class MemWiseGUI:
         _mutex_err = ctypes.windll.kernel32.GetLastError()
         if _mutex_err in (0xB7, 5):
             # 激活已有窗口（0xB7 权威；5 且句柄空时以窗口存在性兜底验证）
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.7.09")
+            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.8.40")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -461,7 +462,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v3.7.09")
+        self.root.title("MemWise v3.8.40")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -488,6 +489,8 @@ class MemWiseGUI:
         self.efis = EfisController(STATE_FILE)
         # 启动即用 EFIS 持久化参数对齐运行时消费方（config.yaml 可能滞后于 efis_state.json）
         self.judger.cfg["efis_params"] = self.efis.get_params()
+        # CFG 同步同一来源：否则守护热加载（mtime 变化）会把 config.yaml 旧值覆盖回 judger.cfg
+        CFG["efis_params"] = self.efis.get_params()
         # kalman_r 同步：新画像的 Kalman 观测噪声与 EFIS 调参结果一致（原只在调参轮生效，重启后回默认）
         self.learner._kalman_r = self.efis.get_params().get('kalman_r', 5.0)
         self.sniffer = Sniffer()
@@ -514,7 +517,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v3.7.09 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v3.8.40 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -561,7 +564,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.7.09")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.8.40")
                     if fw:
                         top = fw
                 except Exception:
@@ -670,10 +673,13 @@ class MemWiseGUI:
                 icon = self._get_colored_icon("idle", ICO_IDLE)
                 tip = f"内存 {pct}%"
         # 释放旧图标防止 GDI 泄漏（长期运行崩溃根因）
+        # 仅成功创建时轮换：失败（None）时保留旧句柄继续复用，避免句柄被丢弃泄漏
         try:
-            if pct_icon_handle and hasattr(self, '_prev_pct_icon'):
-                ctypes.windll.user32.DestroyIcon(self._prev_pct_icon)
-            self._prev_pct_icon = pct_icon_handle
+            if pct_icon_handle:
+                prev = getattr(self, '_prev_pct_icon', None)
+                if prev:
+                    ctypes.windll.user32.DestroyIcon(prev)
+                self._prev_pct_icon = pct_icon_handle
         except Exception:
             pass
         self._tray_icon_handle = icon
@@ -811,7 +817,6 @@ class MemWiseGUI:
             self._log("🎮 游戏模式已手动启用 · 游戏进程受保护")
         else:
             self._log("🎮 游戏模式已手动关闭 · 恢复正常清理")
-            self.cleaner.judger._game_proc_set.clear()
             self.cleaner.judger._game_pid_set.clear()
     # ---- UI 构建 ----
 
@@ -1492,7 +1497,8 @@ class MemWiseGUI:
 
     def _show_learn_log(self):
         info_data = []
-        for name, p in sorted(self.learner.profiles.items()):
+        # dict() 拷贝在 GIL 下原子完成：守护线程可能随时增键，直接迭代 items() 会 RuntimeError
+        for name, p in sorted(dict(self.learner.profiles).items()):
             if p.total_samples < 2:
                 continue
             info_data.append((name, p.alpha, p.beta, p.total_samples,
@@ -1953,8 +1959,9 @@ class MemWiseGUI:
             self._eris_ewma_trend = []
         
         # ── 维度1 raw: Kalman 预测精准度 ──
-        # 迭代前快照：daemon 线程可能随时 get() 增键，直接迭代会 RuntimeError（dictionary changed size）
-        profiles_snapshot = list(profiles.values())
+        # 迭代前快照：daemon 线程可能随时 get() 增键，直接迭代会 RuntimeError（dictionary changed size）；
+        # dict() 拷贝在 GIL 下原子完成
+        profiles_snapshot = list(dict(profiles).values())
         kalman_errors = []
         for p in profiles_snapshot:
             if p.clean_count < 1 and p.total_samples < 1:
@@ -2629,6 +2636,7 @@ class MemWiseGUI:
                 agg_max = agg_first  # 本轮峰值
                 layer3_ran_start = self.cleaner.summary().get("layer3_ran", 0)
                 deep_triggered = False  # 本轮是否触发过深度清理
+                self._emergency_done_cycle = False  # 本轮是否已触发紧急清理（周期内去重）
 
                 # 清理
                 mode = CFG.get("clean_mode", "normal")  # 读 CFG 镜像：tk 变量非线程安全，daemon 线程不触碰 Tk 对象
@@ -2640,6 +2648,7 @@ class MemWiseGUI:
                     agg_emerg = self.judger.update_pressure(m_emerg["pct"])
                     self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg)
                     self._msg_queue.put(('log', "⚠ 紧急触发清理(full模式)"))
+                    self._emergency_done_cycle = True
                 interval = CFG.get("interval", 60)  # 周期由配置驱动（默认 60s，原硬编码 60 使配置键失效）
                 deadline = time.time() + interval - 3 - overtime_debt
                 l2_all = []; probe_all = []
@@ -2660,46 +2669,53 @@ class MemWiseGUI:
                             # 周期内启动又退出时，两条日志按序进入周期末打包通道
                             game_now = self.cleaner._is_user_game_running(snaps)
                             if self.cleaner._game_mode_manual:
-                                # 手动模式：实时刷新 PID 保护集，不自动切换模式
+                                # 手动模式：实时刷新 PID 保护集（含子进程树），不自动切换模式
                                 if game_now:
-                                    self.cleaner.judger._game_pid_set = {
-                                        s.pid for s in snaps if s.name.lower() in self.cleaner._get_user_game_procs()}
+                                    self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
                             elif not self.cleaner.game_mode and game_now:
                                 self.cleaner.game_mode = True
                                 self.cleaner.judger.game_mode = True
-                                self.cleaner.judger._game_proc_set = set()
-                                self.cleaner.judger._game_pid_set = {
-                                    s.pid for s in snaps if s.name.lower() in self.cleaner._get_user_game_procs()}
+                                self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
                                 self._cycle_log_buffer.append("🎮 检测到游戏运行 · 启用 游戏模式")
                             elif self.cleaner.game_mode and not game_now:
                                 self.cleaner.game_mode = False
                                 self.cleaner.judger.game_mode = False
-                                self.cleaner.judger._game_proc_set.clear()
                                 self.cleaner.judger._game_pid_set.clear()
                                 self._cycle_log_buffer.append("🎮 游戏已退出 · 恢复正常模式")
-                            # 高频压制只做注册表缓存（零磁盘 I/O）；standby/脏页写回由 gap 末
-                            # optimize 与 harvest 统一清理——standby 需要累积时间才有释放量，
-                            # 高频清空只会让文件缓存持续失效并反复写盘
-                            if not self.cleaner.game_mode:
-                                self.cleaner._layer1_memreduct(full=False, ops={"registry"}, clean_self=False)
-                                if mode != "quick":
-                                    for ft_pid in list(self.cleaner._fast_track):
-                                        if not self.cleaner.quick_retrim(ft_pid):
-                                            self.cleaner._fast_track.discard(ft_pid)
+                            # 高频压制：registry 零磁盘干扰，游戏模式同样执行（游戏流畅只禁磁盘类操作）；
+                            # fast_track 为非游戏高回填进程（游戏进程树已被 PID 保护集排除）
+                            self.cleaner._layer1_memreduct(full=False, ops={"registry"}, clean_self=False)
+                            if mode != "quick":
+                                for ft_pid in list(self.cleaner._fast_track):
+                                    if ft_pid in self.cleaner.judger._game_pid_set:
+                                        self.cleaner._fast_track.discard(ft_pid)
+                                        continue
+                                    if not self.cleaner.quick_retrim(ft_pid):
+                                        self.cleaner._fast_track.discard(ft_pid)
                         snap_skip -= 1
                         m2 = winapi.get_memory_status()
                         if m2:
                             agg = self.judger.update_pressure(m2["pct"]); m = m2
                             agg_max = max(agg_max, agg)
+                            # 周期内紧急即时响应：内存飙到阈值立即 full 清理（不等下一周期），每周期至多一次
+                            if (m2.get("pct", 0) >= CFG.get("emergency_threshold", 80)
+                                    and not self._emergency_done_cycle):
+                                self._emergency_done_cycle = True
+                                self._cycle_log_buffer.append("⚠ 周期内紧急触发清理(full模式)")
+                                self.cleaner.optimize(snaps, self.learner, "full",
+                                                      operations=ops, aggressiveness=agg)
+                                m2 = winapi.get_memory_status()
+                                if m2:
+                                    m = m2
+                                    agg = self.judger.update_pressure(m2["pct"])
+                                    agg_max = max(agg_max, agg)
                         # 节奏控制：0.5s 间隔保持高频温和压制，杜绝忙循环空转烧 CPU
                         time.sleep(0.5)
                     # gap-fill 天花板：quick 保持 quick，其余统一用 normal（deep/full 的重操作留给 harvest）
                     gap_fill_mode = "quick" if mode == "quick" else "normal"
-                    if self.cleaner.game_mode:
-                        # 游戏模式：gap 期间不清理（避免周期性缺页卡顿），只维持周期节奏
-                        result = {"mode": gap_fill_mode, "aggressiveness": agg, "layer2": [], "probe": [], "net_freed": 0}
-                    else:
-                        result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg, allow_layer3=False)
+                    # 游戏模式同样执行：optimize 内部对游戏进程树绝对保护、跳过磁盘干扰系统操作，
+                    # 非游戏进程持续积极清理为游戏腾出内存（游戏流畅只依赖 PID 保护与磁盘操作跳过）
+                    result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg, allow_layer3=False)
                     agg = result.get("aggressiveness", agg)
                     l2_all.extend(result.get("layer2", []))
                     probe_all.extend(result.get("probe", []))
@@ -2714,7 +2730,7 @@ class MemWiseGUI:
                             gap = min(25.0, gap + 3)
                     prev_per_proc = per_proc
                 while time.time() < deadline - 4 and self.daemon_running:
-                    if mode != "quick" and not self.cleaner.game_mode:
+                    if mode != "quick":
                         self.cleaner._layer1_memreduct(full=False, ops={"registry"}, clean_self=False)
                     time.sleep(1.5)
                 # harvest：每轮完整收割（游戏进程由 PID 保护、系统缓存由 game_mode 跳过，
@@ -2868,18 +2884,9 @@ class MemWiseGUI:
 
                 # 元认知（harvest 超时时跳过，避免零数据污染诊断）
                 if not harvest_partial:
-                    meta_stats = {
-                        'mem_pct': m['pct'],
-                        'trimmed_cnt': self._cycle_trimmed,
-                        'failed_cnt': self._cycle_failed,
-                        'total_attempts': self._cycle_trimmed + self._cycle_failed,
-                        'cycle_freed': cycle_freed,
-                        'snaps': snaps,
-                        'fore_fullscreen': winapi.is_foreground_fullscreen(),
-                    }
                     meta_findings = []
                     try:
-                        meta_findings = self.learner.meta.tick(meta_stats)
+                        meta_findings = self.learner.meta.tick()
                     except Exception as e:
                         _log_write("异常", f"元认知异常: {e!r}")
                     if meta_findings:
@@ -2972,6 +2979,7 @@ class MemWiseGUI:
         self.lbl_tr["text"] = f"进程: {self._fmt_count(s['ws_trim'])}"
         fm = s['freed_mb']
         self.lbl_fr["text"] = f"释放: {fm/1024.0:.1f}GB" if fm >= 1000 else f"释放: {fm:.1f}MB"
+        self._upd_learned()  # 守护中持续学习新进程，已学习数随周期刷新
         pct = m["pct"]
         icon = "🟢" if pct < 70 else ("🟡" if pct < 90 else "🔴")
         self.lbl_st["text"] = f"{icon} {txt} {pct}%"

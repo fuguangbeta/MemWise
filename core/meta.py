@@ -11,8 +11,8 @@ class MetaCognition:
     def __init__(self, learner):
         self.learner = learner
     
-    def tick(self, stats):
-        """每 tick 调用"""
+    def tick(self):
+        """每 tick 调用（状态全部取自 learner 画像，无需外部统计输入）"""
         now = time.time()
         findings = []
         
