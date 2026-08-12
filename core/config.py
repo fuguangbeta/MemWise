@@ -38,7 +38,13 @@ DEFAULT_CFG = {
     "gap_seconds": 12, "clean_passes": 4,
     "hotkey": "ctrl+shift+m", "game_hotkey": "ctrl+shift+g", "game_processes": [],
     "clean_operations": ["ws", "standby", "modified", "volume", "registry"],
+    "emergency_threshold": 80, "log_to_file": False,
+    "close_action": "ask", "tray_left_action": "show",
 }
+
+# 清理操作合法键（GUI 六开关全量映射）；历史遗留键（compress/combine 等旧版操作名）
+# 无任何消费方——加载时白名单清洗，防止死配置残留（名不副实）
+CLEAN_OPS_WHITELIST = {"ws", "standby", "modified", "filecache", "volume", "registry"}
 
 
 def get_state_path():
@@ -76,6 +82,9 @@ def load():
             else:
                 return d
         d.update(u)
+        # 清理操作白名单清洗：历史遗留键（compress/combine 等）无消费方，过滤防残留
+        if isinstance(d.get("clean_operations"), list):
+            d["clean_operations"] = [k for k in d["clean_operations"] if k in CLEAN_OPS_WHITELIST]
     except Exception as e:
         print(f"[MemWise] 配置加载失败: {e}", file=_ERR)
     return d

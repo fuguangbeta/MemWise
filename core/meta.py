@@ -3,7 +3,6 @@ MetaCognition — 元认知层
 监控整个认知系统，自动发现并修复问题
 """
 import time
-import math
 
 class MetaCognition:
     """两维监控: 概念漂移 / 探索覆盖"""

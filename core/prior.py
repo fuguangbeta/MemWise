@@ -11,7 +11,7 @@ class HierarchicalPrior:
         "browser_child": ["chrome_child", "msedge_child", "firefox_child"],
         "ide": ["code", "devenv", "clion", "pycharm", "idea", "eclipse", "androidstudio"],
         "terminal": ["cmd", "powershell", "windowsterminal", "conhost", "wt"],
-        "office": ["winword", "excel", "powerpnt", "outlook", "onenote", "word", "excel", "powerpoint"],
+        "office": ["winword", "excel", "powerpnt", "outlook", "onenote", "word", "powerpoint"],
         "game": ["csgo", "dota2", "lol", "overwatch", "valorant", "fortnite", "steam", "epicgames"],
         "chat": ["wechat", "qq", "discord", "telegram", "slack", "teams"],
         "system": ["svchost", "services", "lsass", "csrss", "smss", "wininit", "lsm"],

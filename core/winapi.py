@@ -74,7 +74,6 @@ TerminateProcess = k32.TerminateProcess; TerminateProcess.argtypes=[w.HANDLE, w.
 GetProcessTimes = k32.GetProcessTimes; GetProcessTimes.argtypes=[w.HANDLE,ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME)]; GetProcessTimes.restype=w.BOOL
 GetSystemTimes = k32.GetSystemTimes; GetSystemTimes.argtypes=[ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME)]; GetSystemTimes.restype=w.BOOL
 GlobalMemoryStatusEx = k32.GlobalMemoryStatusEx; GlobalMemoryStatusEx.argtypes=[ctypes.POINTER(MEMORYSTATUSEX)]; GlobalMemoryStatusEx.restype=w.BOOL
-NtSetSystemInformation = ntdll.NtSetSystemInformation; NtSetSystemInformation.argtypes=[w.INT,ctypes.c_void_p,w.ULONG]; NtSetSystemInformation.restype=w.LONG
 GetProcessMemoryInfo = psapi.GetProcessMemoryInfo; GetProcessMemoryInfo.argtypes=[w.HANDLE,ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),w.DWORD]; GetProcessMemoryInfo.restype=w.BOOL
 GetForegroundWindow = u32.GetForegroundWindow; GetForegroundWindow.argtypes=[]; GetForegroundWindow.restype=w.HANDLE
 GetWindowRect = u32.GetWindowRect; GetWindowRect.argtypes=[w.HANDLE, ctypes.c_void_p]; GetWindowRect.restype=w.BOOL
@@ -83,6 +82,8 @@ GetWindowThreadProcessId = u32.GetWindowThreadProcessId; GetWindowThreadProcessI
 SetWindowLongPtrW = u32.SetWindowLongPtrW; SetWindowLongPtrW.argtypes=[w.HANDLE, w.INT, ctypes.c_void_p]; SetWindowLongPtrW.restype=ctypes.c_void_p
 CallWindowProcW = u32.CallWindowProcW; CallWindowProcW.argtypes=[ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p]; CallWindowProcW.restype=ctypes.c_void_p
 SetSystemFileCacheSize = k32.SetSystemFileCacheSize; SetSystemFileCacheSize.argtypes=[ctypes.c_size_t,ctypes.c_size_t,w.DWORD]; SetSystemFileCacheSize.restype=w.BOOL
+# K32 官方通道（跨机器保留：本机 Win11 26100 实测全失效 87，但其他系统可能正常——
+# 双通道策略：K32 优先（可反复设置/恢复），失败回退 Nt 直通兜底）
 SetProcessInformation = k32.SetProcessInformation; SetProcessInformation.argtypes=[w.HANDLE,w.DWORD,ctypes.c_void_p,w.DWORD]; SetProcessInformation.restype=w.BOOL
 GetDriveTypeW = k32.GetDriveTypeW; GetDriveTypeW.argtypes=[w.LPCWSTR]; GetDriveTypeW.restype=w.UINT
 RegisterHotKey = u32.RegisterHotKey; RegisterHotKey.argtypes=[w.HANDLE,w.INT,w.UINT,w.UINT]; RegisterHotKey.restype=w.BOOL
@@ -219,16 +220,22 @@ def terminate_process(pid, exit_code=1):
 
 
 def set_memory_priority(pid, level=0):
-    """设置进程内存优先级 (0=最低, 4=正常)。
-    低优先级进程的页面在内存紧张时会被系统优先压缩/回收。
-    纯内存管理提示，不影响进程调度，零副作用。"""
+    """设置进程内存优先级 (0=最低, 5=正常)。双通道：
+    K32 官方通道优先（其他系统上有效且可反复调整/恢复）；本机实测 K32 全失效(87)
+    时回退 Nt 类 42 (ProcessMemoryPriority, PHNT)——2026-08-12 实验定论：Nt 42
+    首次设置真实生效，但每进程仅可设置一次（二次恒 STATUS_ALREADY_COMPLETE，
+    与 EcoQoS 同款"一次性"特性）。低优先级进程的页面在内存紧张时被系统优先回收。"""
     h = OpenProcess(PROCESS_SET_INFORMATION, False, pid)
     if not h:
         return False
     try:
-        info = PROCESS_MEMORY_PRIORITY_INFORMATION(level)
-        ok = SetProcessInformation(h, 0x13, ctypes.byref(info), ctypes.sizeof(info))
-        return bool(ok)
+        info = PROCESS_MEMORY_PRIORITY_INFORMATION(max(0, min(5, level)))
+        if SetProcessInformation(h, 0x13, ctypes.byref(info), ctypes.sizeof(info)):
+            return True
+        # K32 失效 → Nt 42 直通（ALREADY_COMPLETE 掩码判定同 EcoQoS）
+        v = w.ULONG(max(0, min(5, level)))
+        ret = NtSetInformationProcess(h, 42, ctypes.byref(v), ctypes.sizeof(v))
+        return ret == 0 or (ret & 0xFFFFFFFF) == 0xC0000048
     finally:
         CloseHandle(h)
 
@@ -242,11 +249,10 @@ class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
     _fields_ = [("Version", w.ULONG), ("ControlMask", w.ULONG), ("StateMask", w.ULONG)]
 
 def set_eco_qos(pid, enable=True):
-    """标记进程为 EcoQoS(节能)或恢复正常。
-    EcoQoS 让系统更积极回收该进程的物理内存页。
-    纯性能提示，不影响调度正确性。
-    Nt 直通（2026-08-11 实验：K32 SetProcessInformation 本机全返回 ERROR_INVALID_PARAMETER，
-    原 SetProcessInformation 实现静默失效；Nt 类 15 实测可用）。
+    """标记进程为 EcoQoS(节能)或恢复正常。双通道：
+    K32 官方通道优先（其他系统上有效且可反复设置/恢复）；本机实测 K32 全失效(87)
+    时回退 Nt 类 15 直通（2026-08-11 实验实测可用）。
+    EcoQoS 让系统更积极回收该进程的物理内存页。纯性能提示，不影响调度正确性。
     0xC0000048（STATUS_ALREADY_COMPLETE）= 目标状态已达成，同样视为成功"""
     h = OpenProcess(PROCESS_SET_INFORMATION, False, pid)
     if not h:
@@ -257,8 +263,10 @@ def set_eco_qos(pid, enable=True):
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED if enable else 0
         )
+        if SetProcessInformation(h, 15, ctypes.byref(state), ctypes.sizeof(state)):
+            return True
+        # K32 失效 → Nt 类 15 直通（ALREADY_COMPLETE 掩码比较：LONG 有符号返回需掩码）
         ret = NtSetInformationProcess(h, 15, ctypes.byref(state), ctypes.sizeof(state))
-        # ALREADY_COMPLETE(0xC0000048) = 目标状态已达成（LONG 有符号返回需掩码比较）
         return ret == 0 or (ret & 0xFFFFFFFF) == 0xC0000048
     finally:
         CloseHandle(h)
@@ -583,9 +591,10 @@ def purge_low_priority_standby():
 
 def clear_system_file_cache_ex():
     """SystemFileCacheInformationEx — 强制 OS 回收文件缓存。
-    正确序列：查询当前 → Min=Max=PeakSize 强制回收 → 恢复 Min=0/Max=SIZE_MAX 默认上限。
+    正确序列：查询当前 → Min=Max=PeakSize 强制回收 → 恢复原始 Min/Max 默认上限。
     2026-08-11 专项排查：原 Min=Max=MAXSIZE 实现返回 0xC000009A（资源不足）从未生效；
-    恢复返回 0x40000002 为警告级（最终状态正确），视为成功。"""
+    恢复返回 0x40000002 为警告级（最终状态正确），视为成功；恢复失败时如实返回 False，
+    防止文件缓存上限被静默锁死在回收后大小（恢复用 step1 查询到的原始 Min/Max，最精确）。"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
         class _SFCI(ctypes.Structure):
@@ -599,21 +608,21 @@ def clear_system_file_cache_ex():
             ]
         info = _SFCI()
         ret_len = w.ULONG()
-        # 1. 查询当前（完整字段）
+        # 1. 查询当前（完整字段，Min/Max 原始值供恢复用）
         if NtQuerySystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(ret_len)) != 0:
             return False
+        orig_min, orig_max = info.MinimumWorkingSet, info.MaximumWorkingSet
         # 2. Min=Max=PeakSize → 强制回收
         info.MinimumWorkingSet = info.PeakSize
         info.MaximumWorkingSet = info.PeakSize
         if NtSetSystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info)) != 0:
             return False
-        # 3. 恢复默认上限（SIZE_MAX；0x40000002 警告级部分成功，最终状态正确）
+        # 3. 恢复原始上限（0x40000002 警告级部分成功，最终状态正确；失败如实返回 False）
         info2 = _SFCI()
-        if NtQuerySystemInformation(0x15, ctypes.byref(info2), ctypes.sizeof(info2), ctypes.byref(ret_len)) == 0:
-            info2.MinimumWorkingSet = 0
-            info2.MaximumWorkingSet = ctypes.c_size_t(-1).value
-            NtSetSystemInformation(0x15, ctypes.byref(info2), ctypes.sizeof(info2))
-        return True
+        info2.MinimumWorkingSet = orig_min
+        info2.MaximumWorkingSet = orig_max
+        ret = NtSetSystemInformation(0x15, ctypes.byref(info2), ctypes.sizeof(info2))
+        return ret == 0 or (ret & 0xFFFFFFFF) == 0x40000002
     except Exception:
         return False
 
@@ -627,16 +636,15 @@ def create_tray_percent_icon(percent, color=(0, 200, 0)):
     import ctypes.wintypes as wt
     gm = ctypes.windll.gdi32
     um = ctypes.windll.user32
-    hdc_screen = hdc = hdc_mask = hbm = hbm_mask = hicon = None
+    hdc_screen = hdc = hbm = hbm_mask = hicon = None
     try:
         hdc_screen = um.GetDC(None)
         if not hdc_screen:
             return None
         hdc = gm.CreateCompatibleDC(hdc_screen)
-        hdc_mask = gm.CreateCompatibleDC(hdc_screen)
         hbm = gm.CreateCompatibleBitmap(hdc_screen, 16, 16)
         hbm_mask = gm.CreateBitmap(16, 16, 1, 1, None)
-        if not all([hdc, hdc_mask, hbm, hbm_mask]):
+        if not all([hdc, hbm, hbm_mask]):
             return None
         prev_bm = gm.SelectObject(hdc, hbm)
         prev_font = gm.SelectObject(hdc, gm.GetStockObject(17))  # DEFAULT_GUI_FONT
@@ -667,7 +675,6 @@ def create_tray_percent_icon(percent, color=(0, 200, 0)):
     finally:
         if hbm_mask: gm.DeleteObject(hbm_mask)
         if hbm: gm.DeleteObject(hbm)
-        if hdc_mask: gm.DeleteDC(hdc_mask)
         if hdc: gm.DeleteDC(hdc)
         if hdc_screen: um.ReleaseDC(None, hdc_screen)
 
@@ -1069,7 +1076,8 @@ def _draw_memwise_pixels_hq(size, buf, base_color=(62, 62, 72), off_mult=0.75, s
     # 3. M 掩码 + 管状法线光照
     m_alpha = [0.0] * n
     m_col = [None] * n
-    DARK = (125, 135, 150)
+    # 小尺寸扁平光照（近白纯色），大尺寸立体管状光照（深色管 + 白色高光）
+    DARK = (235, 238, 242) if small else (125, 135, 150)
     BRIGHT = (255, 255, 255)
     MLX, MLY = -0.7071, -0.7071
     for y in range(cs):
@@ -1089,12 +1097,9 @@ def _draw_memwise_pixels_hq(size, buf, base_color=(62, 62, 72), off_mult=0.75, s
             if d > 1e-6:
                 nx2, ny2 = (px - nx_) / d, (py - ny_) / d
                 diff = nx2 * MLX + ny2 * MLY
-                # 小尺寸扁平光照（近白纯色），大尺寸保持立体管状光照（0.10~1.0）
                 shade = 0.9 if small else (0.55 + 0.45 * diff)
             else:
                 shade = 0.9 if small else 0.55
-            if small:
-                DARK, BRIGHT = (235, 238, 242), (255, 255, 255)  # flat：近白 M
             r = int(DARK[0] + (BRIGHT[0] - DARK[0]) * shade)
             g = int(DARK[1] + (BRIGHT[1] - DARK[1]) * shade)
             b = int(DARK[2] + (BRIGHT[2] - DARK[2]) * shade)

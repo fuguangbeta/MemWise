@@ -108,10 +108,8 @@ class PareJudger:
             target=efis_cfg.get("target_usage", config.get("target_usage", TARGET_USAGE)),
         )
         self.aggressiveness = 0.0
-        self._prev_agg = 0.0
         self._last_mem_pct = 50
         self.cooldown = {}
-        self._info_msgs = []
         self.pf_before = {}
         self._post_clean_ws = {}  # 进程清理后的 WS 基线
         self._post_clean_time = {}  # 基线设置时间戳（20分钟填满判定窗口 / 1小时过期清理）
@@ -152,7 +150,6 @@ class PareJudger:
         except Exception:
             pass
         self.aggressiveness = self.pid.update(mem_usage_pct)
-        self._prev_agg = self.aggressiveness
         return self.aggressiveness
 
     # ── 决策 ──

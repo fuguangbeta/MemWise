@@ -1,4 +1,4 @@
-# MemWise v3.8.40
+# MemWise v3.9.28
 
 ## 关于本工具 · *About This Tool*
 
@@ -332,9 +332,9 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 6. 内存优先级管理 · *Memory Priority Management*
 
-系统通过 `NtSetInformationProcess` 直通向 OS 传递偏好级别：对高价值大进程（学习评分高且内存占用大）启用 EcoQoS 节能标记——系统会更积极回收其物理内存页；游戏名单进程保持默认节能状态以确保游戏流畅。内存优先级（ProcessMemoryPriority）在支持的 Windows 版本上按学习评分分层尽力设置。这是操作系统层面的被动优化，不消耗额外 CPU 或 I/O。
+系统通过 `NtSetInformationProcess` 直通向 OS 传递偏好级别：对高价值大进程（学习评分高且内存占用大）启用 EcoQoS 节能标记并设置最低内存优先级——系统会更积极回收其物理内存页；游戏名单进程保持默认节能状态以确保游戏流畅。内存优先级与 EcoQoS 采用同一门槛，真实生效（每进程仅设置一次）。这是操作系统层面的被动优化，不消耗额外 CPU 或 I/O。
 
-*High-value large processes (high learning score, large memory footprint) receive EcoQoS power-throttling hints via direct NtSetInformationProcess calls, so the OS reclaims their physical pages first; game-list processes stay at the default state for smooth gaming. Memory priority is applied on a tiered best-effort basis where supported. A passive OS-level optimization with zero CPU or I/O overhead.*
+*High-value large processes (high learning score, large memory footprint) receive EcoQoS power-throttling hints and the lowest memory priority via direct NtSetInformationProcess calls, so the OS reclaims their physical pages first; game-list processes stay at the default state for smooth gaming. Memory priority shares the same threshold as EcoQoS and takes effect on first application (set once per process). A passive OS-level optimization with zero CPU or I/O overhead.*
 
 ---
 
@@ -553,7 +553,7 @@ MemWise/
 │   ├── eris.py                 # ERIS 效率评分纯函数（生产/测试共用）· ERIS Pure Functions
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py             # 回归测试（71 项断言）· Regression Suite
+│   └── test_v2.6.py             # 回归测试（79 项断言）· Regression Suite
 ```
 
 ---

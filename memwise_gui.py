@@ -1,5 +1,5 @@
 """
-MemWise v3.8.40 GUI —— 图形界面
+MemWise v3.9.28 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -114,7 +114,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v3.8.40 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v3.9.28 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -345,6 +345,8 @@ class ToolTip:
 
     def _show(self):
         if self._tw: return
+        if not self.widget.winfo_exists():
+            return  # 窗口已销毁（after 回调残留）：跳过创建防 TclError
         x = self.widget.winfo_rootx() + 16
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
         self._tw = tk.Toplevel(self.widget)
@@ -427,7 +429,36 @@ if "--watchdog" in sys.argv:
     sys.exit(0)
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_v3.8.40_SingleInstance"
+SINGLE_MUTEX_NAME = "Global\\MemWise_SingleInstance"
+
+
+def _activate_existing_instance():
+    """枚举顶层窗口，激活标题以「MemWise v」开头的既有实例（跨版本兼容——
+    FindWindowW 精确标题随版本号失效，升级后旧实例窗口找不到无法激活）"""
+    try:
+        EnumProc = ctypes.WINFUNCTYPE(w.BOOL, w.HANDLE, w.LPARAM)
+        found = []
+
+        @EnumProc
+        def _cb(hwnd, lparam):
+            try:
+                buf = ctypes.create_unicode_buffer(256)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+                if buf.value.startswith("MemWise v"):
+                    found.append(hwnd)
+                    return False  # 找到即停
+            except Exception:
+                pass
+            return True
+
+        if ctypes.windll.user32.EnumWindows(_cb, 0) and found:
+            hwnd = found[0]
+            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 class MemWiseGUI:
@@ -440,14 +471,12 @@ class MemWiseGUI:
         # 单实例检测 — 已有实例运行则激活后退出
         # Global\ 命名空间：管理员实例运行时普通进程 CreateMutexW 返回 ERROR_ACCESS_DENIED(5)
         # 而非 ALREADY_EXISTS(0xB7)——两者均视为已有实例，防双守护/双看门狗并发
+        # mutex 名固定不带版本号：版本升级后新旧实例互斥（原带版本号可双实例并存）
         self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
         _mutex_err = ctypes.windll.kernel32.GetLastError()
         if _mutex_err in (0xB7, 5):
-            # 激活已有窗口（0xB7 权威；5 且句柄空时以窗口存在性兜底验证）
-            hwnd = ctypes.windll.user32.FindWindowW(None, "MemWise v3.8.40")
-            if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            # 激活已有实例窗口（0xB7 权威；5 且句柄空时以窗口存在性兜底验证）
+            if _activate_existing_instance():
                 self._mutex = None
                 sys.exit(0)
             if _mutex_err == 0xB7 or not self._mutex:
@@ -462,7 +491,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v3.8.40")
+        self.root.title("MemWise v3.9.28")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -486,6 +515,9 @@ class MemWiseGUI:
                 "efis_params":CFG.get("efis_params",{})}
         self.judger = Judger(self.learner, jcfg)
         self.cleaner = Cleaner(self.judger)
+        # harvest 专用独立线程池（与 trim 池彻底隔离——防池内嵌套死锁，见 _dae_worker）
+        self._harvest_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="memwise-harvest")
         self.efis = EfisController(STATE_FILE)
         # 启动即用 EFIS 持久化参数对齐运行时消费方（config.yaml 可能滞后于 efis_state.json）
         self.judger.cfg["efis_params"] = self.efis.get_params()
@@ -508,6 +540,7 @@ class MemWiseGUI:
         self._eff_factors = deque(maxlen=60)  # 效率主导因子
         self._chart_lock = threading.Lock()
         self._eris_lock = threading.Lock()  # ERIS 分位数窗读写互斥锁
+        self._eris_save_lock = threading.Lock()  # ERIS 状态持久化互斥锁（daemon 线程与退出线程可能并发写）
         self._chart_cycle_meta = deque(maxlen=60)  # 每轮元数据(seq,trimmed,failed,mem_pct,failed_weight,partial)
         self._chart_eris_last_seq = -1  # 最后进入ERIS的轮次序列号（替代绝对索引，防maxlen边界bug）
         self._chart_bar_seq = 0  # 全局轮次序列号（daemon递增）
@@ -517,7 +550,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v3.8.40 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v3.9.28 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             self._spawn_watchdog()
@@ -564,7 +597,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.8.40")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v3.9.28")
                     if fw:
                         top = fw
                 except Exception:
@@ -719,9 +752,11 @@ class MemWiseGUI:
             # 前置窗口（TrackPopupMenu 要求）
             um.SetForegroundWindow(hwnd)
             # 弹出菜单（阻塞直到选择或取消）
-            cmd = um.TrackPopupMenu(hmenu, 0x0020 | 0x0002 | 0x0100, pt.x, pt.y, 0, hwnd, None)
-            # TPM_RETURNCMD=0x0100 | TPM_RIGHTBUTTON=0x0002 | TPM_TOPALIGN=0x0000
-            um.DestroyMenu(hmenu)
+            try:
+                cmd = um.TrackPopupMenu(hmenu, 0x0020 | 0x0002 | 0x0100, pt.x, pt.y, 0, hwnd, None)
+            finally:
+                # TPM_RETURNCMD=0x0100 | TPM_RIGHTBUTTON=0x0002 | TPM_TOPALIGN=0x0000
+                um.DestroyMenu(hmenu)  # 异常路径也销毁，防句柄泄漏
             # 执行操作
             if cmd == ID_SHOW:
                 self._show_window()
@@ -812,6 +847,13 @@ class MemWiseGUI:
         if not game:
             # 手动关闭后恢复自动检测（与 tooltip「自动检测或手动开启」语义一致）
             self.cleaner._game_mode_manual = False
+        else:
+            # 立即构建游戏 PID 保护集（等下一轮快照会有 ≤3s 无保护窗口期）
+            try:
+                snaps = self.sniffer.snapshot()
+                self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
+            except Exception:
+                pass
         _log_write("决策", f"游戏模式手动{'启用' if game else '关闭'}")
         if game:
             self._log("🎮 游戏模式已手动启用 · 游戏进程受保护")
@@ -1026,7 +1068,8 @@ class MemWiseGUI:
             "进程闲置内存清理的总次数\n"
             "\n"
             "每成功清理一个进程计 1 次（含多轮深度清理）。\n"
-            "清理前还会降低该进程的内存优先级。\n"
+            "对确认值得清理的大进程，程序会为其设置最低内存优先级，\n"
+            "让系统优先回收其闲置页面。\n"
             "\n"
             "⚠ 数字大不一定释放得多——多次清理小进程也会累加\n"
             "⚠ 参考释放量（MB）更有意义")
@@ -1219,7 +1262,7 @@ class MemWiseGUI:
 
         ca_lbl = ttk.Label(sf, text="关闭按钮行为：")
         ca_lbl.pack(anchor="w", pady=(8,0))
-        self._add_tip(ca_lbl, "点击窗口关閉按鈕时的行为：\n· 最小化到托盘 — 隐藏到托盘继续守护\n· 直接退出程序 — 完全退出自动保存\n· 每次询问 — 弹窗选择（默认）")
+        self._add_tip(ca_lbl, "点击窗口关闭按钮时的行为：\n· 最小化到托盘 — 隐藏到托盘继续守护\n· 直接退出程序 — 完全退出自动保存\n· 每次询问 — 弹窗选择（默认）")
         self._close_var = tk.StringVar(value=CFG.get("close_action","ask"))
         def set_ca(v):
             global CFG
@@ -1307,7 +1350,6 @@ class MemWiseGUI:
                       "\n"
                       "无磁盘读写操作，不影响任何程序运行。\n"
                       "守护模式下始终执行，取消勾选后完全跳过。")
-                # ─── 关闭按钮行为 ───
         # ─── 游戏模式 ───
         gmf = ttk.LabelFrame(inner_frame, text="游戏模式", padding=8)
         gmf.pack(fill="x", padx=12, pady=4)
@@ -2312,21 +2354,22 @@ class MemWiseGUI:
         c.bind("<Leave>", self._chart_hide_tip)
 
     def _save_eris_ewma(self):
-        """持久化 ERIS IQR 分位数窗（原子写入）"""
-        try:
-            import json, os
-            bufs = getattr(self, '_eris_bufs', None)
-            if bufs and any(bufs):
-                data = {"bufs": [list(b) for b in bufs],
-                        "iqr_ewma": getattr(self, "_eris_iqr_ewma", [0.0]*5),
-                        "p50_ewma": getattr(self, "_eris_p50_ewma", [0.0]*5)}
-                path = os.path.join(os.path.dirname(STATE_FILE), "memwise_eris_ewma.json")
-                tmp = path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
-                os.replace(tmp, path)
-        except Exception:
-            pass
+        """持久化 ERIS IQR 分位数窗（原子写入；daemon 线程与退出线程可能并发写，加锁防 tmp 交错截断）"""
+        with self._eris_save_lock:
+            try:
+                import json, os
+                bufs = getattr(self, '_eris_bufs', None)
+                if bufs and any(bufs):
+                    data = {"bufs": [list(b) for b in bufs],
+                            "iqr_ewma": getattr(self, "_eris_iqr_ewma", [0.0]*5),
+                            "p50_ewma": getattr(self, "_eris_p50_ewma", [0.0]*5)}
+                    path = os.path.join(os.path.dirname(STATE_FILE), "memwise_eris_ewma.json")
+                    tmp = path + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(data, f)
+                    os.replace(tmp, path)
+            except Exception:
+                pass
     
     def _load_eris_ewma(self):
         """加载 ERIS 分位数窗（热重启保留/冷启动重建），严格校验"""
@@ -2568,16 +2611,14 @@ class MemWiseGUI:
         self._update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _dae_worker(self):
-        h_low = h_high = None
+        h_low = None
         try:
-            # 创建内存通知对象（事件驱动取代轮询）
+            # 创建内存通知对象（事件驱动取代轮询；HIGH 通知无消费方——只 wait LOW，不创建浪费句柄）
             h_low = winapi.create_memory_resource_notification(
                 winapi.MEMORY_RESOURCE_NOTIFICATION_TYPE_LOW)
-            h_high = winapi.create_memory_resource_notification(
-                winapi.MEMORY_RESOURCE_NOTIFICATION_TYPE_HIGH)
-            use_event_driver = (h_low is not None and h_high is not None)
+            use_event_driver = h_low is not None
             
-            interval = CFG.get("interval",30)
+            interval = CFG.get("interval", 60)  # 与 DEFAULT_CFG 一致（原 30 系历史默认值残留）
             last_cfg_check = 0
             last_save = 0
             startup_logged = False
@@ -2730,7 +2771,10 @@ class MemWiseGUI:
                 # 非游戏进程清理不影响游戏流畅；图表每轮保持真实数据）
                 if not self.daemon_running:
                     break
-                harvest_future = self.cleaner._trim_executor.submit(
+                # harvest 独立 1 线程池执行：与 trim 池彻底隔离——
+                # 原提交到 _trim_executor 池内嵌套（harvest 占线程 + 内部 _bounded_submit 再向同池提交）：
+                # 1 核机器 max_workers=1 死锁致 harvest 永久超时；多核时排队时间计入 30s 超时误判 partial
+                harvest_future = self._harvest_executor.submit(
                     self.cleaner.optimize, snaps, self.learner, mode,
                     operations=ops, aggressiveness=agg)
                 result = None
@@ -2793,6 +2837,7 @@ class MemWiseGUI:
                     last_save = now
                     self.judger.purge_expired()
                     self.learner.save(STATE_FILE)
+                    self._save_eris_ewma()  # ERIS 分位数窗随周期保存：运行中崩溃（watchdog 重启）不丢
                 trimmed = [(snap, ok, freed, reason) for snap, ok, freed, reason in l2_results if ok]
                 failed = [r for r in l2_results if not r[1]]
                 ratios = []
@@ -2894,10 +2939,6 @@ class MemWiseGUI:
                     self._cycle_log_buffer.append(msg)
                 for msg in self.cleaner.pop_info():
                     self._cycle_log_buffer.append(msg)
-                if hasattr(self.judger, '_info_msgs') and self.judger._info_msgs:
-                    for msg in self.judger._info_msgs:
-                        self._cycle_log_buffer.append(msg)
-                    self.judger._info_msgs.clear()
 
                 # 周期日志（已并入统一日志常开落盘，此处旧逻辑移除）
 
@@ -2961,8 +3002,6 @@ class MemWiseGUI:
             try:
                 if h_low:
                     winapi.close_handle(h_low)
-                if h_high:
-                    winapi.close_handle(h_high)
             except Exception:
                 pass
             self._msg_queue.put(('dae_stopped', None))
@@ -3116,6 +3155,9 @@ class MemWiseGUI:
         except Exception:
             pass
         try: self.cleaner.shutdown()
+        except Exception:
+            pass
+        try: self._harvest_executor.shutdown(wait=False)
         except Exception:
             pass
         _save_cfg()

@@ -22,6 +22,7 @@ class PareCleaner:
         self.game_mode = False
         self._game_mode_manual = False  # 用户手动设置过模式开关后，自动检测不再覆盖（直到再次手动切换/重启）
         self._low_pri_pids = set()
+        self._mem_pri_set = set()  # 已设 MemoryPriority 的 PID（Nt 42 一次性特性：防重复无效调用）
         self._pri_refresh_counter = 0
         self._fast_track = set()  # 高回填率 PID，gap-fill 期间快速重清
         self._last_standby_time = 0
@@ -507,7 +508,6 @@ class PareCleaner:
         candidates = []
         probe_list = []
 
-        import os
         SELF_PID = os.getpid()
         for s in snaps:
             # 排除自身进程
@@ -522,17 +522,22 @@ class PareCleaner:
                     probe_list.append(s)
                 self.stats["skipped"] += 1
 
-        # ── 全局 3 层内存优先级 + EcoQoS ──
-        # 所有非系统非黑名单进程，按 θ 分 3 层设 MemoryPriority + EcoQoS。
-        # 这比 EmptyWorkingSet 更温和——只是提示 Windows 优先/延后回收。
-        # 每 30 tick 全部重新评估一次，确保优先级始终与最新 θ 匹配
+        # ── 全局内存优先级 + EcoQoS ──
+        # 对高价值大进程（θ≥0.5 且 WS≥100MB）设 VERY_LOW 内存优先级 + EcoQoS——
+        # 只是提示 Windows 优先回收其页面，比 EmptyWorkingSet 更温和。
+        # 两类标记均"每进程仅设置一次不可恢复"（Nt 直通特性）：30 tick 重评清空
+        # 集合后重设，已设进程返回 ALREADY（幂等视为成功重建集合），新进程/新转
+        # 后台的进程借此获得首次设置机会
         self._pri_refresh_counter += 1
         if self._pri_refresh_counter >= 30:
             self._low_pri_pids.clear()
+            self._mem_pri_set.clear()
             self._pri_refresh_counter = 0
         _all_games = self._get_user_game_procs()  # 循环外取一次（并集构建开销）
         for s in snaps:
             # 游戏进程（含此前被降级的）：恢复默认优先级/EcoQoS，确保不被 OS 优先回收
+            # （双通道语义：K32 可用机器上恢复真实生效；K32 失效机器上 Nt 通道一次性，
+            # 对已设进程无效无害，对未设进程（名单跳过者）首次设 4 = 锁定默认——同为恢复意图）
             if self.game_mode and hasattr(self.judger, '_game_pid_set') and s.pid in self.judger._game_pid_set:
                 if s.pid in self._low_pri_pids:
                     try:
@@ -556,24 +561,21 @@ class PareCleaner:
             if getattr(s, "fg", False):
                 winapi.set_eco_qos(s.pid, False)
                 continue
-            # 游戏进程分支已提前处理（恢复默认优先级），此处不再重复
             theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
-            if theta >= 0.3:
-                level = 0   # VERY_LOW for proven processes
-            else:
-                level = 1   # LOW for all else (OS reclaims proactively)
-            # MemoryPriority 尽力而为（部分系统 K32 通道失效）；EcoQoS 独立设置不阻断
-            # （2026-08-11 实验：K32 SetProcessInformation 全失效 → EcoQoS 已改 Nt 直通，实测可靠）
-            winapi.set_memory_priority(s.pid, level)
-            # EcoQoS 只对高价值大进程启用（θ≥0.5 且 WS≥100MB）：系统会对标记进程的冷页做
-            # 压缩驻留（压缩池计入"正在使用"），全量启用实测使内存使用率升高 4-8%；
-            # 限定范围后压缩池可控，大进程的回收收益保留
+            # EcoQoS + MemoryPriority 只对高价值大进程启用（θ≥0.5 且 WS≥100MB）：
+            # ① EcoQoS 压缩池效应（压缩池计入"正在使用"）——全量启用实测使用率升高 4-8%；
+            # ② MemoryPriority 双通道中 Nt 42 兜底"每进程仅设置一次不可恢复"——
+            #    低置信/小进程在 K32 失效机器上不值得被永久降级
+            #    （原 θ<0.5 两档在 K32 失效下从未生效，零损失收敛到高价值门槛）
             if theta >= 0.5 and s.ws >= (100 << 20):
                 if winapi.set_eco_qos(s.pid, True):
                     self._low_pri_pids.add(s.pid)
+                if winapi.set_memory_priority(s.pid, 0):
+                    self._mem_pri_set.add(s.pid)
         # 清除已退出的 PID
         alive = {s.pid for s in snaps}
         self._low_pri_pids &= alive
+        self._mem_pri_set &= alive
 
         # 动态 probe 间隔：候选多=>短间隔快速覆盖
         n_probe = len(probe_list)
@@ -611,11 +613,14 @@ class PareCleaner:
         # ── 进程树感知：同一父进程的子进程批量排序 ──
         # 对 candidates 按父进程分组，同组内按 θ 降序
         # 浏览器(Chrome/Edge/Firefox)等有多子进程的应用优先批量清理
+        # 父名用本轮快照 pid→name 映射（零额外系统调用——原逐进程
+        # CreateToolhelp32Snapshot 全表扫描，浏览器 20+ 子进程时每轮重复开销大）
+        pid2name = {s.pid: s.name for s in snaps}
         tree_bonus = {}
         for s in candidates:
             pname = s.name.lower()
             if any(b in pname for b in ["chrome", "msedge", "firefox", "brave", "opera", "electron"]):
-                parent = winapi.get_parent_process_name(s.pid)
+                parent = pid2name.get(s.parent)
                 if parent:
                     pn = parent.lower()
                     if pn not in tree_bonus:
@@ -745,6 +750,9 @@ class PareCleaner:
                 continue
             if name_lower in never or s.pid in never:
                 continue
+            # 前台进程低压力不碰（与 can_trim 同规则——Layer2 有前台保护，深度聚合不得缺失）
+            if getattr(s, 'fg', False) and getattr(self.judger, 'aggressiveness', 0.0) < 0.35:
+                continue
             bl = self.judger._post_clean_ws.get(name_lower, 0)
             if bl > 0 and s.ws >= bl * 2.0:
                 d_candidates.append(s)
@@ -788,7 +796,7 @@ class PareCleaner:
         ops_filter = set(operations) if operations else None
         run_ws = ops_filter is None or "ws" in ops_filter
         # 管线上下文：层间传递执行状态，避免重复工作
-        pipeline_ctx = {"layer1_done": False, "layer2_trimmed": set(), "layer1_freed": 0}
+        pipeline_ctx = {"layer1_done": False, "layer2_trimmed": set()}
         self._pipeline_ctx = pipeline_ctx
         # Helper to build result with net_freed tracking
         def _mk_result(l2, probe):
@@ -839,9 +847,21 @@ class PareCleaner:
             pipeline_ctx["layer1_done"] = True
             self._layer3_deep(snaps, learner, max(agg, 0.6), ops_filter)
             agg = max(agg, 0.6)  # full 模式强制 agg ≥0.6，同步返回结果
-            # 回弹二轮：对已修剪进程追加 WS 清空
+            # 回弹二轮：对已修剪进程追加 WS 清空（与 Layer3 阶段 D 同款硬守卫——
+            # 游戏 PID 树/系统核心/黑名单/自身/前台(低压力) 一律跳过：防御纵深，
+            # 不依赖 Layer2 过滤的时序正确性，防未来逻辑变化致保护界限被破解）
             if pipeline_ctx["layer2_trimmed"]:
+                never = self.judger.cfg.get("never", []) or []
+                game_pids = getattr(self.judger, '_game_pid_set', set()) if self.game_mode else set()
+                _agg = getattr(self.judger, 'aggressiveness', 0.0)
                 for s in snaps:
+                    if s.pid == os.getpid() or s.pid in game_pids:
+                        continue
+                    name_l = s.name.lower()
+                    if _is_system_core(name_l) or name_l in never or s.pid in never:
+                        continue
+                    if getattr(s, 'fg', False) and _agg < 0.35:
+                        continue  # 前台进程低压力不碰（与 can_trim 同规则）
                     if s.name in pipeline_ctx["layer2_trimmed"] and s.ws >= (10 << 20):
                         try:
                             winapi.empty_ws(s.pid)
@@ -850,8 +870,10 @@ class PareCleaner:
             return _mk_result(l2_results, probe_results)
 
         else:
-            self._layer1_memreduct()
+            # 未知模式防御：回退 normal 语义（原 else 无参全量 layer1 过激且名不副实）
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
+            self._layer1_memreduct(full=False, total_procs=len(snaps), game_mode=self.game_mode,
+                                   ops=self._layer1_ops(ops_filter))
             return _mk_result(l2_results, probe_results)
 
     # ── 统计 ──

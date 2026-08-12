@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v3.8.40 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v3.9.28 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -232,6 +232,25 @@ check("inf", not validate_state([[float('inf')]*10]*5, [0.0]*5, W))
 check("negative ewma", not validate_state([[1.0]*10]*5, [-0.1,0,0,0,0], W))
 check("not dict", not validate_state("string", [0.0]*5, W))
 check("empty bufs ok", validate_state([[]]*5, [0.0]*5, W))
+
+print("\n[13] 终极审查修复回归（2026-08-12）")
+# config 白名单清洗：历史遗留键（compress/combine 等）无消费方，load 后必须被过滤
+_WL = {"ws", "standby", "modified", "filecache", "volume", "registry"}
+cfg_w = config_load()
+check("clean_operations 全白名单", all(k in _WL for k in cfg_w.get("clean_operations", [])))
+# DEFAULT_CFG 补全：与 GUI 消费方默认值一致（原分散在各 .get() 兜底）
+check("DEFAULT_CFG emergency_threshold", DEFAULT_CFG["emergency_threshold"] == 80)
+check("DEFAULT_CFG log_to_file", DEFAULT_CFG["log_to_file"] is False)
+check("DEFAULT_CFG close_action", DEFAULT_CFG["close_action"] == "ask")
+check("DEFAULT_CFG tray_left_action", DEFAULT_CFG["tray_left_action"] == "show")
+# prior office 分类无重复元素（重复名不副实）
+check("office 分类无重复", len(HierarchicalPrior.CATEGORIES["office"]) == len(set(HierarchicalPrior.CATEGORIES["office"])))
+# judger 无 _prev_agg 死字段（无消费方的冗余赋值已移除）
+j_tmp = PareJudger(l2, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+j_tmp.update_pressure(55)
+check("judger 无 _prev_agg 死字段", not hasattr(j_tmp, "_prev_agg"))
+# 未知模式防御：optimize else 分支回退 normal 语义（不再无参全量 layer1）——走纯配置检查
+check("clean_mode 默认 normal", config_load().get("clean_mode", "normal") in ("quick","normal","deep","full"))
 
 # ═══════════════════════════════════════════
 # ── 全量审查修复回归（v3.7.09 追加）──

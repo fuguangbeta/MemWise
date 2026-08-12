@@ -1,5 +1,5 @@
 """
-MemWise v3.8.40 PARES —— 智能内存看护
+MemWise v3.9.28 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -56,7 +56,8 @@ def cmd_status(_):
 def cmd_learn(args):
     minutes = int(args[0]) if args and args[0].isdigit() else 10
     print(f"学习模式 ({minutes} 分钟) — 仅观察不动手")
-    sniffer = Sniffer(); learner = Learner.load(STATE_PATH)
+    # 学习模式不需要进程路径（cleaner 决策才用）——关掉路径采集省快照开销
+    sniffer = Sniffer(collect_path=False); learner = Learner.load(STATE_PATH)
     try:
         for i in range(minutes * 12):
             snaps = sniffer.snapshot(); learner.feed(snaps)
@@ -149,8 +150,9 @@ def cmd_daemon(args):
                         CFG.update(_load_cfg())
                         mode = CFG.get("clean_mode", "normal")
                         interval = CFG.get("interval", 30)
-                        # 同步 judger 运行配置（排除列表/清理深度/EFIS 参数即时生效）
+                        # 同步 judger 运行配置（排除列表/游戏名单/清理深度/EFIS 参数即时生效）
                         judger.cfg["never"] = CFG.get("never", [])
+                        judger.cfg["game_processes"] = CFG.get("game_processes", [])
                         judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
                         judger.cfg["efis_params"] = CFG.get("efis_params", {})
                 except Exception:
@@ -209,13 +211,14 @@ def cmd_install_service(args):
     task_name = "MemWiseDaemon"
     action = f'"{exe}" "{script}" daemon --minimized'
     if args and args[0] == "remove":
+        # shell=False：列表直接传 schtasks，不经过 cmd.exe 二次解析（引号错乱隐患源）
         subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
-                       capture_output=True, shell=True)
+                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         print("Scheduled Task 已移除")
         return
     cmd = ["schtasks", "/create", "/tn", task_name, "/tr", action,
            "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest", "/f"]
-    r = subprocess.run(cmd, capture_output=True, shell=True,
+    r = subprocess.run(cmd, capture_output=True,
                        creationflags=subprocess.CREATE_NO_WINDOW)
     if r.returncode == 0:
         print("✓ Scheduled Task 已安装 (系统启动时自动运行)")
@@ -251,7 +254,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print("MemWise v3.8.40 PARES —— 智能内存看护")
+        print("MemWise v3.9.28 PARES —— 智能内存看护")
         print("用法: py memwise.py <命令> [参数]")
         print("  status                    内存状态")
         print("  learn [分钟]              学习进程行为 (默认10分钟)")
