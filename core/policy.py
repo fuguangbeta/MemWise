@@ -33,8 +33,10 @@ class PolicyVoter:
             delta = direction * (1.0 if contrib > 0 else -1.0) * 0.05
             self._tree_weights[i] = max(-2.0, min(2.0, self._tree_weights[i] + delta))
 
-    def should_trim(self, name, ws, state, learner):
-        """是否清理此进程 → (True/False, 理由, 各树贡献)"""
+    def should_trim(self, name, ws, state, learner, threshold=0):
+        """是否清理此进程 → (True/False, 理由, 各树贡献)
+        threshold: 投票通过阈值（模式梯度：normal=0 标准 / deep=-1 略宽 / full=-2 大幅放宽但保留
+        最低价值底线——全负分仍拒绝，防完全无意义清理）"""
         scores = [0] * 5  # 每棵树独立计分
         reasons = []
         k_freed = 0.0
@@ -83,9 +85,10 @@ class PolicyVoter:
                 elif adv_mb > 20:
                     scores[4] += 1
 
-        # 加权求和决策：权重由 update_weights_per_trim 在线学习（可为负），使学习真正影响投票
+        # 加权求和决策：权重由 update_weights_per_trim 在线学习（可为负），使学习真正影响投票；
+        # threshold 由模式梯度传入（normal 0 / deep -1 / full -2）
         weighted = self._apply_weights(scores)
-        return sum(weighted) >= 0, "; ".join(reasons[:3]) if reasons else "", list(scores)
+        return sum(weighted) >= threshold, "; ".join(reasons[:3]) if reasons else "", list(scores)
 
     def should_probe(self, name, ws, state, learner):
         """是否试探此进程 → (True/False, 理由)"""

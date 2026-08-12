@@ -2,8 +2,11 @@
 PARES Judger — PID 压力控制器 + Thompson Sampling 联合判定
 """
 import time
-import os, sys
+import os, sys, random
 from .learner import _is_system_core
+from . import winapi
+from .stable import EXPLORE_RATE
+from .i18n import tr
 
 # frozen windowed 下 sys.stderr 为 None，统一兜底（防异常路径 print 自身崩溃）
 _ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
@@ -114,20 +117,34 @@ class PareJudger:
         self._post_clean_ws = {}  # 进程清理后的 WS 基线
         self._post_clean_time = {}  # 基线设置时间戳（20分钟填满判定窗口 / 1小时过期清理）
         self._probe_last_time = {}
+        # ── P0-C 连续低活动确认：{name: (连续低活动轮数, 时间戳)} ──
+        self._low_activity = {}
+        # ── P1-E IO 活跃判定缓存：{pid: (累计IO字节, 时间戳)}（按需采样差分速率）──
+        self._io_cache = {}
+        # ── 手动优化标志（cleaner 每轮同步）：手动时跳过自动化保守门（前台冷却/连续确认/锚点抑制），
+        #    保留实时安全门（CPU/IO 活跃——正在干活的程序手动也不清）──
+        self._manual_mode = False
+        # ── 锚点抑制计数（EFIS 自平衡诊断用：每轮被"稳态抑制"拦截的次数——
+        #    抑制多但内存仍高 → EFIS 自动收紧抑制余量，保证压缩能力兜底）──
+        self.suppress_cnt = 0
+        # ── 清理模式严格度（cleaner 每轮同步）：模式决定"时间等待类"守卫的严格度——
+        #    normal 标准 / deep 减半 / full 跳过（极限=不等、立即清）；
+        #    "效率类"守卫（锚点/回弹）模式无关——极限≠白忙 ──
+        self._mode_guard = "normal"
 
     # ── PID ──
 
     def _agg_label(self, v):
-        if v <= 0.01: return "极低"
-        if v < 0.40: return "低"
-        if v < 0.60: return "中"
-        return "高"
+        if v <= 0.01: return tr("极低")
+        if v < 0.40: return tr("低")
+        if v < 0.60: return tr("中")
+        return tr("高")
 
     def _mem_label(self, pct):
-        if pct < 30: return "充裕"
-        if pct < 60: return "正常"
-        if pct < 80: return "偏高"
-        return "极高"
+        if pct < 30: return tr("充裕")
+        if pct < 60: return tr("正常")
+        if pct < 80: return tr("偏高")
+        return tr("极高")
 
     def update_pressure(self, mem_usage_pct):
         """根据内存压力更新 PID，返回当前 aggressiveness；同时维护 30s 采样内存趋势（供策略树2）"""
@@ -176,7 +193,6 @@ class PareJudger:
         fg_gate = 0.35  # 前台非游戏程序保持保护（游戏全屏时前台即游戏，已被 PID 保护）
         min_ws_gate = self._game_overrides["min_ws"] if self.game_mode else (1 << 20)
         
-        efis = self.cfg.get("efis_params", {})
         if is_fg:
             if self.aggressiveness < fg_gate:
                 return False, "前台窗口"
@@ -184,10 +200,41 @@ class PareJudger:
         if snap.ws < min_ws_gate:
             return False, "工作集太小"
 
+        # ── 前台/窗口冷却（P0-A + A 方案）：刚切走的进程不碰——有可见窗口 10 分钟
+        #    （有窗口=用户可能随时切回），无窗口 5 分钟；deep 减半、full 跳过（极限=不等）；
+        #    手动跳过（用户主动清理目标）；高压覆盖极端释放 ──
+        now = time.time()
+        _guard = getattr(self, "_mode_guard", "normal")
+        if not is_fg and not self._manual_mode and self.aggressiveness < 0.8 and _guard != "full":
+            p_fg = self.learner.get_profile(name)
+            if p_fg and p_fg.last_foreground_at:
+                _win = getattr(snap, 'has_visible', False)
+                _cd = (600 if _win else 300)
+                if _guard == "deep":
+                    _cd //= 2
+                if now - p_fg.last_foreground_at < _cd:
+                    return False, "刚切走"
+
+        # ── CPU 活跃门（P0-C）：正在干活的进程不清（单轮实时信号；手动同样生效——安全维度；
+        #    full 模式放宽到 12%——极限释放允许更高活跃度的进程，MuseRAM Ultimate 同口径）──
+        _cpu_gate = 12.0 if _guard == "full" else 8.0
+        if (getattr(snap, "cpu", 0.0) or 0.0) >= _cpu_gate:
+            return False, "CPU活跃"
+
+        # ── IO 活跃门（P1-E）：IO 密集（下载/播放/写盘）进程不清（按需采样差分；手动同样生效）──
+        if self._io_active(snap.pid):
+            return False, "IO活跃"
+
+        # ── 连续低活动确认（P0-C）：2 轮可靠低活动才可清（按 PID 键——同名多实例互不干扰；
+        #    防瞬时脉冲误判；手动/高压跳过；full 模式跳过——极限=立即清）──
+        if _guard != "full" and not self._manual_mode and self.aggressiveness < 0.8:
+            _la = self._low_activity.get(snap.pid)
+            if _la is None or _la[0] < 2:
+                return False, "活动确认中"
+
         # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──
         # 判定窗口按回填速率动态化：慢回填拉长重评间隔（避免低效重复清），快回填保持灵敏；
         # 默认 1200s，范围 [120, 3600]；ws 已超基线时直接放行（不受窗口影响）
-        now = time.time()
         baseline = self._post_clean_ws.get(name, 0)
         bl_time = self._post_clean_time.get(name, 0)
         if baseline > 0:
@@ -202,6 +249,23 @@ class PareJudger:
                     window = 120
             if now - bl_time <= window:
                 if snap.ws <= baseline:return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline)})"
+        # ── 稳态锚点抑制（P1-D）：低于应用自然稳态+余量 → 清了也白清。
+        #    手动/高压跳过；探索机制（EXPLORE_RATE 概率放行）保持 Thompson 学习闭环验证锚点──
+        if not self._manual_mode and self.aggressiveness < 0.8:
+            path_a = getattr(snap, "path", None)
+            if path_a and self.learner.stable_anchors.should_suppress(
+                    path_a, snap.ws, self.cfg.get("efis_params", {}).get("anchor_margin", 0.15)):
+                if random.random() >= EXPLORE_RATE:
+                    self.suppress_cnt += 1
+                    return False, "稳态抑制"
+        # ── 回弹自动后退（B 方案）：清后回填率高的组件进入后退期（不重复白清）；
+        #    手动/高压跳过；EWMA 回落自动解除；探索放行（5%）保持数据流——
+        #    防后退死锁：进程行为变化后探测清理产生新回弹数据，EWMA 快速回落解除 ──
+        if not self._manual_mode and self.aggressiveness < 0.8:
+            path_b = getattr(snap, "path", None)
+            if path_b and self.learner.rebound.in_backoff(path_b, now):
+                if random.random() >= EXPLORE_RATE:
+                    return False, "回弹后退"
         # ── 失败冷却检查（仅 mark_failed 设置的）──
         cd = self.cooldown.get(name, 0)
         if now < cd: return False, f"失败冷却中({int(cd-now)}s)"
@@ -218,6 +282,13 @@ class PareJudger:
         # ── 系统目录进程: 需要高 θ 值 ──
         path = getattr(snap, "path", None)
         if path and self._is_system_path(path) and theta < 0.3:return False, "系统目录进程(概率不足)"
+
+        # ── 模式价值底线（MuseRAM MinIdleScore 同构，独立于投票的干净梯度）：
+        #    deep 0.12 / full 0.06 / normal 无——极限模式也保留极低价值底线，
+        #    防完全无价值进程（θ≈0）白付 PF。ws_override 时 theta=1.0 不触发 ✅ ──
+        _theta_floor = {"deep": 0.12, "full": 0.06}.get(_guard, 0.0)
+        if _theta_floor and theta < _theta_floor:
+            return False, "价值不足"
 
         # 策略投票: 综合 Kalman/记忆/因果/时机
         try:
@@ -348,6 +419,68 @@ class PareJudger:
         for k in list(self._probe_last_time.keys()):
             if now - self._probe_last_time[k] > 1800:
                 del self._probe_last_time[k]
+        # 清理过期低活动计数（>30分钟未更新）
+        for k in list(self._low_activity.keys()):
+            if now - self._low_activity[k][1] > 1800:
+                del self._low_activity[k]
+        # 清理过期 IO 缓存（>60s 未采样）
+        for k in list(self._io_cache.keys()):
+            if now - self._io_cache[k][1] > 60:
+                del self._io_cache[k]
+        # 锚点过期（7 天无更新）
+        try:
+            self.learner.stable_anchors.purge_expired(now)
+        except Exception:
+            pass
+        # 回弹观察过期 + 后退期到期清理（字典保留键值，到期由 in_backoff 判定）
+        try:
+            self.learner.rebound.purge_expired(now)
+        except Exception:
+            pass
+
+    # ── P0-C 连续低活动确认 / P1-E IO 活跃 / P1-D 锚点喂样 ──
+
+    def update_activity(self, snaps):
+        """每轮更新连续低活动计数（按 PID 键——同名多实例进程互不干扰）：
+        CPU<8% 连续 2 轮才可清（活跃即清零重来）。
+        进程身份校验：创建时间变化（进程重启）→ 计数清零重新确认（防新实例继承旧计数）。
+        同时每轮重置锚点抑制计数（GUI/CLI 口径统一；EFIS 周期末读最近一轮计数）"""
+        self.suppress_cnt = 0
+        now = time.time()
+        for s in snaps:
+            cpu = getattr(s, "cpu", 0.0) or 0.0
+            create = getattr(s, "create", None)
+            prev = self._low_activity.get(s.pid)
+            if prev is not None and len(prev) >= 3 and prev[2] != create:
+                prev = None  # 进程重启：旧计数作废，重新确认
+            if cpu < 8.0:
+                self._low_activity[s.pid] = (prev[0] + 1 if prev else 1, now, create)
+            else:
+                self._low_activity.pop(s.pid, None)
+
+    def _io_active(self, pid):
+        """IO 活跃判定（按需采样：读一次累计计数与缓存差分速率；首轮无基线不拦截）。
+        实时安全门：与 CPU 活跃门一致，高压同样尊重——活跃进程清理无效且加剧卡顿"""
+        io = winapi.get_process_io_counters(pid)
+        if io is None:
+            return False
+        now = time.time()
+        prev = self._io_cache.get(pid)
+        self._io_cache[pid] = (io, now)
+        if prev is None:
+            return False
+        dt = now - prev[1]
+        if dt <= 0.1 or io < prev[0]:
+            return False
+        return (io - prev[0]) / dt > (4 << 20)
+
+    def update_anchors(self, snaps, now=None):
+        """喂锚点自然 WS 样本：排除清理后回填期（120s——回填不是自然稳态，防锚点被压低）；
+        顺带驱动回弹观察（B 方案：比对快照 WS 结算回填率）"""
+        now = now or time.time()
+        exclude = {n for n, t in self._post_clean_time.items() if now - t < 120}
+        self.learner.stable_anchors.feed(snaps, now, exclude)
+        self.learner.rebound.observe(snaps, now)
 
     @staticmethod
     def _is_system_path(path):

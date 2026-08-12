@@ -34,6 +34,14 @@ class PROCESS_MEMORY_PRIORITY_INFORMATION(ctypes.Structure):
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", w.DWORD),("dwHighDateTime", w.DWORD)]
 
+class IO_COUNTERS(ctypes.Structure):
+    _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
+        ("WriteOperationCount", ctypes.c_ulonglong),
+        ("OtherOperationCount", ctypes.c_ulonglong),
+        ("ReadTransferCount", ctypes.c_ulonglong),
+        ("WriteTransferCount", ctypes.c_ulonglong),
+        ("OtherTransferCount", ctypes.c_ulonglong)]
+
 class RECT(ctypes.Structure):
     _fields_ = [("left", w.LONG), ("top", w.LONG), ("right", w.LONG), ("bottom", w.LONG)]
 
@@ -72,6 +80,7 @@ AdjustTokenPrivileges = adv32.AdjustTokenPrivileges; AdjustTokenPrivileges.argty
 EmptyWorkingSet = psapi.EmptyWorkingSet; EmptyWorkingSet.argtypes=[w.HANDLE]; EmptyWorkingSet.restype=w.BOOL
 TerminateProcess = k32.TerminateProcess; TerminateProcess.argtypes=[w.HANDLE, w.UINT]; TerminateProcess.restype=w.BOOL
 GetProcessTimes = k32.GetProcessTimes; GetProcessTimes.argtypes=[w.HANDLE,ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME)]; GetProcessTimes.restype=w.BOOL
+GetProcessIoCounters = k32.GetProcessIoCounters; GetProcessIoCounters.argtypes=[w.HANDLE,ctypes.POINTER(IO_COUNTERS)]; GetProcessIoCounters.restype=w.BOOL
 GetSystemTimes = k32.GetSystemTimes; GetSystemTimes.argtypes=[ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME),ctypes.POINTER(FILETIME)]; GetSystemTimes.restype=w.BOOL
 GlobalMemoryStatusEx = k32.GlobalMemoryStatusEx; GlobalMemoryStatusEx.argtypes=[ctypes.POINTER(MEMORYSTATUSEX)]; GlobalMemoryStatusEx.restype=w.BOOL
 GetProcessMemoryInfo = psapi.GetProcessMemoryInfo; GetProcessMemoryInfo.argtypes=[w.HANDLE,ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),w.DWORD]; GetProcessMemoryInfo.restype=w.BOOL
@@ -79,6 +88,7 @@ GetForegroundWindow = u32.GetForegroundWindow; GetForegroundWindow.argtypes=[]; 
 GetWindowRect = u32.GetWindowRect; GetWindowRect.argtypes=[w.HANDLE, ctypes.c_void_p]; GetWindowRect.restype=w.BOOL
 GetSystemMetrics = u32.GetSystemMetrics; GetSystemMetrics.argtypes=[w.INT]; GetSystemMetrics.restype=w.INT
 GetWindowThreadProcessId = u32.GetWindowThreadProcessId; GetWindowThreadProcessId.argtypes=[w.HANDLE,ctypes.POINTER(w.DWORD)]; GetWindowThreadProcessId.restype=w.DWORD
+IsWindowVisible = u32.IsWindowVisible; IsWindowVisible.argtypes=[w.HANDLE]; IsWindowVisible.restype=w.BOOL
 SetWindowLongPtrW = u32.SetWindowLongPtrW; SetWindowLongPtrW.argtypes=[w.HANDLE, w.INT, ctypes.c_void_p]; SetWindowLongPtrW.restype=ctypes.c_void_p
 CallWindowProcW = u32.CallWindowProcW; CallWindowProcW.argtypes=[ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p]; CallWindowProcW.restype=ctypes.c_void_p
 SetSystemFileCacheSize = k32.SetSystemFileCacheSize; SetSystemFileCacheSize.argtypes=[ctypes.c_size_t,ctypes.c_size_t,w.DWORD]; SetSystemFileCacheSize.restype=w.BOOL
@@ -158,6 +168,33 @@ def get_foreground_pid():
     GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return pid.value
 
+# ── 可见窗口枚举（窗口状态采集：有可见窗口的后台程序=用户可能随时切回，清理冷却更长）──
+# IsWindowVisible 对最小化窗口返回 True（最小化仍属"可见状态"）——覆盖可见+最小化两类
+_WNDENUMPROC = ctypes.WINFUNCTYPE(w.BOOL, w.HANDLE, w.LPARAM)
+
+def enum_visible_window_pids():
+    """枚举所有可见顶层窗口的 PID 集合（含最小化；调用方按需缓存——窗口状态变化慢）"""
+    pids = set()
+    @_WNDENUMPROC
+    def _cb(hwnd, lparam):
+        try:
+            if IsWindowVisible(hwnd):
+                pid = w.DWORD()
+                GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value:
+                    pids.add(pid.value)
+        except Exception:
+            pass
+        return True
+    try:
+        EnumWindows = u32.EnumWindows
+        EnumWindows.argtypes = [_WNDENUMPROC, w.LPARAM]
+        EnumWindows.restype = w.BOOL
+        EnumWindows(_cb, 0)
+    except Exception:
+        pass
+    return pids
+
 # 非游戏全屏窗口，防止假阳性触发游戏模式
 IGNORE_FULLSCREEN_CLASSES = {
     "Chrome_WidgetWin_1",
@@ -191,6 +228,20 @@ def get_process_times(pid):
         ct, et, kt, ut = FILETIME(), FILETIME(), FILETIME(), FILETIME()
         if GetProcessTimes(h, ctypes.byref(ct), ctypes.byref(et), ctypes.byref(kt), ctypes.byref(ut)):
             return {"kernel": _ft_to_ns(kt), "user": _ft_to_ns(ut)}
+        return None
+    finally:
+        CloseHandle(h)
+
+def get_process_io_counters(pid):
+    """进程累计 IO 字节数（读+写，GetProcessIoCounters 累计计数）——IO 活跃判定用；
+    速率需调用方与上次采样差分。失败（权限/退出）返回 None"""
+    h = OpenProcess(_PROCESS_QUERY_LIMITED, False, pid)
+    if not h:
+        return None
+    try:
+        io = IO_COUNTERS()
+        if GetProcessIoCounters(h, ctypes.byref(io)):
+            return io.ReadTransferCount + io.WriteTransferCount
         return None
     finally:
         CloseHandle(h)

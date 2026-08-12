@@ -40,6 +40,8 @@ DEFAULT_CFG = {
     "clean_operations": ["ws", "standby", "modified", "volume", "registry"],
     "emergency_threshold": 80, "log_to_file": False,
     "close_action": "ask", "tray_left_action": "show",
+    "emergency_abs_pct": 0,  # 紧急触发兜底：可用内存百分比阈值（0=禁用；使用率阈值调高时的保险）
+    "language": "zh_CN",  # 界面语言（zh_CN=简体中文 / en=English）
 }
 
 # 清理操作合法键（GUI 六开关全量映射）；历史遗留键（compress/combine 等旧版操作名）

@@ -16,6 +16,7 @@ PARAMS = {
     "learning_rate":      {"min": 0.10, "max": 0.90, "default": 0.50, "step": 0.05},  # EWMA 反馈学习率（λ）：接入 record_clean 的 gain/cost EWMA 主通道，fast/slow 趋势通道固定
     "composite_kalman_w": {"min": 0.10, "max": 0.50, "default": 0.30, "step": 0.05},
     "kalman_r":           {"min": 1.0,  "max": 20.0,  "default": 5.0,   "step": 1.0},
+    "anchor_margin":      {"min": 0.05, "max": 0.30, "default": 0.15, "step": 0.05},  # 稳态锚点抑制余量（P1-D：余量小=抑制更严/清理更多；余量大=更保守）
 }
 
 WINDOW = 5
@@ -212,15 +213,24 @@ class EfisController:
         elif trimmed_total > 0 and freed_total / max(trimmed_total, 1) > 100:
             # 平均每进程释放充足 → 回升 Kalman 权重（原只有 -1 单向下降）
             results["composite_kalman_w"] = +1
+        # 锚点抑制自平衡（压缩能力兜底）：抑制拦截多但内存仍高于目标 → 收紧抑制余量
+        # （多清）；无抑制且内存低于目标 → 放宽余量（更保守）。防"抑制过度压不下去"
+        suppress_avg = sum(s.get("suppress_cnt", 0) for s in w) / n
+        if suppress_avg > 0 and mem_avg > target:
+            results["anchor_margin"] = -1
+        elif suppress_avg == 0 and mem_avg < target - 5:
+            results["anchor_margin"] = +1
         return results
 
     def _apply(self, diag):
         # 协方差监控：检测参数反向调整，冻结变动幅度较小的一方
+        # anchor_margin 例外：其"-1"语义=收紧抑制=更激进，与 pid_kp+/target_usage+ 语义同向
+        # （符号相反但非补偿振荡）——排除防误冻结（曾见抑制自平衡被 pid_kp 反向冻结失效）
         conflicting = {}
         for p1, d1 in diag.items():
-            if d1 == 0: continue
+            if d1 == 0 or p1 == "anchor_margin": continue
             for p2, d2 in diag.items():
-                if p2 <= p1 or d2 == 0: continue
+                if p2 <= p1 or d2 == 0 or p2 == "anchor_margin": continue
                 if (d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0):
                     # 反向调整 → 冻结 step 较小的
                     if PARAMS[p1]["step"] < PARAMS[p2]["step"]:

@@ -7,6 +7,8 @@ from .kalman import KalmanProfile
 from .prior import HierarchicalPrior
 from .policy import PolicyVoter
 from .meta import MetaCognition
+from .stable import StableAnchorStore
+from .rebound import ReboundLearner
 from collections import deque
 
 WINDOW = 20  # 趋势窗口大小
@@ -49,6 +51,7 @@ class Profile:
                  "leak_suspect", "leak_tick_count",
                  "clean_count", "refill_ewma",
                  "kalman", "last_feedback_time",
+                 "last_foreground_at",  # 最后前台时间（前台历史冷却：刚切走不碰）
                  "_info_msgs", "timeout_count")
 
     def __init__(self, name, kalman_r=5.0):
@@ -77,6 +80,7 @@ class Profile:
         self.fail_cnt = 0
         self.last_seen = 0.0
         self.last_feedback_time = 0.0  # 上次被清理/试探的时间（好奇心计算用）
+        self.last_foreground_at = 0.0  # 最后前台时间戳（0=从未在前台；前台历史冷却用）
         self.last_ws = 0
         # Probe 计数器
         self.probe_ok = 0
@@ -92,11 +96,13 @@ class Profile:
         self._info_msgs = []  # 泄漏检测等消息缓冲
         self.timeout_count = 0  # 超时累计（仅内存，不持久化）
 
-    def feed(self, ws):
-        """喂入 WS 样本，更新 EWMA 和 Z-score 基线"""
+    def feed(self, ws, is_fg=False):
+        """喂入 WS 样本，更新 EWMA 和 Z-score 基线；is_fg=True 记录最后前台时间（前台历史冷却）"""
         self.ws_deque.append(ws)
         prev_seen = self.last_seen
         self.last_seen = time.time()
+        if is_fg:
+            self.last_foreground_at = time.time()
         # 波动率已并入 Z-score sigma（ws_ewma_sigma），vol_ewma 历史字段不再维护
         if self.last_ws > 0 and ws > self.last_ws and prev_seen > 0:
             dt = max(time.time() - prev_seen, 1)
@@ -314,6 +320,7 @@ class Profile:
             "ok_cnt": self.ok_cnt, "fail_cnt": self.fail_cnt,
             "last_seen": self.last_seen,
             "last_feedback_time": self.last_feedback_time,
+            "last_foreground_at": self.last_foreground_at,
             "last_ws": self.last_ws,
             "probe_ok": self.probe_ok, "probe_fail": self.probe_fail,
             "leak_suspect": self.leak_suspect,
@@ -350,6 +357,7 @@ class Profile:
         p.fail_cnt = max(0, int(_num(d.get("fail_cnt", 0))))
         p.last_seen = _num(d.get("last_seen", 0.0))
         p.last_feedback_time = _num(d.get("last_feedback_time", 0.0))
+        p.last_foreground_at = _num(d.get("last_foreground_at", 0.0))
         p.last_ws = max(0, int(_num(d.get("last_ws", 0))))
         p.probe_ok = max(0, int(_num(d.get("probe_ok", 0))))
         p.probe_fail = max(0, int(_num(d.get("probe_fail", 0))))
@@ -385,6 +393,10 @@ class PareLearner:
         self._info_msgs = []
         # 上下文修正查找表: 30桶 × 1 float，在线学习条件偏差
         self._ctx_corrections = {}         # {bucket_key: correction_ewma}
+        # 稳态锚点存储（P1-D）：按可执行路径学习"应用自然稳态"，低于稳态抑制清理
+        self.stable_anchors = StableAnchorStore()
+        # 回弹学习（B 方案）：清后回填率 EWMA → 自动后退期（回弹高的应用不再重复白清）
+        self.rebound = ReboundLearner()
     
     @staticmethod
     def _ctx_bucket(mem_pct, is_fg, hour):
@@ -432,7 +444,7 @@ class PareLearner:
     def feed(self, snaps):
         """喂入一批快照"""
         for s in snaps:
-            self.get(s.name).feed(s.ws)
+            self.get(s.name).feed(s.ws, getattr(s, 'fg', False))
 
     # ── Thompson Sampling ──
 
@@ -497,6 +509,8 @@ class PareLearner:
             data = {
                 "version": 4,
                 "profiles": {k: v.to_dict() for k, v in filtered.items()},
+                "stable_anchors": self.stable_anchors.to_dict(),
+                "rebound": self.rebound.to_dict(),
             }
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -527,6 +541,8 @@ class PareLearner:
                 learner.profiles[k] = Profile.from_dict(v)
             except Exception:
                 continue  # 坏条目跳过，保留其余画像
+        learner.stable_anchors = StableAnchorStore.from_dict(data.get("stable_anchors"))
+        learner.rebound = ReboundLearner.from_dict(data.get("rebound"))
         return learner
 
     # ── 反饋 ──

@@ -3,10 +3,11 @@ import threading
 from . import winapi
 
 class ProcessSnapshot:
-    __slots__ = ("pid","name","ws","pf","priv","cpu","fg","path","parent","_growth_bonus","_tree_scores")
-    def __init__(self, pid, name, ws, pf, priv, cpu, fg, path=None, parent=0):
+    __slots__ = ("pid","name","ws","pf","priv","cpu","fg","path","parent","create","has_visible","_growth_bonus","_tree_scores")
+    def __init__(self, pid, name, ws, pf, priv, cpu, fg, path=None, parent=0, create=None, has_visible=False):
         self.pid=pid; self.name=name; self.ws=ws; self.pf=pf; self.priv=priv
-        self.cpu=cpu; self.fg=fg; self.path=path; self.parent=parent
+        self.cpu=cpu; self.fg=fg; self.path=path; self.parent=parent; self.create=create
+        self.has_visible=has_visible
 
 class Sniffer:
     def __init__(self, collect_path=True):
@@ -15,6 +16,7 @@ class Sniffer:
         self._lock = threading.Lock()
         self._prev_times = {}; self._prev_sys = None
         self._path_cache = {}; self._collect_path = collect_path
+        self._win_cache = None  # (时间戳, 可见窗口 PID 集)——窗口状态变化慢，30s 缓存降枚举开销
 
     def snapshot(self):
         with self._lock:
@@ -30,6 +32,15 @@ class Sniffer:
                 self._path_cache.pop(pid, None)
                 self._prev_times.pop(pid, None)
 
+    def _visible_pids(self):
+        """可见窗口 PID 集（30s 缓存；枚举失败返回空集——has_visible 全 False，冷却退化为 300s）"""
+        now = time.time()
+        if self._win_cache and now - self._win_cache[0] < 30:
+            return self._win_cache[1]
+        pids = winapi.enum_visible_window_pids()
+        self._win_cache = (now, pids)
+        return pids
+
     def _snapshot_locked(self):
         sys_now = winapi.get_system_times()
         sys_delta = 0
@@ -39,6 +50,7 @@ class Sniffer:
         except: fg_pid = 0
         procs = winapi.enum_processes()
         self._purge_dead(p for p,_,_ in procs)
+        visible_pids = self._visible_pids()  # 窗口状态 30s 缓存（每快照一次集合查找）
         result = []
         # 批量获取：内存 + CPU 时间 + 创建时间一次系统调用（避免逐进程 OpenProcess，快照开销 ↓~90%）
         bulk = winapi.get_all_processes_memory()
@@ -73,6 +85,8 @@ class Sniffer:
                     path = winapi.get_process_path(pid)
                     self._path_cache[pid] = path
             result.append(ProcessSnapshot(pid=pid, name=name, ws=mem["ws"], pf=mem["pf"], priv=mem.get("priv",0),
-                                          cpu=cpu, fg=(pid==fg_pid), path=path, parent=parent))
+                                          cpu=cpu, fg=(pid==fg_pid), path=path, parent=parent,
+                                          create=now.get("create") if now else None,
+                                          has_visible=pid in visible_pids))
         self._prev_sys = sys_now
         return result

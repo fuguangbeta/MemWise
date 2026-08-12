@@ -1,5 +1,5 @@
 """
-MemWise v3.9.28 PARES —— 智能内存看护
+MemWise v4.0.128 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -13,12 +13,14 @@ from core.sniffer import Sniffer
 from core import winapi
 from core.config import load as _load_cfg
 from core.config import get_state_path
+from core.i18n import tr, set_language  # 界面语言（跟随 GUI 设置）
 import core.config as _config
 
 SEP = "─" * 50
 STATE_PATH = get_state_path()
 
 CFG = _load_cfg()
+set_language(CFG.get("language", "zh_CN"))
 
 def _gb(b): return b / (1 << 30)
 def _mb(b): return b / (1 << 20)
@@ -41,15 +43,15 @@ def _build_pipeline():
 def cmd_status(_):
     m = _mem_or_none()
     if not m: return
-    print(f" 总内存: {_gb(m['total']):.1f} GB")
-    print(f" 已用:   {_gb(m['used']):.1f} GB ({m['pct']}%)")
-    print(f" 可用:   {_gb(m['avail']):.1f} GB")
-    print(f" 权限:   {'管理员' if winapi.is_admin() else '普通用户'}")
+    print(tr(" 总内存: ") + f"{_gb(m['total']):.1f} GB")
+    print(tr(" 已用:   ") + f"{_gb(m['used']):.1f} GB ({m['pct']}%)")
+    print(tr(" 可用:   ") + f"{_gb(m['avail']):.1f} GB")
+    print(tr(" 权限:   ") + (tr("管理员") if winapi.is_admin() else tr("普通用户")))
     if os.path.isfile(STATE_PATH):
         try:
             with open(STATE_PATH, "r", encoding="utf-8") as f:
                 meta = json.load(f)
-            print(f" 画像:   {len(meta.get('profiles',{}))} 个进程已学习")
+            print(tr(" 画像:   ") + f"{len(meta.get('profiles',{}))} " + tr("个进程已学习"))
         except Exception:
             pass
 
@@ -96,8 +98,12 @@ def cmd_optimize(args):
         if i < 2: time.sleep(2)
     print(f"  ─ 观察到 {len(snaps)} 个进程")
     print("  ─ 执行清理...")
-    freed0 = cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
-    result = cleaner.optimize(snaps, learner, mode, operations=CFG.get("clean_operations"))
+    cleaner._manual_run = True  # 手动优化：跳过自动化保守门，保留实时安全门（CPU/IO 活跃）
+    try:
+        freed0 = cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
+        result = cleaner.optimize(snaps, learner, mode, operations=CFG.get("clean_operations"))
+    finally:
+        cleaner._manual_run = False
     stats = cleaner.summary()
     trimmed = [t for t in result.get("layer2", []) if t[1]]
     net = result.get("net_freed", 0)
@@ -254,16 +260,16 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print("MemWise v3.9.28 PARES —— 智能内存看护")
-        print("用法: py memwise.py <命令> [参数]")
-        print("  status                    内存状态")
-        print("  learn [分钟]              学习进程行为 (默认10分钟)")
-        print("  optimize [--mode q|n|d|f] 执行优化")
-        print("  daemon [--mode q|n|d|f] 守护模式")
-        print("  profile <pid>             进程详情 (含 PARES 指标)")
-        print("  auto-start on|off         开机自启")
-        print("  service [remove]          安装/移除 Scheduled Task 服务")
-        print("  reset                     恢复出厂设置")
+        print("MemWise v4.0.128 PARES —— 智能内存看护")
+        print(tr("用法: py memwise.py <命令> [参数]"))
+        print(tr("  status                    内存状态"))
+        print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))
+        print(tr("  optimize [--mode q|n|d|f] 执行优化"))
+        print(tr("  daemon [--mode q|n|d|f] 守护模式"))
+        print(tr("  profile <pid>             进程详情 (含 PARES 指标)"))
+        print(tr("  auto-start on|off         开机自启"))
+        print(tr("  service [remove]          安装/移除 Scheduled Task 服务"))
+        print(tr("  reset                     恢复出厂设置"))
         return
     cmd = sys.argv[1]; args = sys.argv[2:]
     cmds = {"status":cmd_status,"learn":cmd_learn,"optimize":cmd_optimize,
