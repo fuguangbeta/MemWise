@@ -283,7 +283,7 @@ class EfisController:
                     "pid_kd":"抑制震荡","target_usage":"目标内存",
                     "cooloff_base":"失败冷却","composite_kalman_w":"卡尔曼权重",
                     "learning_rate":"学习速率",
-                    "kalman_r":"卡尔曼噪声"}
+                    "kalman_r":"卡尔曼噪声","anchor_margin":"锚点余量"}
         last = self._adjust_log[-1]
         cn = PARAM_CN.get(last['param'], last['param'])
         return f"EFIS调整{cn}: {last['old']:.2f}→{last['new']:.2f}"

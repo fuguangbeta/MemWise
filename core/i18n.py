@@ -335,7 +335,7 @@ _EN = {
     "+ 添加": "+ Add",
     "− 删除": "− Remove",
     "学习日志": "Learning Log",
-    "EFIS调整": "EFIS adjusted",
+    "EFIS调整": "EFIS adjusted ",
     "深度门槛": "deepen threshold",
     "深层清理": "deep layer gate",
     "响应速度": "response gain",
@@ -345,6 +345,13 @@ _EN = {
     "卡尔曼权重": "Kalman weight",
     "学习速率": "learning rate",
     "卡尔曼噪声": "Kalman noise",
+    "锚点余量": "Anchor margin",
+    # ── 动态日志词条（meta 元认知消息：前缀/片段匹配，后缀递归）──
+    "漂移: ": "Drift: ",
+    "个进程(": " processes(",
+    "已复位": " reset",
+    "探索: ": "Exploration: ",
+    "从未试探，加速探索": "never probed — accelerating",
     # ── ERIS 因子 / 图表 ──
     "↑预测精准": "↑ Accurate forecast",
     "↓预测偏差": "↓ Forecast drift",
