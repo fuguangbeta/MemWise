@@ -50,7 +50,7 @@ CLEAN_OPS_WHITELIST = {"ws", "standby", "modified", "filecache", "volume", "regi
 
 
 def get_state_path():
-    """获取 memwise_state.json 路径，兼容 PyInstaller 打包"""
+    """获取 memwise_state.json 路径（运行时数据统一在 data/ 目录），兼容 PyInstaller 打包"""
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(sys.executable)
         if os.path.basename(exe_dir).lower() == "dist":
@@ -59,7 +59,7 @@ def get_state_path():
             base = exe_dir
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "memwise_state.json")
+    return os.path.join(base, "data", "memwise_state.json")
 
 def load():
     """加载 config.yaml，缺失字段用 DEFAULT_CFG 兜底。
@@ -84,8 +84,20 @@ def load():
             else:
                 return d
         d.update(u)
-        # 清理操作白名单清洗：历史遗留键（compress/combine 等）无消费方，过滤防残留
-        if isinstance(d.get("clean_operations"), list):
+        # 顶层键白名单（2026-08-14 审查）：历史遗留键（daemon_trim_every_ticks/scheduled_clean 等）
+        # 零消费方，加载即过滤防残留（下次 save 自动清除，防死配置名不副实）
+        _wl = set(DEFAULT_CFG.keys()) | {"efis_params"}
+        for _k in list(d.keys()):
+            if _k not in _wl:
+                del d[_k]
+        # 列表键类型归一：yaml 空值（never: / null）解析为 None，消费方 `in` 判断会 TypeError
+        # （曾致守护线程崩溃）；统一归一为空列表（clean_operations 保留默认集合并走白名单清洗）
+        for _k in ("never", "game_processes"):
+            if not isinstance(d.get(_k), list):
+                d[_k] = []
+        if not isinstance(d.get("clean_operations"), list):
+            d["clean_operations"] = [k for k in DEFAULT_CFG["clean_operations"] if k in CLEAN_OPS_WHITELIST]
+        else:
             d["clean_operations"] = [k for k in d["clean_operations"] if k in CLEAN_OPS_WHITELIST]
     except Exception as e:
         print(f"[MemWise] 配置加载失败: {e}", file=_ERR)

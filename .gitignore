@@ -1,9 +1,5 @@
 # Runtime
-memwise_state.json
-memwise_efis_state.json
-memwise_eris_ewma.json
-memwise_crash.log
-watchdog.json
+data/
 config.local.yaml
 /config.yaml
 config/config.yaml
@@ -41,7 +37,6 @@ Thumbs.db
 .DS_Store
 
 .gh_token
-memwise.log
 
 config/*.bak*
 config/config.yaml

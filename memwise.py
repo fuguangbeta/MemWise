@@ -1,5 +1,5 @@
 """
-MemWise v4.0.128 PARES —— 智能内存看护
+MemWise v4.1.066 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -36,6 +36,7 @@ def _build_pipeline():
             "kd": CFG.get("kd", 0.1), "target_usage": CFG.get("target_usage", 60),
             "never": CFG.get("never",[]),
             "game_processes": CFG.get("game_processes",[]),
+            "clean_passes": CFG.get("clean_passes", 4),
             "efis_params": CFG.get("efis_params",{})}
     judger = Judger(learner, jcfg)
     return learner, judger, Cleaner(judger)
@@ -57,19 +58,19 @@ def cmd_status(_):
 
 def cmd_learn(args):
     minutes = int(args[0]) if args and args[0].isdigit() else 10
-    print(f"学习模式 ({minutes} 分钟) — 仅观察不动手")
+    print(tr_msg(f"学习模式 ({minutes} 分钟) — 仅观察不动手"))
     # 学习模式不需要进程路径（cleaner 决策才用）——关掉路径采集省快照开销
     sniffer = Sniffer(collect_path=False); learner = Learner.load(STATE_PATH)
     try:
         for i in range(minutes * 12):
             snaps = sniffer.snapshot(); learner.feed(snaps)
             sampled = sum(p.total_samples for p in learner.profiles.values())
-            sys.stdout.write(f"\r⏳ {i*5}s | 进程 {len(snaps)} | 画像 {len(learner.profiles)} | 样本 {sampled}")
+            sys.stdout.write(tr_msg(f"\r⏳ {i*5}s | 进程 {len(snaps)} | 画像 {len(learner.profiles)} | 样本 {sampled}"))
             sys.stdout.flush(); time.sleep(5)
-    except KeyboardInterrupt: print("\n中断")
-    finally: learner.save(STATE_PATH); print(f"\n学习数据已保存")
+    except KeyboardInterrupt: print("\n" + tr("中断"))
+    finally: learner.save(STATE_PATH); print(f"\n{tr('学习数据已保存')}")
     print(f"\n{SEP}")
-    print(f"{'进程名':<24} {'θ':>4} {'WS':>8} {'样本':>5} {'ROI(MB/PF)':>10}")
+    print(f"{tr('进程名'):<24} {'θ':>4} {'WS':>8} {tr('样本'):>5} {'ROI(MB/PF)':>10}")
     print(SEP)
     for name, roi, theta, p in learner.top(25):
         ws = _mb(p.ws_deque[-1]) if p.ws_deque else 0
@@ -85,19 +86,19 @@ def cmd_optimize(args):
     if mode not in ("quick", "normal", "deep", "full"):
         print(f"未知模式 {mode}，回退 normal")
         mode = "normal"
-    print(f"{mode.title()} 优化模式")
+    print(f"{mode.title()}{tr(' 优化模式')}")
     m0 = _mem_or_none()
     if not m0: return
     print(f"优化前: {_gb(m0['avail']):.1f}GB 可用 ({m0['pct']}%)")
     learner, judger, cleaner = _build_pipeline()
     sniffer = Sniffer()
-    print("  ─ 采集进程基线...")
+    print(tr("  ─ 采集进程基线..."))
     snaps = []
     for i in range(3):
         snaps = sniffer.snapshot(); learner.feed(snaps)
         if i < 2: time.sleep(2)
-    print(f"  ─ 观察到 {len(snaps)} 个进程")
-    print("  ─ 执行清理...")
+    print(tr_msg(f"  ─ 观察到 {len(snaps)} 个进程"))
+    print(tr("  ─ 执行清理..."))
     cleaner._manual_run = True  # 手动优化：跳过自动化保守门，保留实时安全门（CPU/IO 活跃）
     try:
         freed0 = cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
@@ -123,10 +124,10 @@ def cmd_optimize(args):
     learner.save(STATE_PATH)
 
 def cmd_daemon(args):
-    print("MemWise PARES 守护 (Ctrl+C 停止)")
+    print(tr("MemWise PARES 守护 (Ctrl+C 停止)"))
     learner, judger, cleaner = _build_pipeline()
     sniffer = Sniffer()
-    interval = CFG.get("interval", 30)
+    interval = CFG.get("interval", 60)  # 与 DEFAULT_CFG 一致（原 30 系历史默认值残留）
     mode = CFG.get("clean_mode", "normal")
     i = 0
     while i < len(args):
@@ -155,7 +156,7 @@ def cmd_daemon(args):
                         cmd_daemon._cfg_mtime = mtime
                         CFG.update(_load_cfg())
                         mode = CFG.get("clean_mode", "normal")
-                        interval = CFG.get("interval", 30)
+                        interval = CFG.get("interval", 60)
                         # 同步 judger 运行配置（排除列表/游戏名单/清理深度/EFIS 参数即时生效）
                         judger.cfg["never"] = CFG.get("never", [])
                         judger.cfg["game_processes"] = CFG.get("game_processes", [])
@@ -165,29 +166,33 @@ def cmd_daemon(args):
                     pass
             if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH); import gc; gc.collect()
             stats = cleaner.summary()
-            sys.stdout.write(f"\r内存 {m['pct']}% | 清理强度={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
+            sys.stdout.write(tr_msg(f"\r内存 {m['pct']}% | 清理强度={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
                              f"释放 {stats['freed_mb']}MB | SB={stats['standby']} MP={stats['modified']} "
                              f"文件缓存={stats['filecache']} | "
-                             f"整理 {stats['ws_trim']} | {tick*interval}s")
+                             f"整理 {stats['ws_trim']} | {tick*interval}s"))
             sys.stdout.flush()
             elapsed = time.time() - tick_start
             time.sleep(max(0.5, interval - elapsed))
     except KeyboardInterrupt:
         learner.save(STATE_PATH)
         stats = cleaner.summary()
-        print(f"\n停止 | 累计释放 {stats['freed_mb']} MB | "
-              f"待机缓存={stats['standby']} | 整理={stats['ws_trim']}")
+        print(tr_msg(f"\n停止 | 累计释放 {stats['freed_mb']} MB | "
+              f"待机缓存={stats['standby']} | 整理={stats['ws_trim']}"))
 
 def cmd_reset(_):
-    print("恢复出厂设置...")
+    print(tr("恢复出厂设置..."))
     from core.config import CONFIG_PATH
     stamp = time.strftime("%Y%m%d%H%M%S")
-    for p in [STATE_PATH, CONFIG_PATH]:
+    # 恢复出厂=全量状态复位（2026-08-14 审查：画像/配置/EFIS 调参/ERIS 分位数窗——
+    # 后两者遗漏则 EFIS 重启仍恢复旧调参，重置名不副实）
+    for p in [STATE_PATH, CONFIG_PATH,
+              STATE_PATH.replace("state.json", "efis_state.json"),
+              os.path.join(os.path.dirname(STATE_PATH), "memwise_eris_ewma.json")]:
         if os.path.isfile(p):
             bak = f"{p}.bak-{stamp}"  # 时间戳备份：多次重置互不覆盖
             os.replace(p, bak)
-            print(f"  已备份: {os.path.basename(bak)}")
-    print("完成。下次启动使用默认配置。")
+            print(tr_msg(f"  已备份: {os.path.basename(bak)}"))
+    print(tr("完成。下次启动使用默认配置。"))
     winapi.report_event("MemWise", "已恢复出厂设置")
 
 def cmd_auto_start(args):
@@ -259,8 +264,15 @@ def main():
         sys.stdout.reconfigure(errors="replace")
     except Exception:
         pass
+    # 数据/配置目录预建（2026-08-14 审查：GUI 由 engine 建，CLI 独立进程需自建——
+    # 否则全新环境下 learner.save 静默失败，学习/优化结果不持久化）
+    try:
+        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+        os.makedirs(os.path.dirname(_config.CONFIG_PATH), exist_ok=True)
+    except Exception:
+        pass
     if len(sys.argv) < 2:
-        print("MemWise v4.0.128 PARES —— 智能内存看护")
+        print("MemWise v4.1.066 PARES —— 智能内存看护")
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

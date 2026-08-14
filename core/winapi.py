@@ -759,7 +759,10 @@ def flush_modified_pages():
         return False
 
 def clear_system_file_cache():
-    """清理系统文件缓存 (SetSystemFileCacheSize)"""
+    """清理系统文件缓存 (SetSystemFileCacheSize)。
+    ⚠ 已弃用（2026-08-14 审查）：Min=Max=SIZE_MAX 写法实测返回 0xC000009A（资源不足）从未生效，
+    有效实现为 clear_system_file_cache_ex（查询→PeakSize 强制回收→恢复原始上限）。
+    定义保留不删：跨机器双通道原则——其他系统行为可能不同，勿草率弃用。"""
     try:
         return bool(SetSystemFileCacheSize(ctypes.c_size_t(-1), ctypes.c_size_t(-1), 0))
     except Exception:

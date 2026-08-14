@@ -2,7 +2,7 @@
 PARES Judger — PID 压力控制器 + Thompson Sampling 联合判定
 """
 import time
-import os, sys, random
+import os, sys, random, threading
 from .learner import _is_system_core
 from . import winapi
 from .stable import EXPLORE_RATE
@@ -131,6 +131,10 @@ class PareJudger:
         #    normal 标准 / deep 减半 / full 跳过（极限=不等、立即清）；
         #    "效率类"守卫（锚点/回弹）模式无关——极限≠白忙 ──
         self._mode_guard = "normal"
+        # ── 并发锁（2026-08-14 审查）：trim 池线程（check_feedback 的 pf_delta_total 累加、
+        #    can_trim 的 suppress_cnt 自增）与守护主线程（update_activity 重置）并发——
+        #    无锁 += 会因 read-modify-write 交错丢更新（EFIS 诊断输入失真）──
+        self._lock = threading.Lock()
 
     # ── PID ──
 
@@ -216,13 +220,16 @@ class PareJudger:
                     return False, "刚切走"
 
         # ── CPU 活跃门（P0-C）：正在干活的进程不清（单轮实时信号；手动同样生效——安全维度；
-        #    full 模式放宽到 12%——极限释放允许更高活跃度的进程，MuseRAM Ultimate 同口径）──
-        _cpu_gate = 12.0 if _guard == "full" else 8.0
-        if (getattr(snap, "cpu", 0.0) or 0.0) >= _cpu_gate:
-            return False, "CPU活跃"
+        #    full 模式跳过——极限释放不设 CPU 门槛（量化：12% 门在浏览器高峰/IDE 编译场景
+        #    拖累 18-26% 释放量，大内存进程恰是 CPU 活跃大户；3.x 无此门，full 回归同口径）──
+        if _guard != "full":
+            _cpu_gate = 8.0
+            if (getattr(snap, "cpu", 0.0) or 0.0) >= _cpu_gate:
+                return False, "CPU活跃"
 
-        # ── IO 活跃门（P1-E）：IO 密集（下载/播放/写盘）进程不清（按需采样差分；手动同样生效）──
-        if self._io_active(snap.pid):
+        # ── IO 活跃门（P1-E）：IO 密集（下载/播放/写盘）进程不清（按需采样差分；手动同样生效；
+        #    full 模式跳过——量化：下载/播放场景 IO 门拖累 4.9%，极限模式回归 3.x 无门口径）──
+        if _guard != "full" and self._io_active(snap.pid):
             return False, "IO活跃"
 
         # ── 连续低活动确认（P0-C）：2 轮可靠低活动才可清（按 PID 键——同名多实例互不干扰；
@@ -235,9 +242,10 @@ class PareJudger:
         # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──
         # 判定窗口按回填速率动态化：慢回填拉长重评间隔（避免低效重复清），快回填保持灵敏；
         # 默认 1200s，范围 [120, 3600]；ws 已超基线时直接放行（不受窗口影响）
+        # deep/full 跳过——极限模式不被"清后白清"保护拦阻（稳态豁免梯度，2026-08-14）
         baseline = self._post_clean_ws.get(name, 0)
         bl_time = self._post_clean_time.get(name, 0)
-        if baseline > 0:
+        if baseline > 0 and _guard not in ("deep", "full"):
             window = 1200
             p_win = self.learner.get_profile(name)
             if p_win and p_win.refill_ewma > 0:
@@ -250,18 +258,21 @@ class PareJudger:
             if now - bl_time <= window:
                 if snap.ws <= baseline:return False, f"WS未填满({_mb(snap.ws)}/{_mb(baseline)})"
         # ── 稳态锚点抑制（P1-D）：低于应用自然稳态+余量 → 清了也白清。
-        #    手动/高压跳过；探索机制（EXPLORE_RATE 概率放行）保持 Thompson 学习闭环验证锚点──
-        if not self._manual_mode and self.aggressiveness < 0.8:
+        #    手动/高压跳过；探索机制（EXPLORE_RATE 概率放行）保持 Thompson 学习闭环验证锚点；
+        #    deep/full 跳过——极限模式解除稳态锁（梯度，2026-08-14）──
+        if not self._manual_mode and self.aggressiveness < 0.8 and _guard not in ("deep", "full"):
             path_a = getattr(snap, "path", None)
             if path_a and self.learner.stable_anchors.should_suppress(
                     path_a, snap.ws, self.cfg.get("efis_params", {}).get("anchor_margin", 0.15)):
                 if random.random() >= EXPLORE_RATE:
-                    self.suppress_cnt += 1
+                    with self._lock:  # 与 update_activity 重置并发，锁内自增防计数丢失
+                        self.suppress_cnt += 1
                     return False, "稳态抑制"
         # ── 回弹自动后退（B 方案）：清后回填率高的组件进入后退期（不重复白清）；
         #    手动/高压跳过；EWMA 回落自动解除；探索放行（5%）保持数据流——
-        #    防后退死锁：进程行为变化后探测清理产生新回弹数据，EWMA 快速回落解除 ──
-        if not self._manual_mode and self.aggressiveness < 0.8:
+        #    防后退死锁：进程行为变化后探测清理产生新回弹数据，EWMA 快速回落解除；
+        #    deep/full 跳过——极限模式不后退（梯度，2026-08-14）──
+        if not self._manual_mode and self.aggressiveness < 0.8 and _guard not in ("deep", "full"):
             path_b = getattr(snap, "path", None)
             if path_b and self.learner.rebound.in_backoff(path_b, now):
                 if random.random() >= EXPLORE_RATE:
@@ -300,7 +311,11 @@ class PareJudger:
                 elif not self._post_clean_ws:
                     ok, reason = True, "首轮(无基线)"
                 else:
-                    ok, reason, _scores = self.learner.policy.should_trim(name, snap.ws, state, self.learner)
+                    # 模式梯度投票阈值：normal=0 标准 / deep=-1 略宽 / full=-2 大幅放宽
+                    # （2026-08-14 接线：policy 早已支持 threshold 但调用处未传——设计意图补全）
+                    _vote_thr = {"deep": -1, "full": -2}.get(_guard, 0)
+                    ok, reason, _scores = self.learner.policy.should_trim(
+                        name, snap.ws, state, self.learner, threshold=_vote_thr)
                     snap._tree_scores = _scores  # 挂到快照上，供 _trim_process 评价
                 if not ok:
                     return False, f"策略否决({reason})"
@@ -367,7 +382,7 @@ class PareJudger:
         """失败冷却: 超时/失败次数越多，冷却越长（最多 4 倍）"""
         name = name.lower()
         efis = self.cfg.get("efis_params", {})
-        cooloff_base = efis.get("cooloff_base", 300)
+        cooloff_base = efis.get("cooloff_base", 360)  # 与 EFIS PARAMS 默认一致（原 300 口径不一）
         cd = cooloff_base * min(4, fail_count)
         # 自适应冷却：快速回填（>256KB/s）的进程缩短冷却，普通回填保持基准
         if hasattr(self.learner, 'get_profile'):
@@ -394,7 +409,8 @@ class PareJudger:
         pf_before, t_before = entry
         dt = max(1.0, time.time() - t_before)
         pf_delta = max(0, pf_after - pf_before)
-        self.pf_delta_total = getattr(self, "pf_delta_total", 0) + pf_delta
+        with self._lock:  # trim 池并发调用，锁内累加防丢更新
+            self.pf_delta_total = getattr(self, "pf_delta_total", 0) + pf_delta
         freed = max(0, ws_before - ws_after)
         # PF 成本：empty_ws 每轮 ~40 PF
         allowed_pf = max(120, int(50 * dt), int(freed / (1 << 20) * 10), passes * 40)
@@ -445,7 +461,8 @@ class PareJudger:
         CPU<8% 连续 2 轮才可清（活跃即清零重来）。
         进程身份校验：创建时间变化（进程重启）→ 计数清零重新确认（防新实例继承旧计数）。
         同时每轮重置锚点抑制计数（GUI/CLI 口径统一；EFIS 周期末读最近一轮计数）"""
-        self.suppress_cnt = 0
+        with self._lock:
+            self.suppress_cnt = 0
         now = time.time()
         for s in snaps:
             cpu = getattr(s, "cpu", 0.0) or 0.0

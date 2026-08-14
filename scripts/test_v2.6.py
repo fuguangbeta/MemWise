@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.0.128 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.1.066 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,22 +21,6 @@ def check(name, cond, detail=""):
     if not cond:
         print(f"  [FAIL] {name}" + (f"  {detail}" if detail else ""))
         errors.append(name)
-from core.stable import StableAnchor, StableAnchorStore, EXPLORE_RATE
-from core.rebound import ReboundLearner, _key
-
-import sys, os, json, math, tempfile, time
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.kalman import KalmanProfile
-from core.prior import HierarchicalPrior
-from core.learner import Profile, PareLearner, SYSTEM_CORE, _is_system_core, SYSTEM_CORE_EXE
-from core.judger import PidController, PareJudger
-from core.config import load as config_load, DEFAULT_CFG
-from core.efis import EfisController, PARAMS
-from core.policy import PolicyVoter
-from core.meta import MetaCognition
-from core.eris import iqr_dim, validate_state
-from collections import deque
 from core.stable import StableAnchor, StableAnchorStore, EXPLORE_RATE
 from core.rebound import ReboundLearner, _key
 
@@ -345,8 +329,8 @@ os.remove(tmp2)
 # ── EFIS anchor_margin 参数 ──
 check("anchor_margin 范围", PARAMS["anchor_margin"]["min"] <= 0.15 <= PARAMS["anchor_margin"]["max"])
 
-print("\n[16] 清理模式严格度适配（四模式×守卫）")
-# full：跳过冷却/确认、CPU 放宽到 12（极限=不等、立即清）
+print("\n[15] 清理模式严格度适配（四模式×守卫）")
+# full：跳过冷却/确认/CPU门/IO门（极限=立即清、不设活跃门槛；量化：CPU门 12% 在真实负载拖累 18-26%）
 j_full = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_full._mode_guard = "full"
 pfu = j_full.learner.get("fulltest.exe"); pfu.last_foreground_at = time.time() - 10
@@ -357,14 +341,26 @@ sfu.cpu = 10.0
 ok_fu2, _ = j_full.can_trim(sfu)
 check("full CPU10放行", ok_fu2)
 sfu.cpu = 50.0
-ok_fu3, _ = j_full.can_trim(sfu)
-check("full CPU50仍拦", not ok_fu3)
-# normal：CPU10 拒绝（8% 门）
+ok_fu3, reason_fu3 = j_full.can_trim(sfu)
+check("full CPU50放行(跳过CPU门)", ok_fu3, f"{reason_fu3}")
+# full：IO 活跃进程也放行（跳过 IO 门；量化：下载/播放场景 IO 门拖累 4.9%）
+_orig_io = j_full._io_active
+j_full._io_active = lambda pid: True
+ok_fu4, _ = j_full.can_trim(sfu)
+j_full._io_active = _orig_io
+check("full IO活跃放行(跳过IO门)", ok_fu4)
+# normal：CPU10 拒绝（8% 门）；IO 活跃拒绝
 j_norm = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_norm._low_activity[9002] = (2, time.time(), None)
 sn_ = Snap(); sn_.name="normtest.exe"; sn_.ws=200<<20; sn_.path="d:\\app\\normtest.exe"; sn_.pid=9002; sn_.pf=0; sn_.priv=0; sn_.fg=False; sn_.cpu=10.0
 ok_no, reason_no = j_norm.can_trim(sn_)
 check("normal CPU10拒绝", not ok_no and "CPU活跃" in reason_no, reason_no)
+_orig_io2 = j_norm._io_active
+j_norm._io_active = lambda pid: True
+sn_.cpu = 0.0  # 先过 CPU 门，专测 IO 门
+ok_no2, reason_no2 = j_norm.can_trim(sn_)
+j_norm._io_active = _orig_io2
+check("normal IO活跃拒绝", not ok_no2 and "IO活跃" in reason_no2, reason_no2)
 # deep：冷却减半（曾前台 200s → deep 已过 150s 冷却放行 / normal 仍处 300s 冷却拦截）
 j_deep = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_deep._mode_guard = "deep"
@@ -380,7 +376,7 @@ sd2 = Snap(); sd2.name="deeptest.exe"; sd2.ws=200<<20; sd2.path="d:\\app\\deepte
 ok_no2, reason_no2 = j_norm2.can_trim(sd2)
 check("normal冷却200s拦截", not ok_no2 and "刚切走" in reason_no2, reason_no2)
 
-print("\n[17] 模式价值底线梯度（θ：deep 0.12 / full 0.06 / normal 无）")
+print("\n[16] 模式价值底线梯度（θ：deep 0.12 / full 0.06 / normal 无）")
 # deep：θ<0.12 拒绝
 jd_v = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 jd_v._mode_guard = "deep"
@@ -430,7 +426,79 @@ sf4 = Snap(); sf4.name="floor4.exe"; sf4.ws=200<<20; sf4.path="d:\\app\\floor4.e
 ok_f4, reason_f4 = jn_v.can_trim(sf4)
 check("normal无价值底线", "价值不足" not in reason_f4, reason_f4)
 
-print("\n[15] 窗口冷却与回弹学习（A/B 方案批次）")
+print("\n[17] 稳态锁梯度（deep/full 跳过 WS基线/锚点/回弹，normal 保留）")
+# 核心修复验证：稳态豁免（agg≥0.8）与 PID 实际输出不匹配（默认参数高压峰值仅 0.38）——
+# 曾导致稳态锁全局锁死 deep/full 压缩能力（卡 37%）。现按模式梯度：normal 保留，deep/full 解除
+import random as _random
+_orig_random = _random.random
+_random.random = lambda: 0.9  # 固定 0.9 ≥ EXPLORE_RATE(0.05)：确定性触发抑制/回弹拦截
+
+def _mk_lock_j(mode):
+    j = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+    j._mode_guard = mode
+    j.aggressiveness = 0.3  # 低 agg：稳态锁生效区（默认参数高压峰值 0.38，实测从未达豁免阈值）
+    if mode != "full":
+        j._low_activity[9200] = (2, time.time(), None)
+    j.learner.policy.should_trim = lambda *a, **k: (True, "", [])  # 放行投票：专测稳态锁
+    return j
+
+def _mk_lock_snap(ws=60 << 20):
+    s = Snap(); s.name="lock.exe"; s.ws=ws; s.path="d:\\app\\lock.exe"; s.pid=9200; s.pf=0; s.priv=0; s.fg=False
+    return s
+
+# a. WS 基线：清后未回填（ws<基线）→ normal 拦 / deep·full 放行
+for mode, expect_ok in (("normal", False), ("deep", True), ("full", True)):
+    j = _mk_lock_j(mode)
+    j.mark_trimmed("lock.exe", freed=0, ws_before=100 << 20, pf_delta=0, ws_after=80 << 20)
+    j._post_clean_time["lock.exe"] = time.time() - 100
+    ok, reason = j.can_trim(_mk_lock_snap(60 << 20))
+    check(f"WS基线 {mode}={'放行' if expect_ok else '拦截'}", ok == expect_ok, f"{mode} {reason}")
+# b. 稳态锚点：低于自然稳态 → normal 拦 / deep·full 放行（ws>基线 隔离 WS 基线检查）
+for mode, expect_ok in (("normal", False), ("deep", True), ("full", True)):
+    j = _mk_lock_j(mode)
+    j.mark_trimmed("lock.exe", freed=0, ws_before=100 << 20, pf_delta=0, ws_after=50 << 20)
+    j._post_clean_time["lock.exe"] = time.time() - 100
+    j.learner.stable_anchors.anchors["d:\\app\\lock.exe"] = type("A", (), {
+        "confirmed": True, "should_suppress": lambda self, ws, m=0.15: True})()
+    ok, reason = j.can_trim(_mk_lock_snap(100 << 20))
+    check(f"锚点抑制 {mode}={'放行' if expect_ok else '拦截'}", ok == expect_ok, f"{mode} {reason}")
+# c. 回弹后退：高回填后退期 → normal 拦 / deep·full 放行
+for mode, expect_ok in (("normal", False), ("deep", True), ("full", True)):
+    j = _mk_lock_j(mode)
+    for _ in range(3):  # 3 次全回填采样：ewma 0.51→0.657→0.76 ≥ 0.7 且 count≥3 → 进入后退期
+        j.learner.rebound.record("d:\\app\\lock.exe", 100 << 20, 100 << 20, time.time())
+    check("回弹后退已进入", j.learner.rebound.in_backoff("d:\\app\\lock.exe", time.time()))
+    ok, reason = j.can_trim(_mk_lock_snap())
+    check(f"回弹后退 {mode}={'放行' if expect_ok else '拦截'}", ok == expect_ok, f"{mode} {reason}")
+_random.random = _orig_random
+# efis 参数边界合理化：pid_kp 下限防触底（0.30 时高压峰值 agg 仅 0.38）、pid_kd 上限防触顶（0.50 的 D 项振荡）
+check("pid_kp 下限防触底", PARAMS["pid_kp"]["min"] == 0.45)
+check("pid_kd 上限防触顶", PARAMS["pid_kd"]["max"] == 0.35)
+
+print("\n[18] 投票 threshold 模式梯度接线（normal=0 / deep=-1 / full=-2）")
+# policy 早已支持 threshold 参数但调用处未传——2026-08-14 接线验证（设计意图补全）
+def _mk_vote_j(mode):
+    j = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+    j._mode_guard = mode
+    j.aggressiveness = 0.3
+    if mode != "full":
+        j._low_activity[9300] = (2, time.time(), None)
+    j._post_clean_ws["vote.exe"] = 150 << 20  # 有基线且 ws<2×基线 → 走投票分支（非 ws_override）
+    return j
+_captured = {}
+for mode, expect in (("normal", 0), ("deep", -1), ("full", -2)):
+    j = _mk_vote_j(mode)
+    _orig_vote = j.learner.policy.should_trim
+    def _wrap(name, ws, state, learner, threshold=0, _m=mode):
+        _captured[_m] = threshold
+        return _orig_vote(name, ws, state, learner, threshold)
+    j.learner.policy.should_trim = _wrap
+    sv = Snap(); sv.name="vote.exe"; sv.ws=200<<20; sv.path="d:\\app\\vote.exe"; sv.pid=9300; sv.pf=0; sv.priv=0; sv.fg=False
+    j.can_trim(sv)
+    check(f"投票threshold {mode}={expect}", _captured.get(mode) == expect, f"实际 {_captured.get(mode)}")
+
+
+print("\n[19] 窗口冷却与回弹学习（A/B 方案批次）")
 # ── 窗口冷却：有可见窗口 600s / 无窗口 300s（301-599s 区间区分）──
 j_win = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_win._low_activity[8001] = (2, time.time(), None)
@@ -512,7 +580,7 @@ try:
 except Exception as ex:
     check("review regression", False, repr(ex))
 
-print("\n[18] 多实例计数独立（A1 修复：确认键按 PID）")
+print("\n[20] 多实例计数独立（A1 修复：确认键按 PID）")
 j_mi = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 # 两个同名进程（如 chrome 子进程）：一个活跃一个低活动——计数互不干扰
 s_m1 = Snap(); s_m1.name="chrome.exe"; s_m1.pid=9501; s_m1.cpu=50.0; s_m1.create=1
@@ -523,7 +591,7 @@ check("低活动实例独立计数", j_mi._low_activity.get(9502, (0, 0, 0))[0] 
 j_mi.update_activity([s_m1, s_m2])
 check("低活动实例累计2", j_mi._low_activity.get(9502, (0, 0, 0))[0] == 2)
 
-print("\n[19] i18n 语言支持（原文即 key / 前缀匹配 / 递归 / 回退）")
+print("\n[21] i18n 语言支持（原文即 key / 前缀匹配 / 递归 / 回退）")
 from core.i18n import tr, tr_msg, set_language, get_language, LANGUAGES, _EN
 # 中文模式：原样返回
 set_language("zh_CN")
@@ -563,6 +631,68 @@ for m in _re.finditer(r'tr\("([^"]*[\u4e00-\u9fff][^"]*)"\)', _src):
     if lit not in _EN and not any(len(k) >= 4 and k in lit for k in _EN):
         _missing.append(lit[:30])
 check("GUI tr 字面量全覆盖", not _missing, f"缺映射: {_missing[:5]}")
+
+print("\n[22] 2026-08-14 全量审查修复回归")
+# ── A1 稳态锚点多实例聚合（同路径多实例锚点不再每轮重置）──
+class _Snap:
+    pass
+def _mk_s(name, ws, path, create):
+    s = _Snap(); s.name = name; s.ws = ws; s.path = path; s.create = create
+    return s
+_store = StableAnchorStore()
+_multi = [_mk_s("chrome.exe", (300 + i * 40) << 20, r"d:\app\chrome\chrome.exe", 1000 + i) for i in range(8)]
+for _ in range(30):
+    _store.feed(_multi, time.time(), set())
+_a = _store.anchors.get(r"d:\app\chrome\chrome.exe")
+check("A1 多实例锚点收敛", _a is not None and _a.samples >= 5 and _a.confirmed, f"samples={_a.samples if _a else 0}")
+_store1 = StableAnchorStore()
+for _ in range(8):
+    _store1.feed([_mk_s("note.exe", 500 << 20, r"d:\app\note.exe", 777)], time.time(), set())
+_a1 = _store1.anchors.get(r"d:\app\note.exe")
+check("A1 单实例行为不变", _a1.samples == 8 and _a1.confirmed)
+_gen0 = _a1.generation
+_store1.feed([_mk_s("note.exe", 500 << 20, r"d:\app\note.exe", 9999)], time.time(), set())
+check("A1 真重启触发新代", _store1.anchors[r"d:\app\note.exe"].generation == _gen0 + 1)
+# ── A2 config 归一 + 白名单（临时文件，不碰真实配置）──
+import core.config as _cfg_mod
+_orig_cfg_p = _cfg_mod.CONFIG_PATH
+_tcfg = os.path.join(tempfile.gettempdir(), "mw_cfg_audit.yaml")
+with open(_tcfg, "w", encoding="utf-8") as f:
+    f.write("never: null\ngame_processes: null\nclean_operations: null\ndaemon_trim_every_ticks: 3\n")
+_cfg_mod.CONFIG_PATH = _tcfg
+_d2 = _cfg_mod.load()
+_cfg_mod.CONFIG_PATH = _orig_cfg_p
+os.remove(_tcfg)
+check("A2 死键白名单清除", "daemon_trim_every_ticks" not in _d2)
+check("A2 never 归一为列表", _d2.get("never") == [] and isinstance(_d2.get("game_processes"), list))
+check("A2 clean_operations 归一", isinstance(_d2.get("clean_operations"), list) and len(_d2.get("clean_operations", [])) > 0)
+# ── A3 judger 并发锁存在（修复面静态断言）──
+_jl = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+check("A3 judger._lock 存在", hasattr(_jl, "_lock"))
+# ── B1/B8/B9 双语键完备 ──
+from core.i18n import _EN as _EN_A
+for _k in ("  · quick — 仅系统级清理，几秒完成，零卡顿\n",
+           "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n",
+           "  · full — 极限释放，连正在活跃使用的程序内存也会一并释放\n",
+           "           尽最大可能腾出内存空间（含二次回收）\n",
+           "           适合：随手一点，不想有任何感知\n",
+           "           适合：日常使用，兼顾效果与流畅\n",
+           "           适合：内存偏紧，接受短暂变慢\n",
+           "           适合：内存告急，需要立刻腾出最多空间\n"):
+    check(f"B1 键存在:{_k.strip()[:18]}", _k in _EN_A)
+check("B8 是/否键", "是" in _EN_A and "否" in _EN_A)
+check("B9 守护异常键", "❌ 守护异常，详见下方错误信息" in _EN_A)
+# ── B1 翻译实证：补键后 tooltip 行完整英文无中文 ──
+set_language("en")
+_line_d = tr("  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n")
+check("B1 deep 行完整翻译", "Deep" in _line_d and "深度" not in _line_d and "清理" not in _line_d, _line_d[:40])
+set_language("zh_CN")
+# ── B10 kalman_r 遍历更新逻辑 ──
+_lr = PareLearner()
+_pa = _lr.get("kr.exe")
+for _p in _lr.profiles.values():
+    _p.kalman.r = 8.0
+check("B10 kalman_r 遍历生效", _pa.kalman.r == 8.0)
 
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))

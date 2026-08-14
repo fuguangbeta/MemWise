@@ -115,7 +115,13 @@ class StableAnchorStore:
         return f"{key}|{create_ns or 0}"
 
     def feed(self, snaps, now, exclude_names):
-        """批量喂入自然 WS 样本；exclude_names: 清理后回填期内的进程名（不进入锚点）"""
+        """批量喂入自然 WS 样本；exclude_names: 清理后回填期内的进程名（不进入锚点）。
+
+        同轮聚合（2026-08-14 审查修复）：同一路径的多实例（chrome/edge 子进程等）逐个 feed 时，
+        启动签名（路径|创建时间）交替导致锚点每轮重置——samples 卡 1，稳态抑制对多进程应用
+        永久失效。现按路径聚合：WS 取最大（该路径最坏稳态，保守方向）、签名取最老实例
+        （create 最小，主进程常驻则签名稳定）；真重启（最老实例退出/重开）仍触发新代隔离。"""
+        by_key = {}
         for s in snaps:
             name = s.name.lower()
             if name in exclude_names:
@@ -124,7 +130,14 @@ class StableAnchorStore:
             ws = getattr(s, "ws", 0) or 0
             if not key or ws <= 0:
                 continue
-            sig = self._launch_sig(key, getattr(s, "create", None))
+            create = getattr(s, "create", None) or 0
+            cur = by_key.get(key)
+            if cur is None or ws > cur[0]:
+                by_key[key] = (ws, create)
+            elif cur[1] == 0 and create:
+                by_key[key] = (cur[0], create)
+        for key, (ws, create) in by_key.items():
+            sig = self._launch_sig(key, create)
             a = self.anchors.get(key)
             if a is None:
                 a = StableAnchor(sig)

@@ -79,6 +79,8 @@ class PareCleaner:
         return ok
 
     def clear_file_cache(self):
+        """清理系统文件缓存——⚠ 已弃用（内部无消费方）：底层 MAXSIZE 版 SetSystemFileCacheSize
+        从未生效，统一走 clear_system_file_cache_ex（见 _layer1_memreduct/Layer3）；定义保留不删"""
         ok = winapi.clear_system_file_cache()
         if ok:
             self._stats_inc("filecache")
@@ -176,7 +178,11 @@ class PareCleaner:
                     if total_procs > 1:
                         self._stats_inc("ws_trim", max(0, total_procs - 1))
             if not game_mode and "filecache_ex" in use:
-                winapi.clear_system_file_cache_ex()
+                # filecache 统计口径（2026-08-14 审查）：有效实现 clear_system_file_cache_ex
+                # （查询→PeakSize 强制→恢复；MAXSIZE 版 SetSystemFileCacheSize 返回 0xC000009A
+                # 从未生效——原"filecache"分支调它导致开关有效但统计恒 0），统一在此带统计执行
+                if _capture(winapi.clear_system_file_cache_ex, "filecache"):
+                    self._stats_inc("filecache")
             # 统计按 API 真实成功计数（权限不足时不再虚增）
             # 游戏模式：跳过 standby/脏页写回等磁盘干扰操作（只留注册表缓存与自身工作集）
             if not game_mode and "modified" in use and _capture(winapi.flush_modified_pages):
@@ -189,8 +195,6 @@ class PareCleaner:
                 self._stats_inc("volume")
             if "registry" in use and _capture(winapi.clear_registry_cache):
                 self._stats_inc("registry")
-            if not game_mode and "filecache" in use and _capture(winapi.clear_system_file_cache, "filecache"):
-                self._stats_inc("filecache")
             # 清自身工作集（~0.2s，释放 MemWise 自身占用的几十 MB；高频路径可传 clean_self=False 关闭）
             if clean_self:
                 try: winapi.empty_ws(os.getpid())
@@ -217,7 +221,8 @@ class PareCleaner:
         mem = winapi.get_process_memory(pid)
         if mem is None:
             with self._lock:
-                learner.record_probe_result(name, True, self._efis_lr(), ws_before)
+                # 进程退出≠试探收益：freed 记 0（防 Kalman 虚高；返回值保留 ws_before 供日志）
+                learner.record_probe_result(name, True, self._efis_lr(), 0)
                 self.judger.mark_probed(name)
             return True, ws_before, 0
         ws_after = mem["ws"]
@@ -310,7 +315,9 @@ class PareCleaner:
         mem = winapi.get_process_memory(pid)
         if mem is None:
             with self._lock:
-                learner.record_clean_result(name, True, freed=ws_before, lr=self._efis_lr())
+                # 进程退出≠清理收益：freed 记 0（防 gain_ewma/Kalman 虚高→θ 虚高→新实例被过度清理；
+                # 返回值的 freed 保留 ws_before 供日志如实显示"该进程退出释放量"）
+                learner.record_clean_result(name, True, freed=0, lr=self._efis_lr())
                 self.judger.mark_trimmed(name)
                 self.stats["ws_trim"] += 1
             return True, ws_before, ws_before, "进程已退出"
@@ -547,7 +554,7 @@ class PareCleaner:
             else:
                 if self.judger.can_probe(s):
                     probe_list.append(s)
-                self.stats["skipped"] += 1
+                self._stats_inc("skipped")  # 锁内统计（与池线程同口径，防竞态丢计数）
 
         # ── 全局内存优先级 + EcoQoS ──
         # 对高价值大进程（θ≥0.5 且 WS≥100MB）设 VERY_LOW 内存优先级 + EcoQoS——
@@ -575,7 +582,16 @@ class PareCleaner:
                     self._low_pri_pids.discard(s.pid)
                 continue
             if s.pid in self._low_pri_pids:
-                continue
+                # full 模式：恢复已设置的 EcoQoS（K32 可撤销；Nt 一次性机器无效无害）——
+                # 存量压缩池解压释放，"使用中"进一步回落；恢复后不 continue，继续本轮回评
+                if getattr(self.judger, "_mode_guard", "normal") == "full":
+                    try:
+                        winapi.set_eco_qos(s.pid, False)
+                    except Exception:
+                        pass
+                    self._low_pri_pids.discard(s.pid)
+                else:
+                    continue
             name = s.name.lower()
             if _is_system_core(name) or name in self.judger.cfg.get("never", []):
                 continue
@@ -589,14 +605,18 @@ class PareCleaner:
                 winapi.set_eco_qos(s.pid, False)
                 continue
             theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
-            # EcoQoS + MemoryPriority 只对高价值大进程启用（θ≥0.5 且 WS≥100MB）：
-            # ① EcoQoS 压缩池效应（压缩池计入"正在使用"）——全量启用实测使用率升高 4-8%；
-            # ② MemoryPriority 双通道中 Nt 42 兜底"每进程仅设置一次不可恢复"——
-            #    低置信/小进程在 K32 失效机器上不值得被永久降级
-            #    （原 θ<0.5 两档在 K32 失效下从未生效，零损失收敛到高价值门槛）
-            if theta >= 0.5 and s.ws >= (100 << 20):
-                if winapi.set_eco_qos(s.pid, True):
-                    self._low_pri_pids.add(s.pid)
+            # EcoQoS + MemoryPriority 门槛梯度（A 方案，2026-08-14）：
+            # normal/deep：θ≥0.5 且 WS≥100MB 才设（压缩池效应 + Nt 一次性权衡）
+            # full：MemoryPriority 放宽到 θ≥0.3 且 WS≥50MB——低优先级页在系统压力下
+            #    自动先回收，回填页被动压制（零 PF 代价，比主动高频重清更优）；
+            #    EcoQoS 仍跳过（压缩池占"使用中"）且存量恢复见 _low_pri_pids 分支
+            _is_full = getattr(self.judger, "_mode_guard", "normal") == "full"
+            _mp_thr = 0.3 if _is_full else 0.5
+            _mp_ws = (50 << 20) if _is_full else (100 << 20)
+            if theta >= _mp_thr and s.ws >= _mp_ws:
+                if not _is_full:
+                    if winapi.set_eco_qos(s.pid, True):
+                        self._low_pri_pids.add(s.pid)
                 if winapi.set_memory_priority(s.pid, 0):
                     self._mem_pri_set.add(s.pid)
         # 清除已退出的 PID
@@ -661,10 +681,14 @@ class PareCleaner:
                     s._growth_bonus = now_bonus + 0.05  # 批量加分
 
         # Fast-track: high-refill PIDs for gap-fill re-trim
+        # 梯度：normal/deep 仅高回填（>500KB/s）；full 放宽（>200KB/s 或大 WS≥300MB）——
+        # 极限模式高频重清回填进程，抑制"压缩后回弹"
         self._fast_track = set()
+        _ft_full = getattr(self.judger, "_mode_guard", "normal") == "full"
         for s in candidates:
             p = learner.get_profile(s.name)
-            if p and getattr(p, 'refill_ewma', 0) > 500 << 10:
+            if p and (getattr(p, 'refill_ewma', 0) > 500 << 10 or
+                      (_ft_full and (getattr(p, 'refill_ewma', 0) > 200 << 10 or s.ws >= (300 << 20)))):
                 self._fast_track.add(s.pid)
         candidates.sort(key=lambda s: -self._composite_score_v2(s, learner) - getattr(s, '_growth_bonus', 0))
         results = []
@@ -745,7 +769,7 @@ class PareCleaner:
             if ops_filter is None or "volume" in ops_filter:
                 _capture(self._flush_volume_cache)
             if ops_filter is None or "filecache" in ops_filter:
-                _capture(self.clear_file_cache, "filecache")
+                # 有效实现统一（MAXSIZE 版 clear_system_file_cache 从未生效，见 Layer1 注释）
                 _capture(winapi.clear_system_file_cache_ex, "filecache")
         if freed_l3 > 0:
             self._stats_inc("freed_bytes", freed_l3)
@@ -786,8 +810,9 @@ class PareCleaner:
                 _la = self.judger._low_activity.get(s.pid)
                 if _la is None or _la[0] < 2:
                     continue
-            # 深度聚合同样执行 IO 活跃门（与 Layer2 同口径——CPU 低但 IO 密集的下载/播放进程不清）
-            if self.judger._io_active(s.pid):
+            # 深度聚合同样执行 IO 活跃门（与 Layer2 同口径——CPU 低但 IO 密集的下载/播放进程不清；
+            # full 跳过——极限模式与 can_trim 同口径，量化拖累 4.9%）
+            if getattr(self.judger, "_mode_guard", "normal") != "full" and self.judger._io_active(s.pid):
                 continue
             bl = self.judger._post_clean_ws.get(name_lower, 0)
             if bl > 0 and s.ws >= bl * 2.0:
@@ -890,6 +915,10 @@ class PareCleaner:
         
         elif mode == "full":
             # deep 基础 + 进程回弹二轮 + 强制高 agg Layer3（各操作按用户开关）
+            # full 极限模式：agg 强制 ≥0.8 并同步 judger——自动闭环前台门/活动确认/稳态豁免
+            # （PID 默认参数高压峰值仅 0.38，达不到豁免阈值 0.8，稳态锁曾全局锁死压缩能力）
+            agg = max(agg, 0.8)
+            self.judger.aggressiveness = max(self.judger.aggressiveness, agg)
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
             pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
             l1_ops = self._layer1_ops(ops_filter)
@@ -899,7 +928,6 @@ class PareCleaner:
                                    ops=l1_ops)
             pipeline_ctx["layer1_done"] = True
             self._layer3_deep(snaps, learner, ops_filter)
-            agg = max(agg, 0.6)  # full 模式强制 agg ≥0.6，同步返回结果
             # 回弹二轮：对已修剪进程追加 WS 清空（与 Layer3 阶段 D 同款硬守卫——
             # 游戏 PID 树/系统核心/黑名单/自身/前台(低压力) 一律跳过：防御纵深，
             # 不依赖 Layer2 过滤的时序正确性，防未来逻辑变化致保护界限被破解）
@@ -917,7 +945,13 @@ class PareCleaner:
                         continue  # 前台进程低压力不碰（与 can_trim 同规则）
                     if s.name in pipeline_ctx["layer2_trimmed"] and s.ws >= (10 << 20):
                         try:
-                            winapi.empty_ws(s.pid)
+                            # 二轮释放量计入统计（2026-08-14 审查：原裸清不计，full 模式"释放"低估）
+                            _pre = winapi.get_process_memory(s.pid)
+                            if _pre and winapi.empty_ws(s.pid):
+                                _post = winapi.get_process_memory(s.pid)
+                                if _post:
+                                    with self._lock:
+                                        self.stats["freed_bytes"] += max(0, _pre["ws"] - _post["ws"])
                         except Exception:
                             pass
             return _mk_result(l2_results, probe_results)
@@ -937,6 +971,8 @@ class PareCleaner:
         return s
 
     def reset_stats(self):
+        """重置统计计数（保留累计释放量）——暂无调用方，保留为内部工具（勿草率弃用）。
+        注意：同时清空 WS 基线/时间戳（judger 状态），未来调用需知晓此副作用"""
         prev_freed = self.stats.get("freed_bytes", 0) if hasattr(self, 'stats') else 0
         self.stats = {
             "standby": 0, "modified": 0, "filecache": 0,

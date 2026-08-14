@@ -3,10 +3,10 @@
 本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
-Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.0.128（2026-08-12 已发布，含双语界面）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n。测试 `scripts/test_v2.6.py`（134 项）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
+Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.1.066（2026-08-14）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_v2.6.py`（155 项）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
 
 ## 📚 知识库索引（工作前必读）
-项目记忆在项目记忆目录（路径见用户级指令，14 篇，按需读取）：
+项目记忆在项目记忆目录（路径见用户级指令，31 篇，按需读取）：
 
 | 文件 | 内容 | 何时读 |
 |---|---|---|
@@ -22,6 +22,8 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 | eris-iqr-v5-formula.md / eris-factor-output-rules.md | ERIS 公式与输出规则 | 改 ERIS 时 |
 | root-directory-cleanliness.md | 根目录整洁偏好 | 收尾时 |
 | current-mcp-and-skills.md | MCP/Skills 清单 | 环境相关 |
+| core-optimization-research.md | 核心优化通道实验结论 + 四模式梯度根因实验（第 6 节） | 改优化机制时 |
+| mode-gradient-spec.md | 四模式清理梯度完整规格（quick/normal/deep/full 权威差异表） | 模式相关改动/发布 |
 
 用户级记忆与指令见用户环境配置（全局规则/偏好）。
 
@@ -42,13 +44,13 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 - 发布脚本：`scripts/release_tag.py`（建 tag+release，幂等）→ `release_upload.py`（上传 exe，改 RELEASE_ID）→ `release_body.py`（自动读 CHANGELOG 更新 body）——token 读环境变量 GITHUB_TOKEN 或项目根 `.gh_token`（禁硬编码、禁上传）
 
 ## 测试与构建
-- 回归：`python -B scripts\test_v2.6.py`（134 项断言，-B 避 pyc 缓存锁；本机已设 PYTHONPYCACHEPREFIX）
+- 回归：`python -B scripts\test_v2.6.py`（155 项断言，-B 避 pyc 缓存锁；本机已设 PYTHONPYCACHEPREFIX）
 - 语法检查：`compile()`；日常修改用回归验证，**非必要不构建 exe**（用户成本偏好）
 - 构建：`cmd /c "taskkill /f /im MemWise.exe >nul 2>&1 & cd /d D:\我的文件\memwise && pyinstaller MemWise.spec --distpath dist --workpath build --noconfirm 2>&1"`（版本/图标变更加 `--clean`）
 - 构建后清理 dist 残留（watchdog.json 等运行时文件），**禁删 memwise.log**
 
 ## 发布流程（完整细节读 github-release-workflow.md）
-1. 修改完成 → 134 项回归全绿 → 更新 CHANGELOG（用户视角规范）
+1. 修改完成 → 155 项回归全绿 → 更新 CHANGELOG（用户视角规范）
 2. `git add -A && git commit && git push origin main`（最快）
 3. 版本号变更时同步 13 处（gui 7/memwise 2/README 1/test 3）+ 构建 exe（--clean）
 4. 改 `release_tag.py` 版本号 → 运行（建 tag+release，拿新 release id）

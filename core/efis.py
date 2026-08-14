@@ -9,8 +9,8 @@ from collections import deque
 PARAMS = {
     "deepen_theta":       {"min": 0.30, "max": 0.80, "default": 0.60, "step": 0.05},
     "layer3_agg_gate":    {"min": 0.30, "max": 0.70, "default": 0.60, "step": 0.05},
-    "pid_kp":             {"min": 0.30, "max": 2.00, "default": 0.60, "step": 0.10},
-    "pid_kd":             {"min": 0.05, "max": 0.50, "default": 0.10, "step": 0.05},
+    "pid_kp":             {"min": 0.45, "max": 2.00, "default": 0.60, "step": 0.10},  # min 0.45：防漂移触底（0.30 时高压峰值 agg 仅 0.38，稳态豁免失效）
+    "pid_kd":             {"min": 0.05, "max": 0.35, "default": 0.10, "step": 0.05},  # max 0.35：防漂移触顶（0.50 的 D 项振荡尖峰，90 分位失真）
     "target_usage":       {"min": 35,   "max": 65,   "default": 60,   "step": 2},
     "cooloff_base":       {"min": 60,   "max": 360,  "default": 360,  "step": 30},
     "learning_rate":      {"min": 0.10, "max": 0.90, "default": 0.50, "step": 0.05},  # EWMA 反馈学习率（λ）：接入 record_clean 的 gain/cost EWMA 主通道，fast/slow 趋势通道固定
