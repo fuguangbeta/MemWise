@@ -1754,11 +1754,19 @@ class MemWiseGUI:
             _log_write("界面", m)
 
     def _rerender_log(self):
-        """语言切换后按新语言重渲染日志面板（历史消息全部翻译刷新）"""
+        """语言切换后按新语言重渲染日志面板——只重渲染切换前可见的行数
+        （与 _log/_log_batch 的清旧口径一致，避免把全部历史缓存倾倒出来）"""
         try:
+            try:
+                cur_lines = int(self.log.index('end-1c').split('.')[0])
+            except Exception:
+                cur_lines = 0
+            if cur_lines <= 0:
+                return
+            msgs = list(self._log_history)[-cur_lines:]
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
-            for m in self._log_history:
+            for m in msgs:
                 self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {tr_msg(m)}\n")
             self.log.see("end")
             self.log.configure(state="disabled")
