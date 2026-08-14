@@ -1,8 +1,8 @@
 # Runtime
 data/
 config.local.yaml
-/config.yaml
 config/config.yaml
+*.log
 
 # Local tooling
 .mcp.json
@@ -31,6 +31,7 @@ venv/
 
 # Local workspace data
 .zcode/
+memwise2/
 
 # OS
 Thumbs.db
@@ -39,5 +40,4 @@ Thumbs.db
 .gh_token
 
 config/*.bak*
-config/config.yaml
 *.json
