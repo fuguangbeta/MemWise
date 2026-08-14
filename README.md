@@ -126,7 +126,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | deep | ✅† | ✅ | ✅* | 始终 | 等待减半+稳态锁跳过 | 重度使用后深度清扫 |
 | full | ✅† | ✅ | ✅* | 强制 | 不等+跳过活跃门槛+最大轮数 | 极限释放 |
 
-* 「系统文件缓存」需在设置中勾选（勾选后任意模式均执行）；「进程闲置页释放」取消勾选时 quick/normal 不执行进程修剪。
+* 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时 quick/normal 不执行进程修剪。
 † 系统级 WS 全清在自动模式下仅内存压力中等以上执行，手动触发不受限；deep 模式等待窗口减半，full 模式跳过全部等待。full 同时跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
 
 *System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). Zero deliberate sleep, sub-10ms total latency.*
@@ -151,7 +151,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | deep | ✅† | ✅ | ✅* | always | halved waiting | Deep cleaning after heavy use |
 | full | ✅† | ✅ | ✅* | forced | no waiting + max rounds | Maximum release |
 
-*The File Cache toggle in Settings enables that operation in any mode (toggles take precedence); unchecking Process Idle Release skips process trimming in quick/normal.*
+*The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations); unchecking Process Idle Release skips process trimming in quick/normal.*
 † *The system-wide WS flush runs under auto mode only when memory pressure is moderate or higher; manual triggers are unrestricted. Deep halves the waiting windows; full skips all waiting. Full also skips the CPU/I/O activity gates — ultimate mode sets no activity limit.*
 
 ### 2.2 Layer2 — 进程级闲置页释放 · *Per-Process Idle Page Reclamation*
