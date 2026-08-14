@@ -60,6 +60,7 @@ check("exe 派生集完备", "svchost.exe" in SYSTEM_CORE_EXE and "explorer.exe"
 check("svchost.exe 命中", _is_system_core("svchost.exe") is True)
 check("无后缀也命中", _is_system_core("svchost") is True)
 check("system 进程命中", _is_system_core("System") is True)
+check("memory compression 命中", _is_system_core("memory compression") is True)
 check("普通进程不命中", _is_system_core("notepad.exe") is False)
 check("空名安全", _is_system_core(None) is False and _is_system_core("") is False)
 

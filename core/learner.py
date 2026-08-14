@@ -27,6 +27,7 @@ SYSTEM_CORE = {
     "conhost", "dllhost", "shellexperiencehost", "startmenuexperiencehost",
     "runtimebroker", "backgroundtaskhost", "wmiprvse", "wudfhost",
     "audiodg", "spoolsv", "mpdefendercoreservice",
+    "memory compression",  # 系统压缩池组件（2026-08-14 审查发现不在保护名单，full 模式可能误清）
 }
 # 进程名来自 PROCESSENTRY32W.szExeFile（必带 .exe），派生带后缀集合供快照名直接比较
 SYSTEM_CORE_EXE = {n + ".exe" for n in SYSTEM_CORE}
