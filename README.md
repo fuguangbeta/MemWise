@@ -68,7 +68,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 |------|------|
 | 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒基准，自适应上限 25 秒），释放多则缩短、释放少则延长 |
 | gap fill 轻量压制 | 高频阶段系统级轻量操作（零磁盘影响）：normal 仅注册表缓存；deep/full 追加待机缓存与脏页写回持续回收（零缺页成本，缓存重建后立即清空，可用内存保持高位）；文件缓存与卷冲刷等重操作仅在周期收割执行——缓存有累积时间，单次释放量更大 |
-| 多次 harvest | 周期内执行 2-3 次完整的 optimize pass（normal 模式），每次含 Layer2 进程修剪 + Layer1 管线（高频 gap 阶段不触发深度聚合） |
+| gap 循环优化 | 每轮 gap 结束执行一次进程修剪与系统级轻量操作（normal 语义，不含深度聚合），次数随自适应 gap 变化（60 秒周期约 3-6 次） |
 | 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含压力门控的系统级全清）→ Layer3 深度聚合（full 追加进程回弹二轮） |
 
 守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。内存占用达到紧急阈值（默认 80%）时，立即跳过等待执行一次极限模式（full）清理；另可配置可用内存绝对兜底（默认禁用），使用率未达阈值但剩余可用内存过低时同样触发。
@@ -83,7 +83,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 |------|------|
 | Adaptive gap | The interval adjusts automatically (8–20s base, up to 25s) based on the previous round's average release volume per process — shorter when releases are large, longer when they are small |
 | Gap-fill light suppression | Lightweight system operations run at high frequency (zero disk impact): registry only in normal; deep/full additionally sustain standby and dirty-page reclamation (zero page-fault cost — caches are emptied as soon as they rebuild, keeping available memory high); heavyweight operations such as file-cache and volume flush run only in periodic harvests — the cache accumulates before each purge, yielding larger per-pass releases |
-| Multiple harvests | 2–3 full optimize passes per cycle (normal mode), each with Layer 2 process trimming plus the Layer 1 pipeline (deep aggregation is not triggered during high-frequency gap phases) |
+| Gap-cycle optimization | One process-trimming pass with lightweight system operations runs at the end of each gap (normal semantics, no deep aggregation); the count follows the adaptive gap (roughly 3–6 times per 60-second cycle) |
 | Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the pressure-gated system-wide working-set flush), then Layer 3 deep aggregation (full adds a rebound second pass) |
 
 *The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. Timed-out processes are throttled by an escalating cooldown (×1~4) that decays after successful recovery. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting; an optional absolute fallback (default disabled) fires on the same logic when available memory is critically low even if the usage ratio has not reached the threshold.*
@@ -202,9 +202,9 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ### 2.4 持续优化架构 · *Continuous Optimization Architecture*
 
-守护模式的每个 60 秒周期内，在 deadline 驱动下交替执行轻量压制与全量收割。自适应 gap 根据每轮的单位进程释放量变化率自动收敛至 8-20 秒（游戏模式 ×1.5 拉长），用户可通过设置面板调节基准间隔（默认 12 秒）。高回填进程通过 fast-track 标记在压制阶段获得高频修剪，全量收割阶段再执行完整的系统级管线。守护周期有完整的超时保护体系——单进程 8 秒、单次 harvest 30 秒硬超时，超时后周期补偿机制自动在下一轮追回。
+守护模式的每个 60 秒周期内，在 deadline 驱动下交替执行轻量压制与全量收割。自适应 gap 根据每轮的单位进程释放量变化率自动在 8-25 秒间调节（游戏模式 ×1.5 拉长），用户可通过设置面板调节基准间隔（默认 12 秒）。高回填进程通过 fast-track 标记在压制阶段获得高频修剪，全量收割阶段再执行完整的系统级管线。守护周期有完整的超时保护体系——单进程 8 秒、单次 harvest 30 秒硬超时，超时后周期补偿机制自动在下一轮追回。
 
-*Each 60-second daemon cycle alternates between lightweight suppression and full harvesting under deadline-driven scheduling. The adaptive gap converges to 8–20 seconds (×1.5 in game mode) based on per-process release rate changes, with a user-configurable base interval (default 12s) in the settings panel. Fast-tracked high-refill processes receive frequent light trims during suppression; the complete pipeline executes during the harvesting phase. A comprehensive timeout defense — 8s per-process, 30s per-harvest — with automatic cycle compensation prevents any single operation from stalling the daemon.*
+*Each 60-second daemon cycle alternates between lightweight suppression and full harvesting under deadline-driven scheduling. The adaptive gap adjusts within 8–25 seconds (×1.5 in game mode) based on per-process release rate changes, with a user-configurable base interval (default 12s) in the settings panel. Fast-tracked high-refill processes receive frequent light trims during suppression; the complete pipeline executes during the harvesting phase. A comprehensive timeout defense — 8s per-process, 30s per-harvest — with automatic cycle compensation prevents any single operation from stalling the daemon.*
 
 ---
 
@@ -469,7 +469,7 @@ python memwise.py [command] [options]
 | `profile <PID>` | 查看指定进程的完整学习画像 |
 | `auto-start on\|off` | 开机自启（启动文件夹快捷方式） |
 | `service [remove]` | 安装/移除计划任务服务（系统启动自动运行，需管理员） |
-| `reset` | 恢复出厂设置（备份并移除配置与画像） |
+| `reset` | 恢复出厂设置（备份并移除配置、画像与调参状态） |
 
 *Command reference:*
 
@@ -482,7 +482,7 @@ python memwise.py [command] [options]
 | `profile <PID>` | View a process's complete learning profile |
 | `auto-start on\|off` | Toggle startup-folder auto-start |
 | `service [remove]` | Install/remove the scheduled-task service (runs at system startup, requires administrator) |
-| `reset` | Factory reset (backs up and removes config and profile) |
+| `reset` | Factory reset (backs up and removes config, profiles, and tuning state) |
 
 ---
 
