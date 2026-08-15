@@ -1373,6 +1373,11 @@ class MemWiseGUI:
                 self.root.tk.call("::msgcat::mclocale", "en_US" if lang == "en" else "zh_CN")
             except Exception:
                 pass
+            # 记录切换前日志面板可见行数（重建后 log 为空，重渲染需按切换前口径取历史）
+            try:
+                self._pre_switch_log_lines = int(self.log.index('end-1c').split('.')[0])
+            except Exception:
+                self._pre_switch_log_lines = 0
             # 关闭所有弹窗（设置/排除/排行等——旧语言界面）
             for w in list(self.root.winfo_children()):
                 if isinstance(w, tk.Toplevel):
@@ -1386,6 +1391,7 @@ class MemWiseGUI:
             self._refresh_mem()          # 重启 2s 刷新链（新控件树）
             self._upd_stats()
             self._rerender_log()         # 历史日志按新语言重渲染（原文缓存）
+            self._draw_chart()           # 图表标题/底部指标/悬浮因子随新语言重绘
             if self.engine.daemon_running:
                 self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
                 self.lbl_st["text"] = tr("守护运行中")
@@ -1787,13 +1793,15 @@ class MemWiseGUI:
             _log_write("界面", m)
 
     def _rerender_log(self):
-        """语言切换后按新语言重渲染日志面板——只重渲染切换前可见的行数
-        （与 _log/_log_batch 的清旧口径一致，避免把全部历史缓存倾倒出来）"""
+        """语言切换后按新语言重渲染日志面板——按切换前可见行数取历史尾部
+        （面板已重建为空，不能依赖当前行数；取多了上限 300 条历史缓存）"""
         try:
-            try:
-                cur_lines = int(self.log.index('end-1c').split('.')[0])
-            except Exception:
-                cur_lines = 0
+            cur_lines = getattr(self, '_pre_switch_log_lines', 0)
+            if cur_lines <= 0:
+                try:
+                    cur_lines = int(self.log.index('end-1c').split('.')[0])
+                except Exception:
+                    cur_lines = 0
             if cur_lines <= 0:
                 return
             msgs = list(self._log_history)[-cur_lines:]
@@ -2101,7 +2109,9 @@ class MemWiseGUI:
         if hasattr(self, '_chart_motion_factors'):
             factors = getattr(self, '_chart_motion_factors', [])
             if idx < len(factors) and factors[idx]:
-                factor_str = "\n" + " ".join(factors[idx])
+                # 因子存原文、显示时翻译（切换语言后已存因子跟随当前语言）
+                factor_str = "\n" + " ".join(tr_msg(f) if isinstance(f, str) else str(f)
+                                             for f in factors[idx])
         # 收割未完成周期如实标注（效率与因子仍按真实数据计算）
         partial_note = ""
         partials = getattr(self, '_chart_motion_partial', [])

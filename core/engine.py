@@ -1081,16 +1081,16 @@ class MemWiseEngine:
                                         self._cycle_failed, mem_pct, self._failed_weight,
                                         update_state=True)
             self._eff_data.append(result["total"])
-            self._eff_factors.append(result.get("factors", [tr("冷启动")]))
+            self._eff_factors.append(result.get("factors", ["冷启动"]))
         except Exception:
             self._eff_data.append(80.0)
-            self._eff_factors.append([tr("计算异常")])
+            self._eff_factors.append(["计算异常"])
 
     # ── ERIS v6：IQR分位数归一化五维加权和（80±40×(raw−p50)/IQR，trimmed IQR + 维级窗口）──
     def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5, probe_ok=0, probe_total=0, update_state=True):
         """返回 {"total": eff, "factors": ["↑预测精准","↓PF偏高"]}"""
         if not data:
-            return {"total": 0, "factors": [tr("冷启动")]}
+            return {"total": 0, "factors": ["冷启动"]}
         visible = list(data)
         learner = self.learner
         profiles = learner.profiles
@@ -1177,16 +1177,16 @@ class MemWiseEngine:
         eff = sum(d * w for d, w in zip(dims, weights))
         eff = max(0.0, eff)
 
-        dim_pairs = [(tr("↑预测精准"), tr("↓预测偏差")), (tr("↑释放改善"), tr("↓释放退步")),
-                     (tr("↑副作用低"), tr("↓副作用高")), (tr("↑参数稳定"), tr("↓频繁调参")),
-                     (tr("↑覆盖广泛"), tr("↓覆盖狭窄"))]
+        dim_pairs = [("↑预测精准", "↓预测偏差"), ("↑释放改善", "↓释放退步"),
+                     ("↑副作用低", "↓副作用高"), ("↑参数稳定", "↓频繁调参"),
+                     ("↑覆盖广泛", "↓覆盖狭窄")]
 
         # ── 因子选择（含防振荡：同维正负不来回跳）──
         prev = self._eris_prev
         prev_f_dim = self._eris_prev_factor_dim
         prev_f_pos = self._eris_prev_factor_pos
         if len(visible) <= 3:
-            factors = [tr("影响因素分析中…")]
+            factors = ["影响因素分析中…"]
         elif round(eff) >= 100:
             best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
             factors = [dim_pairs[best_i][0]]
@@ -1195,7 +1195,7 @@ class MemWiseEngine:
                 ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
                 best_i = ranked[1] if len(ranked) > 1 else best_i
                 factors = [dim_pairs[best_i][0]]
-            factors.append(tr("🚀效率超常"))
+            factors.append("🚀效率超常")
             if update_state:
                 # 99 标记极性轮，打断趋势连续性
                 self._eris_ewma_trend.append(99)
@@ -1209,7 +1209,7 @@ class MemWiseEngine:
                 ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
                 best_i = ranked[1] if len(ranked) > 1 else best_i
                 factors = [dim_pairs[best_i][1]]
-            factors.append(tr("⚠效率异常"))
+            factors.append("⚠效率异常")
             if update_state:
                 # -99 标记极性轮，打断趋势连续性
                 self._eris_ewma_trend.append(-99)
@@ -1232,11 +1232,11 @@ class MemWiseEngine:
             if len(self._eris_ewma_trend) >= 3 and len(set(self._eris_ewma_trend[-3:])) == 1:
                 last_val = self._eris_ewma_trend[-1]
                 if last_val == 1:
-                    factors.append(tr("🔥持续改善"))
+                    factors.append("🔥持续改善")
                 elif last_val == -1:
-                    factors.append(tr("⚠持续下滑"))
+                    factors.append("⚠持续下滑")
         else:
-            factors = [tr("相对平稳")]
+            factors = ["相对平稳"]
             if update_state:
                 self._eris_ewma_trend.append(0)
                 # 平稳期重置防振荡状态：旧方向不应影响后续活跃期的判断
