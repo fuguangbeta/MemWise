@@ -1,4 +1,4 @@
-# MemWise v4.1.066
+﻿# MemWise v4.1.80
 
 ## 关于本工具 · *About This Tool*
 
@@ -56,9 +56,9 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.1 一键优化 · *One-Click Optimization*
 
-点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 触发与日志 → 全局热键中自定义），程序按当前选择的清理模式执行单次优化，并输出累计释放量。四种模式按力度真实分层：quick 仅轻量系统操作（零进程清理）、normal 进程加系统标准力度、deep 等待减半并启用系统级全清（压力门控）、full 不等待立即全力清理（跳过活跃门槛，含每进程最大轮数与回弹二轮），最终显示对比优化前后的内存占用变化。
+点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 全局热键中自定义），程序按当前选择的清理模式执行一次完整优化（三轮深度执行），并输出累计释放量。四种模式按力度真实分层：quick 仅轻量系统操作（零进程清理）、normal 进程加系统标准力度、deep 等待减半并启用系统级全清（中高压启用）、full 不等待立即全力清理（跳过活跃门槛，含每进程最大轮数与回弹二轮），最终显示对比优化前后的内存占用变化。守护运行中点击优化按钮，则按当前模式立即执行一轮即时优化（游戏模式时跳过，避免影响流畅）。
 
-*Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Triggers & Logging → Global Hotkey). Runs a single optimization pass in the currently selected cleaning mode, with real intensity tiers: quick is system-only lightweight (no process trimming), normal adds process trimming at standard guard strictness, deep halves the waiting windows and enables the pressure-gated system-wide working-set flush, full skips waiting and activity gates entirely for maximum release (maximum rounds per process plus a rebound second pass). Displays the before-and-after memory delta.*
+*Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Global Hotkeys). Runs a full optimization (three deep rounds) in the currently selected cleaning mode, with real intensity tiers: quick is system-only lightweight (no process trimming), normal adds process trimming at standard guard strictness, deep halves the waiting windows and enables the system-wide working-set flush at moderate-to-high usage, full skips waiting and activity gates entirely for maximum release (maximum rounds per process plus a rebound second pass). Displays the before-and-after memory delta. While Guard is running, the button triggers one immediate optimization round in the current mode (skipped in Game Mode to avoid impacting smoothness).*
 
 ### 1.2 守护模式（推荐）· *Daemon Mode (Recommended)*
 
@@ -69,13 +69,13 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒基准，自适应上限 25 秒），释放多则缩短、释放少则延长 |
 | gap fill 轻量压制 | 高频阶段系统级轻量操作（零磁盘影响）：normal 仅注册表缓存；deep/full 追加待机缓存与脏页写回持续回收（零缺页成本，缓存重建后立即清空，可用内存保持高位）；文件缓存与卷冲刷等重操作仅在周期收割执行——缓存有累积时间，单次释放量更大 |
 | gap 循环优化 | 每轮 gap 结束执行一次进程修剪与系统级轻量操作（normal 语义，不含深度聚合），次数随自适应 gap 变化（60 秒周期约 3-6 次） |
-| 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含压力门控的系统级全清）→ Layer3 深度聚合（full 追加进程回弹二轮） |
+| 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含系统级全清：deep 中高压执行、full 无条件）→ Layer3 深度聚合（full 追加进程回弹二轮） |
 
 守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。内存占用达到紧急阈值（默认 80%）时，立即跳过等待执行一次极限模式（full）清理；另可配置可用内存绝对兜底（默认禁用），使用率未达阈值但剩余可用内存过低时同样触发。
 
 程序内嵌看门狗子进程，主进程意外崩溃后可在数秒内自动重启，并恢复崩溃前的运行状态——守护运行中则自动续守护，空闲中则保持空闲；单实例互斥锁防止恢复实例与手动启动实例冲突。
 
-守护判定自带多重保护：刚切走的程序 5-10 分钟内不清理（有可见窗口更久，内存高压时自动放宽）；正在工作的程序（CPU 或磁盘 IO 活跃）在 normal/deep 一律不清理（full 极限释放除外）；连续两轮确认空闲才会被纳入清理候选（full 跳过）；对反复清理后迅速回填的常驻程序，程序会学习其自然内存占用基线并自动停止无效清理（稳态抑制与回弹后退，deep/full 跳过）。
+守护判定自带多重保护：刚切走的程序 5-10 分钟内不清理（有可见窗口更久，内存高压时自动放宽）；正在工作的程序（CPU 或磁盘 IO 活跃）在 normal/deep 一律不清理（full 极限释放除外）；连续低活动确认后才被纳入清理候选（normal 两轮、deep 一轮、full 跳过）；对反复清理后迅速回填的常驻程序，程序会学习其自然内存占用基线并自动停止无效清理（稳态抑制与回弹后退，deep/full 跳过）。
 
 *Operates in 60-second log/chart cycles with uninterrupted optimization:*
 
@@ -84,13 +84,13 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | Adaptive gap | The interval adjusts automatically (8–20s base, up to 25s) based on the previous round's average release volume per process — shorter when releases are large, longer when they are small |
 | Gap-fill light suppression | Lightweight system operations run at high frequency (zero disk impact): registry only in normal; deep/full additionally sustain standby and dirty-page reclamation (zero page-fault cost — caches are emptied as soon as they rebuild, keeping available memory high); heavyweight operations such as file-cache and volume flush run only in periodic harvests — the cache accumulates before each purge, yielding larger per-pass releases |
 | Gap-cycle optimization | One process-trimming pass with lightweight system operations runs at the end of each gap (normal semantics, no deep aggregation); the count follows the adaptive gap (roughly 3–6 times per 60-second cycle) |
-| Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the pressure-gated system-wide working-set flush), then Layer 3 deep aggregation (full adds a rebound second pass) |
+| Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the system-wide working-set flush — deep at moderate-to-high usage, full always), then Layer 3 deep aggregation (full adds a rebound second pass) |
 
 *The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. Timed-out processes are throttled by an escalating cooldown (×1~4) that decays after successful recovery. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting; an optional absolute fallback (default disabled) fires on the same logic when available memory is critically low even if the usage ratio has not reached the threshold.*
 
 *A watchdog subprocess automatically restores daemon state within seconds of an unexpected crash. A single-instance mutex prevents conflicts between recovered and manually launched instances.*
 
-*Built-in guards keep trimming safe: apps you just switched away from are left untouched for 5–10 minutes (longer with a visible window, relaxed under memory pressure); actively working apps (CPU or disk I/O active) are never trimmed in normal/deep (full's ultimate release is the exception); a process must confirm two consecutive idle rounds before becoming a candidate (skipped in full); for resident apps that refill quickly after every trim, the program learns their natural memory baseline and automatically stops futile re-trimming (stable-state suppression and rebound backoff, both skipped in deep/full).*
+*Built-in guards keep trimming safe: apps you just switched away from are left untouched for 5–10 minutes (longer with a visible window, relaxed under memory pressure); actively working apps (CPU or disk I/O active) are never trimmed in normal/deep (full's ultimate release is the exception); a process must confirm low activity before becoming a candidate (two rounds in normal, one in deep, skipped in full); for resident apps that refill quickly after every trim, the program learns their natural memory baseline and automatically stops futile re-trimming (stable-state suppression and rebound backoff, both skipped in deep/full).*
 
 ### 1.3 命令行 · *Command Line*
 
@@ -122,12 +122,12 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | 模式 | WS全清 | 进程trim | 文件缓存 | Layer3 | 守卫力度 | 适用场景 |
 |------|:--:|:--:|:--:|:--:|:--:|------|
 | quick | ❌ | ❌ | ❌ | ❌ | 轻量系统 | 临时快速释放，零感知 |
-| normal | ❌ | ✅ | ❌* | 高压触发 | 标准 | 日常极致优化，无副作用 |
-| deep | ✅† | ✅ | ✅* | 始终 | 等待减半+稳态锁跳过 | 重度使用后深度清扫 |
+| normal | ❌ | ✅ | ❌* | 高压触发 | 标准 | 日常均衡优化，副作用小 |
+| deep | ✅† | ✅ | ✅* | 始终 | 等待减半+稳态锁跳过+快速确认 | 重度使用后深度清扫 |
 | full | ✅† | ✅ | ✅* | 强制 | 不等+跳过活跃门槛+最大轮数 | 极限释放 |
 
 * 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时 quick/normal 不执行进程修剪。
-† 系统级 WS 全清在自动模式下仅内存压力中等以上执行，手动触发不受限；deep 模式等待窗口减半，full 模式跳过全部等待。full 同时跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
+† 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
 
 *System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). Zero deliberate sleep, sub-10ms total latency.*
 
@@ -147,18 +147,18 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | Mode | WS Clear | Process Trim | File Cache | Layer3 | Guard Strictness | Best For |
 |------|:--:|:--:|:--:|:--:|:--:|------|
 | quick | ❌ | ❌ | ❌ | ❌ | lightweight system | Instant, imperceptible |
-| normal | ❌ | ✅ | ❌* | pressure-gated | standard | Daily, zero side effects |
-| deep | ✅† | ✅ | ✅* | always | halved waiting | Deep cleaning after heavy use |
+| normal | ❌ | ✅ | ❌* | pressure-gated | standard | Daily, minimal side effects |
+| deep | ✅† | ✅ | ✅* | always | halved waiting + fast confirm | Deep cleaning after heavy use |
 | full | ✅† | ✅ | ✅* | forced | no waiting + max rounds | Maximum release |
 
 *The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations); unchecking Process Idle Release skips process trimming in quick/normal.*
-† *The system-wide WS flush runs under auto mode only when memory pressure is moderate or higher; manual triggers are unrestricted. Deep halves the waiting windows; full skips all waiting. Full also skips the CPU/I/O activity gates — ultimate mode sets no activity limit.*
+† *The system-wide WS flush runs in deep at moderate-to-high usage (≥33%) and never disturbs at low usage; manual triggers are unrestricted; full executes it unconditionally. Deep halves the waiting windows; full skips all waiting and the CPU/I/O activity gates — ultimate mode sets no activity limit.*
 
 ### 2.2 Layer2 — 进程级闲置页释放 · *Per-Process Idle Page Reclamation*
 
 对每个非自身进程调用 `EmptyWorkingSet`，释放其物理内存中的非活跃页。决策链路：
 
-1. **安全过滤**：排除系统核心进程、用户排除列表、游戏进程树（游戏模式时）；刚切走的程序（5-10 分钟窗口，有可见窗口更久，deep 减半、full 跳过）、前台窗口保护（压力达到阈值时放开）、CPU 或磁盘 IO 活跃的进程（full 跳过——极限释放不设活跃度限制）、连续两轮低活动确认（full 跳过）、工作集过小的微小进程、WS 基线检查（deep/full 跳过）、稳态锚点抑制（deep/full 跳过）、回弹自动回退（deep/full 跳过）、失败冷却检查、系统目录进程（需高评分）
+1. **安全过滤**：排除系统核心进程、用户排除列表、游戏进程树（游戏模式时）；刚切走的程序（5-10 分钟窗口，有可见窗口更久，deep 减半、full 跳过）、前台窗口保护（压力达到阈值时放开）、CPU 或磁盘 IO 活跃的进程（full 跳过——极限释放不设活跃度限制）、连续低活动确认（normal 两轮、deep 一轮、full 跳过）、工作集过小的微小进程、WS 基线检查（deep/full 跳过）、稳态锚点抑制（deep/full 跳过）、回弹自动回退（deep/full 跳过）、失败冷却检查、系统目录进程（需高评分）
 2. **策略投票（三树决策）**：Kalman 预期收益、内存压力与趋势、反事实优势（对比全体画像均值）。各树贡献经在线学习的权重加权（权重可为负，按清理结果持续调节预测可靠度），加权总分达模式阈值即通过（normal 0 / deep -1 / full -2，全负分仍拒绝）；deep/full 模式另设价值底线（θ ≥ 0.12/0.06），防完全无意义清理
 3. **复合评分排序**：θ、Kalman 预期释放量、WS 大小、WS 回弹率、预期 PF 代价（低代价优先）五维加权，EFIS 可调权重
 4. **PID 增益调度**：根据当前内存压力自动分三区调节响应强度——低压（<40%）保守、中压（40–75%）标准、高压（>75%）激进
@@ -171,7 +171,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 *Invokes EmptyWorkingSet on every process except MemWise itself to release idle physical pages. The decision pipeline follows:*
 
-1. *Safety gate — system-core processes, user exclusions, game process trees (in Game Mode), recently-used apps (5–10 min window, longer with a visible window; halved in deep, skipped in full), foreground windows, CPU or disk-I/O-active processes (skipped in full — ultimate mode sets no activity limit), two consecutive low-activity rounds (skipped in full), tiny processes, baseline-checked processes (skipped in deep/full), stable-state suppression (skipped in deep/full), rebound backoff (skipped in deep/full), failure cooldown, and system-directory processes (require a high score)*
+1. *Safety gate — system-core processes, user exclusions, game process trees (in Game Mode), recently-used apps (5–10 min window, longer with a visible window; halved in deep, skipped in full), foreground windows, CPU or disk-I/O-active processes (skipped in full — ultimate mode sets no activity limit), low-activity confirmation (two rounds in normal, one in deep, skipped in full), tiny processes, baseline-checked processes (skipped in deep/full), stable-state suppression (skipped in deep/full), rebound backoff (skipped in deep/full), failure cooldown, and system-directory processes (require a high score)*
 2. *Three-tree policy vote — Kalman-predicted gain, memory-pressure and trend, and counterfactual advantage over the profile average; contributions weighted by online-learned per-tree weights (can be negative), with a mode-graded pass threshold (0 / −1 / −2 for normal/deep/full; all-negative totals still rejected), plus a value floor in deep/full (θ ≥ 0.12/0.06) against meaningless cleanups*
 3. *Composite score ranking — five-dimensional weighted ranking: θ, Kalman expected gain, WS size, regrowth rate, and expected PF cost (lower cost ranks first), with EFIS-tunable weights*
 4. *PID gain scheduling — three-zone response: conservative below 40%, standard at 40–75%, aggressive above 75%*
@@ -364,7 +364,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 激活后实施四重保护：
 
-- **进程级绝对保护**：游戏进程及其全部子进程树（反作弊、更新器等）的 PID 被实时追踪，`EmptyWorkingSet` 清理、内存优先级降权、`can_trim`/`can_probe` 判定对所有匹配进程自动跳过，游戏工作集完全不受触碰
+- **进程级完全保护**：游戏进程及其全部子进程树（反作弊、更新器等）的 PID 被实时追踪，`EmptyWorkingSet` 清理、内存优先级降权、`can_trim`/`can_probe` 判定对所有匹配进程自动跳过，游戏工作集完全不受触碰
 - **系统级操作抑制**：standby 清空、脏页写回、文件缓存清空、卷缓存冲刷在游戏模式全部跳过，仅保留注册表缓存清理——零磁盘 I/O，消除游戏读盘竞争
 - **非游戏智能释放**：非游戏进程按智能评分持续清理（受门槛约束，前台窗口与排除列表受保护），内存优先级降为低优先，操作系统优先回收其页面供游戏使用
 - **操作频率自适应**：gap 间隔从常规 12s 拉长至 18s（游戏模式自动 ×1.5），降低守护周期对系统的干预密度
@@ -375,7 +375,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 *When active, a four-tier protection scheme engages:*
 
-- *Per-process absolute protection — game PIDs and their entire descendant process trees (anti-cheat, updaters, etc.) are tracked in real time, exempt from WS trims, memory-priority demotion, and can_trim/can_probe gating; the game's working set is never touched*
+- *Per-process full protection — game PIDs and their entire descendant process trees (anti-cheat, updaters, etc.) are tracked in real time, exempt from WS trims, memory-priority demotion, and can_trim/can_probe gating; the game's working set is never touched*
 - *System-level operation suppression — standby purge, dirty-page flush, file-cache clear, and volume flush are all skipped; only registry-cache cleanup remains — zero disk I/O, eliminating read contention with the game*
 - *Non-game intelligent release — non-game processes are continuously cleaned via intelligent scoring (gated; foreground and excluded processes are protected) and demoted to low memory priority so the OS reclaims their pages for the game first*
 - *Adaptive intervention density — the gap interval extends from 12s to 18s (auto ×1.5 in game mode) to reduce daemon intervention*
@@ -394,11 +394,11 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 9. 进程排行 · *Process Ranking*
 
-点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存、CPU 占用、以及学习画像数据。每 3 秒自动刷新。
+点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存、CPU 占用、以及学习画像数据，打开时即时采集，关闭后重新打开可获取最新数据。
 
 内存数据的采集优先使用内核批量查询接口，无需对每个进程执行 `OpenProcess`，可绕过安全软件的进程保护机制。
 
-*A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory, CPU usage, and learned profile data. Refreshes every 3 seconds.*
+*A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory, CPU usage, and learned profile data, captured on open — close and reopen to refresh.*
 
 *Memory data is collected via a kernel bulk-query API that requires no per-process OpenProcess, bypassing security-software process protection.*
 
@@ -587,7 +587,7 @@ MemWise/
 │   ├── eris.py                 # ERIS 效率评分纯函数（生产/测试共用）· ERIS Pure Functions
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py            # 回归测试（155 项断言）· Regression Suite
+│   └── test_v2.6.py            # 回归测试（170 项断言）· Regression Suite
 ```
 
 ---

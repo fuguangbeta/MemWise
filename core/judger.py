@@ -232,11 +232,13 @@ class PareJudger:
         if _guard != "full" and self._io_active(snap.pid):
             return False, "IO活跃"
 
-        # ── 连续低活动确认（P0-C）：2 轮可靠低活动才可清（按 PID 键——同名多实例互不干扰；
-        #    防瞬时脉冲误判；手动/高压跳过；full 模式跳过——极限=立即清）──
+        # ── 连续低活动确认（P0-C）：按 PID 键（同名多实例互不干扰）；
+        #    防瞬时脉冲误判；手动/高压跳过；确认轮数按模式梯度：normal 2 轮 / deep 1 轮 / full 跳过
+        #    （2026-08-14 梯度修复：原仅 full 跳过——deep 与 normal 同级，深度模式名不副实）
         if _guard != "full" and not self._manual_mode and self.aggressiveness < 0.8:
+            _need = 2 if _guard == "normal" else 1
             _la = self._low_activity.get(snap.pid)
-            if _la is None or _la[0] < 2:
+            if _la is None or _la[0] < _need:
                 return False, "活动确认中"
 
         # ── WS 基线检查（替代旧冷却：判断是否已重新填满，不是干等时间）──

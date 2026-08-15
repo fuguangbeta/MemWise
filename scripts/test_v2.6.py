@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.1.066 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.1.80 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -615,9 +615,9 @@ set_language("en")
 for reason in ("刚切走", "CPU活跃", "IO活跃", "稳态抑制", "回弹后退", "价值不足", "系统核心进程"):
     check(f"理由覆盖:{reason}", _EN.get(reason) is not None)
 # tooltip 拼接场景（相邻字面量合并后的完整串——精确匹配必失败，走片段全替换）
-_tooltip = ("按当前选择的清理模式立即执行一次优化\n" "四种力度由轻到重：\n" "  · quick — 仅系统级清理，零卡顿，适合随手一点")
+_tooltip = ("按当前选择的清理模式立即执行一次内存优化\n" "游戏模式下游戏进程受完全保护，其余进程将由进程决策优化")
 _tr_r = tr(_tooltip)
-check("tooltip拼接翻译", "optimization" in _tr_r and "Quick" in _tr_r and "system-level" in _tr_r, _tr_r[:60])
+check("tooltip拼接翻译", "optimization" in _tr_r and "protected" in _tr_r and "process decisions" in _tr_r, _tr_r[:60])
 # "维持" 与 agg 标签（高/中/低）分离——粘连防护
 check("维持高分离", tr_msg("维持高") == "staying high", tr_msg("维持高"))
 check("维持中分离", tr_msg("维持中") == "staying medium", tr_msg("维持中"))
@@ -672,15 +672,14 @@ _jl = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"
 check("A3 judger._lock 存在", hasattr(_jl, "_lock"))
 # ── B1/B8/B9 双语键完备 ──
 from core.i18n import _EN as _EN_A
-for _k in ("  · quick — 仅系统级清理，几秒完成，零卡顿\n",
+for _k in ("  · quick — 仅系统级清理，几秒完成，几乎无感知\n",
            "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n",
-           "  · full — 极限释放，连正在活跃使用的程序内存也会一并释放\n",
-           "           尽最大可能腾出内存空间（含二次回收）\n",
-           "           适合：随手一点，不想有任何感知\n",
-           "           适合：日常使用，兼顾效果与流畅\n",
-           "           适合：内存偏紧，接受短暂变慢\n",
-           "           适合：内存告急，需要立刻腾出最多空间\n"):
-    check(f"B1 键存在:{_k.strip()[:18]}", _k in _EN_A)
+           "  · full — 极限释放，尽最大可能腾出内存空间，包括刚切走或正在工作的程序内存\n",
+           "                   适合：随手一点，不想有任何感知\n",
+           "                      适合：日常使用，兼顾效果与流畅\n",
+           "                  适合：内存偏紧，接受短暂变慢\n",
+           "               适合：内存告急，需要立刻腾出最多空间\n"):
+    check(f"B1 键存在:{_k.strip()[:18]}", _k in _EN_A or _k.rstrip("\n") in _EN_A)
 check("B8 是/否键", "是" in _EN_A and "否" in _EN_A)
 check("B9 守护异常键", "❌ 守护异常，详见下方错误信息" in _EN_A)
 # ── B1 翻译实证：补键后 tooltip 行完整英文无中文 ──
@@ -694,6 +693,111 @@ _pa = _lr.get("kr.exe")
 for _p in _lr.profiles.values():
     _p.kalman.r = 8.0
 check("B10 kalman_r 遍历生效", _pa.kalman.r == 8.0)
+
+print("\n[23] 四模式梯度修复回归（2026-08-14 梯度专项）")
+# ── 活动确认梯度：normal 2 轮 / deep 1 轮 / full 跳过 ──
+j_g = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+j_g._mode_guard = "normal"; j_g.aggressiveness = 0.1
+j_g._low_activity[9601] = (1, time.time(), None)
+sg = Snap(); sg.name="g.exe"; sg.ws=200<<20; sg.path="d:\\app\\g.exe"; sg.pid=9601; sg.pf=0; sg.priv=0; sg.fg=False
+ok_n, r_n = j_g.can_trim(sg)
+check("活动确认 normal 1轮拦", not ok_n and "活动确认" in r_n, r_n)
+j_d = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+j_d._mode_guard = "deep"; j_d.aggressiveness = 0.1
+j_d._low_activity[9601] = (1, time.time(), None)
+ok_d, r_d = j_d.can_trim(sg)
+check("活动确认 deep 1轮放行", ok_d, r_d)
+j_f = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
+j_f._mode_guard = "full"; j_f.aggressiveness = 0.1
+ok_f, _ = j_f.can_trim(sg)
+check("活动确认 full 跳过", ok_f)
+# ── ws_all 使用率门控：中高压(≥33%)执行 / 低压豁免（monkeypatch，不触碰真实系统操作）──
+from core.cleaner import PareCleaner, DEEP_WSALL_PCT_GATE
+import core.winapi as _wa
+def _run_deep_opt(pct):
+    lr_o = PareLearner()
+    j_o = PareJudger(lr_o, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[],"efis_params":{}})
+    c_o = PareCleaner(j_o)
+    captured = {}
+    c_o._layer1_memreduct = lambda **kw: captured.update(ops=kw.get('ops'))
+    c_o._layer3_deep = lambda *a, **k: None  # 防真实系统清理调用
+    _orig_ms = _wa.get_memory_status
+    _orig_mub = _wa.get_memory_used_bytes
+    _wa.get_memory_status = lambda: {"pct": pct, "total": 16<<30, "avail": (16<<30)-int(pct/100*16)<<30, "used": int(pct/100*16)<<30}
+    _wa.get_memory_used_bytes = lambda: int(pct/100*16)<<30
+    try:
+        c_o.optimize([], lr_o, "deep", operations=["ws"], aggressiveness=0.1)
+    finally:
+        _wa.get_memory_status = _orig_ms
+        _wa.get_memory_used_bytes = _orig_mub
+    return captured.get('ops')
+ops_hi = _run_deep_opt(40)
+check("deep 使用率40% ws_all 执行", ops_hi is not None and "ws_all" in ops_hi, str(ops_hi))
+ops_lo = _run_deep_opt(30)
+check("deep 使用率30% ws_all 豁免", ops_lo is not None and "ws_all" not in ops_lo, str(ops_lo))
+check("DEEP_WSALL_PCT_GATE=33", DEEP_WSALL_PCT_GATE == 33)
+# ── fast_track 梯度：deep 350KB/s 档（normal 500 不进 / deep 400 进）──
+def _run_ft(mode, refill_kb):
+    lr_f = PareLearner()
+    j_f2 = PareJudger(lr_f, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[],"efis_params":{}})
+    j_f2._mode_guard = mode
+    c_f = PareCleaner(j_f2)
+    _orig_can = j_f2.can_trim
+    j_f2.can_trim = lambda s: (True, "")
+    _orig_trim = c_f._trim_process
+    c_f._trim_process = lambda snap, learner: (True, 0, 0, "模拟")
+    _orig_eco = _wa.set_eco_qos; _orig_mp = _wa.set_memory_priority
+    _wa.set_eco_qos = lambda *a, **k: True; _wa.set_memory_priority = lambda *a, **k: True
+    sf = Snap(); sf.name="ft.exe"; sf.ws=200<<20; sf.path="d:\\app\\ft.exe"; sf.pid=9701
+    sf.pf=0; sf.priv=0; sf.fg=False; sf.cpu=0.0; sf.parent=0; sf.create=time.time(); sf.has_visible=False
+    p = lr_f.get("ft.exe"); p.refill_ewma = refill_kb << 10
+    try:
+        c_f._layer2_process([sf], lr_f)
+    finally:
+        j_f2.can_trim = _orig_can
+        c_f._trim_process = _orig_trim
+        _wa.set_eco_qos = _orig_eco; _wa.set_memory_priority = _orig_mp
+    return 9701 in c_f._fast_track
+check("fast_track deep 400KB/s 进池", _run_ft("deep", 400) is True)
+check("fast_track normal 400KB/s 不进池", _run_ft("normal", 400) is False)
+
+# ── 守护运行中手动即时优化：exec_lock 互斥 + optimize 壳转发 + _manual_run 生命周期 ──
+import threading as _th
+lr_x = PareLearner()
+j_x = PareJudger(lr_x, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[],"efis_params":{}})
+c_x = PareCleaner(j_x)
+check("exec_lock 为 RLock", type(c_x._exec_lock).__name__ == "RLock", str(type(c_x._exec_lock)))
+_orig_ol = c_x._optimize_locked
+_called_modes = []
+c_x._optimize_locked = lambda *a, **k: _called_modes.append(a[2] if len(a) > 2 else k.get("mode")) or {"mode": a[2] if len(a) > 2 else k.get("mode")}
+c_x.optimize([], lr_x, "full", operations=["ws"])
+c_x._optimize_locked = _orig_ol
+check("optimize 壳转发 _optimize_locked", _called_modes == ["full"], str(_called_modes))
+# 锁内重入（RLock）不阻塞：手动 worker 持锁期间同一线程再次 optimize
+with c_x._exec_lock:
+    c_x.optimize([], lr_x, "quick", operations=["ws"])  # quick+ws 无真实系统清理，安全
+check("exec_lock 锁内重入不阻塞", True)
+# _opt_worker_once：_manual_run 生命周期 + 事件输出（fake sniffer，临时状态文件）
+class _FakeSniffer:
+    def snapshot(self):
+        return []
+from core.engine import MemWiseEngine
+from core.efis import EfisController
+_tmp_state = os.path.join(tempfile.mkdtemp(), "state.json")
+_efis_x = EfisController(state_path=None)  # 内存态，不碰磁盘
+_j_x2 = PareJudger(lr_x, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[],"efis_params":{}})
+c_x2 = PareCleaner(_j_x2)
+_manual_seen = []
+_orig_opt = c_x2.optimize
+c_x2.optimize = lambda *a, **k: (_manual_seen.append(c_x2._manual_run), {"mode": k.get("mode"), "layer2": [], "probe": [], "net_freed": 0})[1]
+eng_x = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), _tmp_state)
+eng_x._opt_worker_once("full", None)
+eng_x.shutdown()
+c_x2.optimize = _orig_opt
+check("once 执行期间 _manual_run=True", _manual_seen == [True], str(_manual_seen))
+check("once 结束后 _manual_run 复位", c_x2._manual_run is False)
+_evs = [m for t, m in list(eng_x.events.queue)]
+check("once 输出即时优化日志", any("即时优化" in m for m in _evs), str(_evs))
 
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))

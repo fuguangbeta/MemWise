@@ -314,7 +314,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v4.1.066 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.1.80 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -536,53 +536,87 @@ class MemWiseEngine:
     def optimize_manual_async(self, mode, ops):
         threading.Thread(target=self._opt_worker, args=(mode, ops), daemon=True).start()
 
+    def optimize_manual_once(self, mode, ops):
+        """守护运行中的手动即时优化：按当前模式执行单轮完整优化。
+        与守护周期经 cleaner._exec_lock 串行（持锁期间设 _manual_run，
+        守护周期 optimize 等待锁后 _manual_run 已复位，互不污染）"""
+        threading.Thread(target=self._opt_worker_once, args=(mode, ops), daemon=True).start()
+
     def _opt_worker(self, mode, ops):
-        self.cleaner._manual_run = True  # 手动优化：跳过自动化保守门（前台冷却/连续确认/锚点抑制），保留实时安全门（CPU/IO 活跃）
-        try:
-            snaps = []
-            for i in range(3):
-                snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
-                if i < 2: time.sleep(2)
-            self.events.put(('log', f"观察到 {len(snaps)} 个进程"))
-            # 候选预览（轻量版）：日志告知将清理范围（复用 can_trim，零新逻辑）
+        with self.cleaner._exec_lock:
+            self.cleaner._manual_run = True  # 手动优化：跳过自动化保守门（前台冷却/连续确认/锚点抑制），保留实时安全门（CPU/IO 活跃）
             try:
-                preview = [s.name for s in snaps if self.judger.can_trim(s)[0]]
-                if preview:
-                    shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
-                    self.events.put(('log', f"📋 将清理 {len(preview)} 个进程候选：{shown}"))
-            except Exception:
-                pass
-            m0 = winapi.get_memory_status()
-            all_l2 = []; all_probe = []
-            total_net = 0
-            freed0 = self.cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
-            for round_idx in range(3):
-                if round_idx == 0:
-                    r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
-                else:
+                snaps = []
+                for i in range(3):
                     snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
-                    r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
-                all_l2.extend(r.get("layer2", []))
-                all_probe.extend(r.get("probe", []))
-                total_net += r.get("net_freed", 0)
-                if round_idx < 2:
-                    time.sleep(2)
-            self.learner.save(self._state_file)
-            m1 = winapi.get_memory_status()
-            freed1 = self.cleaner.summary()['freed_mb']
-            released = max(0.0, freed1 - freed0)  # 三轮释放量标量总和
-            pct_str = f"，可用内存 {m0['pct']}%→{m1['pct']}%" if m0 and m1 else ""
-            self.events.put(('log', f"📊 三轮优化合计释放 {released:.1f} MB · 内存净下降 {total_net/(1<<20):.1f} MB{pct_str}"))
-            self.events.put(('log_op', f"优化完成 · 三轮合计释放 {released:.1f} MB（净下降 {total_net/(1<<20):.1f} MB）"))
-            self.events.put(('opt_done', {
-                "mode": mode, "layer2": all_l2, "probe": all_probe}))
-        except Exception:
-            import traceback; traceback.print_exc(file=_ERR)
-            self.events.put(('log', "⚠ 手动优化异常，已自动恢复"))
-            self.events.put(('opt_done', {
-                "mode": mode, "layer2": [], "probe": []}))
-        finally:
-            self.cleaner._manual_run = False
+                    if i < 2: time.sleep(2)
+                self.events.put(('log', f"观察到 {len(snaps)} 个进程"))
+                # 候选预览（轻量版）：日志告知将清理范围（复用 can_trim，零新逻辑）
+                try:
+                    preview = [s.name for s in snaps if self.judger.can_trim(s)[0]]
+                    if preview:
+                        shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
+                        self.events.put(('log', f"📋 将清理 {len(preview)} 个进程候选：{shown}"))
+                except Exception:
+                    pass
+                m0 = winapi.get_memory_status()
+                all_l2 = []; all_probe = []
+                total_net = 0
+                freed0 = self.cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
+                for round_idx in range(3):
+                    if round_idx == 0:
+                        r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                    else:
+                        snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                        r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                    all_l2.extend(r.get("layer2", []))
+                    all_probe.extend(r.get("probe", []))
+                    total_net += r.get("net_freed", 0)
+                    if round_idx < 2:
+                        time.sleep(2)
+                self.learner.save(self._state_file)
+                m1 = winapi.get_memory_status()
+                freed1 = self.cleaner.summary()['freed_mb']
+                released = max(0.0, freed1 - freed0)  # 三轮释放量标量总和
+                pct_str = f"，可用内存 {m0['pct']}%→{m1['pct']}%" if m0 and m1 else ""
+                self.events.put(('log', f"📊 三轮优化合计释放 {released:.1f} MB · 内存净下降 {total_net/(1<<20):.1f} MB{pct_str}"))
+                self.events.put(('log_op', f"优化完成 · 三轮合计释放 {released:.1f} MB（净下降 {total_net/(1<<20):.1f} MB）"))
+                self.events.put(('opt_done', {
+                    "mode": mode, "layer2": all_l2, "probe": all_probe}))
+            except Exception:
+                import traceback; traceback.print_exc(file=_ERR)
+                self.events.put(('log', "⚠ 手动优化异常，已自动恢复"))
+                self.events.put(('opt_done', {
+                    "mode": mode, "layer2": [], "probe": []}))
+            finally:
+                self.cleaner._manual_run = False
+
+    def _opt_worker_once(self, mode, ops):
+        """守护运行中即时优化的执行体：单轮快照+单轮 optimize（守护周期互斥见调用方注释）"""
+        with self.cleaner._exec_lock:
+            self.cleaner._manual_run = True
+            try:
+                snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                m0 = winapi.get_memory_status()
+                freed0 = self.cleaner.summary()['freed_mb']
+                r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                self.learner.save(self._state_file)
+                m1 = winapi.get_memory_status()
+                freed1 = self.cleaner.summary()['freed_mb']
+                released = max(0.0, freed1 - freed0)
+                trimmed = [t for t in r.get("layer2", []) if t[1]]
+                pct_str = f"，可用内存 {m0['pct']}%→{m1['pct']}%" if m0 and m1 else ""
+                self.events.put(('log', f"⚡ 即时优化（{mode}）完成 · 清理 {len(trimmed)} 个进程 · 释放 {released:.1f} MB{pct_str}"))
+                self.events.put(('log_op', f"即时优化完成 · 释放 {released:.1f} MB"))
+                self.events.put(('opt_done', {
+                    "mode": mode, "layer2": r.get("layer2", []), "probe": r.get("probe", [])}))
+            except Exception:
+                import traceback; traceback.print_exc(file=_ERR)
+                self.events.put(('log', "⚠ 即时优化异常，已自动恢复"))
+                self.events.put(('opt_done', {
+                    "mode": mode, "layer2": [], "probe": []}))
+            finally:
+                self.cleaner._manual_run = False
 
     # ── 守护线程（逐行搬移自原 GUI，行为不变）──
     def _dae_worker(self):

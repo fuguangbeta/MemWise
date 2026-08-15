@@ -12,6 +12,10 @@ from .learner import _is_system_core
 # （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
 GAME_PROCESSES = set()
 
+# 深度模式系统级全清的使用率门控（2026-08-14 梯度修复）：中高压（≥33%）执行深度清扫，
+# 低压不打扰（full 无条件——极限模式随时全力，梯度差异）
+DEEP_WSALL_PCT_GATE = 33
+
 
 
 class PareCleaner:
@@ -28,6 +32,7 @@ class PareCleaner:
         self._fast_track = set()  # 高回填率 PID，gap-fill 期间快速重清
         self._last_standby_time = 0
         self._lock = threading.Lock()
+        self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
         self._max_workers = min(os.cpu_count() or 2, 8)
         self._probe_executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="memwise-probe")
         self._trim_executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="memwise-trim")
@@ -681,14 +686,15 @@ class PareCleaner:
                     s._growth_bonus = now_bonus + 0.05  # 批量加分
 
         # Fast-track: high-refill PIDs for gap-fill re-trim
-        # 梯度：normal/deep 仅高回填（>500KB/s）；full 放宽（>200KB/s 或大 WS≥300MB）——
-        # 极限模式高频重清回填进程，抑制"压缩后回弹"
+        # 梯度（2026-08-14）：normal >500KB/s；deep >350KB/s（深度模式回填压制更积极）；
+        # full >200KB/s 或大 WS≥300MB——极限模式高频重清回填进程，抑制"压缩后回弹"
         self._fast_track = set()
-        _ft_full = getattr(self.judger, "_mode_guard", "normal") == "full"
+        _ft_g = getattr(self.judger, "_mode_guard", "normal")
+        _ft_thr = (350 << 10) if _ft_g == "deep" else ((200 << 10) if _ft_g == "full" else (500 << 10))
         for s in candidates:
             p = learner.get_profile(s.name)
-            if p and (getattr(p, 'refill_ewma', 0) > 500 << 10 or
-                      (_ft_full and (getattr(p, 'refill_ewma', 0) > 200 << 10 or s.ws >= (300 << 20)))):
+            if p and (getattr(p, 'refill_ewma', 0) > _ft_thr or
+                      (_ft_g == "full" and s.ws >= (300 << 20))):
                 self._fast_track.add(s.pid)
         candidates.sort(key=lambda s: -self._composite_score_v2(s, learner) - getattr(s, '_growth_bonus', 0))
         results = []
@@ -805,10 +811,12 @@ class PareCleaner:
             if getattr(s, 'fg', False) and getattr(self.judger, 'aggressiveness', 0.0) < 0.35:
                 continue
             # 深度聚合同样要求连续空闲确认（D 方案：与 Layer2 同口径按 PID 键，防深清活跃程序；
-            # 手动优化跳过——用户主动深清；full 模式跳过——极限=立即清）
+            # 确认轮数按模式梯度：normal 2 轮 / deep 1 轮 / full 跳过（2026-08-14 梯度修复）；
+            # 手动优化跳过——用户主动深清）
             if not self.judger._manual_mode and getattr(self.judger, "_mode_guard", "normal") != "full":
+                _need = 2 if getattr(self.judger, "_mode_guard", "normal") == "normal" else 1
                 _la = self.judger._low_activity.get(s.pid)
-                if _la is None or _la[0] < 2:
+                if _la is None or _la[0] < _need:
                     continue
             # 深度聚合同样执行 IO 活跃门（与 Layer2 同口径——CPU 低但 IO 密集的下载/播放进程不清；
             # full 跳过——极限模式与 can_trim 同口径，量化拖累 4.9%）
@@ -850,6 +858,13 @@ class PareCleaner:
         allow_layer3: 高频路径（gap-fill）传 False，Layer3 深度操作只在 harvest 执行
         注: standby 开关同时覆盖低优先与全量两级待机页回收
         """
+        # 整轮互斥（RLock 可重入）：手动优化（_opt_worker 持锁期间设 _manual_run）与守护周期
+        # 串行执行——守护的 optimize 等待手动完成，杜绝 _manual_run 被守护轮误读/双份 trim 叠加
+        with self._exec_lock:
+            return self._optimize_locked(snaps, learner, mode, operations, score_fn, aggressiveness, allow_layer3)
+
+    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None, allow_layer3=True):
+        """optimize 加锁后的实际主体（保持原逻辑，仅被 optimize 壳调用）"""
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
         self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
         mem_before_opt = winapi.get_memory_used_bytes()
@@ -903,10 +918,13 @@ class PareCleaner:
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
             pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
             l1_ops = self._layer1_ops(ops_filter)
-            if l1_ops is not None and "ws_all" in l1_ops and not self._manual_run and agg < 0.4:
-                # 系统级全清 WS 绕过进程级守卫（含前台/冷却/CPU）——自动模式下仅压力中等以上
-                # 执行，防止"内存充裕时用户正在用的程序被全清"；手动（用户主动）不受限
-                l1_ops = l1_ops - {"ws_all"}
+            if l1_ops is not None and "ws_all" in l1_ops and not self._manual_run:
+                # 深度模式的系统级全清按使用率门控（2026-08-14 梯度修复：原用 agg<0.4 豁免，
+                # 而 agg 受 target_usage 扭曲（36% 使用率时 agg≈0）——深度模式能力被永久锁死，
+                # 与 normal 无差别；改用使用率直判：中高压（≥33%）执行深度清扫，低压不打扰）
+                _mp = winapi.get_memory_status()
+                if _mp and _mp["pct"] < DEEP_WSALL_PCT_GATE:
+                    l1_ops = l1_ops - {"ws_all"}
             self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
                                    ops=l1_ops)
             pipeline_ctx["layer1_done"] = True
