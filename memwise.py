@@ -1,5 +1,5 @@
 """
-MemWise v4.1.080 PARES —— 智能内存看护
+MemWise v4.1.083 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -272,7 +272,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print("MemWise v4.1.080 PARES —— 智能内存看护")
+        print("MemWise v4.1.083 PARES —— 智能内存看护")
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

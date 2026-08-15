@@ -1,5 +1,5 @@
 """
-MemWise v4.1.080 GUI —— 图形界面
+MemWise v4.1.083 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -203,41 +203,76 @@ def _wnd_proc(hwnd, msg, wp, lp):
 # ---- Tooltip 辅助类 ----
 
 class ToolTip:
-    """为任意 widget 添加鼠标悬停提示"""
+    """为任意 widget 添加鼠标悬停提示。
+    整行范围提示用 add_widget 挂多个控件（Tk Enter/Leave 不冒泡，逐控件绑定），
+    所有控件共享同一延迟回调与提示窗：快速滑动时后 Enter 取消前 Enter 的回调，
+    不产生双提示；提示窗全局唯一（类属性），任意时刻至多一个悬浮提示"""
+    _tip = None  # 全局唯一提示窗
+
     def __init__(self, widget, text, delay=400):
         self.widget = widget
         self.text = text
         self.delay = delay
-        self._tw = None
         self._id = None
-        widget.bind("<Enter>", self._enter, add="+")
-        widget.bind("<Leave>", self._leave, add="+")
+        # 延迟调度挂根窗口而非控件：控件级 after 的回调命令与 Tkinter 命令管理
+        # 存在生命周期缺陷（命令被删但 _tclCommands 残留/id 复用覆盖），控件销毁时
+        # deletecommand 二次删除抛 "can't delete Tcl command" 中断 destroy（曾致设置
+        # 面板关闭时语言行被部分销毁）；root 从不销毁，命令生命周期干净
+        self._root = widget._root()
+        self._bind(widget)
+
+    def add_widget(self, w):
+        """把同一提示扩展到另一个控件（整行范围提示用）"""
+        self._bind(w)
+
+    def _bind(self, w):
+        w.bind("<Enter>", self._enter, add="+")
+        w.bind("<Leave>", self._leave, add="+")
 
     def _enter(self, e):
-        self._id = self.widget.after(self.delay, self._show)
+        self.widget = e.widget  # 定位跟随当前悬停控件
+        if self._id:
+            try:
+                self._root.after_cancel(self._id)
+            except Exception:
+                pass
+        self._id = self._root.after(self.delay, self._show)
 
     def _leave(self, e):
         if self._id:
-            self.widget.after_cancel(self._id); self._id = None
+            try:
+                self._root.after_cancel(self._id)
+            except Exception:
+                pass
+            self._id = None
         self._hide()
 
     def _show(self):
-        if self._tw: return
+        if self._tip is not None:
+            self._hide()  # 先销毁已有提示窗（可能是其他实例的延迟回调所建）
         if not self.widget.winfo_exists():
             return  # 窗口已销毁（after 回调残留）：跳过创建防 TclError
         x = self.widget.winfo_rootx() + 16
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-        self._tw = tk.Toplevel(self.widget)
-        self._tw.wm_overrideredirect(True)
-        self._tw.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(self._tw, text=self.text, justify="left",
+        # master 用控件所在顶层窗口而非控件本身：Toplevel 挂在行内控件路径下时，
+        # 关闭窗口的递归销毁会二次删除其 Tcl 命令（can't delete Tcl command）导致
+        # 销毁中断、窗口只销毁部分（曾见设置面板只剩语言行消失）
+        self._tip = tk.Toplevel(self.widget.winfo_toplevel())
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(self._tip, text=self.text, justify="left",
                        bg="#2d2d2d", fg="#eee", font=("Microsoft YaHei UI", 9),
                        padx=8, pady=4, wraplength=800)
         lbl.pack()
 
     def _hide(self):
-        if self._tw:
-            self._tw.destroy(); self._tw = None
+        if self._tip is not None:
+            try:
+                if self._tip.winfo_exists():
+                    self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
 
 
 # ═══ 看门狗入口 — 无 GUI，纯监控 + 崩溃重启 ═══
@@ -308,7 +343,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.1.080")
+        self.root.title("MemWise v4.1.083")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -359,7 +394,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.1.080 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.1.083 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
@@ -406,7 +441,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.1.080")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.1.083")
                     if fw:
                         top = fw
                 except Exception:
@@ -674,6 +709,13 @@ class MemWiseGUI:
     def _add_tip(self, w, txt):
         ToolTip(w, tr(txt))  # tooltip 统一翻译（原文即 key——未命中回退中文）
 
+    def _add_tip_row(self, row, txt):
+        """整行范围提示：一个 ToolTip 实例挂载行内全部控件（标签+输入框都触发，
+        共享同一延迟回调与提示窗，快速滑动不产生双提示）"""
+        t = ToolTip(row, tr(txt))
+        for _c in row.winfo_children():
+            t.add_widget(_c)
+
     def _hk_display(self, key="hotkey"):
         """热键配置 → 显示文案（如 ctrl+shift+m → Ctrl+Shift+M）"""
         spec = CFG.get(key, "ctrl+shift+m" if key == "hotkey" else "ctrl+shift+g")
@@ -926,7 +968,7 @@ class MemWiseGUI:
                         ctypes.windll.user32.SendMessageW(top, 0x0080, 0, sml_h)
                 except Exception:
                     pass
-            win.after(100, _set)
+            self.root.after(100, _set)
         except Exception:
             pass
 
@@ -966,21 +1008,14 @@ class MemWiseGUI:
         lang_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮防误改
         lang_combo.bind("<<ComboboxSelected>>", lambda e: self._switch_language(
             "zh_CN" if lang_var.get() == LANGUAGES["zh_CN"] else "en"))
-        # tooltip 绑整行（悬浮"界面语言:"标签或下拉框都触发——Tk Enter/Leave 不冒泡，逐控件绑定）
-        self._add_tip(lang_row,
+        # tooltip 绑整行（悬浮"界面语言:"标签或下拉框都触发——单个实例挂行内全部控件）
+        self._add_tip_row(lang_row,
             "选择界面语言，切换后立即生效（守护与统计数据不受影响）\n"
             "\n"
             "  · 简体中文 — 默认\n"
             "  · English — 全界面切换为英文\n"
             "\n"
             "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise1.log)保留原始语言")
-        for _c in lang_row.winfo_children():
-            self._add_tip(_c, "选择界面语言，切换后立即生效（守护与统计数据不受影响）\n"
-                          "\n"
-                          "  · 简体中文 — 默认\n"
-                          "  · English — 全界面切换为英文\n"
-                          "\n"
-                          "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise1.log)保留原始语言")
         ttk.Label(langf, text=tr("（切换后立即生效）"), foreground="#888").pack(anchor="w", pady=(4,0))
 
         sf = ttk.LabelFrame(inner_frame, text=tr("启动"), padding=8)
@@ -1305,12 +1340,22 @@ class MemWiseGUI:
                    "⚠ 至少包含一个修饰键（ctrl/alt/shift）\n"
                    "⚠ 不能与其他热键相同\n"
                    "⚠ 输入后点击其他位置或按回车生效，被占用时会提示")
-            # 整行覆盖（Tk Enter/Leave 不冒泡——标签+输入框各自绑定，悬浮任何位置都触发）
-            self._add_tip(row, tip)
-            for _c in row.winfo_children():
-                self._add_tip(_c, tip)
+            # 整行覆盖（Tk Enter/Leave 不冒泡——单个实例挂行内全部控件，快速滑动单提示）
+            self._add_tip_row(row, tip)
 
         # 关闭按钮行为：设置即时保存，无需独立保存按钮（save_and_close 已移除）
+        # 关闭前释放下拉列表 popdown 的残留 grab（ttk Combobox 展开时 grab global 独占
+        # 鼠标事件——展开后点关闭会被下拉吞掉一次；收起异常时 grab 残留致多次点击失效）
+        def _close_settings_win():
+            try:
+                g = win.grab_current()
+                if g is not None and g != win:
+                    g.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _close_settings_win)
+        win.bind("<Escape>", lambda e: _close_settings_win())  # Esc 直接关闭（下拉展开时由 popdown 先消费收起）
         win.deiconify()  # 全部控件就绪，居中后一次显示
 
     def _switch_language(self, lang):
@@ -1689,7 +1734,7 @@ class MemWiseGUI:
             except Exception as e:
                 import sys; print(f"[MemWise] _refresh data error: {e}", file=_ERR)
             win.after(3000, _refresh)
-            win.after(10, _restore_hover)
+            self.root.after(10, _restore_hover)
 
         _refresh()
         win.deiconify()  # 全部控件就绪，居中后一次显示
