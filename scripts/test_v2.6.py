@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.1.80 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.1.080 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

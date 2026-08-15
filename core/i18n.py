@@ -440,7 +440,7 @@ _EN = {
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
     "与「": "Conflicts with \"",
     "」冲突": "\"",
-    "MemWise v4.1.80 启动· ": "MemWise v4.1.80 started · ",
+    "MemWise v4.1.080 启动· ": "MemWise v4.1.080 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",

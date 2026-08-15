@@ -1,5 +1,5 @@
 """
-MemWise v4.1.80 GUI —— 图形界面
+MemWise v4.1.080 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -308,7 +308,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.1.80")
+        self.root.title("MemWise v4.1.080")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -359,7 +359,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.1.80 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.1.080 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
@@ -406,7 +406,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.1.80")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.1.080")
                     if fw:
                         top = fw
                 except Exception:

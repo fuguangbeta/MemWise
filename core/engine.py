@@ -314,7 +314,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v4.1.80 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.1.080 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 

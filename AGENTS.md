@@ -3,7 +3,7 @@
 本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
-Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.1.80（2026-08-15）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_v2.6.py`（170 项）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
+Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.1.080（2026-08-15）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_v2.6.py`（170 项）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
 
 ## 📚 知识库索引（工作前必读）
 项目记忆在项目记忆目录（路径见用户级指令，31 篇，按需读取）：
