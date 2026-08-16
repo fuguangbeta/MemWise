@@ -1,4 +1,4 @@
-﻿# MemWise v4.1.083
+﻿# MemWise v4.2.024
 
 ## 关于本工具 · *About This Tool*
 
@@ -94,9 +94,9 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.3 命令行 · *Command Line*
 
-程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）、auto-start（开机自启开关）、service（计划任务服务安装/移除）、reset（恢复出厂设置）等子命令。
+程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）、service（计划任务服务安装/移除）、reset（恢复出厂设置）等子命令。
 
-*A CLI is available via `memwise.py`, supporting status, optimize, daemon, profile, learn, auto-start, service, and reset subcommands.*
+*A CLI is available via `memwise.py`, supporting status, optimize, daemon, profile, learn, service, and reset subcommands.*
 
 ---
 
@@ -394,11 +394,11 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 9. 进程排行 · *Process Ranking*
 
-点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存、CPU 占用、以及学习画像数据，打开时即时采集，关闭后重新打开可获取最新数据。
+点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存、CPU 占用、以及学习画像数据，打开时即时采集，打开期间自动刷新（守护运行中直接复用守护采集的快照，不产生额外开销）。
 
 内存数据的采集优先使用内核批量查询接口，无需对每个进程执行 `OpenProcess`，可绕过安全软件的进程保护机制。
 
-*A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory, CPU usage, and learned profile data, captured on open — close and reopen to refresh.*
+*A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory, CPU usage, and learned profile data, captured on open and auto-refreshed while open (reusing the daemon's snapshots during Guard, so no extra sampling cost).*
 
 *Memory data is collected via a kernel bulk-query API that requires no per-process OpenProcess, bypassing security-software process protection.*
 
@@ -414,30 +414,33 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 11. 设置面板 · *Settings Panel*
 
-设置面板提供以下可配置项，所有更改即时保存；守护运行中排除列表、清理操作、清理深度、全局热键即时生效，其余重启后生效：
+设置面板提供以下可配置项，所有更改即时保存；守护运行中排除列表、清理操作、清理深度、全局热键、紧急阈值、守护间隔与文件日志即时生效，托盘行为与关闭行为在下次对应事件时生效，自启在下次开机生效：
 
 **界面语言**：简体中文 / English 即时切换（设置面板顶部独立栏目）。切换瞬间生效，守护与统计数据不受影响；未翻译内容自动回退原语言，日志文件保留原始语言便于排障。
 
-**启动设置**：开机自启（快捷方式）、管理员权限启动（计划任务）、启动时自动开启守护、启动后最小化到托盘。
+**启动设置**：管理员权限启动（计划任务，登录时以最高权限静默运行）、启动时自动开启守护、启动后最小化到托盘。
 
-**关闭按钮行为**：最小化到托盘（守护继续运行）、直接退出程序、每次询问（默认）。
+**窗口与托盘**：关闭按钮行为（最小化到托盘（守护继续运行）、直接退出程序、每次询问（默认））、托盘左键行为（显示窗口（默认）/一键清理/无操作，仅窗口隐藏时生效）。
 
-**清理操作**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启。
+**清理操作**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启；进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
 
 **游戏模式**：管理游戏进程名单（一体化窗口：列出/添加/删除，逗号分隔批量输入、重复项提示、删除带确认）。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
-**触发与日志**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）、托盘左键行为、文件日志开关、进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。
+**守护**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）。
+
+**日志**：记录运行日志到文件（统一日志 memwise.log，2MB×2 轮转，详见日志系统节）。
 
 **全局热键**：独立栏汇总所有快捷键——手动优化（默认 `ctrl+shift+m`）与游戏模式开关（默认 `ctrl+shift+g`），各自独立配置。格式校验（至少一个修饰键 + 单字母/F1-F24）、双键冲突检测、注册占用提示（被其他程序占用时本次使用默认值），修改即时生效。
 
-*All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, and global hotkeys take effect instantly; other changes apply on the next restart.*
+*All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, daemon interval, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.*
 
 - *Language — Simplified Chinese / English, switchable instantly from the top section of Settings. The whole UI (tips, dialogs, log display, CLI) follows the choice; untranslated text falls back to the source language, and the log file keeps the original language for troubleshooting*
-- *Startup — auto-start with Windows (shortcut), elevated auto-start (scheduled task), auto-enable daemon on launch, start minimized to tray*
-- *Close behavior — minimize to tray (daemon continues), exit immediately, or ask each time (default)*
-- *Operations — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache*
+- *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon), auto-enable daemon on launch, start minimized to tray*
+- *Window & Tray — close-button behavior (minimize to tray (daemon continues), exit immediately, or ask each time — default) and tray left-click action (show window (default) / one-click cleanup / no action; active only while the window is hidden)*
+- *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected)*
 - *Game mode — manage the game-process list (add/remove in one window; comma-separated batch input, duplicate warnings, delete confirmation). A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click switching*
-- *Trigger & logging — emergency threshold (50–99%, default 80%), daemon clean interval (8-20s, default 12s), tray left-click action, file-log toggle, cleaning depth (2–6 pass, default 4; the large-process ceiling directly follows this value, other tiers unaffected)*
+- *Guard — emergency threshold (50–99%, default 80%) and daemon clean interval (8–20s, default 12s)*
+- *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
 - *Global hotkeys — manual optimize (default ctrl+shift+m) and game-mode toggle (default ctrl+shift+g), independently configurable with format validation (at least one modifier + a letter or F1-F24), conflict detection, and busy-key fallback, taking effect instantly*
 
 ---
@@ -467,7 +470,6 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | 单次优化（支持 quick/normal/deep/full） |
 | `daemon [--mode MODE]` | CLI 守护模式 |
 | `profile <PID>` | 查看指定进程的完整学习画像 |
-| `auto-start on\|off` | 开机自启（启动文件夹快捷方式） |
 | `service [remove]` | 安装/移除计划任务服务（系统启动自动运行，需管理员） |
 | `reset` | 恢复出厂设置（备份并移除配置、画像与调参状态） |
 
@@ -480,7 +482,6 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | Run one optimization pass (quick/normal/deep/full) |
 | `daemon [--mode MODE]` | CLI daemon mode |
 | `profile <PID>` | View a process's complete learning profile |
-| `auto-start on\|off` | Toggle startup-folder auto-start |
 | `service [remove]` | Install/remove the scheduled-task service (runs at system startup, requires administrator) |
 | `reset` | Factory reset (backs up and removes config, profiles, and tuning state) |
 
@@ -498,8 +499,7 @@ python memwise.py [command] [options]
 | `ki` | float | `0.15` | PID 积分系数 |
 | `kd` | float | `0.1` | PID 微分系数（`efis_params.pid_kd` 优先） |
 | `target_usage` | int | `45` | PID 控制目标内存占用（%，`efis_params.target_usage` 优先） |
-| `auto_start` | bool | `false` | 开机自启 |
-| `auto_start_admin` | bool | `false` | 管理员权限开机自启 |
+| `auto_start_admin` | bool | `false` | 管理员权限开机自启（计划任务） |
 | `auto_start_daemon` | bool | `false` | 启动后自动守护 |
 | `auto_start_minimize` | bool | `false` | 启动后最小化 |
 | `close_action` | str | `"ask"` | 关闭按钮行为 |
@@ -527,7 +527,6 @@ python memwise.py [command] [options]
 | `ki` | float | `0.15` | PID integral gain |
 | `kd` | float | `0.1` | PID derivative gain (`efis_params.pid_kd` takes precedence) |
 | `target_usage` | int | `45` | PID target memory usage in percent (`efis_params.target_usage` takes precedence) |
-| `auto_start` | bool | `false` | Auto-start with Windows |
 | `auto_start_admin` | bool | `false` | Elevated auto-start (scheduled task) |
 | `auto_start_daemon` | bool | `false` | Auto-enable daemon on launch |
 | `auto_start_minimize` | bool | `false` | Start minimized to tray |
@@ -587,7 +586,7 @@ MemWise/
 │   ├── eris.py                 # ERIS 效率评分纯函数（生产/测试共用）· ERIS Pure Functions
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py            # 回归测试（170 项断言）· Regression Suite
+│   └── test_v2.6.py            # 回归测试（185 项断言）· Regression Suite
 ```
 
 ---

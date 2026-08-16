@@ -604,8 +604,10 @@ class PareCleaner:
             # （二次设置恒 ALREADY_COMPLETE）——游戏运行时需保持默认节能状态，从源头避免被降级
             if name in _all_games:
                 continue
-            # 前台进程: 保持默认优先级（不需调用API，且不入 _low_pri_pids——
-            # 入集合会被误判"已降级"而跳过后续重评，转后台后降级滞后数分钟）
+            # 前台进程: 保持默认节能状态（K32 可用机器上对"后台曾降级、现转前台"的进程立即
+            # 恢复，不等 30 tick 重评；K32 失效机器上对未设置进程无效果、对已设进程返回
+            # ALREADY 视为成功——跨机器语义均正确）；不入 _low_pri_pids——
+            # 入集合会被误判"已降级"而跳过后续重评，转后台后降级滞后数分钟
             if getattr(s, "fg", False):
                 winapi.set_eco_qos(s.pid, False)
                 continue
@@ -708,7 +710,8 @@ class PareCleaner:
                                              max_inflight=max_inflight,
                                              per_task_timeout=8):
                 if r is None:
-                    # 执行超时（排队不计时）：递增冷却 + Thompson 惩罚，与历史超时处理一致
+                    # 执行超时（排队不计时）：递增冷却防重试（任务在池中继续执行，
+                    # 其真实结果会自行反馈——不在此双重记录成功/失败，防 θ 被矛盾信号拉偏）
                     ok, freed, pf_delta, reason = False, 0, 0, "超时"
                     with self._lock:
                         self.stats["skipped"] += 1
@@ -718,8 +721,6 @@ class PareCleaner:
                             p.timeout_count = tc
                         # 递增冷却：超时次数越多冷却越长，最多 4 倍
                         self.judger.mark_failed(s.name.lower(), fail_count=tc)
-                        # Thompson 惩罚：beta+1，Kalman q 提升以增加不确定性
-                        learner.record_clean_result(s.name.lower(), ok=False)
                 else:
                     ok, freed, pf_delta, reason = r
                 results.append((s, ok, freed, reason))
@@ -895,7 +896,7 @@ class PareCleaner:
         elif mode == "normal":
             # 完整进程 trim + 系统级清理（按用户开关映射；无文件缓存），游戏横扫
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
+            pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
             # full=False：normal 不做系统级全清 WS（ws_all 仅 deep/full 启用）
             l1_ops = self._layer1_ops(ops_filter)
             if l1_ops is not None and not allow_layer3:
@@ -916,7 +917,7 @@ class PareCleaner:
         elif mode == "deep":
             # normal 基础 + 系统级全清 WS + 强制 Layer3（文件缓存/各操作按用户开关）
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
+            pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
             l1_ops = self._layer1_ops(ops_filter)
             if l1_ops is not None and "ws_all" in l1_ops and not self._manual_run:
                 # 深度模式的系统级全清按使用率门控（2026-08-14 梯度修复：原用 agg<0.4 豁免，
@@ -938,10 +939,9 @@ class PareCleaner:
             agg = max(agg, 0.8)
             self.judger.aggressiveness = max(self.judger.aggressiveness, agg)
             l2_results, probe_results = self._layer2_process(snaps, learner) if run_ws else ([], [])
-            pipeline_ctx["layer2_trimmed"] = {r[0].name for r in l2_results if r[1]}
+            pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
             l1_ops = self._layer1_ops(ops_filter)
-            if l1_ops is not None and "ws_all" in l1_ops and not self._manual_run and agg < 0.4:
-                l1_ops = l1_ops - {"ws_all"}
+            # full 无条件 ws_all（agg 已在上方 max(agg,0.8) 强制，原 agg<0.4 豁免为恒假死分支）
             self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
                                    ops=l1_ops)
             pipeline_ctx["layer1_done"] = True
@@ -961,7 +961,7 @@ class PareCleaner:
                         continue
                     if getattr(s, 'fg', False) and _agg < 0.35:
                         continue  # 前台进程低压力不碰（与 can_trim 同规则）
-                    if s.name in pipeline_ctx["layer2_trimmed"] and s.ws >= (10 << 20):
+                    if s.pid in pipeline_ctx["layer2_trimmed"] and s.ws >= (10 << 20):
                         try:
                             # 二轮释放量计入统计（2026-08-14 审查：原裸清不计，full 模式"释放"低估）
                             _pre = winapi.get_process_memory(s.pid)

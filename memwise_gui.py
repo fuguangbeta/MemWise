@@ -1,5 +1,5 @@
 """
-MemWise v4.1.083 GUI —— 图形界面
+MemWise v4.2.024 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -300,7 +300,10 @@ def _activate_existing_instance():
                 pass
             return True
 
-        if ctypes.windll.user32.EnumWindows(_cb, 0) and found:
+        # 回调在找到目标窗口时返回 False（提前停表）——EnumWindows 返回值随之
+        # 为 False，不可用于成功判断（2026-08-15 审查：原 `and found` 使激活分支恒不执行）
+        ctypes.windll.user32.EnumWindows(_cb, 0)
+        if found:
             hwnd = found[0]
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -343,7 +346,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.1.083")
+        self.root.title("MemWise v4.2.024")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -359,6 +362,7 @@ class MemWiseGUI:
         self._custom_hicon = None
         self._icon_cache = {}  # name -> HICON
         self._optimizing = False  # 防止并发优化
+        self._once_optimizing = False  # 守护运行中即时优化防重入（2026-08-15 审查）
 
         self.learner = Learner.load(STATE_FILE)
         jcfg = {"kp":CFG.get("kp",0.6),"ki":CFG.get("ki",0.15),"kd":CFG.get("kd",0.1),
@@ -394,7 +398,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.1.083 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.2.024 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
@@ -405,6 +409,13 @@ class MemWiseGUI:
             self.root.after(800, self._maybe_restore_daemon)
         if winapi.is_elevated():
             winapi.enable_reduct_privileges()
+        # 升级迁移（2026-08-15）：普通自启功能已移除，启动文件夹旧快捷方式
+        # 幂等清理（防与管理员计划任务开机双启动）
+        if CFG.get("auto_start_admin"):
+            try:
+                winapi.remove_auto_start("MemWise")
+            except Exception:
+                pass
         # 启动消息队列轮询（每 100ms 检查一次，主线程安全）
         self._poll_msg_queue()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -441,7 +452,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.1.083")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.2.024")
                     if fw:
                         top = fw
                 except Exception:
@@ -479,11 +490,11 @@ class MemWiseGUI:
         self._apply_hotkeys(initial=True)
         hIcon = self._get_colored_icon("idle", ICO_IDLE)
         self._tray_icon_handle = hIcon
-        ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, "MemWise — 智能内存看护")
+        ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, tr("MemWise — 智能内存看护"))
         if not ok:
             self._log("⚠ 托盘图标添加失败，重试...")
             time.sleep(0.5)
-            ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, "MemWise — 智能内存看护")
+            ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, tr("MemWise — 智能内存看护"))
 
     def _apply_hotkeys(self, initial=False):
         """按配置重注册全部全局热键（统一入口：注销→逐项解析→冲突检测→逐个注册）。
@@ -557,6 +568,10 @@ class MemWiseGUI:
                 if prev:
                     ctypes.windll.user32.DestroyIcon(prev)
                 self._prev_pct_icon = pct_icon_handle
+            elif getattr(self, '_prev_pct_icon', None):
+                # 创建失败：旧百分数图标已不再复用，销毁防 GDI 泄漏（2026-08-15 审查）
+                ctypes.windll.user32.DestroyIcon(self._prev_pct_icon)
+                self._prev_pct_icon = None
         except Exception:
             pass
         self._tray_icon_handle = icon
@@ -597,9 +612,10 @@ class MemWiseGUI:
             um.SetForegroundWindow(hwnd)
             # 弹出菜单（阻塞直到选择或取消）
             try:
-                cmd = um.TrackPopupMenu(hmenu, 0x0020 | 0x0002 | 0x0100, pt.x, pt.y, 0, hwnd, None)
-            finally:
                 # TPM_RETURNCMD=0x0100 | TPM_RIGHTBUTTON=0x0002 | TPM_TOPALIGN=0x0000
+                # （TOPALIGN=菜单在光标下方展开，Windows 常规；原 0x0020 实为 BOTTOMALIGN，2026-08-15 审查修正）
+                cmd = um.TrackPopupMenu(hmenu, 0x0002 | 0x0100, pt.x, pt.y, 0, hwnd, None)
+            finally:
                 um.DestroyMenu(hmenu)  # 异常路径也销毁，防句柄泄漏
             # 执行操作
             if cmd == ID_SHOW:
@@ -800,10 +816,12 @@ class MemWiseGUI:
             "\n"
             "可配置的内容：\n"
             "  语言 — 中英文界面即时切换\n"
-            "  启动 — 开机自启、管理员权限启动、启动时自动守护、最小化到托盘、关闭行为\n"
-            "  清理操作 — 6 种操作独立开关\n"
-            "  触发与日志 — 紧急阈值、守护间隔、托盘行为、文件日志、清理深度\n"
+            "  启动 — 管理员权限自启、启动时自动守护、最小化到托盘\n"
+            "  窗口与托盘 — 关闭按钮行为、托盘左键行为\n"
+            "  清理 — 6 种操作独立开关与清理深度\n"
             "  游戏模式 — 管理游戏进程名单\n"
+            "  守护 — 紧急阈值、守护清理间隔\n"
+            "  日志 — 文件日志开关\n"
             "  全局热键 — 优化/游戏模式快捷键设置")
         self.btn_log = ttk.Button(bf, text=tr("📜 学习日志"), command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
@@ -1015,45 +1033,15 @@ class MemWiseGUI:
             "  · 简体中文 — 默认\n"
             "  · English — 全界面切换为英文\n"
             "\n"
-            "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise1.log)保留原始语言")
+            "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise1.log)作保留")
         ttk.Label(langf, text=tr("（切换后立即生效）"), foreground="#888").pack(anchor="w", pady=(4,0))
 
         sf = ttk.LabelFrame(inner_frame, text=tr("启动"), padding=8)
         sf.pack(fill="x", padx=12, pady=(10,4))
 
-        ast_var = tk.BooleanVar(value=CFG.get("auto_start", False))
-        def on_autostart():
-            en = ast_var.get()
-            if getattr(sys, "frozen", False):
-                target = sys.executable; args = ""; wd = os.path.dirname(sys.executable)
-            else:
-                pythonw = sys.executable.replace("python.exe", "pythonw.exe")
-                target = pythonw if os.path.isfile(pythonw) else sys.executable
-                args = f'"{os.path.abspath(__file__)}"'; wd = base  # 引号：脚本路径含空格时快捷方式仍可解析
-            if en:
-                winapi.set_auto_start("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""), wd)
-                # 互斥：启用普通自启时移除管理员自启任务（避免开机双启动）
-                winapi.remove_auto_start_admin("MemWise")
-                CFG["auto_start_admin"] = False
-                asa_var.set(False)
-                self._log("开机自启已启用")
-            else:
-                winapi.remove_auto_start("MemWise")
-                self._log("开机自启已关闭")
-            CFG["auto_start"] = en
-            _save_cfg()
-        ttk.Checkbutton(sf, text=tr("开机自启"), variable=ast_var,
-                        command=on_autostart).pack(anchor="w")
-        self._add_tip(sf.winfo_children()[-1],
-            "开机时自动启动本程序\n"
-            "\n"
-            "路径为启动文件夹快捷方式\n"
-            "  · 不修改注册表\n"
-            "  · 普通用户权限启动，优化能力受限\n"
-            "  · 如需管理员权限请勾下面的「管理员权限启动」\n"
-            "\n"
-            "⚠ 取消勾选后会自动删除启动文件夹快捷方式残留")
-
+        # 开机自启（2026-08-15 用户决策）：移除普通权限自启（快捷方式），只保留
+        # 管理员权限自启（计划任务，登录时静默最高权限运行、无 UAC）——启动文件夹
+        # 旧快捷方式由 on_autostart_admin 启用时及程序启动时幂等清理（防双启动）
         asa_var = tk.BooleanVar(value=CFG.get("auto_start_admin", False))
         def on_autostart_admin():
             en = asa_var.get()
@@ -1066,17 +1054,14 @@ class MemWiseGUI:
             if en:
                 ok = winapi.set_auto_start_admin("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""))
                 if ok:
+                    # 幂等清理旧版普通自启快捷方式残留（防与新计划任务开机双启动）
                     winapi.remove_auto_start("MemWise")
-                    # 语义：管理员自启替换普通自启，普通自启配置如实置关
-                    ast_var.set(False)
-                    CFG["auto_start"] = False
                     self._log("管理员权限开机自启已启用")
                 else:
                     asa_var.set(False)
                     self._log("管理员权限自启设置失败（请以管理员身份运行一次本程序）")
             else:
                 winapi.remove_auto_start_admin("MemWise")
-                CFG["auto_start"] = ast_var.get()
                 self._log("管理员权限开机自启已关闭")
             CFG["auto_start_admin"] = en if not en or ok else False
             _save_cfg()
@@ -1089,8 +1074,7 @@ class MemWiseGUI:
             "系统缓存类清理需要管理员权限\n"
             "以最高权限启动后受限的功能可完整执行\n"
             "\n"
-            "⚠ 需先以管理员身份运行过一次本程序才能启用\n"
-            "⚠ 启用后会替换普通开机自启，二者无法同时启用")
+            "⚠ 需先以管理员身份运行过一次本程序才能启用")
 
         asd_var = tk.BooleanVar(value=CFG.get("auto_start_daemon", False))
         def on_auto_daemon():
@@ -1113,8 +1097,12 @@ class MemWiseGUI:
                         command=on_minimize).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1], "程序启动后自动最小化到系统托盘\n\n主窗口不显示，只在托盘区域显示图标\n双击托盘图标恢复窗口，右键弹出菜单\n适合搭配「启动时自动守护」使用，实现开机静默运行")
 
-        ca_lbl = ttk.Label(sf, text=tr("关闭按钮行为："))
-        ca_lbl.pack(anchor="w", pady=(8,0))
+        # ─── 窗口与托盘（2026-08-16 归类整理：关闭行为与托盘左键行为同属窗口/托盘
+        # 交互域——点窗口 X、点托盘图标；原分居"关闭行为"与"触发与日志"两栏）───
+        cbf = ttk.LabelFrame(inner_frame, text=tr("窗口与托盘"), padding=8)
+        cbf.pack(fill="x", padx=12, pady=(10,4))
+        ca_lbl = ttk.Label(cbf, text=tr("关闭按钮行为："))
+        ca_lbl.pack(anchor="w")
         self._add_tip(ca_lbl, "点击窗口关闭按钮时的行为：\n  · 最小化到托盘 — 隐藏到托盘继续守护\n  · 直接退出程序 — 退出并自动保存状态\n  · 每次询问 — 弹窗选择（默认）")
         self._close_var = tk.StringVar(value=CFG.get("close_action","ask"))
         def set_ca(v):
@@ -1125,10 +1113,28 @@ class MemWiseGUI:
                    "exit":"点击关闭按钮后程序完全退出，守护模式停止\n所有状态自动保存",
                    "ask":"点击关闭按钮后弹窗询问\n可选择最小化或退出（默认行为）"}
         for v, lbl in [("minimize", tr("\u6700\u5c0f\u5316\u5230\u6258\u76d8")), ("exit", tr("\u76f4\u63a5\u9000\u51fa\u7a0b\u5e8f")), ("ask", tr("\u6bcf\u6b21\u8be2\u95ee"))]:
-            rb = ttk.Radiobutton(sf, text=lbl, variable=self._close_var, value=v, command=lambda x=v: set_ca(x))
+            rb = ttk.Radiobutton(cbf, text=lbl, variable=self._close_var, value=v, command=lambda x=v: set_ca(x))
             rb.pack(anchor="w")
             if v in tips_ca:
                 self._add_tip(rb, tips_ca[v])
+        ta_lbl = ttk.Label(cbf, text=tr("托盘左键行为："))
+        ta_lbl.pack(anchor="w", pady=(6,0))
+        # 索引映射（2026-08-14 审查：显示名翻译后反查中文键在英文界面恒失败回退 show——
+        # 保存/初始值一律按索引取，语言无关）
+        map_vals = [("显示窗口","show"),("一键清理","clean"),("无操作","none")]
+        ta_combo = ttk.Combobox(cbf, values=[tr(k) for k,_ in map_vals], state="readonly", width=20)
+        ta_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
+        ta_cur = CFG.get("tray_left_action","show")
+        ta_idx = next((i for i,(_,v) in enumerate(map_vals) if v == ta_cur), 0)
+        ta_combo.current(ta_idx)
+        ta_combo.pack(fill="x", pady=(0,6))
+        self._add_tip(ta_combo, "托盘左键单击行为：\n  · 显示窗口 — 恢复主界面（默认）\n  · 一键清理 — 立即执行优化\n  · 无操作 — 忽略点击\n\n⚠ 仅在窗口隐藏时生效，任务栏存在图标（窗口显示）时锁定")
+        def set_tray_act(e):
+            global CFG
+            idx = ta_combo.current()
+            CFG["tray_left_action"] = map_vals[idx][1] if 0 <= idx < len(map_vals) else "show"
+            _save_cfg()
+        ta_combo.bind("<<ComboboxSelected>>", set_tray_act)
 
         # ─── 清理设置 ───
         cf = ttk.LabelFrame(inner_frame, text=tr("清理"), padding=8)
@@ -1201,6 +1207,22 @@ class MemWiseGUI:
         self._add_tip(cb_rg, "清空系统注册表的读写缓存\n"
                       "无磁盘读写操作，不中断正在运行的程序\n"
                       "守护模式下始终执行，取消勾选后完全跳过")
+        # ─── 清理深度（2026-08-16 归类整理：清理强度归"清理"栏，原在触发与日志栏）───
+        passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
+        def set_passes(v):
+            global CFG
+            CFG["clean_passes"] = int(float(v))
+            _save_cfg()
+        ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
+        ps_lbl.pack(anchor="w", pady=(6,0))
+        self._add_tip(ps_lbl, "每个进程反复清理的轮数（2~6，默认 4）\n越高释放越彻底，但耗时越长\n欲降低本程序性能占用建议 2~3\n对于更彻底的优化需求可设 5~6")
+        ps_sl = ttk.Scale(cf, from_=2, to=6, variable=passes_val, orient="horizontal",
+                         command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
+        ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
+        ps_sl.pack(fill="x", pady=(0,6))
+        ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
+                  foreground="#888").pack(anchor="w")
+
         # ─── 游戏模式 ───
         gmf = ttk.LabelFrame(inner_frame, text=tr("游戏模式"), padding=8)
         gmf.pack(fill="x", padx=12, pady=4)
@@ -1218,44 +1240,43 @@ class MemWiseGUI:
             "不带.exe后缀自动补全，守护模式检测到后自动开启游戏保护\n"
             "\n"
             "⚠ 同名程序的所有实例都会被识别")
-        ttk.Label(ops_frame, text=tr("（未勾选 = 不执行对应系统清理）"),
-                  foreground="#888").pack(anchor="w")
 
-        # ─── 紧急触发阈值 & 托盘行为 & 日志 ───
-        ef2 = ttk.LabelFrame(inner_frame, text=tr("触发与日志"), padding=8)
-
-
-        ef2.pack(fill="x", padx=12, pady=4)
+        # ─── 守护（2026-08-16 归类整理：原"触发与日志"拆分，守护运行参数独立成栏）───
+        gf = ttk.LabelFrame(inner_frame, text=tr("守护"), padding=8)
+        gf.pack(fill="x", padx=12, pady=4)
         def set_emerg(v):
             global CFG
             CFG["emergency_threshold"] = int(float(v))
             _save_cfg()
         em_val = tk.IntVar(value=CFG.get("emergency_threshold", 80))
-        em_lbl = ttk.Label(ef2, text=tr("紧急触发阈值: ") + f"{em_val.get()}%", foreground="#555")
+        em_lbl = ttk.Label(gf, text=tr("紧急触发阈值: ") + f"{em_val.get()}%", foreground="#555")
         self._add_tip(em_lbl, "内存使用率达到此百分比时，跳过等待立即执行全量优化\n范围 50-99%，默认 80%\n降低可更及时响应，提高阈值可减少清理频率")
         em_lbl.pack(anchor="w")
-        em_sl = ttk.Scale(ef2, from_=50, to=99, variable=em_val, orient="horizontal",
+        em_sl = ttk.Scale(gf, from_=50, to=99, variable=em_val, orient="horizontal",
                          command=lambda v: em_lbl.config(text=tr("紧急触发阈值: ") + f"{int(float(v))}%"))
         em_sl.bind("<ButtonRelease-1>", lambda e: set_emerg(em_val.get()))  # 拖动仅更新显示，松开才保存（防高频写盘）
         em_sl.pack(fill="x", pady=(0,6))
-        ta_lbl = ttk.Label(ef2, text=tr("托盘左键行为："))
-        ta_lbl.pack(anchor="w")
-        # 索引映射（2026-08-14 审查：显示名翻译后反查中文键在英文界面恒失败回退 show——
-        # 保存/初始值一律按索引取，语言无关）
-        map_vals = [("显示窗口","show"),("一键清理","clean"),("无操作","none")]
-        ta_combo = ttk.Combobox(ef2, values=[tr(k) for k,_ in map_vals], state="readonly", width=20)
-        ta_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
-        ta_cur = CFG.get("tray_left_action","show")
-        ta_idx = next((i for i,(_,v) in enumerate(map_vals) if v == ta_cur), 0)
-        ta_combo.current(ta_idx)
-        ta_combo.pack(fill="x", pady=(0,6))
-        self._add_tip(ta_combo, "托盘左键单击行为：\n  · 显示窗口 — 恢复主界面（默认）\n  · 一键清理 — 立即执行优化\n  · 无操作 — 忽略点击\n\n⚠ 仅在窗口隐藏时生效，任务栏存在图标（窗口显示）时锁定")
-        def set_tray_act(e):
+        gap_val = tk.IntVar(value=CFG.get("gap_seconds", 12))
+        def set_gap(v):
             global CFG
-            idx = ta_combo.current()
-            CFG["tray_left_action"] = map_vals[idx][1] if 0 <= idx < len(map_vals) else "show"
+            CFG["gap_seconds"] = int(float(v))
             _save_cfg()
-        ta_combo.bind("<<ComboboxSelected>>", set_tray_act)
+        gp_lbl = ttk.Label(gf, text=tr("守护清理间隔: ") + f"{gap_val.get()} " + tr("秒"), foreground="#555")
+        gp_lbl.pack(anchor="w", pady=(6,0))
+        self._add_tip(gp_lbl, "守护模式每轮周期内的轻量阶段频率（8~20 秒，默认 12）\n"
+                         "用于控制周期内清理操作的密集程度\n"
+                         "间隔越短，同周期内清理次数越多，释放效果越彻底\n"
+                         "但对性能的消耗也越高\n"
+                         "欲降低本程序性能占用建议 15~20\n"
+                         "对于更彻底的优化需求可设 8~10")
+        gp_sl = ttk.Scale(gf, from_=8, to=20, variable=gap_val, orient="horizontal",
+                         command=lambda v: gp_lbl.config(text=tr("守护清理间隔: ") + f"{int(float(v))} " + tr("秒")))
+        gp_sl.bind("<ButtonRelease-1>", lambda e: set_gap(gap_val.get()))
+        gp_sl.pack(fill="x", pady=(0,6))
+
+        # ─── 日志（2026-08-16 归类整理：独立成栏）───
+        lgf = ttk.LabelFrame(inner_frame, text=tr("日志"), padding=8)
+        lgf.pack(fill="x", padx=12, pady=4)
         lg_var = tk.BooleanVar(value=CFG.get("log_to_file", False))
         def set_log():
             global CFG
@@ -1266,42 +1287,12 @@ class MemWiseGUI:
                 _log_open()
             else:
                 _log_close()
-        lg_cb = ttk.Checkbutton(ef2, text=tr("记录运行日志到文件"),
+        lg_cb = ttk.Checkbutton(lgf, text=tr("记录运行日志到文件"),
                                 variable=lg_var, command=set_log)
         lg_cb.pack(anchor="w")
         self._add_tip(lg_cb, "开启后，运行期间的全部信息写入日志文件（memwise.log/memwise1.log）：\n"
                       "每轮清理摘要、界面日志消息、启动/退出、异常、调参、游戏模式切换等\n"
                       "日志自动轮转保留最近两份，无需手动清理")
-        passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
-        def set_passes(v):
-            global CFG
-            CFG["clean_passes"] = int(float(v))
-            _save_cfg()
-        ps_lbl = ttk.Label(ef2, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
-        ps_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(ps_lbl, "每个进程反复清理的轮数（2~6，默认 4）\n越高释放越彻底，但耗时越长\n欲降低本程序性能占用建议 2~3\n对于更彻底的优化需求可设 5~6")
-        ps_sl = ttk.Scale(ef2, from_=2, to=6, variable=passes_val, orient="horizontal",
-                         command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
-        ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
-        ps_sl.pack(fill="x", pady=(0,6))
-
-        gap_val = tk.IntVar(value=CFG.get("gap_seconds", 12))
-        def set_gap(v):
-            global CFG
-            CFG["gap_seconds"] = int(float(v))
-            _save_cfg()
-        gp_lbl = ttk.Label(ef2, text=tr("守护清理间隔: ") + f"{gap_val.get()} " + tr("秒"), foreground="#555")
-        gp_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(gp_lbl, "守护模式每轮周期内的轻量阶段频率（8~20 秒，默认 12）\n"
-                         "用于控制周期内清理操作的密集程度\n"
-                         "间隔越短，同周期内清理次数越多，释放效果越彻底\n"
-                         "但对性能的消耗也越高\n"
-                         "欲降低本程序性能占用建议 15~20\n"
-                         "对于更彻底的优化需求可设 8~10")
-        gp_sl = ttk.Scale(ef2, from_=8, to=20, variable=gap_val, orient="horizontal",
-                         command=lambda v: gp_lbl.config(text=tr("守护清理间隔: ") + f"{int(float(v))} " + tr("秒")))
-        gp_sl.bind("<ButtonRelease-1>", lambda e: set_gap(gap_val.get()))
-        gp_sl.pack(fill="x", pady=(0,6))
 
         # ─── 全局热键（独立栏，汇总所有热键） ───
         hkf = ttk.LabelFrame(inner_frame, text=tr("全局热键"), padding=8)
@@ -1400,9 +1391,17 @@ class MemWiseGUI:
         except Exception as e:
             import sys; print(f"[MemWise] 语言切换异常: {e}", file=_ERR)
             try:
-                self._log_op(tr("语言切换失败，已保留原界面"))
+                # 尽力恢复界面：旧控件树已销毁，重建为新语言界面（2026-08-15 审查：
+                # 原实现只打日志，界面实际已损坏，"已保留原界面"名不副实）
+                self._build_ui()
+                self._refresh_mem()
+                self._upd_stats()
+                self._log_op(tr("语言已切换"))
             except Exception:
-                pass
+                try:
+                    self._log_op(tr("语言切换失败，请重启程序"))
+                except Exception:
+                    pass
 
     def _edit_exclusion_list(self):
         win = tk.Toplevel(self.root)
@@ -1421,7 +1420,8 @@ class MemWiseGUI:
         for n in never: lb.insert("end", n)
 
         def add_excl():
-            name = simpledialog.askstring("添加排除", "输入程序名（不带后缀自动补全）:", parent=win)
+            # 弹窗标题/提示必须随界面语言（2026-08-15 审查：原未包 tr，英文界面残留中文，键已存在）
+            name = simpledialog.askstring(tr("添加排除"), tr("输入程序名（不带后缀自动补全）:"), parent=win)
             if name:
                 nm = _normalize_proc_name(name)
                 if nm in never:
@@ -1712,17 +1712,27 @@ class MemWiseGUI:
             except Exception:
                 pass
 
+        _refresh_ms = 10000  # 自动刷新间隔（守护运行中读共享快照零额外采集；非守护低频自采）
+
         def _refresh():
             if not win.winfo_exists():
                 return
-            for item in tree.get_children():
-                tree.delete(item)
+            # 窗口最小化/隐藏时暂停采集（仅续期定时器）——排行只在可见时刷新
+            if not win.winfo_viewable():
+                win.after(_refresh_ms, _refresh)
+                return
             try:
-                snaps = self.sniffer.snapshot()
+                if self.engine.daemon_running:
+                    # 守护运行中直接读守护线程共享快照（零额外采集，2026-08-15 审查）
+                    snaps = getattr(self.engine, '_last_snaps', None) or self.sniffer.snapshot()
+                else:
+                    snaps = self.sniffer.snapshot()
             except Exception as e:
                 import sys; print(f"[MemWise] _refresh sniffer error: {e}", file=_ERR)
-                win.after(3000, _refresh)
+                win.after(_refresh_ms, _refresh)
                 return
+            for item in tree.get_children():
+                tree.delete(item)
             try:
                 for s in snaps:
                     ws_mb = s.priv / (1 << 20)
@@ -1739,7 +1749,7 @@ class MemWiseGUI:
                         tree.move(k, "", i2)
             except Exception as e:
                 import sys; print(f"[MemWise] _refresh data error: {e}", file=_ERR)
-            win.after(3000, _refresh)
+            win.after(_refresh_ms, _refresh)
             self.root.after(10, _restore_hover)
 
         _refresh()
@@ -2173,13 +2183,14 @@ class MemWiseGUI:
     # ---- 优化 ----
 
     def _on_optimize(self):
-        if self._optimizing:
+        if self._optimizing or getattr(self, '_once_optimizing', False):
             return
         if self.engine.daemon_running:
             # 守护运行中：按当前选择的清理模式执行一次即时优化（与守护周期经 exec_lock 串行）
             if self.cleaner.game_mode:
                 self._log("游戏进行中，跳过手动清理以保障流畅")
                 return
+            self._once_optimizing = True  # 防连点排队多轮即时优化（_opt_done 统一复位）
             self.engine.optimize_manual_once(CFG.get("clean_mode", "normal"),
                                              CFG.get("clean_operations"))
             return
@@ -2190,6 +2201,7 @@ class MemWiseGUI:
                                           CFG.get("clean_operations"))
 
     def _opt_done(self, result):
+        self._once_optimizing = False  # 即时优化完成/异常均发 opt_done，此处统一复位
         s = self.cleaner.summary()
         trimmed = [t for t in result.get("layer2", []) if t[1]]
         for snap, ok, freed, reason in trimmed[:10]:
@@ -2225,7 +2237,8 @@ class MemWiseGUI:
         self.lbl_fr["text"] = tr("释放: ") + (f"{fm/1024.0:.1f}GB" if fm >= 1000 else f"{fm:.1f}MB")
         self._upd_learned()  # 守护中持续学习新进程，已学习数随周期刷新
         pct = m["pct"]
-        icon = "🟢" if pct < 70 else ("🟡" if pct < 90 else "🔴")
+        # 四档与内存条/托盘口径一致（60/75/90，2026-08-15 审查：原三档 70/90 与托盘不一致）
+        icon = "🟢" if pct < 60 else ("🟡" if pct < 75 else ("🟠" if pct < 90 else "🔴"))
         self.lbl_st["text"] = f"{icon} {tr(txt)} {pct}%"
 
     def _stop_daemon(self):

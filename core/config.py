@@ -33,7 +33,8 @@ if getattr(sys, "frozen", False):
 DEFAULT_CFG = {
     "kp": 1.0, "ki": 0.15, "kd": 0.1, "target_usage": 45,
     "interval": 60, "never": [], "clean_mode": "normal",
-    "auto_start": False, "auto_start_daemon": False,
+    # auto_start（普通权限快捷方式自启）已于 2026-08-15 移除，仅保留管理员权限自启
+    "auto_start_daemon": False,
     "auto_start_admin": False, "auto_start_minimize": False,
     "gap_seconds": 12, "clean_passes": 4,
     "hotkey": "ctrl+shift+m", "game_hotkey": "ctrl+shift+g", "game_processes": [],
@@ -95,6 +96,17 @@ def load():
         for _k in ("never", "game_processes"):
             if not isinstance(d.get(_k), list):
                 d[_k] = []
+        # efis_params 类型校验（2026-08-15 审查）：畸形配置（列表/字符串）会致
+        # Judger 构造 .get 崩溃（启动即崩）；内层数值键清洗——手改字符串会在
+        # PidController 运行时 TypeError（守护异常），坏键删除回退默认
+        if not isinstance(d.get("efis_params"), dict):
+            d["efis_params"] = {}
+        else:
+            for _k in list(d["efis_params"]):
+                try:
+                    float(d["efis_params"][_k])
+                except (TypeError, ValueError):
+                    del d["efis_params"][_k]
         if not isinstance(d.get("clean_operations"), list):
             d["clean_operations"] = [k for k in DEFAULT_CFG["clean_operations"] if k in CLEAN_OPS_WHITELIST]
         else:

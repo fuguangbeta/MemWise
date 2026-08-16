@@ -132,10 +132,18 @@ class StableAnchorStore:
                 continue
             create = getattr(s, "create", None) or 0
             cur = by_key.get(key)
-            if cur is None or ws > cur[0]:
+            if cur is None:
                 by_key[key] = (ws, create)
-            elif cur[1] == 0 and create:
-                by_key[key] = (cur[0], create)
+            else:
+                # max_ws 与 min_create 独立维护（2026-08-15 审查修复）：
+                # 原实现整体覆盖使 create 跟随"最大 WS 实例"——浏览器子进程 WS 常大于主进程
+                # 且频繁启停，子进程更替即换代重置、锚点抑制失效；签名须取最老实例（主进程常驻）
+                nw, nc = cur
+                if ws > nw:
+                    nw = ws
+                if create and (nc == 0 or create < nc):
+                    nc = create
+                by_key[key] = (nw, nc)
         for key, (ws, create) in by_key.items():
             sig = self._launch_sig(key, create)
             a = self.anchors.get(key)

@@ -10,16 +10,12 @@ from collections import deque
 
 # ── 数据/资源路径（与原 GUI 同规则：exe 旁；dist 目录特判上移）──
 try:
-    ctypes_shcore = __import__("ctypes")
-    try:
-        ctypes_shcore.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            ctypes_shcore.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 except Exception:
-    pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 if getattr(sys, "frozen", False):
     exe_dir = os.path.dirname(sys.executable)
@@ -314,7 +310,7 @@ def _log_open():
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v4.1.083 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.2.024 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -360,10 +356,12 @@ def _prof_theta_above(learner):
 
 
 def _drain_pf_delta(judger):
-    """清零并返回本轮 PF 增量（跨周期清零，防污染诊断窗口）"""
-    v = getattr(judger, "pf_delta_total", 0)
-    judger.pf_delta_total = 0
-    return v
+    """清零并返回本轮 PF 增量（跨周期清零，防污染诊断窗口）。
+    与 check_feedback 的锁内累加同锁：无锁读-清会与 trim 池并发交错丢更新（2026-08-15 审查）"""
+    with judger._lock:
+        v = getattr(judger, "pf_delta_total", 0)
+        judger.pf_delta_total = 0
+        return v
 
 
 def _emergency_active(m):
@@ -452,6 +450,8 @@ class MemWiseEngine:
         # 回弹驱动（C 方案，2026-08-14）：harvest 后 WS 基线 + 释放量，供 full 模式 gap 回填率判断
         self._last_harvest_ws = None
         self._last_harvest_freed = 0
+        # 共享最近快照（2026-08-15 审查）：进程排行窗口在守护运行中零额外采集直接读取
+        self._last_snaps = []
         self._refill_hot = False   # 跨周期：是否处于回涨快状态（状态翻转去重，2026-08-14）
         self._refill_cycle = False # 本周期是否触发过回涨快（周期末判定）
         self._refill_total = 0     # 最新回涨量（进入回涨快时展示）
@@ -491,6 +491,7 @@ class MemWiseEngine:
         self._refill_hot = False
         self._refill_cycle = False
         self._refill_total = 0
+        self._last_snaps = []  # 新守护周期从空开始（排行窗口按 daemon_running 切换数据源）
         self._running = True
         self._thread = threading.Thread(target=self._dae_worker, daemon=True)
         self._thread.start()
@@ -510,6 +511,14 @@ class MemWiseEngine:
         with self._chart_lock:
             return (list(self._chart_data), list(self._chart_cycle_meta),
                     list(self._eff_data), list(self._eff_factors))
+
+    def _snap(self):
+        """快照 + 喂学习器 + 缓存共享快照（守护/手动路径统一入口；
+        进程排行窗口守护运行中直接读 _last_snaps，零额外采集）"""
+        snaps = self.sniffer.snapshot()
+        self.learner.feed(snaps)
+        self._last_snaps = snaps
+        return snaps
 
     # ── 收尾 ──
     def save_state(self):
@@ -548,7 +557,7 @@ class MemWiseEngine:
             try:
                 snaps = []
                 for i in range(3):
-                    snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                    snaps = self._snap()
                     if i < 2: time.sleep(2)
                 self.events.put(('log', f"观察到 {len(snaps)} 个进程"))
                 # 候选预览（轻量版）：日志告知将清理范围（复用 can_trim，零新逻辑）
@@ -567,7 +576,7 @@ class MemWiseEngine:
                     if round_idx == 0:
                         r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
                     else:
-                        snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                        snaps = self._snap()
                         r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
                     all_l2.extend(r.get("layer2", []))
                     all_probe.extend(r.get("probe", []))
@@ -596,7 +605,7 @@ class MemWiseEngine:
         with self.cleaner._exec_lock:
             self.cleaner._manual_run = True
             try:
-                snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                snaps = self._snap()
                 m0 = winapi.get_memory_status()
                 freed0 = self.cleaner.summary()['freed_mb']
                 r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
@@ -666,7 +675,7 @@ class MemWiseEngine:
                 # 60s 周期从工作阶段继续计算（等待已计入 cycle_start）
                 m = winapi.get_memory_status()
                 if not m: time.sleep(interval); continue
-                snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                snaps = self._snap()
 
                 total_samples = sum(p.total_samples for p in self.learner.profiles.values())
                 learned = len(self.learner.profiles)
@@ -707,7 +716,7 @@ class MemWiseEngine:
                     while time.time() < gap_end and self._running:
                         # 快照降频：每3s采集一次（节省~20% CPU/功耗，进程列表在gap期间变化极小）
                         if snap_skip <= 0:
-                            snaps = self.sniffer.snapshot(); self.learner.feed(snaps)
+                            snaps = self._snap()
                             snap_skip = 6
                             # 回弹驱动（C 方案，2026-08-14）：full 模式回填率 >60% → gap 立即收紧，
                             # 提前进入收割（回弹越猛压得越密；net_freed≤32MB 的微小轮跳过判断）
@@ -845,7 +854,7 @@ class MemWiseEngine:
                 # 回弹驱动基线（C 方案）：记录 harvest 后总 WS 与释放量，供下一周期 gap 回填率判断
                 self._last_harvest_freed = max(result.get("net_freed", 0), 0)
                 try:
-                    _hs = self.sniffer.snapshot()
+                    _hs = self._snap()
                     self._last_harvest_ws = sum(getattr(s, 'ws', 0) for s in _hs)
                 except Exception:
                     self._last_harvest_ws = None

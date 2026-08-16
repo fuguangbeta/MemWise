@@ -695,7 +695,11 @@ def create_tray_percent_icon(percent, color=(0, 200, 0)):
         hdc = gm.CreateCompatibleDC(hdc_screen)
         hbm = gm.CreateCompatibleBitmap(hdc_screen, 16, 16)
         hbm_mask = gm.CreateBitmap(16, 16, 1, 1, None)
-        if not all([hdc, hbm, hbm_mask]):
+        if not hdc or not hbm or not hbm_mask:
+            # 失败路径逐个释放已创建对象（2026-08-15 审查：原 `all` 判断直接返回泄漏 DC/位图）
+            if hbm_mask: gm.DeleteObject(hbm_mask)
+            if hbm: gm.DeleteObject(hbm)
+            if hdc: gm.DeleteDC(hdc)
             return None
         prev_bm = gm.SelectObject(hdc, hbm)
         prev_font = gm.SelectObject(hdc, gm.GetStockObject(17))  # DEFAULT_GUI_FONT
@@ -897,7 +901,9 @@ _COM_INITIALIZED = False  # 标记 COM 是否已初始化
 # IsDirty=4, Load=5, Save=6, SaveCompleted=7, GetCurFile=8
 
 def set_auto_start(name, target_path, arguments="", work_dir=""):
-    """通过 IShellLink 创建启动文件夹快捷方式（纯 Win32 API，无脚本引擎）"""
+    """通过 IShellLink 创建启动文件夹快捷方式（纯 Win32 API，无脚本引擎）。
+    ⚠ 2026-08-15 起无调用方（普通权限自启功能已移除，仅保留管理员自启）——
+    定义保留不删（红线：不草率弃用，未来如需恢复普通自启零成本）"""
     global _COM_INITIALIZED
     if not _COM_INITIALIZED:
         ret = _ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED

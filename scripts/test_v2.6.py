@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.1.083 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.2.024 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -760,6 +760,66 @@ def _run_ft(mode, refill_kb):
     return 9701 in c_f._fast_track
 check("fast_track deep 400KB/s 进池", _run_ft("deep", 400) is True)
 check("fast_track normal 400KB/s 不进池", _run_ft("normal", 400) is False)
+
+print("\n[24] 2026-08-15 全量审查修复回归")
+# ── efis_params 类型清洗：畸形配置不崩溃（回退空 dict），坏值键删除 ──
+import core.config as _cfg3
+_ocp3 = _cfg3.CONFIG_PATH
+_tc3 = os.path.join(tempfile.gettempdir(), "mw_cfg_e1.yaml")
+with open(_tc3, "w", encoding="utf-8") as f:
+    f.write("efis_params: [1,2,3]\n")
+_cfg3.CONFIG_PATH = _tc3
+_dc1 = _cfg3.load()
+_cfg3.CONFIG_PATH = _ocp3
+os.remove(_tc3)
+check("efis_params 列表清洗为 dict", isinstance(_dc1.get("efis_params"), dict), str(type(_dc1.get("efis_params"))))
+_tc4 = os.path.join(tempfile.gettempdir(), "mw_cfg_e2.yaml")
+with open(_tc4, "w", encoding="utf-8") as f:
+    f.write("efis_params: {pid_kp: 'abc', target_usage: 60}\n")
+_cfg3.CONFIG_PATH = _tc4
+_dc2 = _cfg3.load()
+_cfg3.CONFIG_PATH = _ocp3
+os.remove(_tc4)
+check("efis_params 坏值键清除", "pid_kp" not in _dc2["efis_params"] and _dc2["efis_params"].get("target_usage") == 60,
+      str(_dc2.get("efis_params")))
+# ── 普通自启移除：DEFAULT_CFG 无 auto_start 键（旧配置残留由白名单自动清洗）──
+check("auto_start 已移除", "auto_start" not in DEFAULT_CFG)
+# ── 锚点聚合签名保持最老实例：子进程更替不换代（原实现被最大 WS 实例劫持）──
+_store_a = StableAnchorStore()
+_store_a.feed([_mk_s("app.exe", 300 << 20, r"d:\app\app.exe", 1000),
+               _mk_s("app.exe", 500 << 20, r"d:\app\app.exe", 2000)], time.time(), set())
+_store_a.feed([_mk_s("app.exe", 300 << 20, r"d:\app\app.exe", 1000),
+               _mk_s("app.exe", 520 << 20, r"d:\app\app.exe", 2100)], time.time(), set())
+_aa = _store_a.anchors.get(r"d:\app\app.exe")
+check("锚点签名保持最老实例", _aa is not None and _aa.launch_sig.endswith("|1000"), _aa.launch_sig if _aa else "None")
+check("锚点子进程更替不换代", _aa is not None and _aa.generation == 0 and _aa.samples == 2,
+      f"gen={_aa.generation} samples={_aa.samples}" if _aa else "None")
+# ── 回弹二轮按 PID 匹配（与 Layer3 阶段 D 同口径，防同名多实例误清）──
+_cleaner_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "core", "cleaner.py"), encoding="utf-8").read()
+check("layer2_trimmed 记录 PID", '{r[0].pid for r in l2_results if r[1]}' in _cleaner_src)
+check("回弹二轮按 PID 匹配", 's.pid in pipeline_ctx["layer2_trimmed"]' in _cleaner_src)
+# ── engine 共享快照（排行窗口守护运行中零额外采集）──
+_eng_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "core", "engine.py"), encoding="utf-8").read()
+check("engine 共享快照 _snap", "def _snap" in _eng_src and "_last_snaps" in _eng_src)
+# ── i18n 审查补键行为（T15 作保留/完成/即时优化/热键/自启日志）──
+set_language("en")
+check("T15 作保留键", any("作保留" in k for k in _EN_A))
+check("完成键", tr("完成") == "Done")
+check("即时优化翻译", tr_msg("⚡ 即时优化（full）完成 · 清理 5 个进程 · 释放 100.0 MB")
+      == "⚡ Instant optimize (full) done · cleaned 5 processes · freed 100.0 MB",
+      tr_msg("⚡ 即时优化（full）完成 · 清理 5 个进程 · 释放 100.0 MB"))
+check("热键 tooltip 首行键", "手动优化全局快捷键" in _EN_A and "游戏模式开关全局快捷键" in _EN_A)
+check("管理员自启日志键", "管理员权限开机自启已启用" in _EN_A and "管理员权限开机自启已关闭" in _EN_A)
+check("T6 八分区键", "  窗口与托盘 — 关闭按钮行为、托盘左键行为" in _EN_A
+      and "  清理 — 6 种操作独立开关与清理深度" in _EN_A
+      and "  守护 — 紧急阈值、守护清理间隔" in _EN_A
+      and "  日志 — 文件日志开关" in _EN_A
+      and "窗口与托盘" in _EN_A and "守护" in _EN_A
+      and "触发与日志" not in _EN_A)
+check("托盘初始 tip 键", "MemWise — 智能内存看护" in _EN_A)
+set_language("zh_CN")
 
 # ── 守护运行中手动即时优化：exec_lock 互斥 + optimize 壳转发 + _manual_run 生命周期 ──
 import threading as _th

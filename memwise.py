@@ -1,5 +1,5 @@
 """
-MemWise v4.1.083 PARES —— 智能内存看护
+MemWise v4.2.024 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -38,7 +38,22 @@ def _build_pipeline():
             "game_processes": CFG.get("game_processes",[]),
             "clean_passes": CFG.get("clean_passes", 4),
             "efis_params": CFG.get("efis_params",{})}
+    # 与 GUI 同权威源（2026-08-15 审查）：EFIS 调参状态以 efis_state.json 为准，
+    # config.yaml 可能滞后——CLI 与 GUI 优化参数一致
+    try:
+        from core.efis import EfisController
+        jcfg["efis_params"] = EfisController(STATE_PATH).get_params()
+    except Exception:
+        pass
     judger = Judger(learner, jcfg)
+    # Kalman 观测噪声同步（与 GUI 启动同款）：新画像与已有画像一并生效
+    try:
+        _kr = jcfg["efis_params"].get("kalman_r", 5.0)
+        learner._kalman_r = _kr
+        for _p in learner.profiles.values():
+            _p.kalman.r = _kr
+    except Exception:
+        pass
     return learner, judger, Cleaner(judger)
 
 def cmd_status(_):
@@ -116,7 +131,7 @@ def cmd_optimize(args):
     if trimmed:
         for snap, ok, freed, reason in trimmed[:20]:
             print(f"  ✓ {snap.name} (PID={snap.pid}) {_mb(freed):.0f}MB — {reason}")
-        if len(trimmed) > 20: print(f"  ... 还有 {len(trimmed)-20} 个")
+        if len(trimmed) > 20: print(f"  ... 还有 {len(trimmed)-20} 个进程")
     probe_n = len(result.get("probe", []))
     if probe_n:
         print(f"  Probe: {probe_n} 个进程微型试探完成")
@@ -195,26 +210,6 @@ def cmd_reset(_):
     print(tr("完成。下次启动使用默认配置。"))
     winapi.report_event("MemWise", "已恢复出厂设置")
 
-def cmd_auto_start(args):
-    if not args:
-        print("用法: memwise.py auto-start on|off")
-        return
-    if getattr(sys, "frozen", False):
-        target = sys.executable
-        arg = ""
-        wd = os.path.dirname(sys.executable)
-    else:
-        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
-        target = pythonw if os.path.isfile(pythonw) else sys.executable
-        arg = f'"{os.path.abspath(__file__)}" daemon --minimized'  # 引号：脚本路径含空格时快捷方式仍可解析
-        wd = os.path.dirname(os.path.abspath(__file__))
-    if args[0] == "on":
-        ok = winapi.set_auto_start("MemWise", target, arg, wd)
-        print(f"开机自启 {'✓ 已启用' if ok else '✗ 启用失败'}")
-    elif args[0] == "off":
-        ok = winapi.remove_auto_start("MemWise")
-        print(f"开机自启 {'✓ 已关闭' if ok else '✗ 关闭失败'}")
-
 def cmd_install_service(args):
     import subprocess
     exe = sys.executable
@@ -271,22 +266,25 @@ def main():
         os.makedirs(os.path.dirname(_config.CONFIG_PATH), exist_ok=True)
     except Exception:
         pass
+    # 启用清理所需权限（2026-08-15 审查）：GUI 启动即启用，CLI 缺失致 deep/full 的
+    # ws_all（系统级全清）静默失效；管理员下 SeProfileSingleProcessPrivilege 必须
+    # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
+    winapi.enable_reduct_privileges()
     if len(sys.argv) < 2:
-        print("MemWise v4.1.083 PARES —— 智能内存看护")
+        print(tr("MemWise v4.2.024 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))
         print(tr("  optimize [--mode q|n|d|f] 执行优化"))
         print(tr("  daemon [--mode q|n|d|f] 守护模式"))
         print(tr("  profile <pid>             进程详情 (含 PARES 指标)"))
-        print(tr("  auto-start on|off         开机自启"))
         print(tr("  service [remove]          安装/移除 Scheduled Task 服务"))
         print(tr("  reset                     恢复出厂设置"))
         return
     cmd = sys.argv[1]; args = sys.argv[2:]
     cmds = {"status":cmd_status,"learn":cmd_learn,"optimize":cmd_optimize,
             "daemon":cmd_daemon,"profile":cmd_profile,
-            "reset":cmd_reset,"auto-start":cmd_auto_start,"service":cmd_install_service}
+            "reset":cmd_reset,"service":cmd_install_service}
     fn = cmds.get(cmd)
     if fn: fn(args)
     else: print(f"未知命令: {cmd}")
