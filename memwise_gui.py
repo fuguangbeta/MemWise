@@ -1713,14 +1713,18 @@ class MemWiseGUI:
                 pass
 
         _refresh_ms = 10000  # 自动刷新间隔（守护运行中读共享快照零额外采集；非守护低频自采）
+        _first_refresh = True  # 首帧强制采集：打开即显示（2026-08-16 热补丁——原 viewable 检查
+        # 在 withdraw 期跳过首帧（_refresh 先于 deiconify 调用），打开白屏且要等下个周期才有数据）
 
         def _refresh():
+            nonlocal _first_refresh
             if not win.winfo_exists():
                 return
-            # 窗口最小化/隐藏时暂停采集（仅续期定时器）——排行只在可见时刷新
-            if not win.winfo_viewable():
+            # 窗口最小化/隐藏时暂停采集（仅续期定时器）——首帧除外（打开时需立即显示数据）
+            if not _first_refresh and not win.winfo_viewable():
                 win.after(_refresh_ms, _refresh)
                 return
+            _first_refresh = False
             try:
                 if self.engine.daemon_running:
                     # 守护运行中直接读守护线程共享快照（零额外采集，2026-08-15 审查）
