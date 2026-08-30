@@ -51,7 +51,10 @@ class ReboundLearner:
         for s in snaps:
             k = _key(getattr(s, "path", None))
             if k:
-                by_path[k] = s.ws
+                # 同路径多实例取最大 WS（与 stable 聚合同向保守）——末值覆盖会随快照
+                # 实例顺序抖动，2026-08-30 实验：同数据不同顺序回弹率 0.21 vs 1.11
+                prev = by_path.get(k)
+                by_path[k] = s.ws if prev is None else max(prev, s.ws)
         for key in list(self._pending.keys()):
             released, ws_after, until = self._pending[key]
             ws_now = by_path.get(key)
@@ -78,7 +81,7 @@ class ReboundLearner:
         return self.backoff_until.get(key, 0) > now
 
     def suggest(self, path, pf_cost, now):
-        """回弹高 + PF 代价高 → 建议保护（长期方案；去重一次）"""
+        """回弹高 + PF 代价高 → 建议保护（P2-G 预留：当前无调用方，保留防草率弃用；去重一次）"""
         key = _key(path)
         if not key or key in self._suggested:
             return False

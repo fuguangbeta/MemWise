@@ -16,8 +16,10 @@ class MetaCognition:
         findings = []
         
         # ── 2. 概念漂移: EWMA快慢速比 ──
+        # dict() 快照迭代：手动优化线程可并发增键，直接迭代会 RuntimeError（2026-08-30，
+        # 与 learner.pop_info / engine._compute_eris 同款防护）
         drifted = []
-        for name, p in self.learner.profiles.items():
+        for name, p in dict(self.learner.profiles).items():
             if p.total_samples > 30:
                 fast = p.gain_ewma_fast
                 slow = p.gain_ewma_slow

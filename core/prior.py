@@ -42,13 +42,5 @@ class HierarchicalPrior:
         
         if len(peers) < 3:
             return 0.35  # 同类样本不足 → 默认
-        
+
         return sum(peers) / len(peers)
-    
-    @classmethod
-    def category_size(cls, name, profiles):
-        """返回同类进程数"""
-        cat = cls.classify(name)
-        if not cat:
-            return 0
-        return sum(1 for n in profiles if cls.classify(n) == cat)

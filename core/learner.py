@@ -2,7 +2,7 @@
 PARES Learner — Predictive Adaptive Reinforcement Engine
 Thompson Sampling + 3x EWMA + Z-score + 趋势线
 """
-import json, os, time, math, random
+import json, os, time, math, random, threading
 from .kalman import KalmanProfile
 from .prior import HierarchicalPrior
 from .policy import PolicyVoter
@@ -13,10 +13,15 @@ from collections import deque
 
 WINDOW = 20  # 趋势窗口大小
 EWMA_LAMBDA = 0.5  # EWMA 衰减因子 (高=更快适应新数据)；EFIS learning_rate 可逐进程覆盖
-Z_SCORE_THRESHOLD = 3.0  # Z-score 异常阈值
-MIN_SAMPLES = 3  # 最小样本数 (更快对新进程做出决策)
+Z_SCORE_THRESHOLD = 3.0  # Z-score 异常阈值（预留：泄漏检测现用双阈值 0.005/2.0 硬编码，保留防未来启用）
+MIN_SAMPLES = 3  # 最小样本数（预留：现用 total_samples>=2/5 就地判定，保留防未来启用）
 TREND_SAMPLES = 3  # 趋势线使用的采样数（原6。缩短窗口让预判式清理更快响应）
 # 注：BETA_DECAY_RATE / CTX_LR_BASE 已随 Beta 衰减迁移至 record_clean 时间感知遗忘、上下文修正固定 0.15，此处不再保留常量
+
+# 持久化写锁（2026-08-30 审查）：守护 30s 周期保存、手动优化保存、GUI 退出保存可并发——
+# 同一 tmp 路径双句柄交错写会损坏画像文件（实验实证 A/B 混写）；与 config._save_lock /
+# engine._eris_save_lock 同款先例
+_SAVE_LOCK = threading.Lock()
 
 SYSTEM_CORE = {
     "system", "system idle process", "registry", "smss", "csrss", "wininit",
@@ -278,11 +283,6 @@ class Profile:
         return (gain / (1 << 20)) / cost if cost > 0 else 0.0
 
     @property
-    def gain_accelerating(self):
-        """收益是否在加速增长（快速均值 > 慢速均值）"""
-        return self.gain_ewma_fast > self.gain_ewma_slow
-
-    @property
     def z_score(self):
         """当前 WS 的 Z-score"""
         if self.ws_ewma_sigma <= 0 or not self.ws_deque:
@@ -389,7 +389,6 @@ class PareLearner:
         self.prior = HierarchicalPrior()   # 分层先验
         self.policy = PolicyVoter()        # 策略投票器
         self.meta = MetaCognition(self)    # 元认知监控
-        self._meta_ready = True
         self._ctx = {}                     # 当前系统上下文
         self._info_msgs = []
         # 上下文修正查找表: 30桶 × 1 float，在线学习条件偏差
@@ -429,8 +428,9 @@ class PareLearner:
         """取出并清空日志消息（含 Learner 自身 + 各 Profile 消息）"""
         msgs = self._info_msgs[:]
         self._info_msgs.clear()
-        # 收集各 Profile 的消息（如泄漏检测）
-        for p in self.profiles.values():
+        # 收集各 Profile 的消息（如泄漏检测）；dict() 快照迭代：手动优化线程可并发
+        # 增键，直接迭代会 RuntimeError 击落守护线程（2026-08-30 审查，与 _compute_eris 同款防护）
+        for p in dict(self.profiles).values():
             if hasattr(p, '_info_msgs') and p._info_msgs:
                 msgs.extend(p._info_msgs)
                 p._info_msgs.clear()
@@ -470,22 +470,6 @@ class PareLearner:
         result = max(0.01, min(0.99, result))
         return result
 
-    def get_roi(self, name):
-        p = self.profiles.get(name.lower())
-        return p.roi if p else 0.0
-
-    def get_slope(self, name):
-        p = self.profiles.get(name.lower())
-        return p.slope if p else 0.0
-
-
-
-    def get_confidence(self, name):
-        p = self.profiles.get(name.lower())
-        return p.confidence if p else 0.0
-
-
-
     def get_profile(self, name):
         return self.profiles.get(name.lower())
 
@@ -500,26 +484,30 @@ class PareLearner:
     # ── 持久化 ──
 
     def save(self, path):
-        try:
-            now = time.time()
-            cutoff = 86400 * 7
-            filtered = {
-                k: v for k, v in self.profiles.items()
-                if now - v.last_seen < cutoff or v.alpha != 2 or v.beta != 1
-            }
-            data = {
-                "version": 4,
-                "profiles": {k: v.to_dict() for k, v in filtered.items()},
-                "stable_anchors": self.stable_anchors.to_dict(),
-                "rebound": self.rebound.to_dict(),
-            }
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-            os.replace(tmp, path)
-            return True
-        except Exception:
-            return False
+        with _SAVE_LOCK:
+            try:
+                now = time.time()
+                cutoff = 86400 * 7
+                filtered = {
+                    k: v for k, v in self.profiles.items()
+                    if now - v.last_seen < cutoff or v.alpha != 2 or v.beta != 1
+                }
+                data = {
+                    "version": 4,
+                    "profiles": {k: v.to_dict() for k, v in filtered.items()},
+                    "stable_anchors": self.stable_anchors.to_dict(),
+                    "rebound": self.rebound.to_dict(),
+                    # 策略树权重按模式持久化（2026-08-30）：在线学习成果随画像保存，
+                    # 重启后沿用；旧格式无此键 → 加载端回退默认等权（完全向后兼容）
+                    "policy": {m: list(w) for m, w in self.policy._mode_weights.items()},
+                }
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+                os.replace(tmp, path)
+                return True
+            except Exception:
+                return False
 
     @classmethod
     def load(cls, path):
@@ -544,6 +532,15 @@ class PareLearner:
                 continue  # 坏条目跳过，保留其余画像
         learner.stable_anchors = StableAnchorStore.from_dict(data.get("stable_anchors"))
         learner.rebound = ReboundLearner.from_dict(data.get("rebound"))
+        # 策略树权重恢复（2026-08-30）：逐模式校验（四模式/五维/有限数值，夹取 ±2）；
+        # 旧格式无此键 → 保持默认等权，完全向后兼容
+        pw = data.get("policy")
+        if isinstance(pw, dict):
+            for mode, weights in pw.items():
+                if (mode in ("quick", "normal", "deep", "full") and isinstance(weights, list)
+                        and len(weights) == 5
+                        and all(isinstance(x, (int, float)) and math.isfinite(x) for x in weights)):
+                    learner.policy._mode_weights[mode] = [max(-2.0, min(2.0, float(x))) for x in weights]
         return learner
 
     # ── 反饋 ──

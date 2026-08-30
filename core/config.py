@@ -107,6 +107,16 @@ def load():
                     float(d["efis_params"][_k])
                 except (TypeError, ValueError):
                     del d["efis_params"][_k]
+        # 数值键范围钳制（2026-08-30 审查）：GUI 滑块范围是唯一合法面，手改 config 的越界值
+        # 原样透传会绕过全部门槛（emergency_threshold: 0 → 每周期紧急 full，实验实证）——
+        # 与 efis_params 的 min/max 夹取同理念补齐；正常用户（GUI 写入）零感知
+        for _k, _lo, _hi in (("emergency_threshold", 50, 99), ("clean_passes", 2, 6),
+                             ("interval", 10, 3600), ("gap_seconds", 8, 20)):
+            try:
+                _v = int(float(d.get(_k, DEFAULT_CFG[_k])))
+            except (TypeError, ValueError):
+                _v = DEFAULT_CFG[_k]
+            d[_k] = max(_lo, min(_hi, _v))
         if not isinstance(d.get("clean_operations"), list):
             d["clean_operations"] = [k for k in DEFAULT_CFG["clean_operations"] if k in CLEAN_OPS_WHITELIST]
         else:

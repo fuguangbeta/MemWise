@@ -11,27 +11,42 @@ class PolicyVoter:
     树 4(紧迫) 预留空实现（加权恒 0，不影响决策）"""
     
     def __init__(self):
-        self._tree_weights = [1.0] * 5  # 五棵树初始等权重
-        
+        self._tree_weights = [1.0] * 5  # 五棵树初始等权重（normal 组，兼容旧引用）
+        self._mode_weights = {"normal": [1.0] * 5}  # 模式隔离权重组（2026-08-16 用户定稿：
+        # 树权重=各决策树预测可靠度，与模式力度强相关——deep/full 激进时压力树权重变化大，
+        # 跨模式共享会使 A 模式的权重学习污染 B 模式决策；场景维度与树权重弱相关，4 组即可）
+        self.current_mode = "normal"
+
+    def set_mode(self, mode):
+        """切换当前模式（权重组懒创建，模式间零污染）"""
+        if mode not in ("quick", "normal", "deep", "full"):
+            mode = "normal"
+        self.current_mode = mode
+        self._mode_weights.setdefault(mode, [1.0] * 5)
+
+    def _weights(self):
+        return self._mode_weights.setdefault(self.current_mode, [1.0] * 5)
+
     def _apply_weights(self, scores):
         """将权重应用于各树得分（加权求和，保持总分范围不变）"""
-        total_w = sum(abs(w) for w in self._tree_weights)
+        total_w = sum(abs(w) for w in self._weights())
         if total_w == 0:
             return scores
         norm = 5.0 / total_w  # 归一化到 [0, 5]
-        return [s * self._tree_weights[i] * norm for i, s in enumerate(scores)]
+        return [s * self._weights()[i] * norm for i, s in enumerate(scores)]
 
     def update_weights_per_trim(self, scores, success):
-        """每进程粒度的在线权重学习——直接调节各树权重（有界 ±2，慢速 0.05 收敛）。
+        """每进程粒度的在线权重学习——直接调节当前模式的各树权重（有界 ±2，慢速 0.05 收敛）。
         正贡献+成功 / 负贡献+失败 → 该树权重上升（预测可靠）；
         正贡献+失败 / 负贡献+成功 → 该树权重下降（预测被证伪）。
         权重可为负：负权重树的贡献在总分中反向计入，使学习真正影响决策。"""
         direction = 1.0 if success else -1.0
+        w = self._weights()
         for i, contrib in enumerate(scores):
             if contrib == 0:
                 continue
             delta = direction * (1.0 if contrib > 0 else -1.0) * 0.05
-            self._tree_weights[i] = max(-2.0, min(2.0, self._tree_weights[i] + delta))
+            w[i] = max(-2.0, min(2.0, w[i] + delta))
 
     def should_trim(self, name, ws, state, learner, threshold=0):
         """是否清理此进程 → (True/False, 理由, 各树贡献)

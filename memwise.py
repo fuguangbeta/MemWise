@@ -1,5 +1,5 @@
 """
-MemWise v4.2.024 PARES —— 智能内存看护
+MemWise v4.3.034 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -13,7 +13,7 @@ from core.sniffer import Sniffer
 from core import winapi
 from core.config import load as _load_cfg
 from core.config import get_state_path
-from core.i18n import tr, set_language  # 界面语言（跟随 GUI 设置）
+from core.i18n import tr, tr_msg, set_language  # 界面语言（跟随 GUI 设置）
 import core.config as _config
 
 SEP = "─" * 50
@@ -27,7 +27,7 @@ def _mb(b): return b / (1 << 20)
 
 def _mem_or_none():
     m = winapi.get_memory_status()
-    if not m: print("无法获取内存状态")
+    if not m: print(tr("无法获取内存状态"))
     return m
 
 def _build_pipeline():
@@ -39,10 +39,12 @@ def _build_pipeline():
             "clean_passes": CFG.get("clean_passes", 4),
             "efis_params": CFG.get("efis_params",{})}
     # 与 GUI 同权威源（2026-08-15 审查）：EFIS 调参状态以 efis_state.json 为准，
-    # config.yaml 可能滞后——CLI 与 GUI 优化参数一致
+    # config.yaml 可能滞后——CLI 与 GUI 优化参数一致；按当前清理模式取对应参数组
     try:
         from core.efis import EfisController
-        jcfg["efis_params"] = EfisController(STATE_PATH).get_params()
+        _efis = EfisController(STATE_PATH)
+        _efis.set_mode(CFG.get("clean_mode", "normal"))
+        jcfg["efis_params"] = _efis.get_params()
     except Exception:
         pass
     judger = Judger(learner, jcfg)
@@ -99,13 +101,23 @@ def cmd_optimize(args):
         elif args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
         i += 1
     if mode not in ("quick", "normal", "deep", "full"):
-        print(f"未知模式 {mode}，回退 normal")
+        print(tr_msg(f"未知模式 {mode}，回退 normal"))
         mode = "normal"
     print(f"{mode.title()}{tr(' 优化模式')}")
     m0 = _mem_or_none()
     if not m0: return
-    print(f"优化前: {_gb(m0['avail']):.1f}GB 可用 ({m0['pct']}%)")
+    print(tr_msg(f"优化前: {_gb(m0['avail']):.1f}GB 可用 ({m0['pct']}%)"))
     learner, judger, cleaner = _build_pipeline()
+    # 命令行模式与参数组对齐（2026-08-16 模式参数组，审查 P7）：
+    # --mode 覆盖 CFG 时按命令行模式取对应参数组，否则 CLI 用 CFG 模式参数
+    if mode != CFG.get("clean_mode", "normal"):
+        try:
+            from core.efis import EfisController
+            _e = EfisController(STATE_PATH)
+            _e.set_mode(mode)
+            judger.cfg["efis_params"] = _e.get_params()
+        except Exception:
+            pass
     sniffer = Sniffer()
     print(tr("  ─ 采集进程基线..."))
     snaps = []
@@ -124,17 +136,17 @@ def cmd_optimize(args):
     trimmed = [t for t in result.get("layer2", []) if t[1]]
     net = result.get("net_freed", 0)
     released = max(0.0, stats['freed_mb'] - freed0)
-    print(f"\n本次释放: {released:.0f} MB · 内存净下降: {_mb(net):.0f} MB | 累计释放: {stats['freed_mb']} MB")
-    print(f"待机缓存={stats['standby']} 已修改页={stats['modified']} "
+    print(tr_msg(f"\n本次释放: {released:.0f} MB · 内存净下降: {_mb(net):.0f} MB | 累计释放: {stats['freed_mb']} MB"))
+    print(tr_msg(f"待机缓存={stats['standby']} 已修改页={stats['modified']} "
           f"文件缓存={stats['filecache']} | "
-          f"整理={stats['ws_trim']} | Probe={stats['probe']} | 反馈异常={stats['failed_feedback']}")
+          f"整理={stats['ws_trim']} | Probe={stats['probe']} | 反馈异常={stats['failed_feedback']}"))
     if trimmed:
         for snap, ok, freed, reason in trimmed[:20]:
             print(f"  ✓ {snap.name} (PID={snap.pid}) {_mb(freed):.0f}MB — {reason}")
-        if len(trimmed) > 20: print(f"  ... 还有 {len(trimmed)-20} 个进程")
+        if len(trimmed) > 20: print(tr_msg(f"  ... 还有 {len(trimmed)-20} 个进程"))
     probe_n = len(result.get("probe", []))
     if probe_n:
-        print(f"  Probe: {probe_n} 个进程微型试探完成")
+        print(tr_msg(f"  Probe: {probe_n} 个进程微型试探完成"))
     winapi.report_event("MemWise", f"优化完成: {stats['freed_mb']}MB 释放, {len(trimmed)} 进程")
     learner.save(STATE_PATH)
 
@@ -142,6 +154,14 @@ def cmd_daemon(args):
     print(tr("MemWise PARES 守护 (Ctrl+C 停止)"))
     learner, judger, cleaner = _build_pipeline()
     sniffer = Sniffer()
+    # 持有 EFIS 实例（2026-08-16 模式参数组，审查 P8）：模式/配置热加载时按模式取参，
+    # 不依赖 _build_pipeline 的局部实例
+    try:
+        from core.efis import EfisController
+        _efis = EfisController(STATE_PATH)
+        _efis.set_mode(CFG.get("clean_mode", "normal"))
+    except Exception:
+        _efis = None
     interval = CFG.get("interval", 60)  # 与 DEFAULT_CFG 一致（原 30 系历史默认值残留）
     mode = CFG.get("clean_mode", "normal")
     i = 0
@@ -149,6 +169,12 @@ def cmd_daemon(args):
         if args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
         elif args[i] == "--minimized": pass  # 自启兼容参数（CLI 无窗口，忽略）
         i += 1
+    # --mode 显式覆盖（2026-08-30 审查）：命令行模式优先于配置文件——立即对齐 EFIS
+    # 参数组（原仅在配置热加载时对齐，且热加载会用 CFG 模式覆盖 --mode 显式意图）
+    _cli_mode_override = mode != CFG.get("clean_mode", "normal")
+    if _efis is not None and _cli_mode_override:
+        _efis.set_mode(mode)
+        judger.cfg["efis_params"] = _efis.get_params()
     tick = 0
     try:
         while True:
@@ -170,13 +196,17 @@ def cmd_daemon(args):
                     if mtime != getattr(cmd_daemon, "_cfg_mtime", 0):
                         cmd_daemon._cfg_mtime = mtime
                         CFG.update(_load_cfg())
-                        mode = CFG.get("clean_mode", "normal")
+                        if not _cli_mode_override:
+                            mode = CFG.get("clean_mode", "normal")
                         interval = CFG.get("interval", 60)
-                        # 同步 judger 运行配置（排除列表/游戏名单/清理深度/EFIS 参数即时生效）
+                        # 同步 judger 运行配置（排除列表/游戏名单/清理深度即时生效）
                         judger.cfg["never"] = CFG.get("never", [])
                         judger.cfg["game_processes"] = CFG.get("game_processes", [])
                         judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
-                        judger.cfg["efis_params"] = CFG.get("efis_params", {})
+                        # EFIS 参数按当前模式取（状态文件权威，config 快照不回灌，审查 P3/P8）
+                        if _efis is not None:
+                            _efis.set_mode(mode)
+                            judger.cfg["efis_params"] = _efis.get_params()
                 except Exception:
                     pass
             if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH); import gc; gc.collect()
@@ -220,38 +250,38 @@ def cmd_install_service(args):
         # shell=False：列表直接传 schtasks，不经过 cmd.exe 二次解析（引号错乱隐患源）
         subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        print("Scheduled Task 已移除")
+        print(tr("Scheduled Task 已移除"))
         return
     cmd = ["schtasks", "/create", "/tn", task_name, "/tr", action,
            "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest", "/f"]
     r = subprocess.run(cmd, capture_output=True,
                        creationflags=subprocess.CREATE_NO_WINDOW)
     if r.returncode == 0:
-        print("✓ Scheduled Task 已安装 (系统启动时自动运行)")
+        print(tr("✓ Scheduled Task 已安装 (系统启动时自动运行)"))
         winapi.report_event("MemWise", "服务模式已安装 (Scheduled Task)")
     else:
-        print(f"✗ 安装失败 (需管理员权限): {r.stderr.decode('gbk','ignore').strip()}")
+        print(tr("✗ 安装失败 (需管理员权限): ") + r.stderr.decode('gbk','ignore').strip())
 
 def cmd_profile(args):
-    if not args: print("用法: memwise profile <pid>"); return
+    if not args: print(tr("用法: memwise profile <pid>")); return
     try: pid = int(args[0])
-    except: print("PID 必须是数字"); return
+    except: print(tr("PID 必须是数字")); return
     mem = winapi.get_process_memory(pid)
-    if not mem: print(f"PID {pid} 不存在"); return
+    if not mem: print(tr_msg(f"PID {pid} 不存在")); return
     name = next((n for p,n,_ in winapi.enum_processes() if p==pid), "?")
     path = winapi.get_process_path(pid)
     p = Learner.load(STATE_PATH).get_profile(name)
     print(f"PID {pid} — {name}")
-    if path: print(f"  路径:    {path}")
-    print(f"  工作集:  {_mb(mem['ws']):.1f} MB")
-    print(f"  页面错误: {mem['pf']}")
+    if path: print(tr("  路径:    ") + f"{path}")
+    print(tr("  工作集:  ") + f"{_mb(mem['ws']):.1f} MB")
+    print(tr("  页面错误: ") + f"{mem['pf']}")
     if p:
         print(f"  Thompson θ: {p.thompson_theta:.2f}")
         print(f"  ROI:        {p.roi:.2f} MB/PF")
         print(f"  Z-score:    {p.z_score:.2f}")
-        print(f"  趋势:       {p.slope:.1f} bytes/tick")
-        print(f"  泄漏:       {'⚠ 疑似' if p.leak_suspect else '正常'}")
-        print(f"  清理:       {p.clean_count} 次 | Probe: {p.probe_ok}/{p.probe_ok+p.probe_fail}")
+        print(tr("  趋势:       ") + f"{p.slope:.1f}" + tr(" bytes/tick"))
+        print(tr("  泄漏:       ") + (tr("⚠ 疑似") if p.leak_suspect else tr("正常")))
+        print(tr("  清理:       ") + f"{p.clean_count}" + tr(" 次 | Probe: ") + f"{p.probe_ok}/{p.probe_ok+p.probe_fail}")
 
 def main():
     # GBK 控制台/重定向时 emoji 输出不崩溃（替换为 ? 而非抛 UnicodeEncodeError）
@@ -270,8 +300,14 @@ def main():
     # ws_all（系统级全清）静默失效；管理员下 SeProfileSingleProcessPrivilege 必须
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
     winapi.enable_reduct_privileges()
+    # 常驻崩溃现场（2026-08-30）：独立于日志开关，CLI 崩溃同样保留 memwise_crash.log
+    try:
+        from core.engine import _install_crash_sink
+        _install_crash_sink()
+    except Exception:
+        pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v4.2.024 PARES —— 智能内存看护"))
+        print(tr("MemWise v4.3.034 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))
@@ -287,7 +323,7 @@ def main():
             "reset":cmd_reset,"service":cmd_install_service}
     fn = cmds.get(cmd)
     if fn: fn(args)
-    else: print(f"未知命令: {cmd}")
+    else: print(tr_msg(f"未知命令: {cmd}"))
 
 if __name__ == "__main__":
     main()

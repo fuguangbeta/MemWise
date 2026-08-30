@@ -91,7 +91,6 @@ GetWindowThreadProcessId = u32.GetWindowThreadProcessId; GetWindowThreadProcessI
 IsWindowVisible = u32.IsWindowVisible; IsWindowVisible.argtypes=[w.HANDLE]; IsWindowVisible.restype=w.BOOL
 SetWindowLongPtrW = u32.SetWindowLongPtrW; SetWindowLongPtrW.argtypes=[w.HANDLE, w.INT, ctypes.c_void_p]; SetWindowLongPtrW.restype=ctypes.c_void_p
 CallWindowProcW = u32.CallWindowProcW; CallWindowProcW.argtypes=[ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p]; CallWindowProcW.restype=ctypes.c_void_p
-SetSystemFileCacheSize = k32.SetSystemFileCacheSize; SetSystemFileCacheSize.argtypes=[ctypes.c_size_t,ctypes.c_size_t,w.DWORD]; SetSystemFileCacheSize.restype=w.BOOL
 # K32 官方通道（跨机器保留：本机 Win11 26100 实测全失效 87，但其他系统可能正常——
 # 双通道策略：K32 优先（可反复设置/恢复），失败回退 Nt 直通兜底）
 SetProcessInformation = k32.SetProcessInformation; SetProcessInformation.argtypes=[w.HANDLE,w.DWORD,ctypes.c_void_p,w.DWORD]; SetProcessInformation.restype=w.BOOL
@@ -204,8 +203,15 @@ IGNORE_FULLSCREEN_CLASSES = {
     "WorkerW",
 }
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", w.DWORD), ("rcMonitor", RECT), ("rcWork", RECT),
+                ("dwFlags", w.DWORD)]
+
+
 def is_foreground_fullscreen():
-    """检测前台窗口是否为全屏模式（辅助游戏检测）"""
+    """检测前台窗口是否为全屏模式（辅助场景识别）。
+    按窗口所在显示器判定（MonitorFromWindow + rcMonitor）——多显示器/负坐标
+    副屏同样正确（2026-08-30 审查：原单主屏假设使副屏全屏检测失效）"""
     hwnd = GetForegroundWindow()
     if not hwnd:
         return False
@@ -217,6 +223,14 @@ def is_foreground_fullscreen():
     rect = RECT()
     if not GetWindowRect(hwnd, ctypes.byref(rect)):
         return False
+    hmon = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if hmon and ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+        m = mi.rcMonitor
+        return (rect.left <= m.left and rect.top <= m.top
+                and rect.right >= m.right and rect.bottom >= m.bottom)
+    # 枚举失败兜底：主屏口径
     screen_w = GetSystemMetrics(0)   # SM_CXSCREEN
     screen_h = GetSystemMetrics(1)   # SM_CYSCREEN
     return rect.left <= 0 and rect.top <= 0 and rect.right >= screen_w and rect.bottom >= screen_h
@@ -271,17 +285,17 @@ def terminate_process(pid, exit_code=1):
 
 
 def set_memory_priority(pid, level=0):
-    """设置进程内存优先级 (0=最低, 5=正常)。双通道：
-    K32 官方通道优先（其他系统上有效且可反复调整/恢复）；本机实测 K32 全失效(87)
-    时回退 Nt 类 42 (ProcessMemoryPriority, PHNT)——2026-08-12 实验定论：Nt 42
-    首次设置真实生效，但每进程仅可设置一次（二次恒 STATUS_ALREADY_COMPLETE，
-    与 EcoQoS 同款"一次性"特性）。低优先级进程的页面在内存紧张时被系统优先回收。"""
+    """设置进程内存优先级 (0=最低, 4=正常)。双通道：
+    K32 官方通道优先（SetProcessInformation 类 0 = ProcessMemoryPriority，文档值——
+    2026-08-30 实验证实可用且可反复设置/恢复，5→4→5 全部 TRUE）；失败回退
+    Nt 类 42 (ProcessMemoryPriority, PHNT)——Nt 通道每进程仅可设置一次
+    （二次恒 STATUS_ALREADY_COMPLETE）。低优先级进程的页面在内存紧张时被系统优先回收。"""
     h = OpenProcess(PROCESS_SET_INFORMATION, False, pid)
     if not h:
         return False
     try:
         info = PROCESS_MEMORY_PRIORITY_INFORMATION(max(0, min(5, level)))
-        if SetProcessInformation(h, 0x13, ctypes.byref(info), ctypes.sizeof(info)):
+        if SetProcessInformation(h, 0, ctypes.byref(info), ctypes.sizeof(info)):
             return True
         # K32 失效 → Nt 42 直通（ALREADY_COMPLETE 掩码判定同 EcoQoS）
         v = w.ULONG(max(0, min(5, level)))
@@ -301,10 +315,10 @@ class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
 
 def set_eco_qos(pid, enable=True):
     """标记进程为 EcoQoS(节能)或恢复正常。双通道：
-    K32 官方通道优先（其他系统上有效且可反复设置/恢复）；本机实测 K32 全失效(87)
-    时回退 Nt 类 15 直通（2026-08-11 实验实测可用）。
+    K32 官方通道优先（SetProcessInformation 类 4 = ProcessPowerThrottling，文档值——
+    2026-08-30 实验证实可用且 enable/disable 可反复切换）；失败回退 Nt 类 15 直通。
     EcoQoS 让系统更积极回收该进程的物理内存页。纯性能提示，不影响调度正确性。
-    0xC0000048（STATUS_ALREADY_COMPLETE）= 目标状态已达成，同样视为成功"""
+    0xC0000048（STATUS_ALREADY_COMPLETE）= 目标状态已达成，同样视为成功（仅 Nt 通道）"""
     h = OpenProcess(PROCESS_SET_INFORMATION, False, pid)
     if not h:
         return False
@@ -314,7 +328,7 @@ def set_eco_qos(pid, enable=True):
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED if enable else 0
         )
-        if SetProcessInformation(h, 15, ctypes.byref(state), ctypes.sizeof(state)):
+        if SetProcessInformation(h, 4, ctypes.byref(state), ctypes.sizeof(state)):
             return True
         # K32 失效 → Nt 类 15 直通（ALREADY_COMPLETE 掩码比较：LONG 有符号返回需掩码）
         ret = NtSetInformationProcess(h, 15, ctypes.byref(state), ctypes.sizeof(state))
@@ -710,8 +724,8 @@ def create_tray_percent_icon(percent, color=(0, 200, 0)):
         rect = wt.RECT(0, 0, 16, 16)
         gm.FillRect(hdc, ctypes.byref(rect), brush)
         gm.DeleteObject(brush)
-        # Draw text
-        text = str(min(99, max(1, percent)))
+        # Draw text（0-100 如实显示——原 min(99) 使 100% 显示 99，2026-08-30 修正）
+        text = str(max(0, min(100, int(percent))))
         gm.SetBkMode(hdc, 1)  # TRANSPARENT
         gm.SetTextColor(hdc, 0xFFFFFF)  # white text
         gm.DrawTextW(hdc, text, -1, ctypes.byref(rect), 0x25)  # DT_CENTER|DT_VCENTER|DT_SINGLELINE
@@ -762,16 +776,6 @@ def flush_modified_pages():
     except Exception:
         return False
 
-def clear_system_file_cache():
-    """清理系统文件缓存 (SetSystemFileCacheSize)。
-    ⚠ 已弃用（2026-08-14 审查）：Min=Max=SIZE_MAX 写法实测返回 0xC000009A（资源不足）从未生效，
-    有效实现为 clear_system_file_cache_ex（查询→PeakSize 强制回收→恢复原始上限）。
-    定义保留不删：跨机器双通道原则——其他系统行为可能不同，勿草率弃用。"""
-    try:
-        return bool(SetSystemFileCacheSize(ctypes.c_size_t(-1), ctypes.c_size_t(-1), 0))
-    except Exception:
-        return False
-
 
 def deep_compress():
     """单轮完整压缩：flush modified → purge standby — 无 sleep，不碰自身 WS"""
@@ -795,10 +799,12 @@ def clear_registry_cache():
         return False
 
 def flush_volume_cache():
-    """冲刷所有卷的待写缓冲区（仅本地固定/可移动卷——网络盘/光驱冲刷对内存释放无意义且网络卷可能阻塞数秒）"""
+    """冲刷所有卷的待写缓冲区（仅本地固定/可移动卷——网络盘/光驱冲刷对内存释放无意义且网络卷可能阻塞数秒）。
+    返回真实执行结果：无任何卷成功打开时返回 False（2026-08-30 审查：原恒 True 使统计虚增）"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
         import string, os
+        flushed = False
         for letter in string.ascii_uppercase:
             vol = f"{letter}:\\"
             if not os.path.exists(vol):
@@ -809,7 +815,8 @@ def flush_volume_cache():
             if h and h != INVALID_HANDLE_VALUE:
                 k32.FlushFileBuffers(h)
                 k32.CloseHandle(h)
-        return True
+                flushed = True
+        return flushed
     except Exception:
         return False
 
@@ -968,7 +975,10 @@ def remove_auto_start(name):
 # ============================================================
 
 def tray_add(hwnd, uid, icon_handle, tip=""):
-    """添加系统托盘图标"""
+    """添加系统托盘图标。
+    NIM_ADD 成功后再 NIM_SETVERSION（微软官方样例顺序）——SETVERSION 先于 ADD
+    会因图标尚不存在静默失败（2026-08-30 实验：前置 FALSE(0x80004005)/后置 TRUE），
+    程序将始终运行在 legacy 回调格式。"""
     nid = NOTIFYICONDATA()
     nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd
@@ -977,11 +987,10 @@ def tray_add(hwnd, uid, icon_handle, tip=""):
     nid.uCallbackMessage = WM_TRAYICON
     nid.hIcon = icon_handle
     nid.szTip = tip[:127]
-    # NIM_SETVERSION MUST come before NIM_ADD (MSDN requirement)
     nid.uVer = 4  # NOTIFYICON_VERSION_4
-    Shell_NotifyIconW(0x00000004, ctypes.byref(nid))  # NIM_SETVERSION
-    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
-    return bool(Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)))
+    ok = bool(Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)))
+    Shell_NotifyIconW(0x00000004, ctypes.byref(nid))  # NIM_SETVERSION（ADD 后设置版本）
+    return ok
 
 def tray_modify(hwnd, uid, icon_handle, tip=""):
     """更新托盘图标"""
@@ -1046,14 +1055,6 @@ GetDIBits = gdi32.GetDIBits
 GetDIBits.argtypes = [w.HANDLE, w.HANDLE, w.UINT, w.UINT, ctypes.c_void_p, ctypes.c_void_p, w.UINT]
 GetDIBits.restype = w.INT
 
-def _dist_to_seg(px, py, x1, y1, x2, y2):
-    """点到线段的最短距离"""
-    dx, dy = x2 - x1, y2 - y1
-    if dx == 0 and dy == 0:
-        return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
-    t = max(0, min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
-    return ((px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2) ** 0.5
-
 def _dist_to_seg_hq(px, py, x1, y1, x2, y2):
     """返回 (距离, 最近点x, 最近点y)"""
     vx, vy = x2 - x1, y2 - y1
@@ -1067,20 +1068,6 @@ def _dist_to_seg_hq(px, py, x1, y1, x2, y2):
     t = c1 / c2
     nx, ny = x1 + t * vx, y1 + t * vy
     return math.hypot(px - nx, py - ny), nx, ny
-
-
-def _fit_m_scale(s, off_mult, soft_r, R):
-    """数值解最大 m_scale：M 最远角（左/右竖顶端）+ 软边 ≤ 圆盘半径，保证 M 不伸出圆外。
-    s 为目标像素/16；off_mult 控制重心下移；soft_r 为 M 软边半径；R 为圆盘半径（同单位）。"""
-    lo, hi = 0.30, 1.0
-    for _ in range(14):
-        ms = (lo + hi) / 2
-        d = math.hypot(6 * ms, 5 * ms + off_mult) * s  # 最远角 (lx,ty) 到圆心
-        if d + soft_r <= R:
-            lo = ms
-        else:
-            hi = ms
-    return lo
 
 
 def _draw_memwise_pixels_hq(size, buf, base_color=(62, 62, 72), off_mult=0.75, shadow=True, gradient=0.47, force_large=False):
@@ -1235,54 +1222,6 @@ def _draw_memwise_pixels_hq(size, buf, base_color=(62, 62, 72), off_mult=0.75, s
     return buf
 
 
-def _draw_memwise_pixels(size, buf, bg_color=(45,45,50)):
-    """在 buf（BGRA bytes）上画圆+M，bg_color 为 (R,G,B) 自动转 BGRA"""
-    # RGB → BGRA
-    bg = (bg_color[2], bg_color[1], bg_color[0])
-    cx = cy = size // 2
-    R = cx - 2
-    s = size / 16.0
-    # 圆背景
-    for y in range(size):
-        for x in range(size):
-            dx, dy = x - cx, y - cy
-            dist = (dx*dx + dy*dy) ** 0.5
-            i = (y * size + x) * 4
-            if dist > R + 0.5:
-                buf[i:i+4] = (0, 0, 0, 0)
-            elif dist > R - 1.5:
-                a = int(255 * (R + 0.5 - dist))
-                buf[i:i+4] = (*bg, max(0, min(255, a)))
-            else:
-                buf[i:i+4] = (*bg, 255)
-    # M 线段
-    segs = []
-    off = -2 * s
-    lx = -6 * s; rx = 6 * s
-    ty = -5 * s + off; by = 5 * s + off
-    mx = 0; my = 1 * s + off
-    segs.extend([(lx, ty, lx, by), (lx, ty, mx, my), (mx, my, rx, ty), (rx, ty, rx, by)])
-    thick = 1.5 * s
-    for y in range(size):
-        for x in range(size):
-            px, py = x - cx, y - cy
-            min_d = float('inf')
-            for x1, y1, x2, y2 in segs:
-                d = _dist_to_seg(px, py, x1, y1, x2, y2)
-                if d < min_d: min_d = d
-            if min_d < thick:
-                i = (y * size + x) * 4
-                a = 255 if min_d < thick * 0.4 else int(255 * (thick - min_d) / (thick * 0.6))
-                bg = buf[i+3]
-                if bg > 0:
-                    buf[i] = buf[i] * (255 - a) // 255 + 230 * a // 255
-                    buf[i+1] = buf[i+1] * (255 - a) // 255 + 235 * a // 255
-                    buf[i+2] = buf[i+2] * (255 - a) // 255 + 240 * a // 255
-                    buf[i+3] = min(255, bg + a)
-                else:
-                    buf[i:i+4] = (230, 235, 240, a)
-    return buf
-
 def create_memwise_ico_multi(path, sizes=(16, 24, 32, 48, 64, 128, 256), bg_color=(45, 45, 50)):
     """生成多尺寸 ICO（16-256 全套）——资源管理器大图标/任务栏/开始菜单/高 DPI 全清晰。
     256×256 按 ICO 规范用 PNG 压缩（zlib 手写，零第三方依赖）；小尺寸用 DIB（32bpp + AND 全透明蒙版）。
@@ -1327,37 +1266,6 @@ def create_memwise_ico_multi(path, sizes=(16, 24, 32, 48, 64, 128, 256), bg_colo
             f.write(data)
     return True
 
-
-def create_memwise_ico(path, size=32):
-    """直接生成 .ico 文件，不走 HICON 中转"""
-    import struct
-    row = ((size * 32 + 31) // 32) * 4  # 每行 32bpp 对齐到 4 字节
-    xor_size = row * size
-    # BGRA 像素（从底部行开始，ICO 存储是 bottom-up）
-    pixels = bytearray(xor_size)
-    buf = (ctypes.c_ubyte * len(pixels)).from_buffer(pixels)
-    _draw_memwise_pixels(size, buf)
-    # 交换 BGRA → 自底向上排列
-    bgra = bytearray(xor_size)
-    for y in range(size):
-        src_off = y * size * 4
-        dst_off = (size - 1 - y) * row
-        for x in range(size):
-            pi = src_off + x * 4
-            po = dst_off + x * 4
-            bgra[po:po+4] = pixels[pi:pi+4]
-    # AND 蒙版（32bpp 全零）
-    and_row = ((size + 31) // 32) * 4
-    and_mask = bytearray(and_row * size)
-    with open(path, "wb") as f:
-        f.write(struct.pack("<HHH", 0, 1, 1))
-        f.write(struct.pack("<BBBBHHII",
-                size if size < 256 else 0,
-                size if size < 256 else 0,
-                0, 0, 1, 32, len(bgra) + len(and_mask), 22))
-        f.write(bgra)
-        f.write(and_mask)
-    return True
 
 def _sharpen_bgra(buf, size, amount=0.8):
     """Unsharp 锐化（拉普拉斯 4 邻域）：只处理不透明像素，透明邻域不参与，避免边缘发暗。

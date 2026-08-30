@@ -1,4 +1,4 @@
-﻿# MemWise v4.2.024
+﻿# MemWise v4.3.034
 
 ## 关于本工具 · *About This Tool*
 
@@ -38,13 +38,13 @@ MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 12.8 MB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 11.4 MB），零外部依赖。
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
-*Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~12.8 MB executable.*
+*Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~11.4 MB executable.*
 
 *MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization at 60-second intervals in daemon mode. A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.*
 
@@ -56,9 +56,9 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.1 一键优化 · *One-Click Optimization*
 
-点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 全局热键中自定义），程序按当前选择的清理模式执行一次完整优化（三轮深度执行），并输出累计释放量。四种模式按力度真实分层：quick 仅轻量系统操作（零进程清理）、normal 进程加系统标准力度、deep 等待减半并启用系统级全清（中高压启用）、full 不等待立即全力清理（跳过活跃门槛，含每进程最大轮数与回弹二轮），最终显示对比优化前后的内存占用变化。守护运行中点击优化按钮，则按当前模式立即执行一轮即时优化（游戏模式时跳过，避免影响流畅）。
+点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 全局热键中自定义），程序按当前选择的清理模式执行一次完整优化（三轮深度执行），并输出累计释放量。四种模式按力度真实分层：quick 仅轻量系统操作（零进程清理）、normal 进程加系统标准力度、deep 等待减半并启用系统级全清（中高压启用）、full 不等待立即全力清理（跳过活跃门槛，含每进程最大轮数与回弹二轮），每轮完成即播报进度。完成后以结果卡整屏显示释放汇总、可用内存变化与释放最多的进程明细（零结果时如实明示）。守护运行中点击优化按钮，则按当前模式立即执行一轮即时优化（游戏模式时跳过，避免影响流畅），点击即有启动确认与候选预览。
 
-*Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Global Hotkeys). Runs a full optimization (three deep rounds) in the currently selected cleaning mode, with real intensity tiers: quick is system-only lightweight (no process trimming), normal adds process trimming at standard guard strictness, deep halves the waiting windows and enables the system-wide working-set flush at moderate-to-high usage, full skips waiting and activity gates entirely for maximum release (maximum rounds per process plus a rebound second pass). Displays the before-and-after memory delta. While Guard is running, the button triggers one immediate optimization round in the current mode (skipped in Game Mode to avoid impacting smoothness).*
+*Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Global Hotkeys). Runs a full optimization (three deep rounds) in the currently selected cleaning mode, with real intensity tiers: quick is system-only lightweight (no process trimming), normal adds process trimming at standard guard strictness, deep halves the waiting windows and enables the system-wide working-set flush at moderate-to-high usage, full skips waiting and activity gates entirely for maximum release (maximum rounds per process plus a rebound second pass); each round reports its progress as it completes. A result card then summarizes freed memory, the availability change, and the most-released processes (an empty run says so honestly). While Guard is running, the button triggers one immediate optimization round in the current mode (skipped in Game Mode to avoid impacting smoothness), with instant start confirmation and a candidate preview on click.*
 
 ### 1.2 守护模式（推荐）· *Daemon Mode (Recommended)*
 
@@ -265,7 +265,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 - **收益树**：Kalman 预期释放量（经上下文修正），权重最高
 - **压力树**：内存占用与趋势——高于 65% 加分、低于 30% 减分
 - **反事实树**：Kalman 预期释放量对比全体画像均值——高于均值 50MB 加分、20MB 小加分
-- **在线权重学习**：每轮清理后按"预测贡献 × 实际结果"调节各树权重（有界 ±2）——正贡献+成功升权重、正贡献+失败降权重、负贡献+成功降权重（可为负），使投票随经验收敛
+- **在线权重学习**：每轮清理后按"预测贡献 × 实际结果"调节各树权重（有界 ±2）——正贡献+成功升权重、正贡献+失败降权重、负贡献+成功降权重（可为负），使投票随经验收敛；权重随学习数据持久化，重启后沿用
 
 加权总分达模式阈值即通过（normal 0 / deep -1 / full -2，全负分仍拒绝）；deep/full 模式另设价值底线（θ ≥ 0.12/0.06），防完全无意义清理。
 
@@ -274,7 +274,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 - *Gain tree — Kalman-predicted gain (context-corrected), highest weight*
 - *Pressure tree — memory usage and trend: above 65% scores, below 30% penalizes*
 - *Counterfactual tree — Kalman gain vs. the profile average: 2 points if 50 MB above average, 1 point if 20 MB above*
-- *Online weight learning — per-tree weights (bounded ±2) adjust by "prediction contribution × outcome" after each trim; positive contribution + success raises a weight, positive + failure lowers it, negative + success lowers it too (weights may go negative), converging with experience*
+- *Online weight learning — per-tree weights (bounded ±2) adjust by "prediction contribution × outcome" after each trim; positive contribution + success raises a weight, positive + failure lowers it, negative + success lowers it too (weights may go negative), converging with experience; weights persist with the learned state and survive restarts*
 
 *Weighted total reaches the mode-graded threshold to pass (0 / −1 / −2 for normal/deep/full; all-negative totals still rejected); deep/full additionally enforce a value floor (θ ≥ 0.12/0.06) against meaningless cleanups.*
 
@@ -325,6 +325,10 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **场景自适应**：守护周期内自动检测运行场景（游戏/浏览器/开发/常规），场景切换时按 7:3 混合新场景参数并持久化，各场景独立调参互不干扰。
 
+**游戏态冻结**：游戏模式运行期间调参自动冻结——游戏周期的统计由保护机制刻意塑形（系统级操作抑制、试探禁用、非游戏进程限定），不具备调参归因意义，不进入任何参数组的评估窗口；游戏退出后从干净窗口恢复日常态调参，进程画像学习不受影响。
+
+**参数分组（模式 × 场景）**：EFIS 参数按"清理模式 × 运行场景"分组隔离（4×4=16 组，按需创建）——每个清理模式拥有独立的调参演进，切换模式互不污染，切回后沿用该模式自己的参数；每模式只调参本模式有实际作用面的参数（极限与深度模式不调深层触发门与锚点余量，极限模式不调深清门槛，quick 模式不参与进程参数调参；响应类参数在轻量阶段真实生效，各进程清理模式均参与调参），深度与极限模式使用更激进的科学初始值（更低的压力目标、更短的失败冷却、更灵敏的观测与更快的反馈适应），首次使用即接近目标；策略树权重同样按模式隔离。升级后旧调参数据自动迁移到常规模式组，其余模式从各自初始值开始。
+
 *EFIS is a 10-parameter closed-loop tuning engine spanning the entire system (9 auto-tuned plus kalman_r configurable).*
 
 *Parameter overview:*
@@ -348,13 +352,17 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 *Scene adaptation — the running scene (game/browser/development/general) is detected every daemon cycle; on scene switches, parameters blend 7:3 with the scene's saved values and persist, so each scene tunes independently.*
 
+*Game-mode freeze — tuning pauses automatically while Game Mode is active: game-period statistics are deliberately shaped by the protection mechanisms (system-level suppression, probes disabled, non-game processes only) and carry no tuning attribution, so they never enter any parameter group's evaluation window; daily tuning resumes from a clean window after the game exits, while per-process profile learning continues.*
+
+*Parameter grouping (mode × scene) — EFIS parameters are isolated per cleaning mode and scene (4×4 = 16 groups, created on demand). Each mode evolves its own tuning without cross-mode contamination, and switching back to a mode restores its own parameters. Each mode tunes only the parameters that actually take effect in it (ultimate/deep modes skip the deep-trigger gate and anchor margin, ultimate mode also skips the deep-clean threshold, quick mode does no process-level tuning; response-type parameters remain active in the gentle phase and stay tunable in every process-cleaning mode), and deep/ultimate start from scientifically aggressive initial values (lower usage targets, shorter failure cooldowns, more sensitive observation and faster feedback adaptation), reaching their targets from the first use. Policy tree weights are also isolated per mode. After upgrading, legacy tuning migrates to the normal-mode group; other modes start from their own initial values.*
+
 ---
 
 ## 6. 内存优先级管理 · *Memory Priority Management*
 
-系统通过 `NtSetInformationProcess` 直通向 OS 传递偏好级别：对高价值大进程（学习评分高且内存占用大）设置最低内存优先级——系统会更积极回收其物理内存页，**回填的页在压力下自动先被回收（零缺页代价的被动持续压缩）**。门槛按模式梯度：normal/deep 仅 θ≥0.5 且 WS≥100MB 的进程启用，**full 放宽到 θ≥0.3 且 WS≥50MB**（极限模式让更多进程的页被动压制回弹）；full 同时跳过 EcoQoS 节能标记并恢复存量标记（压缩池计入"正在使用"，极限模式以使用率为目标，压缩反而拖累）。游戏名单进程保持默认节能状态以确保游戏流畅。内存优先级真实生效（每进程仅设置一次）。这是操作系统层面的被动优化，不消耗额外 CPU 或 I/O。
+系统通过官方进程信息通道向 OS 传递偏好级别（可反复设置与恢复；不支持的系统自动回退一次性直通设置）：对高价值大进程（学习评分高且内存占用大）设置最低内存优先级——系统会更积极回收其物理内存页，**回填的页在压力下自动先被回收（零缺页代价的被动持续压缩）**。门槛按模式梯度：normal/deep 仅 θ≥0.5 且 WS≥100MB 的进程启用，**full 放宽到 θ≥0.3 且 WS≥50MB**（极限模式让更多进程的页被动压制回弹）；full 同时跳过 EcoQoS 节能标记并恢复存量标记（压缩池计入"正在使用"，极限模式以使用率为目标，压缩反而拖累）。游戏名单进程保持默认节能状态以确保游戏流畅。内存优先级真实生效，且支持随模式与状态变化重复调整与恢复。这是操作系统层面的被动优化，不消耗额外 CPU 或 I/O。
 
-*High-value large processes (high learning score, large memory footprint) receive the lowest memory priority via direct NtSetInformationProcess calls, so the OS reclaims their physical pages first — refilled pages are passively reclaimed under pressure with zero page-fault cost. The threshold scales by mode: normal/deep enable it only for θ≥0.5 with WS≥100 MB, while full relaxes it to θ≥0.3 with WS≥50 MB so more processes get passive refill suppression; full also skips EcoQoS power-throttling and restores any existing marks (the compressed-memory pool counts as "in use", which works against the ultimate mode's usage-rate goal). Game-list processes stay at the default state for smooth gaming. Memory priority takes effect on first application (set once per process). A passive OS-level optimization with zero CPU or I/O overhead.*
+*High-value large processes (high learning score, large memory footprint) receive the lowest memory priority through the official process-information channel (repeatable and restorable; systems without it fall back to a one-shot direct call), so the OS reclaims their physical pages first — refilled pages are passively reclaimed under pressure with zero page-fault cost. The threshold scales by mode: normal/deep enable it only for θ≥0.5 with WS≥100 MB, while full relaxes it to θ≥0.3 with WS≥50 MB so more processes get passive refill suppression; full also skips EcoQoS power-throttling and restores any existing marks (the compressed-memory pool counts as "in use", which works against the ultimate mode's usage-rate goal). Game-list processes stay at the default state for smooth gaming. Memory priority takes effect for real and supports repeated adjustment and restoration as modes and states change. A passive OS-level optimization with zero CPU or I/O overhead.*
 
 ---
 
@@ -447,13 +455,13 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 12. 日志系统 · *Logging System*
 
-主界面右侧为日志区域。每轮输出本轮释放量、系统操作次数、整理进程数、试探/成功数等关键指标。周期内的算法诊断消息（元认知校准、概念漂移、EFIS 调参等）被缓冲至周期末，与压力强度日志和汇总行批量输出——当前面板行数+批量条数>7 时自动清旧再显示。游戏检测/退出消息实时推送，按钮点击等交互消息走即时通道。
+主界面右侧为日志区域。每轮输出本轮释放量、系统操作次数、整理进程数、试探/成功数等关键指标。周期内的算法诊断消息（元认知校准、概念漂移、EFIS 调参等）被缓冲至周期末，与压力强度日志和汇总行批量输出。日志区采用**分组写入**：每个逻辑批次按实际行数整批原子输出，批间累计不超过 7 行时接续显示、超过则清屏后整批输出；单一批次本身可超过 7 行完整呈现，不会被滚动刷新截断。周期末成果（汇总、调参、压力强度、游戏检测、紧急触发等）合并为一个大批次一次性输出，同周期的各组始终完整同屏。游戏检测/退出消息实时推送，按钮点击等交互消息走即时通道。
 
-**统一运行日志**：除界面日志外，程序在数据目录维护统一日志 `memwise.log`（运行时数据统一存放于程序旁的 `data/` 目录），由设置中「记录运行日志到文件」开关总控——开启后按时间线记录运行期间全部有价值信息（启动/退出、每轮清理摘要、游戏模式决策、EFIS 调参、配置保存、未捕获异常与崩溃现场、诊断信息），关闭则不写任何日志。每条带毫秒时间戳与类别标签（`[启动][清理][决策][调参][配置][异常][系统][诊断][界面]`）。容量 2MB×2 份轮转（`memwise.log.1` 保留最近两份，自动删除最旧），线程安全写入不交错，运行时切换开关即时生效。旧版 `memwise_crash.log` 在首次开启时自动并入一次，历史现场不丢失。
+**统一运行日志**：除界面日志外，程序在数据目录维护统一日志 `memwise.log`（运行时数据统一存放于程序旁的 `data/` 目录），由设置中「记录运行日志到文件」开关总控——开启后按时间线记录运行期间全部有价值信息（启动/退出、每轮清理摘要、游戏模式决策、EFIS 调参、配置保存、未捕获异常与崩溃现场、诊断信息），关闭则不写任何日志。每条带毫秒时间戳与类别标签（`[启动][清理][决策][调参][配置][异常][系统][诊断][界面]`）。容量 2MB×2 份轮转（`memwise.log.1` 保留最近两份，自动删除最旧），线程安全写入不交错，运行时切换开关即时生效。**崩溃现场 `memwise_crash.log` 独立于该开关常驻记录**（线程级转储与未捕获异常，2MB 轮转），保证默认关日志时程序意外退出后仍有现场可查；每次开启统一日志时自动并入一次，历史现场不丢失。
 
-*The log panel outputs per-cycle key metrics — freed amount, system operation count, trimmed process count, and probe success rate. Intra-cycle diagnostic messages (meta-cognitive calibration, concept drift, EFIS tuning, deep-clean triggers) are buffered and flushed at cycle end together with the summary line. When the combined line count of the existing panel plus the new batch exceeds seven, old content is cleared before output, ensuring every message in the batch remains visible for at least one full cycle. Real-time messages (button clicks, game detection) continue to appear immediately.*
+*The log panel outputs per-cycle key metrics — freed amount, system operation count, trimmed process count, and probe success rate. Intra-cycle diagnostic messages (meta-cognitive calibration, concept drift, EFIS tuning, deep-clean triggers) are buffered and flushed at cycle end together with the summary line. The panel uses **grouped writes**: each logical batch is rendered atomically and counted by its actual rendered lines; batches keep appending while the running total stays within seven lines, and the panel clears before a batch that would exceed it — a single batch larger than seven lines is still rendered in full and never truncated mid-list. The cycle-end results (summary, tuning, pressure intensity, game detection, emergency triggers, etc.) are merged into one large batch rendered in a single pass, so every group of the same cycle stays on screen together. Real-time messages (button clicks, game detection) continue to appear immediately.*
 
-*Besides the on-screen panel, MemWise maintains a unified runtime log `memwise.log` in the data folder (all runtime data lives in the `data/` directory next to the program), controlled by the 「log to file」toggle in Settings — when enabled, it records every valuable event along a single timeline (startup/shutdown, per-cycle cleanup summaries, game-mode decisions, EFIS tuning, config saves, uncaught exceptions and crash dumps, diagnostics); when disabled, nothing is written. Each line carries a millisecond timestamp and a category tag (`[启动][清理][决策][调参][配置][异常][系统][诊断][界面]`). The file rotates at 2 MB with two generations (`memwise.log.1`), deleting the oldest automatically; writes are thread-safe and the toggle takes effect immediately at runtime. Legacy `memwise_crash.log` content is merged in once on first enable, so no history is lost.*
+*Besides the on-screen panel, MemWise maintains a unified runtime log `memwise.log` in the data folder (all runtime data lives in the `data/` directory next to the program), controlled by the 「log to file」toggle in Settings — when enabled, it records every valuable event along a single timeline (startup/shutdown, per-cycle cleanup summaries, game-mode decisions, EFIS tuning, config saves, uncaught exceptions and crash dumps, diagnostics); when disabled, nothing is written. Each line carries a millisecond timestamp and a category tag (`[启动][清理][决策][调参][配置][异常][系统][诊断][界面]`). The file rotates at 2 MB with two generations (`memwise.log.1`), deleting the oldest automatically; writes are thread-safe and the toggle takes effect immediately at runtime. **Crash dumps in `memwise_crash.log` are recorded permanently regardless of this toggle** (thread dumps and uncaught exceptions, 2 MB rotation), so a crash leaves an inspectable trace even with logging disabled by default; the dump is merged into the unified log once on first enable, so no history is lost.*
 
 ---
 
@@ -562,7 +570,8 @@ MemWise/
 │   ├── memwise_efis_state.json # EFIS 状态文件 · EFIS State
 │   ├── memwise_eris_ewma.json  # ERIS IQR 分位数窗持久化 · ERIS Quantile Window Persistence
 │   ├── watchdog.json           # 看门狗标记文件（自动管理）· Watchdog Marker
-│   └── memwise.log             # 统一运行日志（2MB×2 轮转）· Unified Runtime Log
+│   ├── memwise.log             # 统一运行日志（2MB×2 轮转）· Unified Runtime Log
+│   └── memwise_crash.log       # 崩溃现场记录（常驻，独立于日志开关）· Crash Dump
 ├── CHANGELOG.md                # 更新日志 · Changelog
 ├── README.md                   # 本文件 · This File
 ├── assets/icon.ico             # 程序图标 · Application Icon
@@ -586,7 +595,7 @@ MemWise/
 │   ├── eris.py                 # ERIS 效率评分纯函数（生产/测试共用）· ERIS Pure Functions
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py            # 回归测试（185 项断言）· Regression Suite
+│   └── test_v2.6.py            # 回归测试（282 项断言）· Regression Suite
 ```
 
 ---

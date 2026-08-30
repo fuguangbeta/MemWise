@@ -14,12 +14,12 @@ _ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
 def _mb(b):
     return b / (1 << 20)
 
-# PID 默认参数
+# PID 默认参数（与 config.DEFAULT_CFG 对齐，2026-08-30 审查 C：原 ki/kd 数值互换系历史遗留）
 DEFAULT_KP = 1.0    # 比例系数 — 响应当前压力 (更积极)
-DEFAULT_KI = 0.10   # 积分系数 — 消除稳态误差
-DEFAULT_KD = 0.15   # 微分系数 — 抑制震荡 (快速升压时提前响应)
+DEFAULT_KI = 0.15   # 积分系数 — 消除稳态误差
+DEFAULT_KD = 0.1    # 微分系数 — 抑制震荡 (快速升压时提前响应)
 TARGET_USAGE = 30.0  # 目标内存使用率 (%) — 对标 MemReduct 极致优化
-DT = 5.0             # 控制周期 (秒，匹配 daemon tick)
+DT = 5.0             # 控制周期参考值（预留：控制器按真实调用间隔取 dt，保留防未来启用）
 
 def _system_path_prefixes():
     """系统目录前缀（动态获取，非硬编码 C 盘——换机器/系统盘非 C 盘时依然有效）"""
@@ -507,10 +507,3 @@ class PareJudger:
             return False
         p = path.lower()
         return any(p.startswith(prefix) for prefix in _system_path_prefixes())
-
-
-
-
-    def reset_pid(self):
-        """重置 PID 控制器"""
-        self.pid.reset()

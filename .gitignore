@@ -13,6 +13,7 @@ scripts/release_*.py
 build/
 dist/
 /MemWise.exe
+nul
 
 # Python
 __pycache__/

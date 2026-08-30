@@ -1,9 +1,9 @@
 """
-MemWise v4.2.024 GUI —— 图形界面
+MemWise v4.3.034 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
-import os, sys, time, threading, tkinter as tk, math, queue, subprocess, concurrent.futures, datetime, atexit
+import os, sys, time, tkinter as tk, queue
 from collections import deque
 from tkinter import ttk, simpledialog, messagebox
 import ctypes
@@ -11,11 +11,11 @@ import ctypes.wintypes as w
 
 # ── 无 UI 引擎（守护循环/ERIS/轮次数据/事件队列）+ 共享基础设施（路径/日志/配置单例/格式化）──
 from core.engine import (
-    base, res_dir, CFG, STATE_FILE, _save_cfg,
+    base, CFG, STATE_FILE, _save_cfg,
     _log_write, _log_open, _log_close, _diag_log, _ERR,
     fmt_label, fmt_count, MemWiseEngine,
     _watchdog_path, _spawn_watchdog, _update_watchdog_daemon,
-    read_watchdog_daemon, remove_watchdog,
+    read_watchdog_daemon, remove_watchdog, _install_crash_sink,
 )
 
 from core import winapi
@@ -26,8 +26,7 @@ from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
 from core.sniffer import Sniffer
 from core.icon_flat import FLAT_48_PNG, decode_png  # 任务栏扁平图标（内嵌 PNG，冷启动 exe 兼容）
-from core.eris import iqr_dim, validate_state  # ERIS 纯函数核心（与回归测试共用）
-from core.i18n import tr, tr_msg, translate_all, set_language, LANGUAGES, get_language  # 界面语言
+from core.i18n import tr, tr_msg, set_language, LANGUAGES, get_language  # 界面语言
 
 # ── user32 图标/窗口句柄 API：必须声明 64 位位宽，否则 HICON 句柄被 c_int 截断 → WM_SETICON 静默失效（v3.4.19 图标失效根因）──
 _Usr32 = ctypes.windll.user32
@@ -42,9 +41,7 @@ _Usr32.GetParent.argtypes = [ctypes.c_void_p]
 _Usr32.SetWindowPos.restype = ctypes.c_int
 _Usr32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
 
-from core.config import load as _load_cfg
-from core.config import get_state_path
-import core.config as _config
+
 
 
 
@@ -54,6 +51,18 @@ def _normalize_proc_name(raw):
     if n and not n.endswith(".exe"):
         n += ".exe"
     return n
+
+
+# ── 日志面板分组写入语义（2026-08-30）：组间 ≤7 接续 / >7 清屏，组内可超 7 完整呈现 ──
+PANEL_MAX_LINES = 7  # 日志面板组间刷新阈值（行）
+
+def _msg_lines(msgs):
+    """一组消息的实际渲染行数（内嵌换行的消息按多行计——"实际多少行就多少行"）"""
+    return sum(m.count("\n") + 1 for m in msgs)
+
+def _panel_needs_clear(cur_lines, group_lines):
+    """组间刷新判定：累计 ≤7 接续显示；>7 清屏后整组输出"""
+    return cur_lines + group_lines > PANEL_MAX_LINES
 
 
 def _center_geometry(win, w, h, parent=None):
@@ -85,9 +94,9 @@ def _parse_hotkey(spec):
     try:
         parts = [x.strip().lower() for x in str(spec).split("+")]
     except Exception:
-        return None, None, "无法识别"
+        return None, None, tr_msg("无法识别")
     if not parts or not any(parts):
-        return None, None, "不能为空"
+        return None, None, tr_msg("不能为空")
     key_count = 0
     for p in parts:
         if p in ("ctrl", "control"):
@@ -103,39 +112,12 @@ def _parse_hotkey(spec):
         else:
             return None, None, tr_msg(f"无法识别按键「{p}」（需 ctrl/alt/shift + 单字母或 F1-F24）")
     if key_count > 1:
-        return None, None, "只能包含一个按键（修饰键 + 单字母或 F1-F24）"
+        return None, None, tr_msg("只能包含一个按键（修饰键 + 单字母或 F1-F24）")
     if not has_mod:
-        return None, None, "至少需要一个修饰键（ctrl/alt/shift）"
+        return None, None, tr_msg("至少需要一个修饰键（ctrl/alt/shift）")
     if key is None:
-        return None, None, "缺少按键（单字母或 F1-F24）"
+        return None, None, tr_msg("缺少按键（单字母或 F1-F24）")
     return mods, key, None
-
-
-# ── EFIS 诊断输入辅助（守护周期构造 stats 用，全部现成数据零新增采集）──
-def _prof_theta_mean(learner):
-    ps = [p for p in learner.profiles.values() if p.total_samples >= 2]
-    return sum(p.thompson_theta for p in ps) / len(ps) if ps else 0.3
-
-def _prof_theta_above(learner):
-    ps = [p for p in learner.profiles.values() if p.total_samples >= 2]
-    return sum(1 for p in ps if p.thompson_theta > 0.6) / len(ps) if ps else 0.0
-
-def _drain_pf_delta(judger):
-    v = getattr(judger, "pf_delta_total", 0)
-    judger.pf_delta_total = 0
-    return v
-
-def _emergency_active(m):
-    """紧急触发判定：使用率≥阈值，或可用百分比≤绝对阈值（emergency_abs_pct，默认 0=禁用——
-    配置弹性：用户把使用率阈值调高时，可用内存过低仍兜底触发）"""
-    if not m:
-        return False
-    if m.get("pct", 0) >= CFG.get("emergency_threshold", 80):
-        return True
-    ap = CFG.get("emergency_abs_pct", 0) or 0
-    if ap > 0 and m.get("total") and m.get("avail"):
-        return m["avail"] / m["total"] * 100 <= ap
-    return False
 
 
 # 托盘和热键常量
@@ -184,9 +166,13 @@ def _wnd_proc(hwnd, msg, wp, lp):
                 pass
             return winapi.CallWindowProcW(_orig_wndproc, hwnd, msg, wp, lp)
         if msg == winapi.WM_TRAYICON and _gui_ref is not None:
-            if lp in (0x201, 0x202, 0x203):
+            # LOWORD 解析（2026-08-30 审查）：legacy 格式 lParam=事件原值、v4 格式
+            # HIWORD=uID——低字在两种格式下均为事件值，与托盘 ADD→SETVERSION（文档
+            # 顺序，2026-08-30 修正）配套后无论 Shell 实际采用何种格式均正确
+            ev = lp & 0xFFFF
+            if ev in (0x201, 0x202, 0x203):
                 _tray_action = 'left'
-            elif lp in (0x205, 0x007B):
+            elif ev in (0x205, 0x007B):
                 _tray_action = 'right'
             return 0
         if msg == WM_HOTKEY and wp == HOTKEY_ID and _gui_ref is not None:
@@ -315,6 +301,9 @@ def _activate_existing_instance():
 
 class MemWiseGUI:
     def __init__(self):
+        # 常驻崩溃现场（2026-08-30）：独立于「记录运行日志到文件」开关——默认关日志的
+        # 分发用户崩溃后仍有 data/memwise_crash.log 可反馈（看门狗子进程不安装）
+        _install_crash_sink()
         if CFG.get("log_to_file"):
             _log_open()  # 统一日志：按「记录运行日志到文件」开关开启（关=完全不写）
         global _gui_ref
@@ -346,7 +335,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.2.024")
+        self.root.title("MemWise v4.3.034")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -372,6 +361,9 @@ class MemWiseGUI:
         self.judger = Judger(self.learner, jcfg)
         self.cleaner = Cleaner(self.judger)
         self.efis = EfisController(STATE_FILE)
+        # 启动按当前清理模式取参（2026-08-16 模式参数组：16 组中取 CFG 模式对应组，
+        # 与守护周期末同步口径一致）
+        self.efis.set_mode(CFG.get("clean_mode", "normal"))
         # 启动即用 EFIS 持久化参数对齐运行时消费方（config.yaml 可能滞后于 efis_state.json）
         self.judger.cfg["efis_params"] = self.efis.get_params()
         # CFG 同步同一来源：否则守护热加载（mtime 变化）会把 config.yaml 旧值覆盖回 judger.cfg
@@ -392,13 +384,14 @@ class MemWiseGUI:
         # 消息队列 = 引擎事件队列（动作格式完全复用——消费端 _poll_msg_queue 零改动）
         self._msg_queue = self.engine.events
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
+        self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
         self._mem_pct = 0
 
         self._build_ui()
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.2.024 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.3.034 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
@@ -452,7 +445,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.2.024")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.3.034")
                     if fw:
                         top = fw
                 except Exception:
@@ -496,12 +489,14 @@ class MemWiseGUI:
             time.sleep(0.5)
             ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, tr("MemWise — 智能内存看护"))
 
-    def _apply_hotkeys(self, initial=False):
+    def _apply_hotkeys(self, initial=False, changed=None):
         """按配置重注册全部全局热键（统一入口：注销→逐项解析→冲突检测→逐个注册）。
         非法/冲突/被占用时本次使用默认值并提示，不写回 CFG（保留用户配置下次启动再试）；
-        initial=True 为启动路径，静默细节差异"""
+        initial=True 为启动路径静默；changed=本次实际变更的配置键集合——仅这些键注册
+        成功后报"已设为"（2026-08-30 审查 C5：原对全部键重复播报，未变更键也报）"""
         try:
             hwnd = int(self.root.winfo_id())
+            changed = changed or set()
             for hk in HOTKEYS:
                 winapi.unregister_hotkey(hwnd, hk["id"])
             # 逐项解析（非法 → 本次用默认）
@@ -522,7 +517,7 @@ class MemWiseGUI:
             # 逐个注册
             for hk, mods, vk in pairs:
                 if winapi.register_hotkey(hwnd, hk["id"], mods, vk):
-                    if not initial:
+                    if not initial and hk["key"] in changed:
                         self._log(f"{hk['name']}热键已设为 {CFG.get(hk['key'], hk['default'])}")
                 else:
                     self._log(f"⚠ {hk['name']}热键注册失败（可能被其他程序占用）: {CFG.get(hk['key'], hk['default'])}")
@@ -532,34 +527,28 @@ class MemWiseGUI:
             pass
 
     def _update_tray_status(self, pct):
-        """根据内存使用率和守护状态更新托盘图标颜色（4档匹配内存条）"""
-        pct_icon_handle = winapi.create_tray_percent_icon(pct)
+        """根据内存使用率和守护状态更新托盘图标颜色（4档匹配内存条；
+        百分比数字图标同样按档位着色——2026-08-30 审查：原恒绿色与四档承诺不符）"""
         if self.engine.daemon_running:
             if pct >= 90:
-                icon = pct_icon_handle or self._get_colored_icon("high", ICO_HIGH)
-                tip = tr_msg(f"🔴 守护中 {pct}% — 内存紧张")
+                _fb, _color, tip = "high", ICO_HIGH, tr_msg(f"🔴 守护中 {pct}% — 内存紧张")
             elif pct >= 75:
-                icon = pct_icon_handle or self._get_colored_icon("mid2", ICO_ORANGE)
-                tip = tr_msg(f"🟠 守护中 {pct}% — 内存偏高")
+                _fb, _color, tip = "mid2", ICO_ORANGE, tr_msg(f"🟠 守护中 {pct}% — 内存偏高")
             elif pct >= 60:
-                icon = pct_icon_handle or self._get_colored_icon("mid", ICO_MID)
-                tip = tr_msg(f"🟡 守护中 {pct}% — 内存偏高")
+                _fb, _color, tip = "mid", ICO_MID, tr_msg(f"🟡 守护中 {pct}% — 内存偏高")
             else:
-                icon = pct_icon_handle or self._get_colored_icon("low", ICO_LOW)
-                tip = tr_msg(f"🟢 守护中 {pct}% — 正常")
+                _fb, _color, tip = "low", ICO_LOW, tr_msg(f"🟢 守护中 {pct}% — 正常")
         else:
             if pct >= 90:
-                icon = self._get_colored_icon("idle_high", ICO_HIGH)
-                tip = tr_msg(f"内存 {pct}% — 紧张")
+                _fb, _color, tip = "idle_high", ICO_HIGH, tr_msg(f"内存 {pct}% — 紧张")
             elif pct >= 75:
-                icon = self._get_colored_icon("idle_mid2", ICO_ORANGE)
-                tip = tr_msg(f"内存 {pct}% — 偏高")
+                _fb, _color, tip = "idle_mid2", ICO_ORANGE, tr_msg(f"内存 {pct}% — 偏高")
             elif pct >= 60:
-                icon = self._get_colored_icon("idle_mid", ICO_MID)
-                tip = tr_msg(f"内存 {pct}% — 偏高")
+                _fb, _color, tip = "idle_mid", ICO_MID, tr_msg(f"内存 {pct}% — 偏高")
             else:
-                icon = self._get_colored_icon("idle", ICO_IDLE)
-                tip = tr_msg(f"内存 {pct}%")
+                _fb, _color, tip = "idle", ICO_IDLE, tr_msg(f"内存 {pct}%")
+        pct_icon_handle = winapi.create_tray_percent_icon(pct, color=_color)
+        icon = pct_icon_handle or self._get_colored_icon(_fb, _color)
         # 释放旧图标防止 GDI 泄漏（长期运行崩溃根因）
         # 仅成功创建时轮换：失败（None）时保留旧句柄继续复用，避免句柄被丢弃泄漏
         try:
@@ -624,10 +613,6 @@ class MemWiseGUI:
                 self.root.after(50, self._do_exit)
         except Exception:
             pass
-
-    def _minimize_to_tray(self):
-        self.root.withdraw()
-        self._minimized_to_tray = True
 
     def _show_window(self):
         """恢复主窗口 — 在 Tkinter 事件循环中安全调用"""
@@ -736,10 +721,6 @@ class MemWiseGUI:
         """热键配置 → 显示文案（如 ctrl+shift+m → Ctrl+Shift+M）"""
         spec = CFG.get(key, "ctrl+shift+m" if key == "hotkey" else "ctrl+shift+g")
         return "+".join(p.capitalize() for p in str(spec).split("+"))
-
-    def _interval_display(self):
-        """守护周期显示文案（配置驱动，默认 60）"""
-        return int(CFG.get("interval", 60))
 
     def _build_ui(self):
         # 内存状态 (Canvas 彩色条)
@@ -1319,10 +1300,12 @@ class MemWiseGUI:
                     if m2 == mods and v2 == vk:
                         st.config(text=tr_msg(f"与「{hk2['name']}」冲突"))
                         return
+                old = CFG.get(hk["key"], hk["default"])
                 CFG[hk["key"]] = spec
                 _save_cfg()
                 st.config(text=tr("已生效"))
-                self._apply_hotkeys()
+                # 只报实际变更的键（2026-08-30 审查 C5：未变更键不再重复播报）
+                self._apply_hotkeys(changed={hk["key"]} if spec != old else set())
             e.bind("<FocusOut>", commit)
             e.bind("<Return>", commit)
             tip = (f"{hk['name']}全局快捷键\n\n"
@@ -1741,7 +1724,8 @@ class MemWiseGUI:
                 for s in snaps:
                     ws_mb = s.priv / (1 << 20)
                     p = self.learner.get_profile(s.name)
-                    learned = "✓" if p and p.total_samples >= 3 else ""
+                    # 已学习标记与学习日志同口径（≥2 样本，2026-08-30 审查：原 3 两处不一致）
+                    learned = "✓" if p and p.total_samples >= 2 else ""
                     tree.insert("", "end", values=(
                         s.name, s.pid, f"{ws_mb:.0f} MB",
                         f"{s.cpu:.1f}%", learned))
@@ -1762,49 +1746,50 @@ class MemWiseGUI:
 
     # ---- 日志 / 状态 ----
 
-    def _log_op(self, m):
-        # 显示层翻译（tr_msg）；原文入历史缓存（切换语言时重渲染）；日志文件保留原文（诊断一致性）
-        self._log_history.append(m)
-        self.log.configure(state="normal")
-        self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {tr_msg(m)}\n"); self.log.see("end")
-        self.log.configure(state="disabled")
-        if CFG.get("log_to_file"):
-            _log_write("界面", m)
-
-    def _log_batch(self, msgs, to_file=True):
-        """周期末批量输出：当前行数+批量>7则清旧，再逐条输出。
-        to_file=False 为纯显示模式（周期摘要/EFIS 消息已有 [清理]/[调参] 直写，避免双通道重复落盘）"""
+    def _write_group(self, msgs, to_file=True):
+        """分组原子写入日志面板（2026-08-30 分组语义，三种写入路径统一走此原语）：
+        · 组 = 逻辑上同批的消息集合，一次清屏判断后整组输出，绝不逐行判断
+          （防组内前半截被清屏自食——原逐行 _log 输出名单实测只剩最后 1-2 个）
+        · 组行数按实际渲染行数计（内嵌换行的消息按多行计，"实际多少行就多少行"）
+        · 组间规则：面板现有行数 + 组行数 ≤7 → 接续输出；>7 → 清屏后整组输出
+        · 组内可超 7 行：大组（结果卡/守护批量）清屏后全部行完整呈现，不被阈值截断
+        · 连续完全相同的单条消息跳过（2026-08-30：启动观察消息实测重复，去重守卫）
+        历史缓存照常累积（语言切换重渲染源）；to_file=False 为纯显示模式
+        （周期摘要/EFIS 消息已有 [清理]/[调参] 直写，避免双通道重复落盘）"""
+        # 连续重复去重：单条消息与上一条完全相同则跳过
+        if len(msgs) == 1 and msgs[0] == self._last_msg:
+            return
         for m in msgs:
             self._log_history.append(m)
         self.log.configure(state="normal")
         try:
-            cur_lines = int(self.log.index('end-1c').split('.')[0])
+            # Tk Text 末尾恒有隐式终止行：end-1c 比可见行数大 1——减 1 得真实可见行数
+            # （旧三路径各自带此偏置判断，阈值实际漂移 1 行；2026-08-30 统一修正）
+            cur_lines = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
         except Exception:
             cur_lines = 0
-        if cur_lines + len(msgs) > 7:
+        if _panel_needs_clear(cur_lines, _msg_lines(msgs)):
             self.log.delete("1.0", "end")
         for m in msgs:
             self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {tr_msg(m)}\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+        self._last_msg = msgs[-1] if msgs else None
         if to_file and CFG.get("log_to_file"):
             for m in msgs:
                 _log_write("界面", m)
 
+    def _log_op(self, m):
+        """即时事件（单行组）——分组语义见 _write_group"""
+        self._write_group([m])
+
+    def _log_batch(self, msgs, to_file=True):
+        """批量组输出——分组语义见 _write_group"""
+        self._write_group(msgs, to_file)
+
     def _log(self, m):
-        """实时日志：>7行则清旧再输出"""
-        self._log_history.append(m)
-        self.log.configure(state="normal")
-        try:
-            cur_lines = int(self.log.index('end-1c').split('.')[0])
-        except Exception:
-            cur_lines = 0
-        if cur_lines > 7:
-            self.log.delete("1.0", "end")
-        self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {tr_msg(m)}\n"); self.log.see("end")
-        self.log.configure(state="disabled")
-        if CFG.get("log_to_file"):
-            _log_write("界面", m)
+        """实时日志（单行组）——分组语义见 _write_group"""
+        self._write_group([m])
 
     def _rerender_log(self):
         """语言切换后按新语言重渲染日志面板——按切换前可见行数取历史尾部
@@ -1851,7 +1836,13 @@ class MemWiseGUI:
                 action, args = self._msg_queue.get_nowait()
                 if action == 'log': self._log(args)
                 elif action == 'log_batch': self._log_batch(args)
-                elif action == 'display': self._log_batch(args, to_file=False)  # 仅显示：内容已有 [清理]/[调参] 直写落盘
+                if action == 'log': self._log(args)
+                elif action == 'log_batch': self._log_batch(args)
+                elif action == 'display_groups':
+                    # 周期末打包整体（2026-08-30 修正）：所有子组合并为一个大整体做一次
+                    # 清屏判定——大整体对外遵循组间规则（现有行数+总行数>7 → 清屏），
+                    # 大整体内部零刷新、全部行完整输出；否则同周期内前几个组会被后组清掉
+                    self._write_group([m for g in args for m in g], to_file=False)  # 仅显示：内容已有 [清理]/[调参] 直写落盘
                 elif action == 'log_op': self._log_op(args)
                 elif action == 'chart':
                     self._drawing_chart = False  # 异常恢复：防止标志永锁
@@ -2150,16 +2141,6 @@ class MemWiseGUI:
         c.addtag_withtag("chart_tip", "chart_tip_rect")
         c.addtag_withtag("chart_tip", "chart_tip_text")
 
-    def _fmt_label(self, v):
-        if abs(v) >= 1000:
-            return f"{v/1024.0:.1f}GB"
-        return f"{v:.1f}MB"
-
-    def _fmt_count(self, n):
-        if n >= 1000:
-            return f"{n/1000:.1f}k"
-        return str(n)
-
     def _chart_hide_tip(self, event):
         self.chart_canvas.delete("chart_tip")
 
@@ -2195,12 +2176,15 @@ class MemWiseGUI:
                 self._log("游戏进行中，跳过手动清理以保障流畅")
                 return
             self._once_optimizing = True  # 防连点排队多轮即时优化（_opt_done 统一复位）
+            # 即时反馈（2026-08-30）：守护分支原点击后零提示，完成前数秒界面无响应痕迹
+            self._log_op(tr_msg(f"⚡ 即时优化（{CFG.get('clean_mode', 'normal')}）已启动"))
+            self.lbl_st["text"] = tr("⚡ 即时优化中…")  # 下一守护周期 upd_ui 自动恢复
             self.engine.optimize_manual_once(CFG.get("clean_mode", "normal"),
                                              CFG.get("clean_operations"))
             return
         self._optimizing = True
         self.btn_opt.configure(state="disabled"); self.lbl_st["text"] = tr("优化中...")
-        self._log_op(tr("开始优化..."))
+        self._log_op(tr_msg(f"开始优化（{CFG.get('clean_mode', 'normal')}·三轮）…"))
         self.engine.optimize_manual_async(CFG.get("clean_mode", "normal"),
                                           CFG.get("clean_operations"))
 
@@ -2208,8 +2192,23 @@ class MemWiseGUI:
         self._once_optimizing = False  # 即时优化完成/异常均发 opt_done，此处统一复位
         s = self.cleaner.summary()
         trimmed = [t for t in result.get("layer2", []) if t[1]]
-        for snap, ok, freed, reason in trimmed[:10]:
-            self._log(f"  ✓ {snap.name} (PID={snap.pid}) {freed/(1<<20):.0f}MB — {reason}")
+        released = result.get("released", 0.0)
+        net = result.get("net", 0)
+        p0, p1 = result.get("pct0"), result.get("pct1")
+        # 结果卡（2026-08-30）：单批次整卡替换面板——原逐行 _log 会被 7 行清屏阈值
+        # 自食（实测 10 个名字最终只剩 1-2 个可见），整卡输出名单恒完整；
+        # 名单按单进程释放量降序取头部（用户最关心谁被清得最多）+ 余量聚合行
+        pct_str = f"（可用 {p0}%→{p1}%）" if p0 is not None and p1 is not None else ""
+        card = [f"⚡ {result.get('mode', '')} 优化完成 · 释放 {released:.0f} MB"
+                f" · 净下降 {net / (1 << 20):.0f} MB{pct_str}"]
+        by_freed = sorted(trimmed, key=lambda t: -t[2])
+        for snap, _ok, freed, _reason in by_freed[:4]:
+            card.append(f"  ✓ {snap.name} (PID={snap.pid}) {freed / (1 << 20):.0f} MB")
+        if len(by_freed) > 4:
+            card.append(tr_msg(f"✓ 其余 {len(by_freed) - 4} 个进程"))
+        elif not by_freed:
+            card.append(tr("没有找到值得清理的进程（全部受保护或无闲置内存）"))
+        self._log_batch(card, to_file=True)
         # 统计栏始终显示程序运行以来累计总量
         winapi.report_event("MemWise", f"GUI 优化: {s['freed_mb']}MB 释放, {len(trimmed)} 进程")
         self._upd_stats()
@@ -2222,7 +2221,7 @@ class MemWiseGUI:
 
     # ---- 守护 ----
 
-    def _on_daemon(self):
+    def _on_daemon(self, log_msg=None):
         if self.engine.daemon_running: return
         if self._optimizing:
             self._log_op("手动优化进行中，请等待完成后再启动守护")
@@ -2231,7 +2230,8 @@ class MemWiseGUI:
             self._log_op("上一守护线程仍在收尾，请稍候再试")
             return
         self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
-        self.lbl_st["text"] = tr("守护运行中"); self._log_op(tr("守护模式启动"))
+        self.lbl_st["text"] = tr("守护运行中")
+        self._log_op(log_msg or tr("守护模式启动"))  # 崩溃恢复路径传恢复文案（单条不重复）
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
@@ -2255,8 +2255,9 @@ class MemWiseGUI:
         err = getattr(self.engine, '_dae_error', None)
         if err:
             self.lbl_st["text"] = "⚠ 守护异常"
-            self._log_op(tr("❌ 守护异常，详见下方错误信息"))
-            self._log(f"🔍 {err}")
+            # 同批原子输出（2026-08-30 分组语义）：头行+详情一组——拆散时边界下面板
+            # 恰满 6 行会让 ❌ 头行被滚动清掉、只剩详情
+            self._log_batch([tr("❌ 守护异常，详见下方错误信息"), f"🔍 {err}"])
             del self.engine._dae_error
         else:
             self.lbl_st["text"] = tr("就绪 · ") + self._hk_display(); self._log_op(tr("守护已停止"))
@@ -2304,11 +2305,11 @@ class MemWiseGUI:
             self._do_exit()
 
     def _maybe_restore_daemon(self):
-        """崩溃恢复：仅当 watchdog.json 记录崩溃前守护运行中才自动续守护"""
+        """崩溃恢复：仅当 watchdog.json 记录崩溃前守护运行中才自动续守护。
+        恢复提示单条合并（2026-08-30 审查 C2：原"守护模式启动"+"从崩溃中恢复"两条语义重叠）"""
         try:
             if read_watchdog_daemon():
-                self._on_daemon()
-                self._log_op("🔄 从崩溃中恢复 — 守护模式已自动继续")
+                self._on_daemon(log_msg=tr("🔄 从崩溃中恢复 — 守护模式已自动继续"))
         except Exception:
             pass
 

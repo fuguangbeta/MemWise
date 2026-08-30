@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.2.024 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.3.034 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -807,9 +807,8 @@ check("engine 共享快照 _snap", "def _snap" in _eng_src and "_last_snaps" in 
 set_language("en")
 check("T15 作保留键", any("作保留" in k for k in _EN_A))
 check("完成键", tr("完成") == "Done")
-check("即时优化翻译", tr_msg("⚡ 即时优化（full）完成 · 清理 5 个进程 · 释放 100.0 MB")
-      == "⚡ Instant optimize (full) done · cleaned 5 processes · freed 100.0 MB",
-      tr_msg("⚡ 即时优化（full）完成 · 清理 5 个进程 · 释放 100.0 MB"))
+check("即时优化翻译", tr_msg("⚡ 即时优化（full）已启动") == "⚡ Instant optimize (full) started",
+      tr_msg("⚡ 即时优化（full）已启动"))
 check("热键 tooltip 首行键", "手动优化全局快捷键" in _EN_A and "游戏模式开关全局快捷键" in _EN_A)
 check("管理员自启日志键", "管理员权限开机自启已启用" in _EN_A and "管理员权限开机自启已关闭" in _EN_A)
 check("T6 八分区键", "  窗口与托盘 — 关闭按钮行为、托盘左键行为" in _EN_A
@@ -820,6 +819,76 @@ check("T6 八分区键", "  窗口与托盘 — 关闭按钮行为、托盘左�
       and "触发与日志" not in _EN_A)
 check("托盘初始 tip 键", "MemWise — 智能内存看护" in _EN_A)
 set_language("zh_CN")
+
+print("\n[25] 模式×场景参数组隔离（2026-08-16 用户定稿）")
+from core.efis import MODE_DEFAULTS, MODE_TUNE_WHITELIST
+# ── 激进初始值与调参白名单 ──
+check("deep 初始 target_usage=45", MODE_DEFAULTS["deep"].get("target_usage") == 45)
+check("full 初始 target_usage=35", MODE_DEFAULTS["full"].get("target_usage") == 35)
+check("deep 初始 pid_kp=0.8", MODE_DEFAULTS["deep"].get("pid_kp") == 0.8)
+check("full 白名单 7 参数", MODE_TUNE_WHITELIST["full"] ==
+      ["pid_kp", "pid_kd", "target_usage", "cooloff_base", "learning_rate", "composite_kalman_w", "kalman_r"])
+check("deep 白名单排除 L3 门与锚点", "layer3_agg_gate" not in MODE_TUNE_WHITELIST["deep"]
+      and "anchor_margin" not in MODE_TUNE_WHITELIST["deep"] and len(MODE_TUNE_WHITELIST["deep"]) == 8)
+check("quick 白名单空", MODE_TUNE_WHITELIST["quick"] == [])
+# ── 16 组隔离:normal 调参不污染 full、切回 normal 参数保持 ──
+_ef25 = EfisController(state_path=None)
+def _osc25(mode, i):
+    return {"mem_pct": 50 + (i % 2) * 30, "trimmed_cnt": 10, "failed_cnt": 2,
+            "total_attempts": 12, "cycle_freed": 500, "snaps": [], "fore_fullscreen": False,
+            "cycle_duration": 60, "pf_delta": 0, "deepen_cnt": 0, "deepen_extra": 0,
+            "layer3_ran": 0, "layer3_extra": 0, "cooldown_cnt": 0, "repeat_fail": 0,
+            "theta_mean": 0.5, "theta_above_06": 0.3, "agg": 0.6, "mode": mode}
+for i in range(10):
+    _ef25.tick(_osc25("normal", i))
+_pid_n = _ef25.get_params("normal")["pid_kp"]
+check("normal 振荡后 pid_kp 下降", _pid_n < 0.6, f"pid_kp={_pid_n}")
+check("full 组初始 pid_kp 未被污染", _ef25.get_params("full")["pid_kp"] == 0.6, f"pid_kp={_ef25.get_params('full')['pid_kp']}")
+# full 低压振荡(30/40):只触发 pid_kp 症状,不与 full 组 target_usage=35 的反向调整冲突
+for i in range(10):
+    s25 = _osc25("full", i)
+    s25["mem_pct"] = 30 + (i % 2) * 10
+    _ef25.tick(s25)
+check("full 白名单外 deepen_theta 不变", _ef25.get_params("full")["deepen_theta"] == 0.6,
+      f"deepen_theta={_ef25.get_params('full')['deepen_theta']}")
+check("full 组 pid_kp 可调(白名单内,gap 阶段消费)", _ef25.get_params("full")["pid_kp"] < 0.6,
+      f"pid_kp={_ef25.get_params('full')['pid_kp']}")
+check("normal 组不受 full 调参影响", abs(_ef25.get_params("normal")["pid_kp"] - _pid_n) < 1e-9,
+      f"normal pid_kp={_ef25.get_params('normal')['pid_kp']}")
+# ── v3 → v4 迁移 ──
+_tmp25 = os.path.join(tempfile.mkdtemp(), "state.json")
+_tmp25e = _tmp25.replace("state.json", "efis_state.json")
+with open(_tmp25e, "w", encoding="utf-8") as f:
+    json.dump({"efis": {"version": 3, "params": {"pid_kp": 0.9, "target_usage": 55},
+                        "scene_params": {"general": {"pid_kp": 0.7}, "browser": {"pid_kp": 0.8}},
+                        "current_scene": "general", "scene_stable": 3, "cycle_count": 7,
+                        "symptoms": {}, "adjust_log": []}}, f)
+_efm25 = EfisController(_tmp25)
+check("v3 迁移:normal.general 用旧全局参数", _efm25.get_params("normal")["pid_kp"] == 0.9
+      and _efm25.get_params("normal")["target_usage"] == 55, str(_efm25.get_params("normal")))
+check("v3 迁移:current_scene 组不被场景历史覆盖", _efm25._group("normal", "general")["params"]["pid_kp"] == 0.9,
+      str(_efm25._group("normal", "general")["params"]["pid_kp"]))
+check("v3 迁移:非当前场景组独立保留", _efm25._group("normal", "browser")["params"]["pid_kp"] == 0.8,
+      str(_efm25._group("normal", "browser")["params"]["pid_kp"]))
+check("v3 迁移:deep 组用模式初始值", _efm25.get_params("deep")["target_usage"] == 45)
+# v4 current_scene 持久化往返（审查 P10）
+_efs25 = EfisController(state_path=_tmp25)
+_efs25.current_scene = "browser"
+_efs25.save()
+_efs25b = EfisController(state_path=_tmp25)
+check("v4 current_scene 往返", _efs25b.current_scene == "browser", _efs25b.current_scene)
+os.remove(_tmp25e)
+# ── Policy 树权重 4 组隔离 ──
+_pv25 = PolicyVoter()
+_pv25.set_mode("normal")
+_pv25.update_weights_per_trim([2, 0, 0, 0, 0], True)
+_w_norm = _pv25._mode_weights["normal"][0]
+check("normal 组权重上升", _w_norm > 1.0, f"w={_w_norm}")
+_pv25.set_mode("full")
+check("full 组权重初始 1.0", _pv25._mode_weights["full"][0] == 1.0)
+_pv25.update_weights_per_trim([2, 0, 0, 0, 0], False)
+check("full 组权重独立下降", _pv25._mode_weights["full"][0] < 1.0)
+check("normal 组权重不受 full 学习影响", abs(_pv25._mode_weights["normal"][0] - _w_norm) < 1e-9)
 
 # ── 守护运行中手动即时优化：exec_lock 互斥 + optimize 壳转发 + _manual_run 生命周期 ──
 import threading as _th
@@ -857,7 +926,269 @@ c_x2.optimize = _orig_opt
 check("once 执行期间 _manual_run=True", _manual_seen == [True], str(_manual_seen))
 check("once 结束后 _manual_run 复位", c_x2._manual_run is False)
 _evs = [m for t, m in list(eng_x.events.queue)]
-check("once 输出即时优化日志", any("即时优化" in m for m in _evs), str(_evs))
+check("once 输出即时优化载荷", any(isinstance(m, dict) and m.get("mode") == "full"
+                                   and "released" in m for m in _evs), str(_evs)[:120])
+
+print("\n[26] 2026-08-30 全量审查批次回归")
+import re as _re26, threading as _th26
+_ROOT26 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _src26(*parts):
+    return open(os.path.join(_ROOT26, *parts), encoding="utf-8").read()
+_wa26_src = _src26("core", "winapi.py")
+_gui26_src = _src26("memwise_gui.py")
+_mw26_src = _src26("memwise.py")
+_eng26_src = _src26("core", "engine.py")
+_i18n26_src = _src26("core", "i18n.py")
+_lm26_src = _src26("core", "learner.py")
+_meta26_src = _src26("core", "meta.py")
+_cl26_src = _src26("core", "cleaner.py")
+
+# ── K32 双通道类号（文档类 0/4；Nt 枚举值 15/0x13 误用已清除）──
+check("K32 MemoryPriority 类 0", "SetProcessInformation(h, 0," in _wa26_src)
+check("K32 PowerThrottling 类 4", "SetProcessInformation(h, 4," in _wa26_src)
+check("Nt 枚举值 0x13 已清除", "SetProcessInformation(h, 0x13" not in _wa26_src)
+check("Nt 枚举值 15 已清除", "SetProcessInformation(h, 15," not in _wa26_src)
+# ── 托盘：ADD 先于 SETVERSION（官方顺序）+ LOWORD 消息解析 ──
+check("托盘 ADD 先于 SETVERSION",
+      _wa26_src.index("Shell_NotifyIconW(NIM_ADD") < _wa26_src.index("0x00000004, ctypes.byref(nid))"))
+check("托盘消息 LOWORD 解析", "lp & 0xFFFF" in _gui26_src)
+# ── learner 并发写锁 + 策略树权重持久化（含旧格式兼容）──
+from core import learner as _lm26
+check("learner.save 写锁", hasattr(_lm26, "_SAVE_LOCK") and hasattr(_lm26._SAVE_LOCK, "acquire"))
+_lr26 = PareLearner()
+_lr26.policy.set_mode("deep"); _lr26.policy.update_weights_per_trim([1, 0, 0, 0, 0], True)
+_t26 = os.path.join(tempfile.mkdtemp(), "state.json")
+check("save ok(含 policy)", _lr26.save(_t26))
+_lr26b = PareLearner.load(_t26)
+check("树权重持久化往返", _lr26b.policy._mode_weights.get("deep", [0] * 5)[0] > 1.0)
+_d26 = json.load(open(_t26, encoding="utf-8")); _d26.pop("policy", None)
+json.dump(_d26, open(_t26, "w", encoding="utf-8"))
+_lr26c = PareLearner.load(_t26)
+check("旧格式无 policy 键兼容", _lr26c.policy._mode_weights.get("deep", [1.0] * 5)[0] == 1.0)
+os.remove(_t26)
+# ── config 数值键钳制（手改越界值不再穿透门槛）──
+import core.config as _cfg26
+_ocp26 = _cfg26.CONFIG_PATH
+_t26c = os.path.join(tempfile.gettempdir(), "mw_cfg_clamp.yaml")
+with open(_t26c, "w", encoding="utf-8") as f:
+    f.write("emergency_threshold: 0\nclean_passes: 1000\ninterval: 1\ngap_seconds: 1\n")
+_cfg26.CONFIG_PATH = _t26c
+_dc26 = _cfg26.load()
+_cfg26.CONFIG_PATH = _ocp26
+os.remove(_t26c)
+check("emergency_threshold 钳制", _dc26.get("emergency_threshold") == 50, str(_dc26.get("emergency_threshold")))
+check("clean_passes 钳制", _dc26.get("clean_passes") == 6)
+check("interval 钳制", _dc26.get("interval") == 10)
+check("gap_seconds 钳制", _dc26.get("gap_seconds") == 8)
+# ── rebound 多实例 max 聚合（快照顺序无关）──
+from core.rebound import ReboundLearner as _RL26
+class _S26:
+    pass
+def _mk26(ws):
+    s = _S26(); s.ws = ws; s.path = r"d:\app\order.exe"; return s
+_n26 = time.time()
+def _run26(order):
+    rb = _RL26(); rb.begin(r"d:\app\order.exe", 200 << 20, 300 << 20, _n26)
+    rb.observe([_mk26(w) for w in order], _n26 + 121)
+    return rb.ewma.get(r"d:\app\order.exe")
+check("rebound 多实例顺序无关",
+      abs(_run26([900 << 20, 200 << 20]) - _run26([200 << 20, 900 << 20])) < 1e-9)
+# ── full 模式执行前 IO 复检梯度（与 can_trim/Layer3 同口径）──
+from core.cleaner import PareCleaner as _PC26
+_l26 = PareLearner()
+_j26 = PareJudger(_l26, {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}})
+_c26 = _PC26(_j26)
+_s26 = Snap(); _s26.name = "iofull.exe"; _s26.ws = 200 << 20; _s26.path = "d:\\app\\iofull.exe"
+_s26.pid = 9801; _s26.pf = 0; _s26.priv = 0; _s26.fg = False
+_oio26 = _j26._io_active
+_j26._io_active = lambda pid: True
+_j26._mode_guard = "full"
+_r26 = _c26._trim_process(_s26, _l26)[3]
+check("full 跳过执行前 IO 复检", _r26 != "执行前IO活跃", _r26)  # 假 PID → API失败
+_j26._mode_guard = "normal"
+_r26 = _c26._trim_process(_s26, _l26)[3]
+check("normal 保留执行前 IO 复检", _r26 == "执行前IO活跃", _r26)
+_j26._io_active = _oio26
+# ── MemoryPriority 防重集合接线（同轮不重复调用一次性 API）──
+import core.winapi as _wa26
+_l27 = PareLearner()
+_j27 = PareJudger(_l27, {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}})
+_c27 = _PC26(_j27)
+_j27.can_trim = lambda s: (True, "")
+_c27._trim_process = lambda snap, learner: (True, 0, 0, "模拟")
+_calls26 = {"eco": 0, "mp": 0}
+_oe26, _om26 = _wa26.set_eco_qos, _wa26.set_memory_priority
+_wa26.set_eco_qos = lambda *a, **k: (_calls26.__setitem__("eco", _calls26["eco"] + 1), False)[1]
+_wa26.set_memory_priority = lambda *a, **k: (_calls26.__setitem__("mp", _calls26["mp"] + 1), True)[1]
+import random as _r26m
+_or26m = _r26m.betavariate
+_r26m.betavariate = lambda a, b: 0.9
+_p26p = _l27.get("mp26.exe")  # 喂样本走画像 θ（无样本走先验 0.35 不达门槛）
+_p26p.ws_deque.append(100 << 20); _p26p.ws_deque.append(100 << 20)
+_sf26 = Snap(); _sf26.name = "mp26.exe"; _sf26.ws = 200 << 20; _sf26.path = "d:\\app\\mp26.exe"
+_sf26.pid = 9810; _sf26.pf = 0; _sf26.priv = 0; _sf26.fg = False
+_sf26.cpu = 0.0; _sf26.parent = 0; _sf26.create = 1.0; _sf26.has_visible = False
+try:
+    _c27._layer2_process([_sf26], _l27)
+    _c27._layer2_process([_sf26], _l27)  # 第二轮：pid 已在 _mem_pri_set，不得重复调用
+finally:
+    _r26m.betavariate = _or26m
+    _wa26.set_eco_qos = _oe26; _wa26.set_memory_priority = _om26
+check("MemoryPriority 防重集合接线", _calls26["mp"] == 1, str(_calls26))
+# ── CLI：i18n 导入完整 + 输出零中文残留 ──
+check("CLI i18n 导入完整", "from core.i18n import tr, tr_msg, set_language" in _mw26_src)
+_mw26_bad = [l.strip()[:60] for l in _mw26_src.splitlines()
+             if _re26.search(r"[\u4e00-\u9fff]", l) and "print(" in l
+             and not _re26.search(r"\btr(_msg)?\(", l) and not l.strip().startswith("#")]
+check("CLI 输出翻译零残留", not _mw26_bad, str(_mw26_bad[:2]))
+check("CLI --mode 参数组对齐", "_cli_mode_override" in _mw26_src and _mw26_src.count("_efis.set_mode(mode)") >= 2)
+# ── 常驻崩溃现场 ──
+check("崩溃现场安装函数", "_install_crash_sink" in _eng26_src
+      and "_install_crash_sink()" in _gui26_src and "_install_crash_sink()" in _mw26_src)
+check("崩溃现场独立于日志开关", "memwise_crash.log" in _eng26_src and "MEMWISE_LOG_DIR" in _eng26_src)
+# ── 字典快照迭代（守护线程防 RuntimeError）──
+check("θ 统计快照迭代", _eng26_src.count("dict(learner.profiles).values()") == 2)
+check("pop_info 快照迭代", "dict(self.profiles)" in _lm26_src)
+check("meta.tick 快照迭代", "dict(self.learner.profiles)" in _meta26_src)
+# ── i18n 零重复键 + 新键 + 退出表述 ──
+_ks26 = _re26.findall(r'^\s+"((?:[^"\\]|\\.)*)"\s*:', _i18n26_src, _re26.M)
+check("i18n 零重复键", len(_ks26) == len(set(_ks26)), f"{len(_ks26)} vs {len(set(_ks26))}")
+set_language("en")
+check("热键错误串英文", tr("不能为空") == "Cannot be empty"
+      and tr("至少需要一个修饰键（ctrl/alt/shift）") == "Needs at least one modifier (ctrl/alt/shift)")
+_hk26 = tr_msg("⚠ 手动优化热键配置无效（不能为空），本次使用默认 ctrl+shift+m")
+check("热键日志片段翻译", "Manual Optimize" in _hk26 and "invalid" in _hk26 and "Cannot be empty" in _hk26, _hk26)
+set_language("zh_CN")
+check("退出表述键", "进程已退出·内存随之释放" in _cl26_src
+      and "进程已退出·内存随之释放" in _i18n26_src)
+# ── 界面微修 ──
+check("托盘数字图标按档着色", "create_tray_percent_icon(pct, color=_color)" in _gui26_src)
+check("托盘百分比 100 如实显示", "min(100, int(percent))" in _wa26_src)
+check("全屏检测按窗口所在显示器", "MonitorFromWindow" in _wa26_src and "GetMonitorInfoW" in _wa26_src)
+check("卷缓存真实成功计数", "return flushed" in _wa26_src)
+check("排行学习标记口径统一", 'p.total_samples >= 2 else ""' in _gui26_src)
+check("GUI 死导入已清", "from core.eris import" not in _gui26_src
+      and "res_dir," not in _gui26_src)
+
+print("\n[27] 游戏态调参冻结（2026-08-30）")
+_ef27 = EfisController(state_path=None)
+def _st27(i, game):
+    return {"mem_pct": 50 + (i % 2) * 30, "trimmed_cnt": 10, "failed_cnt": 2,
+            "total_attempts": 12, "cycle_freed": 500, "snaps": [], "fore_fullscreen": False,
+            "cycle_duration": 60, "pf_delta": 0, "deepen_cnt": 0, "deepen_extra": 0,
+            "layer3_ran": 0, "layer3_extra": 0, "cooldown_cnt": 0, "repeat_fail": 0,
+            "theta_mean": 0.5, "theta_above_06": 0.3, "agg": 0.6, "mode": "normal",
+            "game": game}
+_log27 = len(_ef27._adjust_log)
+for _i in range(4):
+    _ef27.tick(_st27(_i, False))
+check("日常周期累积窗口", len(_ef27._window) == 4)
+_g27 = _ef27.tick(_st27(4, True))
+check("游戏周期返回空且清窗", _g27 == "" and len(_ef27._window) == 0)
+for _i in range(10):
+    _ef27.tick(_st27(_i, True))
+check("游戏期零调参零累积", len(_ef27._adjust_log) == _log27 and len(_ef27._window) == 0)
+for _i in range(5):
+    _ef27.tick(_st27(_i, False))
+check("游戏退出后干净恢复累积", len(_ef27._window) == 5 and len(_ef27._adjust_log) == _log27)
+check("参数组未被游戏期触碰", _ef27.get_params("normal")["pid_kp"] == _ef27.get_params("normal")["pid_kp"]
+      and _ef27.get_params("full")["target_usage"] == 35)
+_ef27q = EfisController(state_path=None)
+_ef27q.set_mode("quick")
+check("quick 模式游戏态双冻结", _ef27q.tick(_st27(0, True)) == "" and len(_ef27q._window) == 0)
+check("引擎游戏态接线", "'game': game_seen" in _eng26_src
+      and "if not game_seen:" in _eng26_src
+      and "game_seen = self.cleaner.game_mode" in _eng26_src)
+
+print("\n[28] 手动优化播报重设计（2026-08-30）")
+# 结果卡头行翻译（tr_msg 片段全覆盖）
+set_language("en")
+_head28 = tr_msg("⚡ full 优化完成 · 释放 512 MB · 净下降 480 MB（可用 43%→31%）")
+check("结果卡头行翻译", _head28 == "⚡ full optimization done · freed 512 MB · net drop 480 MB (available 43%→31%)", _head28)
+check("三轮启动文案", tr_msg("开始优化（full·三轮）…") == "Start optimization (full · three rounds)…")
+check("轮次节拍文案", tr_msg("第 2/3 轮完成 · 本轮释放 152 MB") == "Round 2/3 done · this round freed 152 MB")
+check("余量聚合行", tr_msg("✓ 其余 21 个进程") == "✓ plus 21 processes")
+check("零结果明示键", tr("没有找到值得清理的进程（全部受保护或无闲置内存）") == "No processes worth cleaning found (all protected or no idle memory)")
+check("状态栏临时提示键", tr("⚡ 即时优化中…") == "⚡ Instant optimizing…")
+set_language("zh_CN")
+# 接线静态断言（结果卡整卡输出/过程节拍/载荷扩展/旧重复摘要移除）
+check("结果卡整卡输出", "_log_batch(card, to_file=True)" in _gui26_src and "by_freed" in _gui26_src)
+check("过程节拍接线", "本轮释放" in _eng26_src and "第 {round_idx + 1}/3 轮完成" in _eng26_src)
+check("载荷扩展", '"released": released' in _eng26_src and '"pct0": m0[\'pct\'] if m0 else None' in _eng26_src)
+check("旧重复摘要已移除", "三轮优化合计释放" not in _eng26_src
+      and "即时优化完成 · 释放" not in _eng26_src and "开始优化..." not in _gui26_src)
+check("旧键已清理", "📊 三轮优化合计释放" not in _i18n26_src
+      and "即时优化完成 · 释放" not in _i18n26_src and "开始优化..." not in _i18n26_src)
+
+print("\n[29] 日志面板分组写入语义（2026-08-30）")
+import memwise_gui as _mg29
+check("面板阈值常量", _mg29.PANEL_MAX_LINES == 7)
+check("实际行数计数", _mg29._msg_lines(["a", "b\nc", "d\ne\nf"]) == 6)
+check("组间≤7接续", _mg29._panel_needs_clear(4, 2) is False and _mg29._panel_needs_clear(0, 7) is False)
+check("组间>7清屏", _mg29._panel_needs_clear(6, 3) is True and _mg29._panel_needs_clear(7, 1) is True
+      and _mg29._panel_needs_clear(0, 10) is True)
+# 真实面板端到端（Tk Text + 桩 self，走真实 _write_group 原语）
+import tkinter as _tk29
+from collections import deque as _dq29
+_root29 = _tk29.Tk(); _root29.withdraw()
+_stub29 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
+_stub29.log = _tk29.Text(_root29)
+_stub29._log_history = _dq29(maxlen=300)
+_stub29._last_msg = None
+def _panel29():
+    # end-1c 带隐式终止行偏置：减 1 得真实可见行数（与 _write_group 同口径）
+    return max(0, int(_stub29.log.index('end-1c').split('.')[0]) - 1)
+_stub29._write_group([f"行 {i}" for i in range(1, 5)])
+check("组1=4行", _panel29() == 4)
+_stub29._write_group(["事件 A", "事件 B"])
+check("组2=2行接续(6≤7)", _panel29() == 6)
+_stub29._write_group(["汇总", "x", "y"])
+check("组3=3行清屏(9>7)", _panel29() == 3)
+_stub29._write_group([f"卡行 {i}" for i in range(1, 11)])
+check("大组10行完整呈现", _panel29() == 10)
+_stub29._write_group(["新事件"])
+check("下一组清屏恢复", _panel29() == 1)
+for _i in range(6):
+    _stub29._write_group([f"单行 {_i}"])
+check("单行逐条接续至7行", _panel29() == 7)
+_stub29._write_group(["多行\n消息"])  # 实际 2 行：7+2=9>7 → 清屏（若按 1 条计会接续成 8 行）
+check("多行消息按实际行计", _panel29() == 2)
+check("历史缓存累积", len(_stub29._log_history) == 4 + 2 + 3 + 10 + 1 + 6 + 1)
+_root29.destroy()
+check("三路径统一委托", _gui26_src.count("_write_group([m])") == 2
+      and "_write_group(msgs, to_file)" in _gui26_src)
+check("engine 启动信息打包", "'log_batch', start_lines" in _eng26_src)
+
+print("\n[30] 周期批分组化 + 同批修复（2026-08-30）")
+check("周期批分组化", "'display_groups', cycle_groups" in _eng26_src
+      and "_cycle_log_groups" in _eng26_src and "_cycle_log_buffer" not in _eng26_src)
+check("紧急消息统一入批", 'self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])' in _eng26_src)
+check("EFIS 并入周期批", 'cycle_groups.append(["[EFIS] " + efis_msg])' in _eng26_src
+      and "('display', ['[EFIS] ' + efis_msg])" not in _eng26_src)
+check("display 事件分组载荷", "elif action == 'display_groups':" in _gui26_src
+      and "self._write_group([m for g in args for m in g], to_file=False)" in _gui26_src
+      and "elif action == 'display':" not in _gui26_src)
+# 大整体语义端到端：面板 6 行 + 周期批 3 组（各 1 行）→ 合并为一个大整体一次判定，
+# 整批完整可见（旧逐组判定下：组1 接续至 7、组2 清屏自占、组3 接续——组1 消失）
+_root30 = _tk29.Tk(); _root30.withdraw()
+_stub30 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
+_stub30.log = _tk29.Text(_root30)
+_stub30._log_history = _dq29(maxlen=300)
+_stub30._last_msg = None
+for _i in range(6):
+    _stub30._write_group([f"既有 {_i}"])
+_groups30 = [["周期汇总"], ["[EFIS] 调整pid_kp: 0.60→0.50"], ["📈 内存 70%·清理强度：维持高"]]
+_stub30._write_group([m for g in _groups30 for m in g], to_file=False)
+_vis30 = _stub30.log.get('1.0', 'end').rstrip(chr(10)).splitlines()
+check("周期大整体完整可见", len(_vis30) == 3 and any("周期汇总" in l for l in _vis30)
+      and any("[EFIS]" in l for l in _vis30) and any("📈" in l for l in _vis30))
+_root30.destroy()
+check("守护异常同批", 'tr("❌ 守护异常，详见下方错误信息"), f"🔍 {err}"' in _gui26_src)
+check("崩溃恢复单条", _gui26_src.count("🔄 从崩溃中恢复 — 守护模式已自动继续") == 1
+      and 'log_msg or tr("守护模式启动")' in _gui26_src)
+check("热键只报变更键", 'changed={hk["key"]} if spec != old else set()' in _gui26_src
+      and 'not initial and hk["key"] in changed' in _gui26_src)
+check("事件契约更新", "'display_groups', [组, …]" in _eng26_src)
 
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))

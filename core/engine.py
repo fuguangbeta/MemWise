@@ -195,7 +195,7 @@ def remove_watchdog():
 
 from core import winapi
 from core.eris import iqr_dim, validate_state  # ERIS 纯函数核心（与回归测试共用）
-from core.i18n import tr, set_language  # 界面语言
+from core.i18n import set_language  # 界面语言（tr 由各算法模块独立导入）
 from core.config import load as _load_cfg
 from core.config import get_state_path
 import core.config as _config
@@ -210,6 +210,9 @@ _LOG_MAX = 2 * 1024 * 1024  # 2MB/份
 # frozen windowed（console=False）下 sys.stderr 为 None，print(file=_ERR) 自身抛 AttributeError
 # （曾致 _opt_worker 异常路径崩溃、opt_done 不入队、优化按钮永久禁用）——统一兜底到 devnull
 _ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
+
+# 常驻崩溃现场 fd（_install_crash_sink 接管；None=未安装，统一日志兜底 faulthandler）
+_CRASH_FD = None
 
 
 def _log_ts():
@@ -254,7 +257,8 @@ def _log_rotate():
         _LOG_FD = open(p0, "a", encoding="utf-8", buffering=1)
         import faulthandler
         try:
-            faulthandler.enable(_LOG_FD, all_threads=True)
+            if _CRASH_FD is None:  # 崩溃现场 fd 优先（_install_crash_sink 已接管时不重绑）
+                faulthandler.enable(_LOG_FD, all_threads=True)
         except Exception:
             pass
     except Exception:
@@ -302,17 +306,67 @@ def _log_open():
         _migrate_old_logs(path)  # 旧 crash log 并入（若存在），旧 memwise.log 继续 append
         _LOG_FD = open(path, "a", encoding="utf-8", buffering=1)
         import faulthandler
-        faulthandler.enable(_LOG_FD, all_threads=True)
+        if _CRASH_FD is None:  # 崩溃现场 fd 优先（_install_crash_sink 已接管时不重绑）
+            try:
+                faulthandler.enable(_LOG_FD, all_threads=True)
+            except Exception:
+                pass
+        # 未捕获异常钩子由 _install_crash_sink 统一安装（写 memwise_crash.log + 此处统一日志）
+        atexit.register(_log_close)
+        _log_write("启动", f"MemWise v4.3.034 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+    except Exception:
+        _LOG_FD = None
+
+
+# ── 常驻崩溃现场（2026-08-30 审查）：独立于「记录运行日志到文件」开关 ──
+# GitHub 单 exe 分发用户默认关日志，此前崩溃后零现场无法报障。faulthandler 与
+# 未捕获异常始终写入 data/memwise_crash.log（2MB×1 轮转；下次启动经 _migrate_old_logs
+# 并入统一日志后改名 .imported，不残留）。看门狗子进程与回归测试不调用本函数。
+def _install_crash_sink():
+    global _CRASH_FD
+    if _CRASH_FD is not None or "--watchdog" in sys.argv:
+        return
+    try:
+        d = os.environ.get("MEMWISE_LOG_DIR") or _LOG_DIR or os.path.join(base, "data")
+        path = os.path.join(d, "memwise_crash.log")
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > _LOG_MAX:
+                old = path + ".1"
+                if os.path.exists(old):
+                    os.remove(old)
+                os.replace(path, old)
+        except Exception:
+            pass
+        _CRASH_FD = open(path, "a", encoding="utf-8", buffering=1)
+        import faulthandler
+        try:
+            faulthandler.enable(_CRASH_FD, all_threads=True)
+        except Exception:
+            pass
 
         def _crash_hook(et, ev, tb):
             import traceback
-            _log_write("异常", "未捕获异常\n" + "".join(traceback.format_exception(et, ev, tb)))
+            try:
+                _CRASH_FD.write("未捕获异常\n" + "".join(traceback.format_exception(et, ev, tb)) + "\n")
+                _CRASH_FD.flush()
+            except Exception:
+                pass
+            _log_write("异常", "未捕获异常（现场已写入 memwise_crash.log）")
             sys.__excepthook__(et, ev, tb)
         sys.excepthook = _crash_hook
-        atexit.register(_log_close)
-        _log_write("启动", f"MemWise v4.2.024 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        atexit.register(_close_crash_sink)
     except Exception:
-        _LOG_FD = None
+        _CRASH_FD = None
+
+
+def _close_crash_sink():
+    global _CRASH_FD
+    if _CRASH_FD is not None:
+        try:
+            _CRASH_FD.close()
+        except Exception:
+            pass
+        _CRASH_FD = None
 
 
 def _diag_log(msg):
@@ -344,14 +398,15 @@ def fmt_count(n):
 
 # ── ERIS/守护辅助（纯函数，逐字对齐原 GUI 实现）──
 def _prof_theta_mean(learner):
-    """画像 Thompson θ 均值（≥2 样本才参与）"""
-    ps = [p for p in learner.profiles.values() if p.total_samples >= 2]
+    """画像 Thompson θ 均值（≥2 样本才参与）。dict() 快照迭代：手动优化线程可并发
+    增键，直接迭代会 RuntimeError 击落守护线程（2026-08-30，与 _compute_eris 同款防护）"""
+    ps = [p for p in dict(learner.profiles).values() if p.total_samples >= 2]
     return sum(p.thompson_theta for p in ps) / len(ps) if ps else 0.3
 
 
 def _prof_theta_above(learner):
-    """θ>0.6 画像占比"""
-    ps = [p for p in learner.profiles.values() if p.total_samples >= 2]
+    """θ>0.6 画像占比（快照迭代同上）"""
+    ps = [p for p in dict(learner.profiles).values() if p.total_samples >= 2]
     return sum(1 for p in ps if p.thompson_theta > 0.6) / len(ps) if ps else 0.0
 
 
@@ -384,7 +439,7 @@ class MemWiseEngine:
     """守护循环 / ERIS / 轮次数据 / 事件队列——不依赖任何 UI 框架。
 
     事件队列 events（queue.Queue）：动作元组与原 GUI 消息队列格式一致——
-    ('log', msg) / ('display', [lines]) / ('log_batch', [lines]) / ('log_op', msg) /
+    ('log', msg) / ('display_groups', [组, …]) / ('log_batch', [lines]) / ('log_op', msg) /
     ('chart', None) / ('upd_ui', (s, m, txt)) / ('opt_done', result) / ('dae_stopped', None)
     ——展示层消费端零改动复用。
     """
@@ -418,7 +473,6 @@ class MemWiseEngine:
         self._eff_factors = deque(maxlen=60)       # 效率主导因子
         self._chart_lock = threading.Lock()
         self._chart_cycle_meta = deque(maxlen=60)  # 每轮元数据(seq,trimmed,failed,mem_pct,failed_weight,partial)
-        self._chart_eris_last_seq = -1             # 最后进入ERIS的轮次序列号（废弃：解耦后 ERIS 在 _push_round 每轮全量计算，字段保留不删）
         self._chart_bar_seq = 0                    # 全局轮次序列号（守护递增）
 
         # ERIS 状态（分位数窗/平滑/趋势/防振荡）
@@ -478,7 +532,6 @@ class MemWiseEngine:
         self._eff_data.clear()
         self._eff_factors.clear()
         self._chart_cycle_meta.clear()
-        self._chart_eris_last_seq = -1
         self._chart_bar_seq = 0
         self._load_eris_ewma()  # 恢复 EWMA 基线
         self._last_sys_ops = 0
@@ -554,20 +607,25 @@ class MemWiseEngine:
     def _opt_worker(self, mode, ops):
         with self.cleaner._exec_lock:
             self.cleaner._manual_run = True  # 手动优化：跳过自动化保守门（前台冷却/连续确认/锚点抑制），保留实时安全门（CPU/IO 活跃）
+            # 按调用时模式取参（2026-08-16 模式参数组）：手动优化用该模式自己的参数，
+            # 不受守护周期末同步的"当前模式"影响；策略树权重同步同一模式（审查 P6）
+            self.judger.cfg["efis_params"] = self.efis.get_params(mode)
+            self.learner.policy.set_mode(mode)
             try:
                 snaps = []
                 for i in range(3):
                     snaps = self._snap()
                     if i < 2: time.sleep(2)
-                self.events.put(('log', f"观察到 {len(snaps)} 个进程"))
-                # 候选预览（轻量版）：日志告知将清理范围（复用 can_trim，零新逻辑）
+                # 启动信息打包（2026-08-30 分组语义）：观察到+候选预览同批原子输出
+                start_lines = [f"观察到 {len(snaps)} 个进程"]
                 try:
                     preview = [s.name for s in snaps if self.judger.can_trim(s)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
-                        self.events.put(('log', f"📋 将清理 {len(preview)} 个进程候选：{shown}"))
+                        start_lines.append(f"📋 将清理 {len(preview)} 个进程候选：{shown}")
                 except Exception:
                     pass
+                self.events.put(('log_batch', start_lines))
                 m0 = winapi.get_memory_status()
                 all_l2 = []; all_probe = []
                 total_net = 0
@@ -581,22 +639,25 @@ class MemWiseEngine:
                     all_l2.extend(r.get("layer2", []))
                     all_probe.extend(r.get("probe", []))
                     total_net += r.get("net_freed", 0)
+                    # 过程节拍（2026-08-30）：长清理拆为可见节拍，消灭轮间静默
+                    self.events.put(('log', f"第 {round_idx + 1}/3 轮完成 · 本轮释放 {r.get('net_freed', 0) / (1 << 20):.0f} MB"))
                     if round_idx < 2:
                         time.sleep(2)
                 self.learner.save(self._state_file)
                 m1 = winapi.get_memory_status()
                 freed1 = self.cleaner.summary()['freed_mb']
                 released = max(0.0, freed1 - freed0)  # 三轮释放量标量总和
-                pct_str = f"，可用内存 {m0['pct']}%→{m1['pct']}%" if m0 and m1 else ""
-                self.events.put(('log', f"📊 三轮优化合计释放 {released:.1f} MB · 内存净下降 {total_net/(1<<20):.1f} MB{pct_str}"))
-                self.events.put(('log_op', f"优化完成 · 三轮合计释放 {released:.1f} MB（净下降 {total_net/(1<<20):.1f} MB）"))
+                # 结果卡由展示层 _opt_done 单批次整卡输出（唯一摘要源，面板/文件零重复）
                 self.events.put(('opt_done', {
-                    "mode": mode, "layer2": all_l2, "probe": all_probe}))
+                    "mode": mode, "layer2": all_l2, "probe": all_probe,
+                    "released": released, "net": total_net,
+                    "pct0": m0['pct'] if m0 else None, "pct1": m1['pct'] if m1 else None}))
             except Exception:
                 import traceback; traceback.print_exc(file=_ERR)
                 self.events.put(('log', "⚠ 手动优化异常，已自动恢复"))
                 self.events.put(('opt_done', {
-                    "mode": mode, "layer2": [], "probe": []}))
+                    "mode": mode, "layer2": [], "probe": [],
+                    "released": 0.0, "net": 0, "pct0": None, "pct1": None}))
             finally:
                 self.cleaner._manual_run = False
 
@@ -604,8 +665,18 @@ class MemWiseEngine:
         """守护运行中即时优化的执行体：单轮快照+单轮 optimize（守护周期互斥见调用方注释）"""
         with self.cleaner._exec_lock:
             self.cleaner._manual_run = True
+            self.judger.cfg["efis_params"] = self.efis.get_params(mode)  # 按调用时模式取参
+            self.learner.policy.set_mode(mode)  # 树权重同模式（审查 P6）
             try:
                 snaps = self._snap()
+                # 候选预览（2026-08-30 与三轮版对齐）：点击后告知将清理范围
+                try:
+                    preview = [s.name for s in snaps if self.judger.can_trim(s)[0]]
+                    if preview:
+                        shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
+                        self.events.put(('log', f"📋 将清理 {len(preview)} 个进程候选：{shown}"))
+                except Exception:
+                    pass
                 m0 = winapi.get_memory_status()
                 freed0 = self.cleaner.summary()['freed_mb']
                 r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
@@ -613,17 +684,17 @@ class MemWiseEngine:
                 m1 = winapi.get_memory_status()
                 freed1 = self.cleaner.summary()['freed_mb']
                 released = max(0.0, freed1 - freed0)
-                trimmed = [t for t in r.get("layer2", []) if t[1]]
-                pct_str = f"，可用内存 {m0['pct']}%→{m1['pct']}%" if m0 and m1 else ""
-                self.events.put(('log', f"⚡ 即时优化（{mode}）完成 · 清理 {len(trimmed)} 个进程 · 释放 {released:.1f} MB{pct_str}"))
-                self.events.put(('log_op', f"即时优化完成 · 释放 {released:.1f} MB"))
+                # 结果卡由展示层 _opt_done 单批次整卡输出（唯一摘要源，面板/文件零重复）
                 self.events.put(('opt_done', {
-                    "mode": mode, "layer2": r.get("layer2", []), "probe": r.get("probe", [])}))
+                    "mode": mode, "layer2": r.get("layer2", []), "probe": r.get("probe", []),
+                    "released": released, "net": r.get("net_freed", 0),
+                    "pct0": m0['pct'] if m0 else None, "pct1": m1['pct'] if m1 else None}))
             except Exception:
                 import traceback; traceback.print_exc(file=_ERR)
                 self.events.put(('log', "⚠ 即时优化异常，已自动恢复"))
                 self.events.put(('opt_done', {
-                    "mode": mode, "layer2": [], "probe": []}))
+                    "mode": mode, "layer2": [], "probe": [],
+                    "released": 0.0, "net": 0, "pct0": None, "pct1": None}))
             finally:
                 self.cleaner._manual_run = False
 
@@ -680,27 +751,42 @@ class MemWiseEngine:
                 total_samples = sum(p.total_samples for p in self.learner.profiles.values())
                 learned = len(self.learner.profiles)
 
+                self._cycle_log_groups = []  # 本周期末分组输出缓存（每项一个逻辑组，2026-08-30）
+                efis_msg = None  # 本周期 EFIS 调参消息（并入周期批输出）
+                # 启动观察消息即时输出（用户定稿：及时反馈，不打包延迟）
                 if not startup_logged:
                     self.events.put(('log', f"🧠 观察到 {len(snaps)} 个进程 · 已有 {learned} 个画像"))
                     startup_logged = True
-                self._cycle_log_buffer = []  # 本轮周期末批量输出缓存
                 self._refill_cycle = False  # 周期内触发标记（周期末状态机判定）
                 agg_first = self.judger.aggressiveness
                 agg_max = agg_first  # 本轮峰值
                 layer3_ran_start = self.cleaner.summary().get("layer3_ran", 0)
                 deep_triggered = False  # 本轮是否触发过深度清理
                 self._emergency_done_cycle = False  # 本轮是否已触发紧急清理（周期内去重）
+                # 游戏态冻结判定（2026-08-30）：本周期内游戏任意时刻开启 → 本周期统计
+                # 不进入 EFIS 评估（翻转周期整周期隔离，防游戏期统计污染参数组）
+                game_seen = self.cleaner.game_mode
 
                 # 清理
                 mode = CFG.get("clean_mode", "normal")  # 读 CFG 镜像：tk 变量非线程安全，daemon 线程不触碰 Tk 对象
+                # 模式参数组同步（2026-08-16）：EFIS 调参与策略树权重按模式隔离，周期开始即对齐
+                self.efis.set_mode(mode)
+                self.learner.policy.set_mode(mode)
+                # 消费源即时同步（审查 P4）：模式切换后首个周期即用新模式参数，
+                # 不等周期末调参（原实现首周期沿用上一模式参数）
+                self.judger.cfg["efis_params"] = self.efis.get_params()
                 agg = self.judger.update_pressure(m['pct'])
                 ops = CFG.get("clean_operations")
                 # 连续优化循环：deadline + 多次 optimize + gap fill + blitz
                 m_emerg = winapi.get_memory_status()
                 if m_emerg and _emergency_active(m_emerg):
+                    _saved_efis = self.judger.cfg.get("efis_params")
+                    self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                     agg_emerg = self.judger.update_pressure(m_emerg["pct"])
                     self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg)
-                    self.events.put(('log', "⚠ 紧急触发清理(full模式)"))
+                    if _saved_efis is not None:
+                        self.judger.cfg["efis_params"] = _saved_efis
+                    self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])
                     self._emergency_done_cycle = True
                 interval = CFG.get("interval", 60)  # 周期由配置驱动（默认 60s，原硬编码 60 使配置键失效）
                 deadline = time.time() + interval - 3 - overtime_debt
@@ -731,6 +817,8 @@ class MemWiseEngine:
                             # 游戏模式：快照后实时检测启动/退出（检测零开销），
                             # 周期内启动又退出时，两条日志按序进入周期末打包通道
                             game_now = self.cleaner._is_user_game_running(snaps)
+                            if game_now:
+                                game_seen = True  # 本周期游戏曾开启（冻结判定）
                             if self.cleaner._game_mode_manual:
                                 # 手动模式：实时刷新 PID 保护集（含子进程树），不自动切换模式
                                 if game_now:
@@ -740,7 +828,7 @@ class MemWiseEngine:
                                 self.cleaner.judger.game_mode = True
                                 self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
                                 self.cleaner._game_gone_count = 0  # 退出计数重置（与 _layer2_process 同口径）
-                                self._cycle_log_buffer.append("🎮 检测到游戏运行 · 启用 游戏模式")
+                                self._cycle_log_groups.append(["🎮 检测到游戏运行 · 启用 游戏模式"])
                             elif self.cleaner.game_mode and not game_now:
                                 # 2 周期确认退出（2026-08-14 审查：原立即退出与 _layer2_process
                                 # 的"连续2周期"口径不一致且会抖动——游戏进程瞬间消失
@@ -751,7 +839,7 @@ class MemWiseEngine:
                                     self.cleaner.judger.game_mode = False
                                     self.cleaner.judger._game_pid_set.clear()
                                     self.cleaner._game_gone_count = 0
-                                    self._cycle_log_buffer.append("🎮 游戏已退出 · 恢复正常模式")
+                                    self._cycle_log_groups.append(["🎮 游戏已退出 · 恢复正常模式"])
                             # 高频压制梯度：registry 零磁盘干扰，游戏模式同样执行（游戏流畅只禁磁盘类操作）；
                             # deep/full 追加系统级持续清（standby/脏页零 PF 成本——缓存重建后立即回收，
                             # 可用内存持续高位，抑制"压缩后回弹"）；游戏模式恒 registry（流畅优先）
@@ -781,9 +869,13 @@ class MemWiseEngine:
                             # 周期内紧急即时响应：内存飙到阈值立即 full 清理（不等下一周期），每周期至多一次
                             if _emergency_active(m2) and not self._emergency_done_cycle:
                                 self._emergency_done_cycle = True
-                                self._cycle_log_buffer.append("⚠ 周期内紧急触发清理(full模式)")
+                                self._cycle_log_groups.append(["⚠ 周期内紧急触发清理(full模式)"])
+                                _saved_efis = self.judger.cfg.get("efis_params")
+                                self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                                 self.cleaner.optimize(snaps, self.learner, "full",
                                                       operations=ops, aggressiveness=agg)
+                                if _saved_efis is not None:
+                                    self.judger.cfg["efis_params"] = _saved_efis
                                 m2 = winapi.get_memory_status()
                                 if m2:
                                     m = m2
@@ -839,7 +931,7 @@ class MemWiseEngine:
                     self._pending_harvest = harvest_future  # 下轮开头收尾，避免任务叠加
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
-                    self._cycle_log_buffer.append("⏱ harvest 超时(30s)·跳过本轮诊断")
+                    self._cycle_log_groups.append(["⏱ harvest 超时(30s)·跳过本轮诊断"])
                 except Exception:
                     self._pending_harvest = harvest_future
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
@@ -850,6 +942,8 @@ class MemWiseEngine:
                 harvest_partial = result.get("_partial", False)
                 agg = result.get("aggressiveness", agg)
                 self.judger.aggressiveness = agg  # 同步入 judger，下一周期 agg_first 正确
+                if self.cleaner.game_mode:
+                    game_seen = True  # 收割期 _layer2_process 可能翻转游戏态（冻结判定覆盖）
                 agg_max = max(agg_max, agg)  # 捕获全量模式强制的 agg 峰值
                 # 回弹驱动基线（C 方案）：记录 harvest 后总 WS 与释放量，供下一周期 gap 回填率判断
                 self._last_harvest_freed = max(result.get("net_freed", 0), 0)
@@ -886,13 +980,15 @@ class MemWiseEngine:
                         mtime = os.path.getmtime(_config.CONFIG_PATH)
                         if mtime != self._cfg_mtime:
                             self._cfg_mtime = mtime
-                            _config.load()
-                            CFG.update(_config.load())
+                            fresh = _config.load()  # 单次读取复用（原连续两次读盘，2026-08-30）
+                            CFG.update(fresh)
                             # 同步 judger 运行配置（排除列表/游戏名单/清理深度/EFIS 参数守护期间即时生效）
                             self.judger.cfg["never"] = CFG.get("never", [])
                             self.judger.cfg["game_processes"] = CFG.get("game_processes", [])
                             self.judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
-                            self.judger.cfg["efis_params"] = CFG.get("efis_params", {})
+                            # EFIS 参数以状态文件为权威（审查 P3）：config.yaml 的 efis_params 是
+                            # 上次调参的模式快照,热加载回灌会覆盖当前模式组——改为直接从 EFIS 取
+                            self.judger.cfg["efis_params"] = self.efis.get_params()
                     except Exception as e:
                         import sys; print(f"[MemWise] 配置加载异常: {e}", file=_ERR)
                 if now - last_save > 30:
@@ -931,14 +1027,18 @@ class MemWiseEngine:
                 self._last_l3_ran = l3_ran_cur
                 self._last_l3_extra = l3_extra_cur
                 if not harvest_partial:
-                    # 场景检测（game/browser/development/general）先于调参诊断
-                    try:
-                        self.efis.detect_scene(snaps, winapi.is_foreground_fullscreen(), m['pct'])
-                    except Exception as e:
-                        _log_write("异常", f"EFIS 场景检测异常: {e!r}")
+                    # 场景检测（game/browser/development/general）先于调参诊断。
+                    # 游戏期冻结（2026-08-30）：alt-tab 全屏切换会在游戏期反复触发 7:3
+                    # 场景混合漂移参数组，游戏期跳过；退出后首次重检测自然恢复
+                    if not game_seen:
+                        try:
+                            self.efis.detect_scene(snaps, winapi.is_foreground_fullscreen(), m['pct'])
+                        except Exception as e:
+                            _log_write("异常", f"EFIS 场景检测异常: {e!r}")
                     stats = {
                         'mem_pct': m['pct'],
                         'mode': mode,
+                        'game': game_seen,  # 游戏态冻结判定（efis.tick 据此清窗并跳过调参）
                         'trimmed_cnt': self._cycle_trimmed,
                         'failed_cnt': self._cycle_failed,
                         'total_attempts': self._cycle_trimmed + self._cycle_failed,
@@ -979,8 +1079,7 @@ class MemWiseEngine:
                         self.learner._kalman_r = _kr
                         for _p in self.learner.profiles.values():
                             _p.kalman.r = _kr
-                    if efis_msg:
-                        self.events.put(('display', ['[EFIS] ' + efis_msg]))  # 仅显示：[调参] 已直写落盘
+                    # 调参消息显示并入周期末分组批（cycle_groups 组装处），不再独立推送
 
                 # 元认知（harvest 超时时跳过，避免零数据污染诊断）
                 if not harvest_partial:
@@ -991,16 +1090,16 @@ class MemWiseEngine:
                         _log_write("异常", f"元认知异常: {e!r}")
                     if meta_findings:
                         for finding in meta_findings:
-                            self._cycle_log_buffer.append(finding)
+                            self._cycle_log_groups.append([finding])
 
                 # ── 收集并显示算法日志消息 ──
                 # 游戏检测消息改走批量通道，防被 _log_batch 清屏擦除
                 for msg in self.cleaner.pop_game_msgs():
-                    self._cycle_log_buffer.append(msg)
+                    self._cycle_log_groups.append([msg])
                 for msg in self.learner.pop_info():
-                    self._cycle_log_buffer.append(msg)
+                    self._cycle_log_groups.append([msg])
                 for msg in self.cleaner.pop_info():
-                    self._cycle_log_buffer.append(msg)
+                    self._cycle_log_groups.append([msg])
 
                 deep_triggered = self.cleaner.summary().get("layer3_ran", 0) > layer3_ran_start
                 # 合并压力+深度清理日志（与上一周期峰值比较，仅变化时输出）
@@ -1018,8 +1117,8 @@ class MemWiseEngine:
                 deep_changed = deep_triggered != self._last_deep_triggered
                 if last_mem != mem_str or change_str != self._last_pressure_chg or deep_changed:
                     deep_str = " · 已触发深度清理" if deep_triggered else ""
-                    self._cycle_log_buffer.append(
-                        f"📈 内存 {m['pct']:.0f}%（{mem_str}）· 清理强度：{change_str}{deep_str}")
+                    self._cycle_log_groups.append(
+                        [f"📈 内存 {m['pct']:.0f}%（{mem_str}）· 清理强度：{change_str}{deep_str}"])
                     self._last_pressure_mem = mem_str
                     self._last_pressure_chg = change_str
                     self._last_agg_peak = agg_peak
@@ -1034,21 +1133,27 @@ class MemWiseEngine:
                 if self._refill_cycle:
                     if not self._refill_hot:
                         _rate = int(round(self._refill_total / max(self._last_harvest_freed, 1) * 100))
-                        self._cycle_log_buffer.append(
-                            f"↻ 内存回涨较快，仅上轮收割后即回涨{_rate}% · 将持续收紧收割节奏直到放缓")
+                        self._cycle_log_groups.append(
+                            [f"↻ 内存回涨较快，仅上轮收割后即回涨{_rate}% · 将持续收紧收割节奏直到放缓"])
                     self._refill_hot = True
                 else:
                     if self._refill_hot:
-                        self._cycle_log_buffer.append("↻ 内存回涨已放缓，试探性恢复正常收割节奏")
+                        self._cycle_log_groups.append(["↻ 内存回涨已放缓，试探性恢复正常收割节奏"])
                     self._refill_hot = False
-                # GUI 日志区：summary 与本轮 buffer 一次打包显示（同一清屏判定）。
-                # 曾见 summary 先入队、log_batch 后入队时被后者的清屏抹掉——第二轮周期末统计日志缺失根因
-                batch_display = [summary_line] + list(self._cycle_log_buffer)
-                self.events.put(('display', batch_display))
+                # 周期末分组输出（2026-08-30）：汇总/调参/压力/游戏/紧急等各自成组，
+                # 展示层逐组原子写入（组间 ≤7 接续 / >7 清屏；组内可超 7 完整呈现）。
+                # 曾见 summary 先入队、log_batch 后入队时被后者的清屏抹掉——分组化后同批
+                # 各组在同一事件内顺序写入，队列竞争不再可能
+                cycle_groups = [[summary_line]]
+                if efis_msg:
+                    cycle_groups.append(["[EFIS] " + efis_msg])  # 周期成果同批（[调参] 已直写文件）
+                cycle_groups += self._cycle_log_groups
+                self.events.put(('display_groups', cycle_groups))
                 if CFG.get("log_to_file"):
-                    # buffer 内容（压力/游戏/决策等）直写 [界面]，与 [清理] 分开，去重保持
-                    for msg in self._cycle_log_buffer:
-                        _log_write("界面", msg)
+                    # 各组内容（压力/游戏/决策等）直写 [界面]，与 [清理] 分开，去重保持
+                    for g in self._cycle_log_groups:
+                        for msg in g:
+                            _log_write("界面", msg)
                 # 状态栏（累计数据）
                 self.events.put(('upd_ui', (s, m, "🟢 守护中")))
                 self.events.put(('chart', None))

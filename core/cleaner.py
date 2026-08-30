@@ -83,14 +83,6 @@ class PareCleaner:
             self._stats_inc("modified")
         return ok
 
-    def clear_file_cache(self):
-        """清理系统文件缓存——⚠ 已弃用（内部无消费方）：底层 MAXSIZE 版 SetSystemFileCacheSize
-        从未生效，统一走 clear_system_file_cache_ex（见 _layer1_memreduct/Layer3）；定义保留不删"""
-        ok = winapi.clear_system_file_cache()
-        if ok:
-            self._stats_inc("filecache")
-        return ok
-
     def _flush_volume_cache(self):
         ok = winapi.flush_volume_cache()
         if ok:
@@ -250,13 +242,16 @@ class PareCleaner:
         """完整清理一个进程 (自适应多轮清理 + 反馈验证)"""
         pid, name = snap.pid, snap.name
         # ── 执行前复检（P0-B）：决策到执行间隔数秒，期间用户可能切过去/游戏可能启动/
-        #    开始 IO 密集（下载/播放）。低压时前台拦截；游戏 PID 集绝对保护；IO 活跃拦截（防御纵深）──
+        #    开始 IO 密集（下载/播放）。低压时前台拦截；游戏 PID 集绝对保护；
+        #    IO 活跃拦截与 can_trim/Layer3 同梯度——full 跳过（极限释放不设 IO 门槛，
+        #    2026-08-30 审查：原无条件拦截使 full 的 IO 豁免在最后一步失效、与
+        #    "清理正在工作的程序"承诺矛盾）──
         try:
             if self.judger.aggressiveness < 0.35 and winapi.get_foreground_pid() == pid:
                 return False, 0, 0, "执行前转前台"
             if self.game_mode and pid in self.judger._game_pid_set:
                 return False, 0, 0, "执行前游戏启动"
-            if self.judger._io_active(pid):
+            if getattr(self.judger, "_mode_guard", "normal") != "full" and self.judger._io_active(pid):
                 return False, 0, 0, "执行前IO活跃"
         except Exception:
             pass
@@ -321,11 +316,12 @@ class PareCleaner:
         if mem is None:
             with self._lock:
                 # 进程退出≠清理收益：freed 记 0（防 gain_ewma/Kalman 虚高→θ 虚高→新实例被过度清理；
-                # 返回值的 freed 保留 ws_before 供日志如实显示"该进程退出释放量"）
+                # freed_bytes 不计——返回值的 freed 保留 ws_before 供日志显示，理由串已注明
+                # 内存随退出释放，2026-08-30 审查消除"清理量"歧义）
                 learner.record_clean_result(name, True, freed=0, lr=self._efis_lr())
                 self.judger.mark_trimmed(name)
                 self.stats["ws_trim"] += 1
-            return True, ws_before, ws_before, "进程已退出"
+            return True, ws_before, ws_before, "进程已退出·内存随之释放"
         ws_after = mem["ws"]
         ok, freed, pf_delta = self.judger.check_feedback(
             pid, mem["pf"], ws_before, ws_after, passes
@@ -624,7 +620,9 @@ class PareCleaner:
                 if not _is_full:
                     if winapi.set_eco_qos(s.pid, True):
                         self._low_pri_pids.add(s.pid)
-                if winapi.set_memory_priority(s.pid, 0):
+                # 防重集合接线（2026-08-30 审查）：集合此前只写不读，full 模式每轮重复
+                # 调用一次性/幂等 API；30 tick 重评清集合后仍可再评（新进程/转后台照常）
+                if s.pid not in self._mem_pri_set and winapi.set_memory_priority(s.pid, 0):
                     self._mem_pri_set.add(s.pid)
         # 清除已退出的 PID
         alive = {s.pid for s in snaps}
@@ -876,9 +874,8 @@ class PareCleaner:
             agg = aggressiveness
         ops_filter = set(operations) if operations else None
         run_ws = ops_filter is None or "ws" in ops_filter
-        # 管线上下文：层间传递执行状态，避免重复工作
+        # 管线上下文：层间传递执行状态（局部变量；self._pipeline_ctx 只写不读已删，2026-08-30）
         pipeline_ctx = {"layer1_done": False, "layer2_trimmed": set()}
-        self._pipeline_ctx = pipeline_ctx
         # Helper to build result with net_freed tracking
         def _mk_result(l2, probe):
             r = {"mode": mode, "aggressiveness": agg, "layer2": l2, "probe": probe}
@@ -987,18 +984,3 @@ class PareCleaner:
         s = self.stats.copy()
         s["freed_mb"] = round(s["freed_bytes"] / (1 << 20), 1)
         return s
-
-    def reset_stats(self):
-        """重置统计计数（保留累计释放量）——暂无调用方，保留为内部工具（勿草率弃用）。
-        注意：同时清空 WS 基线/时间戳（judger 状态），未来调用需知晓此副作用"""
-        prev_freed = self.stats.get("freed_bytes", 0) if hasattr(self, 'stats') else 0
-        self.stats = {
-            "standby": 0, "modified": 0, "filecache": 0,
-            "ws_trim": 0, "probe": 0,
-            "skipped": 0, "failed_feedback": 0,
-            "freed_bytes": prev_freed,
-            "deepen_cnt": 0, "deepen_extra": 0,
-            "layer3_ran": 0, "layer3_extra": 0,
-        }
-        self.judger._post_clean_ws.clear()
-        self.judger._post_clean_time.clear()
