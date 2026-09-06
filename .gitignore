@@ -14,6 +14,7 @@ build/
 dist/
 /MemWise.exe
 nul
+.mcp.json
 
 # Python
 __pycache__/
