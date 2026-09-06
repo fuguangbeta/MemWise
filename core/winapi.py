@@ -1222,51 +1222,6 @@ def _draw_memwise_pixels_hq(size, buf, base_color=(62, 62, 72), off_mult=0.75, s
     return buf
 
 
-def create_memwise_ico_multi(path, sizes=(16, 24, 32, 48, 64, 128, 256), bg_color=(45, 45, 50)):
-    """生成多尺寸 ICO（16-256 全套）——资源管理器大图标/任务栏/开始菜单/高 DPI 全清晰。
-    256×256 按 ICO 规范用 PNG 压缩（zlib 手写，零第三方依赖）；小尺寸用 DIB（32bpp + AND 全透明蒙版）。
-    复用 _draw_memwise_pixels 的矢量式抗锯齿绘制，任意尺寸边缘锐利。"""
-    import struct, zlib
-    entries = []  # (size, data)
-
-    def _png_encode(size, pixels):
-        raw = b"".join(b"\x00" + pixels[y * size * 4:(y + 1) * size * 4] for y in range(size))
-        def chunk(t, d):
-            c = t + d
-            return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
-        ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
-
-    for size in sizes:
-        buf = (ctypes.c_ubyte * (size * size * 4))()
-        _draw_memwise_pixels_hq(size, buf, bg_color)
-        pixels = bytes(buf)
-        if size == 256:
-            entries.append((size, _png_encode(size, pixels)))
-        else:
-            # DIB: BITMAPINFOHEADER + XOR(bottom-up BGRA) + AND 蒙版（全 0 = 不透明）
-            row = size * 4
-            xor = bytearray(row * size)
-            for y in range(size):
-                xor[(size - 1 - y) * row:(size - y) * row] = pixels[y * size * 4:(y + 1) * size * 4]
-            and_row = ((size + 31) // 32) * 4
-            and_mask = bytearray(and_row * size)
-            header = struct.pack("<IIIHHIIIIII", 40, size, size * 2, 1, 32, 0,
-                                 row * size + and_row * size, 0, 0, 0, 0)
-            entries.append((size, header + bytes(xor) + bytes(and_mask)))
-
-    with open(path, "wb") as f:
-        f.write(struct.pack("<HHH", 0, 1, len(entries)))
-        offset = 6 + 16 * len(entries)
-        for w, data in entries:
-            f.write(struct.pack("<BBBBHHII", w if w < 256 else 0, w if w < 256 else 0,
-                                0, 0, 1, 32, len(data), offset))
-            offset += len(data)
-        for _, data in entries:
-            f.write(data)
-    return True
-
-
 def _sharpen_bgra(buf, size, amount=0.8):
     """Unsharp 锐化（拉普拉斯 4 邻域）：只处理不透明像素，透明邻域不参与，避免边缘发暗。
     仅任务栏图标使用。"""

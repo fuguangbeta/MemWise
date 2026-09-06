@@ -1,5 +1,5 @@
 """
-MemWise v4.3.034 GUI —— 图形界面
+MemWise v4.4.021 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -15,7 +15,7 @@ from core.engine import (
     _log_write, _log_open, _log_close, _diag_log, _ERR,
     fmt_label, fmt_count, MemWiseEngine,
     _watchdog_path, _spawn_watchdog, _update_watchdog_daemon,
-    read_watchdog_daemon, remove_watchdog, _install_crash_sink,
+    read_watchdog_daemon, remove_watchdog, _install_crash_sink, _event_log,
 )
 
 from core import winapi
@@ -27,6 +27,7 @@ from core.efis import EfisController
 from core.sniffer import Sniffer
 from core.icon_flat import FLAT_48_PNG, decode_png  # 任务栏扁平图标（内嵌 PNG，冷启动 exe 兼容）
 from core.i18n import tr, tr_msg, set_language, LANGUAGES, get_language  # 界面语言
+from core import backup  # 配置包：导出/导入/自动备份/恢复出厂（任务3，2026-09-06）
 
 # ── user32 图标/窗口句柄 API：必须声明 64 位位宽，否则 HICON 句柄被 c_int 截断 → WM_SETICON 静默失效（v3.4.19 图标失效根因）──
 _Usr32 = ctypes.windll.user32
@@ -335,7 +336,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.3.034")
+        self.root.title("MemWise v4.4.021")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -391,7 +392,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.3.034 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.4.021 启动· 当前是否管理员权限:{adm}")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
@@ -445,7 +446,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.3.034")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.4.021")
                     if fw:
                         top = fw
                 except Exception:
@@ -797,12 +798,14 @@ class MemWiseGUI:
             "\n"
             "可配置的内容：\n"
             "  语言 — 中英文界面即时切换\n"
-            "  启动 — 管理员权限自启、启动时自动守护、最小化到托盘\n"
+            "  启动 — 管理员权限自启、启动时自动守护、开机自启动后最小化到托盘\n"
             "  窗口与托盘 — 关闭按钮行为、托盘左键行为\n"
             "  清理 — 6 种操作独立开关与清理深度\n"
             "  游戏模式 — 管理游戏进程名单\n"
             "  守护 — 紧急阈值、守护清理间隔\n"
             "  日志 — 文件日志开关\n"
+            "  重置 — 恢复默认设置与数据\n"
+            "  配置传输 — 导出与导入配置包\n"
             "  全局热键 — 优化/游戏模式快捷键设置")
         self.btn_log = ttk.Button(bf, text=tr("📜 学习日志"), command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
@@ -882,8 +885,7 @@ class MemWiseGUI:
             "查看当前所有进程包括内存占用在内的排行\n"
             "\n"
             "按内存占用从大到小排列，打开时即时采集\n"
-            "快速定位哪些进程最占内存\n"
-            "关闭窗口后重新打开可获取最新数据\n"
+            "打开期间自动刷新，可看到内存变化\n"
             "\n"
             "点击列标题可切换排序方式")
         ttk.Label(mf, text="  ").pack(side="left")
@@ -1024,16 +1026,27 @@ class MemWiseGUI:
         # 管理员权限自启（计划任务，登录时静默最高权限运行、无 UAC）——启动文件夹
         # 旧快捷方式由 on_autostart_admin 启用时及程序启动时幂等清理（防双启动）
         asa_var = tk.BooleanVar(value=CFG.get("auto_start_admin", False))
-        def on_autostart_admin():
-            en = asa_var.get()
+
+        def _admin_task_args():
+            """管理员自启计划任务的目标与参数（frozen=exe 本体 / dev=pythonw+脚本引号），
+            参数随「开机自启动后最小化到托盘」勾选联动（2026-09-06 审查 F4：on_autostart_admin
+            与 on_minimize 共用，杜绝两处构造漂移）"""
             if getattr(sys, "frozen", False):
-                target = sys.executable; args = ""; wd = os.path.dirname(sys.executable)
+                target = sys.executable
+                args = ""
             else:
                 pythonw = sys.executable.replace("python.exe", "pythonw.exe")
                 target = pythonw if os.path.isfile(pythonw) else sys.executable
-                args = f'"{os.path.abspath(__file__)}"'; wd = base  # 引号：脚本路径含空格时快捷方式仍可解析
+                args = f'"{os.path.abspath(__file__)}"'  # 引号：脚本路径含空格时计划任务仍可解析
+            if asm_var.get():
+                args = (args + " --minimized") if args else "--minimized"
+            return target, args
+
+        def on_autostart_admin():
+            en = asa_var.get()
             if en:
-                ok = winapi.set_auto_start_admin("MemWise", target, args + (" --minimized" if asm_var.get() else "") if args else ("--minimized" if asm_var.get() else ""))
+                target, task_args = _admin_task_args()
+                ok = winapi.set_auto_start_admin("MemWise", target, task_args)
                 if ok:
                     # 幂等清理旧版普通自启快捷方式残留（防与新计划任务开机双启动）
                     winapi.remove_auto_start("MemWise")
@@ -1068,15 +1081,34 @@ class MemWiseGUI:
             "\n"
             "无需手动点击守护按钮，程序一打开就在后台运行\n"
             "约每分钟输出一轮优化结果，同时持续自动调整优化策略\n"
-            "配合「启动后最小化到托盘」使用效果更佳")
+            "配合「开机自启动后最小化到托盘」使用效果更佳")
 
         asm_var = tk.BooleanVar(value=CFG.get("auto_start_minimize", False))
         def on_minimize():
             CFG["auto_start_minimize"] = asm_var.get()
             _save_cfg()
-        ttk.Checkbutton(sf, text=tr("启动后最小化到托盘"), variable=asm_var,
+            # 联动重建（2026-09-06 审查 F4）：管理员自启已启用时立即按新参数更新计划任务——
+            # 原实现只写配置，已安装任务的 --minimized 参数不变，重启后勾选不生效
+            if CFG.get("auto_start_admin"):
+                target, task_args = _admin_task_args()
+                if winapi.set_auto_start_admin("MemWise", target, task_args):
+                    self._log(tr("开机自启动已按新的最小化设置更新"))
+                else:
+                    # 重建失败（权限）回退勾选，保持配置与实际任务一致（与 on_autostart_admin 失败分支同语义）
+                    asm_var.set(not asm_var.get())
+                    CFG["auto_start_minimize"] = asm_var.get()
+                    _save_cfg()
+                    self._log(tr("管理员权限自启设置失败（请以管理员身份运行一次本程序）"))
+        ttk.Checkbutton(sf, text=tr("开机自启动后最小化到托盘"), variable=asm_var,
                         command=on_minimize).pack(anchor="w", pady=(2,0))
-        self._add_tip(sf.winfo_children()[-1], "程序启动后自动最小化到系统托盘\n\n主窗口不显示，只在托盘区域显示图标\n双击托盘图标恢复窗口，右键弹出菜单\n适合搭配「启动时自动守护」使用，实现开机静默运行")
+        self._add_tip(sf.winfo_children()[-1],
+            "开机自启动后自动最小化到系统托盘\n"
+            "\n"
+            "勾选后开机自启动时窗口不显示，仅在托盘区域显示图标\n"
+            "手动启动程序不受影响，窗口正常显示\n"
+            "双击托盘图标恢复窗口，右键弹出菜单\n"
+            "\n"
+            "需搭配「管理员权限启动」使用，实现开机静默运行")
 
         # ─── 窗口与托盘（2026-08-16 归类整理：关闭行为与托盘左键行为同属窗口/托盘
         # 交互域——点窗口 X、点托盘图标；原分居"关闭行为"与"触发与日志"两栏）───
@@ -1317,6 +1349,37 @@ class MemWiseGUI:
             # 整行覆盖（Tk Enter/Leave 不冒泡——单个实例挂行内全部控件，快速滑动单提示）
             self._add_tip_row(row, tip)
 
+        # ─── 重置（恢复出厂设置，2026-09-06 任务3）───
+        rf = ttk.LabelFrame(inner_frame, text=tr("重置"), padding=8)
+        rf.pack(fill="x", padx=12, pady=4)
+        reset_btn = ttk.Button(rf, text=tr("恢复默认"), command=self._on_factory_reset)
+        reset_btn.pack(anchor="w")
+        self._add_tip(reset_btn,
+            "将程序所有配置、学习数据与调参结果等恢复为默认状态\n"
+            "确认后将重启程序以生效默认配置\n"
+            "当前配置会自动备份到程序数据目录，可供再次导入\n"
+            "⚠ 此操作会清除所有使用数据，恢复前会再次确认防止误触\n"
+            "⚠ 请确保守护模式未运行，否则无法重置")
+
+        # ─── 配置传输（导出/导入配置包，2026-09-06 任务3）───
+        xfer = ttk.LabelFrame(inner_frame, text=tr("配置传输"), padding=8)
+        xfer.pack(fill="x", padx=12, pady=4)
+        xfer_btns = ttk.Frame(xfer); xfer_btns.pack(fill="x")
+        export_btn = ttk.Button(xfer_btns, text=tr("导出配置"), command=self._on_export_config)
+        export_btn.pack(side="left", padx=(0,6))
+        self._add_tip(export_btn,
+            "将当前全部配置、学习数据与调参结果打包导出到数据目录\n"
+            "导出文件可用于本机恢复，也可分享给其他用户导入")
+        import_btn = ttk.Button(xfer_btns, text=tr("导入配置"), command=self._on_import_config)
+        import_btn.pack(side="left")
+        self._add_tip(import_btn,
+            "从配置包导入全部配置、学习数据与调参结果\n"
+            "支持本程序导出与自动备份生成的配置包\n"
+            "导入前可先备份当前状态，导入后将重启程序生效\n"
+            "⚠ 请首先将配置文件包存入导入文件夹内\n"
+            "⚠ 导入会覆盖当前全部数据，若想保留当前配置请备份\n"
+            "⚠ 请确认文件来源可信，警惕被植入病毒等破坏性程序")
+
         # 关闭按钮行为：设置即时保存，无需独立保存按钮（save_and_close 已移除）
         # 关闭前释放下拉列表 popdown 的残留 grab（ttk Combobox 展开时 grab global 独占
         # 鼠标事件——展开后点关闭会被下拉吞掉一次；收起异常时 grab 残留致多次点击失效）
@@ -1347,9 +1410,10 @@ class MemWiseGUI:
                 self.root.tk.call("::msgcat::mclocale", "en_US" if lang == "en" else "zh_CN")
             except Exception:
                 pass
-            # 记录切换前日志面板可见行数（重建后 log 为空，重渲染需按切换前口径取历史）
+            # 记录切换前日志面板可见行数（重建后 log 为空，重渲染需按切换前口径取历史；
+            # end-1c 含隐式终止行偏置，减 1 得真实可见行数——与 _write_group 同口径）
             try:
-                self._pre_switch_log_lines = int(self.log.index('end-1c').split('.')[0])
+                self._pre_switch_log_lines = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
             except Exception:
                 self._pre_switch_log_lines = 0
             # 关闭所有弹窗（设置/排除/排行等——旧语言界面）
@@ -1369,6 +1433,10 @@ class MemWiseGUI:
             if self.engine.daemon_running:
                 self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
                 self.lbl_st["text"] = tr("守护运行中")
+            elif self._optimizing:
+                # 手动优化进行中切换语言：新按钮保持禁用态（防重入逻辑不变，视觉一致）
+                self.btn_opt.configure(state="disabled")
+            self._last_msg = None  # 重建后去重上下文清零（防跨语言首条消息被误去重）
             self._update_tray_status(getattr(self, '_mem_pct', 0) or 50)  # 托盘 tip 即时刷新
             self._log_op(tr("语言已切换"))
         except Exception as e:
@@ -1385,6 +1453,194 @@ class MemWiseGUI:
                     self._log_op(tr("语言切换失败，请重启程序"))
                 except Exception:
                     pass
+
+    # ---- 恢复默认与配置传输（2026-09-06 任务3）----
+
+    def _center_fit(self, win, min_w=None):
+        """按内容实际请求尺寸居中显示（自适应：不留白过多也不显示不全）。
+        构建完成后调用，替代固定宽高的 _center_geometry。"""
+        win.update_idletasks()
+        w = max(win.winfo_reqwidth(), min_w or 0)
+        h = win.winfo_reqheight()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        parent = win.master
+        try:
+            px, py = parent.winfo_x(), parent.winfo_y()
+            pw, ph = parent.winfo_width(), parent.winfo_height()
+            if pw < 10:
+                px = py = 0
+                pw, ph = sw, sh
+        except Exception:
+            px = py = 0
+            pw, ph = sw, sh
+        cx = max(0, min(px + (pw - w) // 2, sw - w))
+        cy = max(0, min(py + (ph - h) // 2, sh - h))
+        win.geometry(f"{w}x{h}+{cx}+{cy}")
+
+    def _dark_message(self, title, text, kind="info"):
+        """暗色信息弹窗（单按钮"确定"）——程序风格统一（替代系统原生 messagebox）。
+        kind: info / warning / error，影响图标与标题色。"""
+        icon = {"info": "ℹ", "warning": "⚠", "error": "❌"}.get(kind, "ℹ")
+        tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(kind, "#e0e0e0")
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Style().configure("DarkMsg.TFrame", background="#1c1c1c")
+        top = ttk.Frame(dlg, style="DarkMsg.TFrame")
+        top.pack(fill="x", padx=18, pady=(16, 2))
+        ttk.Label(top, text=icon, font=("Segoe UI Emoji", 18),
+                  background="#1c1c1c", foreground=tfg).pack(side="left", padx=(0, 12))
+        ttk.Label(top, text=title, font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
+        ttk.Label(dlg, text=text, justify="left", wraplength=440,
+                  background="#1c1c1c", foreground="#aaa").pack(padx=18, pady=(2, 4))
+        ttk.Button(dlg, text=tr("确认"), command=dlg.destroy).pack(pady=(6, 14))
+        self._center_fit(dlg, min_w=430)
+        dlg.deiconify()
+        dlg.wait_window()
+
+    def _confirm_reset_dialog(self, title, message, extra_info=None):
+        """三按钮确认弹窗（取消 / 确认并备份 / 确认但不备份）——重置与导入共用。
+        返回 None（取消）/ True（确认并备份）/ False（确认但不备份）"""
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()  # 先隐藏，构建完成后按内容尺寸居中一次显示
+        self._apply_icon(dlg)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.focus_set()
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Label(dlg, text=title, font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(pady=(18, 4))
+        body = ttk.Label(dlg, text=message, justify="left", wraplength=480,
+                         background="#1c1c1c", foreground="#aaa")
+        body.pack(padx=16)
+        if extra_info:
+            ttk.Label(dlg, text=extra_info, justify="left", wraplength=480,
+                      background="#1c1c1c", foreground="#6a6a6a").pack(padx=16, pady=(6, 0))
+        result = {"value": None}
+        btn = ttk.Frame(dlg, style="Dark.TFrame"); btn.pack(pady=14)
+        ttk.Style().configure("Dark.TFrame", background="#1c1c1c")
+        def _pick(v):
+            result["value"] = v; dlg.destroy()
+        ttk.Button(btn, text=tr("取消"), command=lambda: _pick(None)).pack(side="left", padx=6)
+        ttk.Button(btn, text=tr("确认并备份"), command=lambda: _pick(True)).pack(side="left", padx=6)
+        ttk.Button(btn, text=tr("确认但不备份"), command=lambda: _pick(False)).pack(side="left", padx=6)
+        self._center_fit(dlg, min_w=500)
+        dlg.deiconify()
+        dlg.wait_window()
+        return result["value"]
+
+    def _restart_with_new_config(self):
+        """重启生效的统一收尾：事件留痕（crash 通道不受日志开关控制）+ 统一日志
+        → 启动新实例（backup.restart_application 经 cmd 延迟 3 秒启动，期间当前
+        实例完全退出——互斥锁与窗口随进程释放，新实例单实例检查干净通过）
+        → 移除托盘图标 → 立即优雅关闭自身：不保存任何状态（需要丢弃的正是旧
+        状态，此路径无 save_state 钩子），句柄正常释放让 PyInstaller bootloader
+        干净清理临时目录（延迟启动同时错开杀软对新旧实例的扫描窗口）"""
+        _log_write("系统", tr("即将重启程序以生效新配置…"))
+        _event_log("主动重启：重置/导入配置生效，程序退出以启动新实例")
+        backup.restart_application()
+        try:
+            winapi.tray_remove(self.root.winfo_id(), TRAY_UID)
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def _on_factory_reset(self):
+        if self.engine.daemon_running:
+            self._dark_message(tr("重置"),
+                tr("守护模式运行中，无法恢复默认——请先停止守护"), kind="warning")
+            return
+        choice = self._confirm_reset_dialog(tr("恢复默认"),
+            tr("确认将全部配置、学习数据与调参结果恢复为默认状态？\n"
+               "选择\"确认并备份\"会先把当前状态保存为配置包（可供再次导入），"
+               "选择\"确认但不备份\"将直接清除。"))
+        if choice is None:
+            return
+        backup.reset_factory(backup=choice)
+        self._restart_with_new_config()
+
+    def _on_export_config(self):
+        p, missing = backup.export_state("export")
+        if p is None:
+            self._dark_message(tr("导出配置"),
+                tr("无法导出：程序尚未生成任何状态文件"), kind="error")
+            return
+        msg = tr_msg(f"配置包已导出: {p}")
+        if missing:
+            msg += "\n" + tr("缺少：") + "、".join(missing)
+        msg += "\n" + tr("可在程序数据目录的 import_export 文件夹找到，也可导入恢复")
+        self._dark_message(tr("导出配置"), msg, kind="info")
+
+    def _on_import_config(self):
+        if self.engine.daemon_running:
+            self._dark_message(tr("导入配置"),
+                tr("守护模式运行中，无法导入配置——请先停止守护"), kind="warning")
+            return
+        idir = backup.import_export_dir()
+        # 导入候选 = import_export 目录全部 zip（导出包/自动备份包/用户放入的包三合一）
+        candidates = sorted(
+            (os.path.join(idir, f) for f in (os.listdir(idir) if os.path.isdir(idir) else [])
+             if f.lower().endswith(".zip")),
+            key=os.path.getmtime, reverse=True)
+        if not candidates:
+            self._dark_message(tr("导入配置"),
+                tr_msg(f"导入文件夹中没有配置包，请先将 .zip 配置包放入：\n{idir}"),
+                kind="warning")
+            return
+        # 多包选择（显示文件名）
+        picked = {"name": None}
+        sel = tk.Toplevel(self.root)
+        sel.withdraw()
+        self._apply_icon(sel)
+        sel.title(tr("选择配置包"))
+        sel.resizable(False, False)
+        sel.transient(self.root)
+        sel.grab_set()
+        sel.configure(bg="#1c1c1c")
+        ttk.Label(sel, text=tr("导入文件夹中的配置包："), background="#1c1c1c",
+                  foreground="#e0e0e0").pack(anchor="w", padx=14, pady=(14, 4))
+        lb = tk.Listbox(sel, width=52, height=9, selectbackground="#419EF3",
+                        activestyle="none")
+        lb.pack(fill="both", expand=True, padx=14)
+        for c in candidates:
+            lb.insert("end", os.path.basename(c))
+        lb.selection_set(0)
+        def _ok():
+            s = lb.curselection()
+            if s:
+                picked["name"] = candidates[s[0]]
+            sel.destroy()
+        bf = ttk.Frame(sel); bf.pack(pady=10)
+        ttk.Button(bf, text=tr("确认"), command=_ok).pack(side="left", padx=6)
+        ttk.Button(bf, text=tr("取消"), command=sel.destroy).pack(side="left", padx=6)
+        self._center_fit(sel, min_w=460)
+        sel.deiconify()
+        sel.wait_window()
+        if not picked["name"]:
+            return
+        pkg = picked["name"]  # 候选列表存完整路径（import_export 目录）
+        manifest, errors = backup.validate_package(pkg)
+        if errors:
+            self._dark_message(tr("导入配置"), "\n".join(errors), kind="error")
+            return
+        src = tr("备份") if manifest.get("source") == "backup" else tr("导出")
+        info = tr_msg(f"包来源：{src} · 导出时间：{manifest.get('exported_at', '')}"
+                      f" · 程序版本：{manifest.get('app_version', '')}")
+        choice = self._confirm_reset_dialog(tr("导入配置"),
+            tr("确认导入该配置包？\n当前全部配置、学习数据与调参结果将被覆盖。\n"
+               "选择\"确认并备份\"会先保存当前状态（可供再次导入）。"), extra_info=info)
+        if choice is None:
+            return
+        backup.import_state(pkg, backup=choice)
+        self._restart_with_new_config()
 
     def _edit_exclusion_list(self):
         win = tk.Toplevel(self.root)
@@ -1836,8 +2092,6 @@ class MemWiseGUI:
                 action, args = self._msg_queue.get_nowait()
                 if action == 'log': self._log(args)
                 elif action == 'log_batch': self._log_batch(args)
-                if action == 'log': self._log(args)
-                elif action == 'log_batch': self._log_batch(args)
                 elif action == 'display_groups':
                     # 周期末打包整体（2026-08-30 修正）：所有子组合并为一个大整体做一次
                     # 清屏判定——大整体对外遵循组间规则（现有行数+总行数>7 → 清屏），
@@ -1890,7 +2144,15 @@ class MemWiseGUI:
                 except Exception as e:
                     import sys; print(f"[MemWise] _refresh_mem UI异常: {e}", file=_ERR)
         finally:
-            self.root.after(2000, self._refresh_mem)
+            # after 链防叠加（2026-09-06 审查）：重入（语言切换/异常兜底再次调用本方法）
+            # 先取消旧调度再排新，恒保持单条 2s 链——原实现每次调用叠加一条并行链，
+            # 切 N 次语言后 N+1 条链同时刷新，开销随切换次数累积
+            try:
+                if getattr(self, "_refresh_mem_id", None):
+                    self.root.after_cancel(self._refresh_mem_id)
+            except Exception:
+                pass
+            self._refresh_mem_id = self.root.after(2000, self._refresh_mem)
 
     def _upd_stats(self):
         s = self.cleaner.summary()
@@ -1973,7 +2235,11 @@ class MemWiseGUI:
             if i == 0:
                 lbl = "0"
             elif lbl_v >= 1000:
-                lbl = f"{lbl_v/1024.0:.1f}GB"
+                # GB 段显示规则（2026-09-06 用户定稿）：换算值 ≥10 四舍五入取整
+                # （10.0GB→10GB，防止一位小数多出的字符使十位/百位溢出标度区）；
+                # <10 保留一位小数（5.3GB）。两个标度（一半/最高）同规则
+                _gb_v = lbl_v / 1024.0
+                lbl = f"{_gb_v:.0f}GB" if _gb_v >= 10 else f"{_gb_v:.1f}GB"
             else:
                 lbl = f"{lbl_v:.0f}MB"
             y = py1 - int(i * ph / 2)
@@ -2050,7 +2316,7 @@ class MemWiseGUI:
                 r = 4
                 if over_100:
                     dot_fill = "#D4A017"
-                elif r_eff <= 60:
+                elif r_eff <= 50:
                     dot_fill = "#FF6B6B"
                 else:
                     dot_fill = "#4488CC"
@@ -2210,7 +2476,7 @@ class MemWiseGUI:
             card.append(tr("没有找到值得清理的进程（全部受保护或无闲置内存）"))
         self._log_batch(card, to_file=True)
         # 统计栏始终显示程序运行以来累计总量
-        winapi.report_event("MemWise", f"GUI 优化: {s['freed_mb']}MB 释放, {len(trimmed)} 进程")
+        winapi.report_event("MemWise", tr_msg(f"GUI 优化: {s['freed_mb']}MB 释放, {len(trimmed)} 进程"))
         self._upd_stats()
         if self.engine.daemon_running:
             # 守护运行中的即时优化：按钮/状态栏由守护周期维护，只更新统计与日志
@@ -2226,8 +2492,11 @@ class MemWiseGUI:
         if self._optimizing:
             self._log_op("手动优化进行中，请等待完成后再启动守护")
             return
-        if not self.engine.start_daemon():  # 含防双守护与周期基线/图表/ERIS 状态重置
-            self._log_op("上一守护线程仍在收尾，请稍候再试")
+        if not self.engine.start_daemon():  # 含防双守护/CLI 互斥与周期基线/图表/ERIS 状态重置
+            if getattr(self.engine, '_daemon_busy_cli', False):
+                self._log_op(tr("命令行守护模式运行中，无法开启界面守护"))
+            else:
+                self._log_op("上一守护线程仍在收尾，请稍候再试")
             return
         self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
         self.lbl_st["text"] = tr("守护运行中")
@@ -2254,7 +2523,7 @@ class MemWiseGUI:
         self.btn_dae.configure(state="normal"); self.btn_stop.configure(state="disabled")
         err = getattr(self.engine, '_dae_error', None)
         if err:
-            self.lbl_st["text"] = "⚠ 守护异常"
+            self.lbl_st["text"] = tr("⚠ 守护异常")
             # 同批原子输出（2026-08-30 分组语义）：头行+详情一组——拆散时边界下面板
             # 恰满 6 行会让 ❌ 头行被滚动清掉、只剩详情
             self._log_batch([tr("❌ 守护异常，详见下方错误信息"), f"🔍 {err}"])

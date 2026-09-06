@@ -35,8 +35,10 @@ class HierarchicalPrior:
             return 0.35  # 未知类别 → 默认
         
         # 同类进程中至少有 5 样本的
+        # dict() 快照迭代（2026-09-06 审查 F2）：调用方传入的是 learner.profiles 活引用，
+        # 手动优化线程可并发增键，直接迭代会 RuntimeError（与 pop_info/_compute_eris 同款防护）
         peers = []
-        for n, p in profiles.items():
+        for n, p in dict(profiles).items():
             if cls.classify(n) == cat and p.total_samples >= 5:
                 peers.append(p.thompson_theta)
         

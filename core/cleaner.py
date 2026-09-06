@@ -511,7 +511,6 @@ class PareCleaner:
         if self._game_mode_manual:
             # 手动模式：模式开关由用户持有，自动检测只做数据维护
             if game_on:
-                self._game_gone_count = 0
                 # 手动模式同样实时刷新保护集（含子进程树）——覆盖游戏期间后启动的子进程/新实例
                 self.judger._game_pid_set = self._build_game_pid_set(snaps)
             elif not game_on and self.game_mode:
@@ -521,21 +520,16 @@ class PareCleaner:
             self._info_msgs.append("🎮 检测到游戏运行 · 启用 游戏模式")
             self.game_mode = True
             self.judger.game_mode = True
-            self._game_gone_count = 0
         elif not game_on and self.game_mode:
-            # 智能退出：连续2周期无游戏进程则退出
-            self._game_gone_count = getattr(self, '_game_gone_count', 0) + 1
-            if self._game_gone_count >= 2:
-                self._info_msgs.append("🎮 游戏已退出 · 恢复正常模式")
-                self.game_mode = False
-                self.judger.game_mode = False
-                self.judger._game_pid_set.clear()
-                self._game_gone_count = 0
+            # 实时退出（2026-09-06 用户定稿：实时监测，游戏模式随游戏启停即时生效，
+            # 无确认周期——与 engine gap 快照检测同口径，消除双计数节奏差）
+            self._info_msgs.append("🎮 游戏已退出 · 恢复正常模式")
+            self.game_mode = False
+            self.judger.game_mode = False
+            self.judger._game_pid_set.clear()
         else:
             self.game_mode = game_on
             self.judger.game_mode = game_on
-            if game_on:
-                self._game_gone_count = 0
         # 游戏运行期间每轮刷新 PID 保护集（覆盖游戏内后启动的子进程/新实例——含子进程树）
         if game_on:
             self.judger._game_pid_set = self._build_game_pid_set(snaps)
@@ -847,10 +841,10 @@ class PareCleaner:
         统一优化入口 — 已激活 8 步内核快速管线
 
         mode: quick|normal|deep|full
-            quick  = layer1(7 步快速管线) + layer2(full probe+trim)
-            normal = layer1(7 步) + layer2(full) + layer3(if agg>=0.3)
-            deep   = layer1(8 步) + layer2 + layer3(always)
-            full   = layer1(8 步) + layer2 + layer3 + extra standby
+            quick  = layer1（轻量 3 步 ∩ 用户勾选），零进程清理
+            normal = layer1(按勾选映射，无系统级全清) + layer2(full) + layer3(if agg>=EFIS gate)
+            deep   = layer1(含 ws_all，使用率<33% 门控豁免) + layer2 + layer3(恒)
+            full   = layer1(含 ws_all 无条件) + layer2 + layer3 + 回弹二轮
 
         operations: 可选列表，限制允许的清理操作，如 ["ws","standby","modified","filecache"]
         aggressiveness: 可选，预计算的 aggressiveness 值（daemon 模式避免 PID 双重更新）

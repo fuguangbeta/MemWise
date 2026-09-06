@@ -1,4 +1,4 @@
-﻿# MemWise v4.3.034
+﻿# MemWise v4.4.021
 
 ## 关于本工具 · *About This Tool*
 
@@ -94,9 +94,9 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.3 命令行 · *Command Line*
 
-程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）、service（计划任务服务安装/移除）、reset（恢复出厂设置）等子命令。
+程序同时提供命令行接口（`memwise.py`），支持 status（查看内存状态）、optimize（一键优化）、daemon（守护模式）、profile（查看进程画像）、learn（学习进程行为）、export（导出配置包）、import（导入配置包）、service（计划任务服务安装/移除）、reset（恢复出厂设置）等子命令。
 
-*A CLI is available via `memwise.py`, supporting status, optimize, daemon, profile, learn, service, and reset subcommands.*
+*A CLI is available via `memwise.py`, supporting status, optimize, daemon, profile, learn, export, import, service, and reset subcommands.*
 
 ---
 
@@ -377,7 +377,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 - **非游戏智能释放**：非游戏进程按智能评分持续清理（受门槛约束，前台窗口与排除列表受保护），内存优先级降为低优先，操作系统优先回收其页面供游戏使用
 - **操作频率自适应**：gap 间隔从常规 12s 拉长至 18s（游戏模式自动 ×1.5），降低守护周期对系统的干预密度
 
-退出检测为连续两轮确认（游戏进程瞬间消失不会误判退出），恢复运行中已调优的参数。常规参数不受游戏模式切换影响。
+游戏模式随游戏启动与退出即时生效，恢复运行中已调优的参数。常规参数不受游戏模式切换影响。
 
 *Auto-activated via process-name matching against your custom game list, or toggled manually from the UI or Ctrl+Shift+G with a confirmation dialog. Manual mode persists until toggled again or restart; the PID protection set keeps refreshing in real time during gameplay.*
 
@@ -388,15 +388,15 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 - *Non-game intelligent release — non-game processes are continuously cleaned via intelligent scoring (gated; foreground and excluded processes are protected) and demoted to low memory priority so the OS reclaims their pages for the game first*
 - *Adaptive intervention density — the gap interval extends from 12s to 18s (auto ×1.5 in game mode) to reduce daemon intervention*
 
-*Exit detection requires two consecutive idle cycles (a momentary disappearance of the game process never triggers a false exit), and tuned parameters resume afterwards; normal parameters are unaffected by game-mode switches.*
+*Game-mode engagement and exit take effect immediately with the game's start and exit, and tuned parameters resume afterwards; normal parameters are unaffected by game-mode switches.*
 
 ---
 
 ## 8. 图表与效率评分 · *Charting & Efficiency Scoring*
 
-图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v6 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身特异性滚动窗（释放效率 25 轮、参数收敛 8 轮、其余 20 轮）的中位数和四分位距(IQR)为基准，经 trimmed IQR 去极值与内插分位，通过 80 + 40×(raw−p50)/IQR（scale=40）将原始值映射为独立分数，释放效率维度经对数压缩，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 >100% 时折点显示金色、<60% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤60% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（60-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率与关键统计指标。
+图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v6 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身特异性滚动窗（释放效率 25 轮、参数收敛 8 轮、其余 20 轮）的中位数和四分位距(IQR)为基准，经 trimmed IQR 去极值与内插分位，通过 80 + 40×(raw−p50)/IQR（scale=40）将原始值映射为独立分数，释放效率维度经对数压缩，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 ≥100% 时折点显示金色、≤50% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤50% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（50-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率与关键统计指标。
 
-*A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars overlaid with the ERIS v6 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, release efficiency, side-effect control, parameter convergence, and exploration completeness — each with its own dimension-specific rolling window (25 cycles for release efficiency, 8 for parameter convergence, 20 for the rest), trimmed-IQR outlier removal, interpolated quantiles, EWMA-smoothed medians, and a log-compressed release-efficiency raw. Scores map via 80 + 40×(raw−p50)/IQR (scale=40) and are weighted-summed into the final efficiency score. Affected quantile windows auto-reset on game-mode transitions. The score genuinely reflects engine performance relative to its own norm. The first 3 data points render as dashed lines/dots during convergence; golden dots mark scores above 100%, coral-red dots warn below 60%. Factor selection uses each dimension's deviation from the IQR center (80) — rising efficiency picks the largest positive deviation, falling picks the largest negative; ±2% fluctuation shows as relatively stable. Scores ≥100% append a 🚀 efficiency-exceptional tag, ≤60% a ⚠ efficiency-abnormal tag; 🔥 sustained-improvement / ⚠ sustained-decline tags trigger only within the normal range (60–100) on three consecutive same-direction cycles, with polarity-continuity protection. Anti-oscillation guards prevent same-dimension flip-flopping, and stable periods auto-reset anti-oscillation state. Hover tooltips reveal true values and the dominant factors. Below the chart: average efficiency and key statistics.*
+*A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars overlaid with the ERIS v6 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, release efficiency, side-effect control, parameter convergence, and exploration completeness — each with its own dimension-specific rolling window (25 cycles for release efficiency, 8 for parameter convergence, 20 for the rest), trimmed-IQR outlier removal, interpolated quantiles, EWMA-smoothed medians, and a log-compressed release-efficiency raw. Scores map via 80 + 40×(raw−p50)/IQR (scale=40) and are weighted-summed into the final efficiency score. Affected quantile windows auto-reset on game-mode transitions. The score genuinely reflects engine performance relative to its own norm. The first 3 data points render as dashed lines/dots during convergence; golden dots mark scores at or above 100%, coral-red dots warn at or below 50%. Factor selection uses each dimension's deviation from the IQR center (80) — rising efficiency picks the largest positive deviation, falling picks the largest negative; ±2% fluctuation shows as relatively stable. Scores ≥100% append a 🚀 efficiency-exceptional tag, ≤50% a ⚠ efficiency-abnormal tag; 🔥 sustained-improvement / ⚠ sustained-decline tags trigger only within the normal range (50–100) on three consecutive same-direction cycles, with polarity-continuity protection. Anti-oscillation guards prevent same-dimension flip-flopping, and stable periods auto-reset anti-oscillation state. Hover tooltips reveal true values and the dominant factors. Below the chart: average efficiency and key statistics.*
 
 ---
 
@@ -426,7 +426,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **界面语言**：简体中文 / English 即时切换（设置面板顶部独立栏目）。切换瞬间生效，守护与统计数据不受影响；未翻译内容自动回退原语言，日志文件保留原始语言便于排障。
 
-**启动设置**：管理员权限启动（计划任务，登录时以最高权限静默运行）、启动时自动开启守护、启动后最小化到托盘。
+**启动设置**：管理员权限启动（计划任务，登录时以最高权限静默运行）、启动时自动开启守护、开机自启动后最小化到托盘。
 
 **窗口与托盘**：关闭按钮行为（最小化到托盘（守护继续运行）、直接退出程序、每次询问（默认））、托盘左键行为（显示窗口（默认）/一键清理/无操作，仅窗口隐藏时生效）。
 
@@ -440,16 +440,22 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **全局热键**：独立栏汇总所有快捷键——手动优化（默认 `ctrl+shift+m`）与游戏模式开关（默认 `ctrl+shift+g`），各自独立配置。格式校验（至少一个修饰键 + 单字母/F1-F24）、双键冲突检测、注册占用提示（被其他程序占用时本次使用默认值），修改即时生效。
 
+**重置**：恢复默认——将全部配置、学习数据与调参结果恢复为默认状态，确认时可选先备份当前状态为配置包（存放于数据目录 import_export 文件夹，可再次导入），确认后自动重启程序生效；守护运行中无法执行。
+
+**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。
+
 *All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, daemon interval, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.*
 
 - *Language — Simplified Chinese / English, switchable instantly from the top section of Settings. The whole UI (tips, dialogs, log display, CLI) follows the choice; untranslated text falls back to the source language, and the log file keeps the original language for troubleshooting*
-- *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon), auto-enable daemon on launch, start minimized to tray*
+- *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon), auto-enable daemon on launch, minimize to tray on auto-start*
 - *Window & Tray — close-button behavior (minimize to tray (daemon continues), exit immediately, or ask each time — default) and tray left-click action (show window (default) / one-click cleanup / no action; active only while the window is hidden)*
 - *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected)*
 - *Game mode — manage the game-process list (add/remove in one window; comma-separated batch input, duplicate warnings, delete confirmation). A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click switching*
 - *Guard — emergency threshold (50–99%, default 80%) and daemon clean interval (8–20s, default 12s)*
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
 - *Global hotkeys — manual optimize (default ctrl+shift+m) and game-mode toggle (default ctrl+shift+g), independently configurable with format validation (at least one modifier + a letter or F1-F24), conflict detection, and busy-key fallback, taking effect instantly*
+- *Reset — factory reset restores all settings, learned data, and tuning results to defaults; optionally backs up the current state as a config package first (stored in the import_export folder of the data directory, re-importable), then restarts automatically to apply; unavailable while the daemon is running*
+- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running)*
 
 ---
 
@@ -478,8 +484,10 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | 单次优化（支持 quick/normal/deep/full） |
 | `daemon [--mode MODE]` | CLI 守护模式 |
 | `profile <PID>` | 查看指定进程的完整学习画像 |
+| `export` | 导出当前全部配置、学习数据与调参结果为配置包（数据目录 import_export 文件夹） |
+| `import <文件名>` | 从数据目录 import_export 文件夹导入指定配置包（导入前严格校验并自动备份当前状态，重启后生效） |
 | `service [remove]` | 安装/移除计划任务服务（系统启动自动运行，需管理员） |
-| `reset` | 恢复出厂设置（备份并移除配置、画像与调参状态） |
+| `reset` | 恢复出厂设置（当前状态自动备份为配置包后移除配置、画像与调参状态，重启后生效） |
 
 *Command reference:*
 
@@ -490,8 +498,10 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | Run one optimization pass (quick/normal/deep/full) |
 | `daemon [--mode MODE]` | CLI daemon mode |
 | `profile <PID>` | View a process's complete learning profile |
+| `export` | Export all settings, learned data, and tuning results as a config package (import_export folder of the data directory) |
+| `import <name>` | Import the named config package from the import_export folder of the data directory (strictly validated, current state auto-backed up, effective after restart) |
 | `service [remove]` | Install/remove the scheduled-task service (runs at system startup, requires administrator) |
-| `reset` | Factory reset (backs up and removes config, profiles, and tuning state) |
+| `reset` | Factory reset (auto-backs up the current state as a config package, then removes config, profiles, and tuning state; effective after restart) |
 
 ---
 
@@ -569,6 +579,7 @@ MemWise/
 │   ├── memwise_state.json      # 学习数据文件（自动保存/加载）· Learned State
 │   ├── memwise_efis_state.json # EFIS 状态文件 · EFIS State
 │   ├── memwise_eris_ewma.json  # ERIS IQR 分位数窗持久化 · ERIS Quantile Window Persistence
+│   ├── import_export/          # 配置包（导出/自动备份/待导入）· Config Packages (Export / Backup / Import)
 │   ├── watchdog.json           # 看门狗标记文件（自动管理）· Watchdog Marker
 │   ├── memwise.log             # 统一运行日志（2MB×2 轮转）· Unified Runtime Log
 │   └── memwise_crash.log       # 崩溃现场记录（常驻，独立于日志开关）· Crash Dump
@@ -593,9 +604,10 @@ MemWise/
 │   ├── i18n.py                 # 界面翻译（简体中文/English 即时切换）· UI Translation
 │   ├── icon_flat.py            # 任务栏扁平图标内嵌 PNG（base64）· Flat Icon Data
 │   ├── eris.py                 # ERIS 效率评分纯函数（生产/测试共用）· ERIS Pure Functions
+│   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py            # 回归测试（282 项断言）· Regression Suite
+│   └── test_v2.6.py            # 回归测试（339 项断言）· Regression Suite
 ```
 
 ---

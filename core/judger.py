@@ -18,8 +18,9 @@ def _mb(b):
 DEFAULT_KP = 1.0    # 比例系数 — 响应当前压力 (更积极)
 DEFAULT_KI = 0.15   # 积分系数 — 消除稳态误差
 DEFAULT_KD = 0.1    # 微分系数 — 抑制震荡 (快速升压时提前响应)
-TARGET_USAGE = 30.0  # 目标内存使用率 (%) — 对标 MemReduct 极致优化
-DT = 5.0             # 控制周期参考值（预留：控制器按真实调用间隔取 dt，保留防未来启用）
+TARGET_USAGE = 30.0  # 目标内存使用率 (%) — PidController 签名默认与 judger 构造兜底
+                     # （实际始终被 efis_params.target_usage 覆盖；2026-09-06 审查 F12 检测：
+                     # 2 处真实消费，保留）
 
 def _system_path_prefixes():
     """系统目录前缀（动态获取，非硬编码 C 盘——换机器/系统盘非 C 盘时依然有效）"""

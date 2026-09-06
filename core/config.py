@@ -50,6 +50,17 @@ DEFAULT_CFG = {
 CLEAN_OPS_WHITELIST = {"ws", "standby", "modified", "filecache", "volume", "registry"}
 
 
+def _norm_proc_name(raw):
+    """进程名规范化：去空格转小写，自动补 .exe 后缀（与 GUI _normalize_proc_name、
+    cleaner._get_user_game_procs 同款）。config.load 归一 never 黑名单用——保证手改配置
+    与 GUI 写入的条目口径一致（4 处消费方直接 `name in never` 比较快照带 .exe 名，
+    不规范化则无后缀条目排除静默失效）"""
+    n = str(raw).strip().lower()
+    if n and not n.endswith(".exe"):
+        n += ".exe"
+    return n
+
+
 def get_state_path():
     """获取 memwise_state.json 路径（运行时数据统一在 data/ 目录），兼容 PyInstaller 打包"""
     if getattr(sys, "frozen", False):
@@ -96,6 +107,9 @@ def load():
         for _k in ("never", "game_processes"):
             if not isinstance(d.get(_k), list):
                 d[_k] = []
+        # never 黑名单规范化（2026-09-06 审查 F9）：手改配置的无后缀条目（如 chrome）也能
+        # 精准匹配快照进程名；幂等——GUI 写回的已规范化条目零变化，空/None 条目剔除
+        d["never"] = [n for n in (_norm_proc_name(x) for x in d["never"] if x and str(x).strip()) if n]
         # efis_params 类型校验（2026-08-15 审查）：畸形配置（列表/字符串）会致
         # Judger 构造 .get 崩溃（启动即崩）；内层数值键清洗——手改字符串会在
         # PidController 运行时 TypeError（守护异常），坏键删除回退默认
@@ -135,7 +149,8 @@ def save(cfg):
     with _save_lock:
         try:
             os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-            tmp = CONFIG_PATH + ".tmp"
+            # tmp 附加进程号（2026-09-06 审查 F3）：跨进程并发写退化为"最后写者胜"而非交错损坏
+            tmp = f"{CONFIG_PATH}.{os.getpid()}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
             os.replace(tmp, CONFIG_PATH)

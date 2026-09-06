@@ -89,8 +89,10 @@ class PolicyVoter:
             reasons.append("内存上升中")
 
         # 树5: 反事实优势 — 与其他有画像进程的平均预期释放对比（排除自身，防均值被自己抬高）
+        # list() 快照迭代（2026-09-06 审查 F2）：can_trim 在守护线程调用，手动优化线程可
+        # 并发增键——有投票段 try 兜底但会误拒该进程，快照根除
         if p and k_freed > 0:
-            peers = [q.kalman.x_freed for q in learner.profiles.values()
+            peers = [q.kalman.x_freed for q in list(learner.profiles.values())
                      if q is not p and q.kalman.x_freed > 0]
             if peers:
                 adv_mb = (k_freed - sum(peers) / len(peers)) / (1 << 20)

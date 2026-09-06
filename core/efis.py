@@ -203,7 +203,8 @@ class EfisController:
             "adjust_log": self._adjust_log[-50:],
             "last_save": time.time(),
         }}
-        tmp = efis_path + ".tmp"
+        # tmp 附加进程号（2026-09-06 审查 F3）：跨进程并发写退化为"最后写者胜"而非交错损坏
+        tmp = f"{efis_path}.{os.getpid()}.tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)

@@ -32,6 +32,11 @@ if base not in sys.path:
     sys.path.insert(0, base)
 
 # ═══ 看门狗（进程级，UI 无关）：崩溃自动重启 + 守护状态记录 ═══
+DAEMON_MUTEX_NAME = "Global\\MemWise_Daemon"  # 守护本体互斥（2026-09-06 审查 F3：
+# 防 CLI daemon 与 GUI 守护并发——双进程同时写同一状态文件，进程内锁不跨进程会交错
+# 损坏画像唯一副本；GUI 查看与手动优化不受影响，mutex 仅在守护运行期间持有）
+
+
 def _watchdog_path():
     """看门狗状态文件路径：运行时数据统一在 data/ 目录（base/data，dist 部署时在项目根 data/；
     主进程与 watchdog 子进程同 exe → 同路径）"""
@@ -44,6 +49,9 @@ def _migrate_runtime_data():
     try:
         os.makedirs(os.path.join(base, "data"), exist_ok=True)
         os.makedirs(os.path.join(base, "config"), exist_ok=True)
+        # 配置包目录（2026-09-06 任务3）：导出/自动备份/待导入三合一，启动即预建
+        os.makedirs(os.path.join(base, "data", "import_export"), exist_ok=True)
+        os.makedirs(os.path.join(base, "data", "import"), exist_ok=True)
         for name in ("memwise_state.json", "memwise_efis_state.json", "memwise_eris_ewma.json",
                      "watchdog.json", "memwise.log", "memwise.log.1"):
             src = os.path.join(base, name)
@@ -114,10 +122,13 @@ if "--watchdog" in sys.argv:
                     startupinfo=si, creationflags=0x08000008,  # CREATE_NO_WINDOW | DETACHED_PROCESS
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 # 更新 watchdog.json 为新 PID（保留崩溃前的守护状态，供恢复分支判断）；tmp+replace 原子写，与主进程协议一致
-                with open(wd_path + ".tmp", "w", encoding="utf-8") as f:
+                # tmp 附加进程号（2026-09-06 审查 F3）：主进程 _update_watchdog_daemon 与
+                # 看门狗子进程可能并发更新此文件，各写各的 tmp 防交错损坏
+                _wd_tmp = f"{wd_path}.{os.getpid()}.tmp"
+                with open(_wd_tmp, "w", encoding="utf-8") as f:
                     json.dump({"pid": p.pid, "ts": now, "crash_count": len(crash_history),
                                "daemon": d.get("daemon", False)}, f)
-                os.replace(wd_path + ".tmp", wd_path)
+                os.replace(_wd_tmp, wd_path)
             except Exception:
                 continue
     _watchdog_loop()
@@ -156,7 +167,8 @@ def _update_watchdog_daemon(flag):
         with open(p, "r", encoding="utf-8") as f:
             d = json.load(f)
         d["daemon"] = flag
-        tmp = p + ".tmp"
+        # tmp 附加进程号（2026-09-06 审查 F3）：与看门狗子进程的写入互不交错
+        tmp = f"{p}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f)
         for _ in range(3):
@@ -313,7 +325,7 @@ def _log_open():
                 pass
         # 未捕获异常钩子由 _install_crash_sink 统一安装（写 memwise_crash.log + 此处统一日志）
         atexit.register(_log_close)
-        _log_write("启动", f"MemWise v4.3.034 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.4.021 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -372,6 +384,19 @@ def _close_crash_sink():
 def _diag_log(msg):
     """诊断日志：写入统一运行日志"""
     _log_write("诊断", msg)
+
+
+def _event_log(msg):
+    """重启/退出类事件的持久痕迹（2026-09-06 任务3）：写入崩溃现场通道——
+    不受「记录运行日志到文件」开关控制，保证 os._exit 类主动退出在任何
+    设置下都留有记录；下次启动经 _migrate_old_logs 并入统一日志。"""
+    global _CRASH_FD
+    try:
+        if _CRASH_FD is not None:
+            _CRASH_FD.write(f"[{_log_ts()}][系统] {msg}\n")
+            _CRASH_FD.flush()
+    except Exception:
+        pass
 
 
 # ── 配置/状态路径（模块级单例：引擎与展示层共享同一 CFG/STATE_FILE）──
@@ -460,6 +485,10 @@ class MemWiseEngine:
         self._thread = None
         self._dae_error = None
         self._pending_harvest = None
+        # 守护互斥 mutex 句柄（Global\MemWise_Daemon，守护运行期间持有；
+        # _daemon_busy_cli 供展示层区分"CLI 占用"与"旧线程收尾中"两种启动失败）
+        self._daemon_mutex = None
+        self._daemon_busy_cli = False
         # harvest 专用独立线程池（与 trim 池彻底隔离——防池内嵌套死锁，见 _dae_worker）
         self._harvest_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="memwise-harvest")
@@ -524,6 +553,15 @@ class MemWiseEngine:
             self._thread.join(timeout=1.5)
             if self._thread.is_alive():
                 return False
+        # 命令行守护互斥（2026-09-06 审查 F3）：CLI daemon（service/手动）运行中拒绝开启；
+        # GUI 不开守护时不占坑——mutex 仅在守护运行期间持有（_dae_worker finally 释放）
+        if self._daemon_mutex is None:
+            self._daemon_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, DAEMON_MUTEX_NAME)
+            if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
+                self._daemon_mutex = None
+                self._daemon_busy_cli = True
+                return False
+        self._daemon_busy_cli = False
         s = self.cleaner.summary()
         self._chart_last_freed = float(s['freed_mb'])
         self._prev_trim_count = s['ws_trim']
@@ -748,7 +786,9 @@ class MemWiseEngine:
                 if not m: time.sleep(interval); continue
                 snaps = self._snap()
 
-                total_samples = sum(p.total_samples for p in self.learner.profiles.values())
+                # dict() 快照迭代（2026-09-06 审查 F2）：手动优化线程可并发增键，
+                # 直接迭代会 RuntimeError 击落守护线程（周期开头，无局部兜底）
+                total_samples = sum(p.total_samples for p in dict(self.learner.profiles).values())
                 learned = len(self.learner.profiles)
 
                 self._cycle_log_groups = []  # 本周期末分组输出缓存（每项一个逻辑组，2026-08-30）
@@ -827,19 +867,15 @@ class MemWiseEngine:
                                 self.cleaner.game_mode = True
                                 self.cleaner.judger.game_mode = True
                                 self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
-                                self.cleaner._game_gone_count = 0  # 退出计数重置（与 _layer2_process 同口径）
                                 self._cycle_log_groups.append(["🎮 检测到游戏运行 · 启用 游戏模式"])
                             elif self.cleaner.game_mode and not game_now:
-                                # 2 周期确认退出（2026-08-14 审查：原立即退出与 _layer2_process
-                                # 的"连续2周期"口径不一致且会抖动——游戏进程瞬间消失
-                                # （反作弊/更新器重启）立即退出又启用；统一计数确认）
-                                self.cleaner._game_gone_count = getattr(self.cleaner, '_game_gone_count', 0) + 1
-                                if self.cleaner._game_gone_count >= 2:
-                                    self.cleaner.game_mode = False
-                                    self.cleaner.judger.game_mode = False
-                                    self.cleaner.judger._game_pid_set.clear()
-                                    self.cleaner._game_gone_count = 0
-                                    self._cycle_log_groups.append(["🎮 游戏已退出 · 恢复正常模式"])
+                                # 实时退出（2026-09-06 用户定稿：实时监测，游戏模式随游戏
+                                # 启停即时生效，无确认周期；原"连续 2 周期确认"在 gap 快照
+                                # 节奏下实为 2×3s，与本意不符）
+                                self.cleaner.game_mode = False
+                                self.cleaner.judger.game_mode = False
+                                self.cleaner.judger._game_pid_set.clear()
+                                self._cycle_log_groups.append(["🎮 游戏已退出 · 恢复正常模式"])
                             # 高频压制梯度：registry 零磁盘干扰，游戏模式同样执行（游戏流畅只禁磁盘类操作）；
                             # deep/full 追加系统级持续清（standby/脏页零 PF 成本——缓存重建后立即回收，
                             # 可用内存持续高位，抑制"压缩后回弹"）；游戏模式恒 registry（流畅优先）
@@ -1043,7 +1079,6 @@ class MemWiseEngine:
                         'failed_cnt': self._cycle_failed,
                         'total_attempts': self._cycle_trimmed + self._cycle_failed,
                         'cycle_freed': cycle_freed,
-                        'snaps': snaps,
                         'fore_fullscreen': winapi.is_foreground_fullscreen(),
                         # ── EFIS 诊断输入全量补齐（11 字段，调参分支获得真实数据）──
                         'theta_mean': _prof_theta_mean(self.learner),
@@ -1077,7 +1112,9 @@ class MemWiseEngine:
                         # 一并更新——参数"配置可调"对全体生效，防名不副实）
                         _kr = params.get('kalman_r', 5.0)
                         self.learner._kalman_r = _kr
-                        for _p in self.learner.profiles.values():
+                        # list() 快照迭代（2026-09-06 审查 F2）：手动优化线程可并发增键，
+                        # 直接迭代会 RuntimeError 击落守护线程（无局部兜底）
+                        for _p in list(self.learner.profiles.values()):
                             _p.kalman.r = _kr
                     # 调参消息显示并入周期末分组批（cycle_groups 组装处），不再独立推送
 
@@ -1180,6 +1217,13 @@ class MemWiseEngine:
                     winapi.close_handle(h_low)
             except Exception:
                 pass
+            # 释放守护互斥 mutex（守护线程结束即放行 CLI daemon）
+            if self._daemon_mutex is not None:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(self._daemon_mutex)
+                except Exception:
+                    pass
+                self._daemon_mutex = None
             self.events.put(('dae_stopped', None))
 
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
@@ -1315,7 +1359,7 @@ class MemWiseEngine:
                 self._eris_ewma_trend.append(99)
                 self._eris_prev_factor_dim = best_i
                 self._eris_prev_factor_pos = True
-        elif round(eff) <= 60:
+        elif round(eff) <= 50:
             best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
             factors = [dim_pairs[best_i][1]]
             # 防振荡：同维+上一轮方向不是False（即上次是正面或未记录）→ 跳到候选2
@@ -1374,7 +1418,8 @@ class MemWiseEngine:
                             "iqr_ewma": getattr(self, "_eris_iqr_ewma", [0.0]*5),
                             "p50_ewma": getattr(self, "_eris_p50_ewma", [0.0]*5)}
                     path = os.path.join(os.path.dirname(self._state_file), "memwise_eris_ewma.json")
-                    tmp = path + ".tmp"
+                    # tmp 附加进程号（2026-09-06 审查 F3）：跨进程并发写防交错损坏
+                    tmp = f"{path}.{os.getpid()}.tmp"
                     with open(tmp, "w", encoding="utf-8") as f:
                         json.dump(data, f)
                     os.replace(tmp, path)

@@ -1,10 +1,10 @@
 """
-MemWise v4.3.034 PARES —— 智能内存看护
+MemWise v4.4.021 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
 
-import json, os, sys, time
+import ctypes, json, os, sys, time
 
 from core.learner import PareLearner as Learner
 from core.judger import PareJudger as Judger
@@ -142,15 +142,24 @@ def cmd_optimize(args):
           f"整理={stats['ws_trim']} | Probe={stats['probe']} | 反馈异常={stats['failed_feedback']}"))
     if trimmed:
         for snap, ok, freed, reason in trimmed[:20]:
-            print(f"  ✓ {snap.name} (PID={snap.pid}) {_mb(freed):.0f}MB — {reason}")
+            # reason 经 tr_msg 翻译（can_trim 理由串键全覆盖；f-string 变量插值是
+            # [26] 字面量静态扫描的盲区，2026-09-06 审查 F7 补包裹）
+            print(f"  ✓ {snap.name} (PID={snap.pid}) {_mb(freed):.0f}MB — {tr_msg(reason)}")
         if len(trimmed) > 20: print(tr_msg(f"  ... 还有 {len(trimmed)-20} 个进程"))
     probe_n = len(result.get("probe", []))
     if probe_n:
         print(tr_msg(f"  Probe: {probe_n} 个进程微型试探完成"))
-    winapi.report_event("MemWise", f"优化完成: {stats['freed_mb']}MB 释放, {len(trimmed)} 进程")
+    winapi.report_event("MemWise", tr_msg(f"优化完成: {stats['freed_mb']}MB 释放, {len(trimmed)} 进程"))
     learner.save(STATE_PATH)
 
 def cmd_daemon(args):
+    # 命令行守护互斥（2026-09-06 审查 F3）：防 CLI 双开与 GUI 守护并发——双进程同时
+    # 写同一状态文件，进程内锁不跨进程会交错损坏画像唯一副本
+    from core.engine import DAEMON_MUTEX_NAME
+    _daemon_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, DAEMON_MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
+        print(tr("命令行守护已在运行，本实例退出"))
+        return
     print(tr("MemWise PARES 守护 (Ctrl+C 停止)"))
     learner, judger, cleaner = _build_pipeline()
     sniffer = Sniffer()
@@ -226,19 +235,66 @@ def cmd_daemon(args):
 
 def cmd_reset(_):
     print(tr("恢复出厂设置..."))
-    from core.config import CONFIG_PATH
-    stamp = time.strftime("%Y%m%d%H%M%S")
-    # 恢复出厂=全量状态复位（2026-08-14 审查：画像/配置/EFIS 调参/ERIS 分位数窗——
-    # 后两者遗漏则 EFIS 重启仍恢复旧调参，重置名不副实）
-    for p in [STATE_PATH, CONFIG_PATH,
-              STATE_PATH.replace("state.json", "efis_state.json"),
-              os.path.join(os.path.dirname(STATE_PATH), "memwise_eris_ewma.json")]:
-        if os.path.isfile(p):
-            bak = f"{p}.bak-{stamp}"  # 时间戳备份：多次重置互不覆盖
-            os.replace(p, bak)
-            print(tr_msg(f"  已备份: {os.path.basename(bak)}"))
+    # 守护互斥（2026-09-06 任务3）：CLI daemon 运行中拒绝（防写回竞态，与 GUI 同语义）
+    from core.engine import DAEMON_MUTEX_NAME
+    _mx = ctypes.windll.kernel32.CreateMutexW(None, False, DAEMON_MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
+        print(tr("守护模式运行中，无法恢复默认——请先停止守护"))
+        return
+    from core import backup as _backup
+    # 恢复出厂=全量状态复位（2026-09-06 任务3：共用 backup.reset_factory，
+    # 备份形态从散落 .bak 文件升级为标准配置包——可经导入完整复刻）
+    ok, bak = _backup.reset_factory(backup=True)
+    if bak:
+        print(tr_msg(f"已备份: {os.path.basename(bak)}"))
     print(tr("完成。下次启动使用默认配置。"))
-    winapi.report_event("MemWise", "已恢复出厂设置")
+    winapi.report_event("MemWise", tr_msg("已恢复出厂设置"))
+
+
+def cmd_export(_):
+    from core import backup as _backup
+    p, missing = _backup.export_state("export")
+    if p is None:
+        print(tr("无法导出：程序尚未生成任何状态文件"))
+        return
+    print(tr_msg(f"配置包已导出: {p}"))
+    if missing:
+        print(tr("缺少：") + "、".join(missing))
+
+
+def cmd_import(args):
+    from core.engine import DAEMON_MUTEX_NAME
+    _mx = ctypes.windll.kernel32.CreateMutexW(None, False, DAEMON_MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
+        print(tr("守护模式运行中，无法导入配置——请先停止守护"))
+        return
+    from core import backup as _backup
+    idir = _backup.import_export_dir()
+    if not args:
+        # 候选 = import_export 目录全部 zip（与 GUI 同口径）
+        candidates = sorted(f for f in (os.listdir(idir) if os.path.isdir(idir) else [])
+                            if f.lower().endswith(".zip"))
+        if not candidates:
+            print(tr_msg(f"导入文件夹中没有配置包，请先将 .zip 配置包放入：\n{idir}"))
+            return
+        print(tr("导入文件夹中的配置包："))
+        for c in candidates:
+            print(f"  {c}")
+        print(tr("用法: memwise.py import <文件名>"))
+        return
+    pkg = os.path.join(idir, args[0])
+    if not os.path.isfile(pkg):
+        if os.path.isfile(args[0]):  # 允许直接给完整路径（脚本场景）
+            pkg = args[0]
+        else:
+            print(tr("配置包不存在"))
+            return
+    ok, err = _backup.import_state(pkg, backup=True)
+    if not ok:
+        # 错误串在 backup 内已翻译（显示层零残留由 [26] 扫描保证）
+        print(err)
+        return
+    print(tr("配置已导入，重启程序后生效"))
 
 def cmd_install_service(args):
     import subprocess
@@ -258,7 +314,7 @@ def cmd_install_service(args):
                        creationflags=subprocess.CREATE_NO_WINDOW)
     if r.returncode == 0:
         print(tr("✓ Scheduled Task 已安装 (系统启动时自动运行)"))
-        winapi.report_event("MemWise", "服务模式已安装 (Scheduled Task)")
+        winapi.report_event("MemWise", tr_msg("服务模式已安装 (Scheduled Task)"))
     else:
         print(tr("✗ 安装失败 (需管理员权限): ") + r.stderr.decode('gbk','ignore').strip())
 
@@ -307,19 +363,22 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v4.3.034 PARES —— 智能内存看护"))
+        print(tr("MemWise v4.4.021 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))
         print(tr("  optimize [--mode q|n|d|f] 执行优化"))
         print(tr("  daemon [--mode q|n|d|f] 守护模式"))
         print(tr("  profile <pid>             进程详情 (含 PARES 指标)"))
+        print(tr("  export                    导出配置包到数据目录"))
+        print(tr("  import <文件名>            从导入文件夹导入配置包"))
         print(tr("  service [remove]          安装/移除 Scheduled Task 服务"))
         print(tr("  reset                     恢复出厂设置"))
         return
     cmd = sys.argv[1]; args = sys.argv[2:]
     cmds = {"status":cmd_status,"learn":cmd_learn,"optimize":cmd_optimize,
             "daemon":cmd_daemon,"profile":cmd_profile,
+            "export":cmd_export,"import":cmd_import,
             "reset":cmd_reset,"service":cmd_install_service}
     fn = cmds.get(cmd)
     if fn: fn(args)

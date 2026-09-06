@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.3.034 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.4.021 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1189,6 +1189,182 @@ check("崩溃恢复单条", _gui26_src.count("🔄 从崩溃中恢复 — 守护
 check("热键只报变更键", 'changed={hk["key"]} if spec != old else set()' in _gui26_src
       and 'not initial and hk["key"] in changed' in _gui26_src)
 check("事件契约更新", "'display_groups', [组, …]" in _eng26_src)
+
+print("\n[31] 2026-09-06 全量审查批次回归（F1-F13）")
+# ── F1 消息队列 log/log_batch 分支唯一（重复 if 链已删）──
+check("F1 消息队列 log 分支唯一", _gui26_src.count("if action == 'log': self._log(args)") == 1)
+# ── F2 dict 快照防护全景（2026-08-30 修复的残留漏网收口）──
+_prior26_src = _src26("core", "prior.py")
+_policy26_src = _src26("core", "policy.py")
+_judger26_src = _src26("core", "judger.py")
+_rebound26_src = _src26("core", "rebound.py")
+check("F2 prior 快照迭代", "dict(profiles).items()" in _prior26_src)
+check("F2 meta 探索覆盖快照迭代", _meta26_src.count("dict(self.learner.profiles)") == 2)
+check("F2 policy 树5 快照迭代", "list(learner.profiles.values())" in _policy26_src)
+check("F2 learner save 快照迭代", _lm26_src.count("dict(self.profiles)") == 2)
+check("F2 engine 周期统计快照迭代", "dict(self.learner.profiles).values()" in _eng26_src)
+check("F2 engine kalman_r 遍历快照迭代", "list(self.learner.profiles.values())" in _eng26_src)
+# ── F3 守护互斥 + tmp 进程隔离 ──
+check("F3 守护互斥 mutex 接线", "MemWise_Daemon" in _eng26_src and "DAEMON_MUTEX_NAME" in _mw26_src)
+check("F3 CLI daemon 入口互斥", "GetLastError() in (0xB7, 5)" in _mw26_src)
+check("F3 GUI 启动失败区分 CLI 占用", "_daemon_busy_cli" in _eng26_src and "_daemon_busy_cli" in _gui26_src)
+check("F3 learner tmp 隔离", "{os.getpid()}.tmp" in _lm26_src)
+check("F3 efis tmp 隔离", "{os.getpid()}.tmp" in _src26("core", "efis.py"))
+check("F3 config tmp 隔离", "{os.getpid()}.tmp" in _src26("core", "config.py"))
+check("F3 engine tmp 隔离×3", _eng26_src.count("{os.getpid()}.tmp") == 3)
+# ── F6 游戏模式实时化（确认计数器全清，启用/退出即时生效）──
+check("F6 游戏退出即时化", "game_gone_count" not in _eng26_src and "game_gone_count" not in _cl26_src)
+check("F6 实时退出注释接线", "实时退出" in _eng26_src and "实时退出" in _cl26_src)
+# ── F7 双语残留清零 ──
+check("F7 守护异常状态栏键", "⚠ 守护异常" in _EN_A and 'tr("⚠ 守护异常")' in _gui26_src)
+check("F7 CLI reason 翻译", "tr_msg(reason)" in _mw26_src)
+# ── F8 docstring 与实现一致（quick 零进程清理）──
+check("F8 quick 零进程清理描述", "零进程清理" in _cl26_src and "layer2(full probe+trim)" not in _cl26_src)
+# ── F9 never 黑名单归一（临时文件，不碰真实配置）──
+_tc26n = os.path.join(tempfile.gettempdir(), "mw_cfg_never.yaml")
+with open(_tc26n, "w", encoding="utf-8") as f:
+    f.write('never: [Chrome, "msedge.exe", ""]\n')
+_ocp26n = _cfg26.CONFIG_PATH
+_cfg26.CONFIG_PATH = _tc26n
+_dn26 = _cfg26.load()
+_cfg26.CONFIG_PATH = _ocp26n
+os.remove(_tc26n)
+check("F9 never 无后缀归一", _dn26.get("never") == ["chrome.exe", "msedge.exe"], str(_dn26.get("never")))
+# ── F10 EFIS stats 无 snaps 死字段 ──
+check("F10 stats 无 snaps", "'snaps': snaps" not in _eng26_src)
+# ── F11/F12 删除项防回退（保留项防误删）──
+check("F11 图标多尺寸函数已删", "create_memwise_ico_multi" not in _wa26_src)
+# 定义行级锚定（清理说明注释可提及原符号名，不构成残留）
+check("F12 死常量已删", not _re26.search(r"^Z_SCORE_THRESHOLD\s*=", _lm26_src, _re26.M)
+      and not _re26.search(r"^DT\s*=\s*5", _judger26_src, _re26.M)
+      and not _re26.search(r"^def suggest\(", _rebound26_src, _re26.M)
+      and "SUGGEST_STRENGTH" not in _rebound26_src)
+check("F12 TARGET_USAGE 保留（有消费方）", "TARGET_USAGE" in _judger26_src)
+check("F12 stable MIN_SAMPLES 不误伤", "MIN_SAMPLES = 5" in _src26("core", "stable.py"))
+# ── F4/F5 自启最小化联动 + 文案落盘 ──
+check("F4 最小化联动任务重建", _gui26_src.count("target, task_args = _admin_task_args()") == 2)
+check("F4 改名键生效", "开机自启动后最小化到托盘" in _i18n26_src and '"启动后最小化到托盘"' not in _i18n26_src)
+check("F4 引用文本联动", "配合「开机自启动后最小化到托盘」使用效果更佳" in _gui26_src)
+check("F5 T10 定稿文案", "打开期间自动刷新，可看到内存变化" in _i18n26_src
+      and "关闭窗口后重新打开可获取最新数据" not in _i18n26_src
+      and "打开期间自动刷新，可看到内存变化" in _gui26_src)
+# ── 英文适配全量扫描补键（事件日志/终止确认尾段/tr_msg 对称）──
+# （对运行时 _EN 字典断言：键中 \n 经解释为真实换行，与源码字面转义形态无关）
+for _k in ("⚠ 图表异常: ", "GUI 优化: ", "MB 释放, ", "优化完成: ",
+           "服务模式已安装 (Scheduled Task)", ") 吗？\n\n该操作会强制结束进程，未保存的数据可能丢失。",
+           "收益高", "收益中", "内存紧张", "内存充足", "内存上升中", "预测优势"):
+    check(f"EN 补键:{_k.strip()[:14]}", _k in _EN_A)
+check("report_event 双语包裹", "tr_msg(f\"GUI 优化: " in _gui26_src
+      and _mw26_src.count("winapi.report_event(\"MemWise\", tr_msg(") == 3)
+# tr_msg 去尾 \n 变体（与 tr 对称）：无尾换行目标串命中带尾 \n 键
+set_language("en")
+_t25en = tr_msg("清空系统文件读取缓存\n会降低文件操作速度直到缓存重建\n在指定的收割阶段执行\n\n⚠ 谨慎使用——文件缓存重建期间磁盘性能下降")
+check("tr_msg 尾\\n 变体对称", "谨慎" not in _t25en and "Use with care" in _t25en, _t25en[-60:])
+set_language("zh_CN")
+
+print("\n[32] 图表标度与效率阈值适配（2026-09-06 用户定稿）")
+# ── 任务1: 纵轴 GB 标度 ≥10 取整 ──
+_gui32_src = _src26("memwise_gui.py")
+check("纵轴 GB≥10 取整", '_gb_v = lbl_v / 1024.0' in _gui32_src
+      and 'f"{_gb_v:.0f}GB" if _gb_v >= 10 else f"{_gb_v:.1f}GB"' in _gui32_src)
+# ── 任务2: 效率异常下限 60→50（折点着色 + 因子极性，含等于语义不变）──
+_eng32_src = _src26("core", "engine.py")
+check("折点阈值 ≤50", "elif r_eff <= 50:" in _gui32_src and "elif r_eff <= 60" not in _gui32_src)
+check("因子下极性 ≤50", "elif round(eff) <= 50:" in _eng32_src and "round(eff) <= 60" not in _eng32_src)
+check("上极性 ≥100 不动", "round(eff) >= 100" in _eng32_src and "over_100 = r_eff >= 100" in _gui32_src)
+# README 双语六处同步（≥/≤ 含等于 + 50 阈值 + 正常范围）
+_readme32 = open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
+for _frag in ("效率 ≥100% 时折点显示金色、≤50% 时显示珊瑚红色以示警戒",
+              "≤50% 时追加\"⚠效率异常\"标签", "仅在正常范围（50-100）内",
+              "at or above 100%, coral-red dots warn at or below 50%",
+              "≤50% a ⚠ efficiency-abnormal tag", "normal range (50–100)"):
+    check(f"README 同步:{_frag[:16]}", _frag in _readme32)
+check("README 旧表述清零", ">100% 时折点" not in _readme32 and "warn below 60%" not in _readme32
+      and "（60-100）" not in _readme32)
+
+print("\n[33] 配置包：导出/导入/备份/恢复出厂（2026-09-06 任务3）")
+import zipfile as _zf33
+from core import backup as _bk33
+_b33 = os.path.join(tempfile.mkdtemp(), "data")
+os.makedirs(_b33, exist_ok=True)
+os.makedirs(os.path.join(os.path.dirname(_b33), "config"), exist_ok=True)
+open(os.path.join(os.path.dirname(_b33), "config", "config.yaml"), "w", encoding="utf-8").write("interval: 45\n")
+open(os.path.join(_b33, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4, "profiles": {}}')
+# ── 导出：包名/缺失记录/根平铺/manifest 内容 ──
+p1, miss1 = _bk33.export_state("export", base=_b33)
+check("导出成功且缺失记录", p1 is not None and "MemWise_Export_" in os.path.basename(p1)
+      and set(miss1) == {"memwise_efis_state.json", "memwise_eris_ewma.json"})
+with _zf33.ZipFile(p1) as _z33:
+    _names33 = _z33.namelist()
+    _m33 = json.loads(_z33.read("manifest.json").decode("utf-8"))
+check("包根平铺 manifest+files", sorted(_names33) == sorted(_m33["files"] + ["manifest.json"])
+      and _m33["format_version"] == 1 and _m33["source"] == "export"
+      and _m33["files"] == ["config.yaml", "memwise_state.json"])
+_m33v, _e33v = _bk33.validate_package(p1)
+check("validate 正常包通过", _e33v == [] and _m33v is not None)
+# ── 坏包四类 + 未来版本拒绝（差异提示含具体清单）──
+_bad33 = os.path.join(tempfile.mkdtemp(), "bad.zip")
+with _zf33.ZipFile(_bad33, "w") as z:
+    z.writestr("manifest.json", json.dumps({"format_version": 1, "files": ["config.yaml", "memwise_state.json"]}))
+    z.writestr("config.yaml", "interval: 1")
+_, _e33a = _bk33.validate_package(_bad33)
+check("少文件拒绝", any("缺少" in x for x in _e33a), str(_e33a))
+with _zf33.ZipFile(_bad33, "w") as z:
+    z.writestr("manifest.json", json.dumps({"format_version": 1, "files": ["config.yaml"]}))
+    z.writestr("config.yaml", "a: 1")
+    z.writestr("extra.txt", "x")
+_, _e33b = _bk33.validate_package(_bad33)
+check("多文件拒绝", any("多出" in x for x in _e33b), str(_e33b))
+with _zf33.ZipFile(_bad33, "w") as z:
+    z.writestr("manifest.json", json.dumps({"format_version": 99, "files": ["config.yaml"]}))
+    z.writestr("config.yaml", "a: 1")
+_m33f, _e33c = _bk33.validate_package(_bad33)
+check("未来版本拒绝", _m33f is not None and any("升级" in x for x in _e33c), str(_e33c))
+with _zf33.ZipFile(_bad33, "w") as z:
+    z.writestr("manifest.json", json.dumps({"format_version": 1, "files": ["config.yaml", "memwise_state.json"]}))
+    z.writestr("config.yaml", "interval: 1")
+    z.writestr("memwise_state.json", "{broken")
+_, _e33d = _bk33.validate_package(_bad33)
+check("坏 JSON 拒绝", any("无法解析" in x for x in _e33d), str(_e33d))
+# ── 导入往返复刻：A 状态导出 → B 导入 → 逐文件一致 + 预期外删除 ──
+_bA = os.path.join(tempfile.mkdtemp(), "data")
+os.makedirs(_bA, exist_ok=True)
+os.makedirs(os.path.join(os.path.dirname(_bA), "config"), exist_ok=True)
+open(os.path.join(os.path.dirname(_bA), "config", "config.yaml"), "w", encoding="utf-8").write("interval: 33\n")
+open(os.path.join(_bA, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4, "mark": "A"}')
+_pa33, _ = _bk33.export_state("export", base=_bA)
+_bB = os.path.join(tempfile.mkdtemp(), "data")
+os.makedirs(_bB, exist_ok=True)
+os.makedirs(os.path.join(os.path.dirname(_bB), "config"), exist_ok=True)
+open(os.path.join(os.path.dirname(_bB), "config", "config.yaml"), "w", encoding="utf-8").write("interval: 99\n")
+open(os.path.join(_bB, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4, "mark": "B"}')
+open(os.path.join(_bB, "memwise_efis_state.json"), "w", encoding="utf-8").write('{"efis": {}}')  # 预期外（A 无此文件）
+_ok33, _err33 = _bk33.import_state(_pa33, backup=False, base=_bB)
+check("导入成功", _ok33 and _err33 == "", _err33)
+check("复刻 config", open(os.path.join(os.path.dirname(_bB), "config", "config.yaml"), encoding="utf-8").read() == "interval: 33\n")
+check("复刻 state", json.load(open(os.path.join(_bB, "memwise_state.json"), encoding="utf-8"))["mark"] == "A")
+check("预期外文件已删（完整复刻）", not os.path.isfile(os.path.join(_bB, "memwise_efis_state.json")))
+# ── reset_factory：备份可选 + 删除 ──
+_ok33r, _bak33 = _bk33.reset_factory(backup=True, base=_bB)
+check("reset 备份包生成", _ok33r and _bak33 and "MemWise_Backup_" in os.path.basename(_bak33)
+      and os.path.isfile(_bak33))
+check("reset 状态文件删除", not any(os.path.isfile(p) for p in _bk33._state_paths(_bB).values()))
+# ── GUI/CLI 静态接线 ──
+check("GUI 两栏三按钮接线", "self._on_factory_reset" in _gui26_src
+      and "self._on_export_config" in _gui26_src and "self._on_import_config" in _gui26_src
+      and "配置传输" in _gui26_src)
+check("GUI 自动重启接线（root.destroy 自然关闭，bootloader 干净清理）",
+      "backup.restart_application()" in _gui26_src
+      and "self.root.destroy()" in _gui26_src and "os._exit(0)" not in _gui26_src)
+check("GUI 导入候选单目录（import_export 三合一）", "backup.import_export_dir()" in _gui26_src
+      and "backup_export" not in _gui26_src)
+check("CLI export/import/reset 接线", "cmd_export" in _mw26_src and "cmd_import" in _mw26_src
+      and "reset_factory" in _mw26_src and "backup.import_state" in _mw26_src)
+check("backup 模块核心面", "PACKAGE_VERSION = 1" in _src26("core", "backup.py")
+      and "restart_application" in _src26("core", "backup.py")
+      and "watchdog" in _src26("core", "backup.py"))
+check("T6 分区联动两行", "  重置 — 恢复默认设置与数据" in _gui26_src
+      and "  配置传输 — 导出与导入配置包" in _gui26_src)
 
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))

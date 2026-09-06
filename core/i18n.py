@@ -44,7 +44,7 @@ _EN = {
     "⚠ 系统核心进程始终受自动保护，无论是否在排除列表中": "⚠ System core processes are always protected, listed or not",
     "打开设置面板进行配置调整": "Open the settings panel to adjust configuration",
     "  语言 — 中英文界面即时切换": "  Language — instant Chinese/English switching",
-    "  启动 — 管理员权限自启、启动时自动守护、最小化到托盘": "  Startup — elevated auto-start, guard on launch, minimize to tray",
+    "  启动 — 管理员权限自启、启动时自动守护、开机自启动后最小化到托盘": "  Startup — elevated auto-start, guard on launch, minimize to tray on auto-start",
     "  窗口与托盘 — 关闭按钮行为、托盘左键行为": "  Window & Tray — close-button behavior, tray left-click action",
     "  清理 — 6 种操作独立开关与清理深度": "  Cleanup — six independent toggles and cleaning depth",
     "  守护 — 紧急阈值、守护清理间隔": "  Guard — emergency threshold, clean interval",
@@ -71,8 +71,7 @@ _EN = {
     "⚠ 程序默认不识别任何游戏——需先在设置 → 游戏模式中添加进程名": "⚠ No game is recognized by default — add process names in Settings → Game Mode first",
     "查看当前所有进程包括内存占用在内的排行": "Rank all current processes, including memory usage",
     "按内存占用从大到小排列，打开时即时采集": "Sorted by memory usage, captured when opened",
-    "快速定位哪些进程最占内存": "Spot the heaviest memory consumers quickly",
-    "关闭窗口后重新打开可获取最新数据": "Close and reopen to refresh the data",
+    "打开期间自动刷新，可看到内存变化": "Auto-refreshes while open — watch memory change",
     "包括待机缓存清空、脏页写回、文件缓存清除、卷缓存刷新、注册表缓存等": "Includes standby cache clearing, dirty-page flush, file cache clear, volume cache flush, registry cache, etc.",
     "每成功清理一个进程计 1 次（含多轮深度清理）": "Counted once per successful cleanup, including deep multi-round passes",
     "对确认值得清理的进程，程序会让系统优先回收其闲置页面": "For processes worth cleaning, the system is nudged to reclaim their idle pages first",
@@ -96,10 +95,8 @@ _EN = {
     "⚠ 需先以管理员身份运行过一次本程序才能启用": "⚠ Requires having run this app as admin at least once",
     "无需手动点击守护按钮，程序一打开就在后台运行": "No need to click Guard — it runs in the background as soon as the app opens",
     "约每分钟输出一轮优化结果，同时持续自动调整优化策略": "Roughly one optimization round per minute, with strategy kept adapting",
-    "配合「启动后最小化到托盘」使用效果更佳": "Pairs best with “Minimize to Tray on Start”",
-    "主窗口不显示，只在托盘区域显示图标": "The main window stays hidden; only the tray icon appears",
+    "配合「开机自启动后最小化到托盘」使用效果更佳": "Pairs best with “Minimize to Tray on auto-start”",
     "双击托盘图标恢复窗口，右键弹出菜单": "Double-click the tray icon to restore the window; right-click for the menu",
-    "适合搭配「启动时自动守护」使用，实现开机静默运行": "Pairs best with “Guard on Launch” for silent startup",
     "  · 最小化到托盘 — 隐藏到托盘继续守护": "  · Minimize to tray — keep guarding in the background",
     "  · 直接退出程序 — 退出并自动保存状态": "  · Exit app — quit and save state automatically",
     "  · 每次询问 — 弹窗选择（默认）": "  · Ask each time — choose in a dialog (default)",
@@ -184,16 +181,11 @@ _EN = {
     # ── 主界面 tooltip（27 个，按原文全文）──
     "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n": "  · Deep — adds system-level deep sweep and reclamation, more thorough\n",
     "每 ": "every ",
-    "⚠ deep/full 清理文件缓存后，打开大文件可能短暂变慢": "⚠ After deep/full file-cache cleanup, opening large files may be briefly slower",
-    "后台守护模式，每 ": "Background guard mode, runs a cleanup round every ",
-    "⚠ 进程级清理无需管理员权限即可生效": "⚠ Process-level cleanup works without administrator rights",
-    "守护期间累积的统计数字会保留在界面上。": "Stats accumulated while guarding stay on screen.",
     "添加后该进程将被完全跳过：\n": "Once added, the process is fully skipped:\n",
     "  · 不释放其闲置内存\n": "  · Its idle memory is never released\n",
     "  · 不设低内存优先级\n": "  · It never gets a low memory priority\n",
     "  · 不参与试探性清理\n": "  · It never joins trial cleanup\n",
     "⚠ 排除太多程序会明显降低释放效果\n": "⚠ Too many exclusions noticeably reduce releases\n",
-    "⚠ 系统核心进程始终受自动保护，不受排除列表影响": "⚠ System core processes are always protected regardless",
     "可配置的内容：\n": "Configurable:\n",
     "  游戏模式 — 管理游戏进程名单\n": "  Game Mode — manage game process list\n",
     "查看每个进程的详细学习数据\n": "View per-process learning details\n",
@@ -205,9 +197,7 @@ _EN = {
     "  · 偏差 — 内存用量的异常波动程度，越大越反常\n": "  · Deviation — how abnormal the memory swings are\n",
     "  · 趋势 — 内存增长斜率，正数表示内存在持续增长\n": "  · Trend — memory growth slope; positive means growing\n",
     "  · 泄漏 — 是否疑似内存泄漏（持续增长且清完很快回涨）\n": "  · Leak — suspected leak (grows and refills fast after trim)\n",
-    "这些数据帮你判断哪些进程值得清理、哪些清完很快又涨回来": "These help you see which apps are worth cleaning and which refill instantly",
     "选择清理力度，优化按钮和守护模式共用此设置：\n": "Choose the intensity used by both Optimize and Guard:\n",
-    "⚠ 切换后守护模式即时生效，无需重启": "⚠ Guard picks up the new mode immediately — no restart",
     "手动开启或关闭游戏模式\n": "Manually enable or disable Game Mode\n",
     "开启后：\n": "When enabled:\n",
     "  · 跳过全系统缓存清理，避免拖慢磁盘\n": "  · System cache cleanup is skipped to avoid disk lag\n",
@@ -219,11 +209,7 @@ _EN = {
     "⚠ 清理后打开大文件可能短暂变慢": "⚠ Opening large files may be briefly slower after cleanup",
     "进程闲置内存清理的总次数\n": "Total process idle-memory trims\n",
     "⚠ 数字大不一定释放得多——多次清理小进程也会累加\n": "⚠ A big number isn't necessarily much freed — many small trims add up\n",
-    "⚠ 参考释放量（MB）更有意义": "⚠ Watch the freed MB figure instead",
-    "参考下方柱状图可看到每轮的实时释放量。": "The bar chart below shows live per-round releases.",
     "已学习的进程数量\n": "Number of learned processes\n",
-    "超过 7 天无活动的进程会被自动清除。": "Profiles idle over 7 days are purged automatically.",
-    "建议关闭部分程序或考虑增加内存。": "close some apps or consider more RAM.",
 
     # ── 动态消息（判定理由/摘要/托盘/菜单/游戏/紧急/调参）──
     "刚切走": "Recently used",
@@ -266,9 +252,7 @@ _EN = {
     "📋 将清理 ": "📋 Will clean ",
     " 个进程候选：": " candidate processes: ",
     " MB": " MB",
-    "，可用内存 ": ", available ",
     "→": "→",
-    "⚡ 已执行即时轻量清理（可用内存 ": "⚡ Instant lightweight cleanup done (available ",
     "%）": "%)",
     "）": ")",
     "观察到 ": "Observed ",
@@ -296,8 +280,6 @@ _EN = {
     "❌ 守护异常，详见下方错误信息": "❌ Guard error, see the details below",
     "手动优化进行中，请等待完成后再启动守护": "Manual optimization in progress, wait before guarding",
     "⚠ 手动优化异常，已自动恢复": "⚠ Manual optimization error — auto recovered",
-    "📊 将清理": "📊 Will clean",
-    "正在优化": "Optimizing",
     "无": "None",
 
     # ── 托盘 ──
@@ -338,7 +320,7 @@ _EN = {
     "（切换后立即生效）": "(applies immediately)",
     "管理员权限启动": "Start as administrator",
     "启动时自动开启守护": "Auto-start Guard on launch",
-    "启动后最小化到托盘": "Start minimized to tray",
+    "开机自启动后最小化到托盘": "Minimize to tray on auto-start",
     "关闭按钮行为：": "Close button action:",
     "每次询问": "Ask every time",
     "直接退出程序": "Exit program",
@@ -411,7 +393,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.3.034 启动· ": "MemWise v4.3.034 started · ",
+    "MemWise v4.4.021 启动· ": "MemWise v4.4.021 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -492,27 +474,21 @@ _EN = {
 
     # ── 设置面板 tooltip 关键句（剩余）──
     "程序启动后立即自动进入守护模式\n": "Enter Guard mode immediately after launch\n",
-    "配合启动后最小化到托盘使用效果更佳。": "Works best with \"start minimized to tray\".",
-    "程序启动后自动最小化到系统托盘\n": "Auto-minimize to the system tray after launch\n",
-    "适合搭配「启动时自动守护」使用，实现开机静默运行。": "Pairs with \"auto-start guard\" for silent boot-time running.",
+    # ── T19「开机自启动后最小化到托盘」新文案键（2026-09-06 改名联动；旧文案 5 死键已删）──
+    "开机自启动后自动最小化到系统托盘\n": "Auto-minimize to the system tray after auto-start on boot\n",
+    "勾选后开机自启动时窗口不显示，仅在托盘区域显示图标\n": "When enabled, no window appears on auto-start — only the tray icon shows\n",
+    "手动启动程序不受影响，窗口正常显示\n": "Manual launches are unaffected — the window shows normally\n",
+    "需搭配「管理员权限启动」使用，实现开机静默运行": "Pairs with \"Start as administrator\" for silent boot-time running",
     "点击窗口关闭按钮时的行为：\n": "Behavior when clicking the window close button:\n",
     "· 每次询问 — 弹窗选择（默认）": "· Ask every time — dialog choice (default)",
     "⚠ 切回被清理的后台程序时可能多几百毫秒加载\n": "⚠ Switching back to a trimmed app may add a few hundred ms\n",
-    "⚠ 系统会自动按需调回，不影响程序正常运行": "⚠ The system reloads pages on demand; apps keep working",
     "⚠ 清理后首次打开大文件可能短暂变慢": "⚠ First opening of large files may be briefly slower",
     "⚠ 少量磁盘写入，对固态硬盘几乎无影响": "⚠ Small disk writes; negligible on SSDs",
     "⚠ 谨慎使用——文件缓存重建期间磁盘性能下降\n": "⚠ Use with care — disk performance drops while rebuilding\n",
-    "⚠ 适合内存严重不足(>85%)且刚用完大文件的场景": "⚠ Best when memory is critically low (>85%) right after large files",
-    "⚠ 每次刷新所有分区，短暂耗时但不丢失数据": "⚠ Flushes all volumes; brief but no data loss",
-    "守护模式下始终执行，取消勾选后完全跳过。": "Always runs while guarding; unchecking skips it entirely.",
     "  · 删除 — 选中后删除，写错/误加/不想要随时移除\n": "  · Remove — select and delete anytime\n",
     "⚠ 同名程序的所有实例都会被识别": "⚠ All instances of a matching name are detected",
-    "降低可更及时响应，提高可减少清理频率。": "Lower = more responsive; higher = fewer cleanups.",
     "托盘左键单击行为：\n": "Tray left-click behavior:\n",
     "· 无操作 — 忽略点击": "· No action — ignore clicks",
-    "关闭则不记录任何日志。日志自动轮转保留最近两份，无需手动清理。": "Off = no logging. Auto-rotates keeping the latest two files.",
-    "低配电脑建议 2~3，高性能可设 5~6。": "Low-end: 2–3; high-end: 5–6.",
-    "低配电脑建议 15~20，高性能可设 8~10。": "Low-end: 15–20; high-end: 8–10.",
     "手动优化全局快捷键\n\n": "Global hotkey for manual optimize\n\n",
     "按此组合：立即执行一次优化\n": "Press it: run an optimization now\n",
     "格式：修饰键+按键，如 ": "Format: modifier+key, e.g. ",
@@ -536,6 +512,12 @@ _EN = {
     "热键注册失败（可能被其他程序占用）: ": " hotkey registration failed (possibly taken by another app): ",
     "热键已设为 ": " hotkey set to ",
 
+    # ── 2026-09-06 全量审查批次补键（守护互斥/状态栏/自启最小化联动）──
+    "命令行守护已在运行，本实例退出": "Command-line guard is already running; this instance exits",
+    "命令行守护模式运行中，无法开启界面守护": "Command-line guard is running — cannot start Guard here",
+    "⚠ 守护异常": "⚠ Guard error",
+    "开机自启动已按新的最小化设置更新": "Auto-start task updated with the new minimize setting",
+
     # ── 2026-08-30 手动优化播报批次补键（点击反馈/过程节拍/结果卡）──
     "）已启动": ") started",
     "⚡ 即时优化中…": "⚡ Instant optimizing…",
@@ -548,6 +530,64 @@ _EN = {
     " MB（可用 ": " MB (available ",
     "✓ 其余 ": "✓ plus ",
     "没有找到值得清理的进程（全部受保护或无闲置内存）": "No processes worth cleaning found (all protected or no idle memory)",
+
+    # ── 2026-09-06 英文适配全量扫描补键（事件日志/终止确认尾段/图表异常）──
+    "⚠ 图表异常: ": "⚠ Chart error: ",
+    "GUI 优化: ": "GUI optimize: ",
+    "MB 释放, ": "MB freed, ",
+    "优化完成: ": "Optimization done: ",
+    "服务模式已安装 (Scheduled Task)": "Service mode installed (Scheduled Task)",
+    ") 吗？\n\n该操作会强制结束进程，未保存的数据可能丢失。": "\"?\n\nThis force-terminates the process. Unsaved data may be lost.",
+    # 策略树投票理由（CLI 清理列表 reason 显示）
+    "收益高": "High gain",
+    "收益中": "Moderate gain",
+    "内存紧张": "Memory pressure",
+    "内存充足": "Memory plentiful",
+    "内存上升中": "Memory rising",
+    "预测优势": "Forecast edge ",
+
+    # ── 2026-09-06 任务3：重置与配置传输（GUI 两栏 + CLI export/import）──
+    "重置": "Reset",
+    "恢复默认": "Factory Reset",
+    "配置传输": "Config Transfer",
+    "导出配置": "Export Config",
+    "导入配置": "Import Config",
+    "确认并备份": "Backup & Continue",
+    "确认但不备份": "Continue without Backup",
+    "确认将全部配置、学习数据与调参结果恢复为默认状态？\n选择\"确认并备份\"会先把当前状态保存为配置包（可供再次导入），选择\"确认但不备份\"将直接清除。": "Reset all settings, learned data, and tuning results to defaults?\n\"Backup & Continue\" first saves the current state as a config package (re-importable); \"Continue without Backup\" clears it directly.",
+    "确认导入该配置包？\n当前全部配置、学习数据与调参结果将被覆盖。\n选择\"确认并备份\"会先保存当前状态（可供再次导入）。": "Import this config package?\nAll current settings, learned data, and tuning results will be overwritten.\n\"Backup & Continue\" first saves the current state (re-importable).",
+    "包来源：": "Source: ",
+    "导出": "Export",
+    "备份": "Backup",
+    " · 导出时间：": " · Exported: ",
+    " · 程序版本：": " · App version: ",
+    "选择配置包": "Select Config Package",
+    "导入文件夹中的配置包：": "Config packages in the import folder:",
+    "配置包已导出: ": "Config package exported: ",
+    "可在程序数据目录的 import_export 文件夹找到，也可导入恢复": "Find it in the import_export folder under the program's data directory, or import it to restore",
+    "即将重启程序以生效新配置…": "Restarting to apply the new configuration…",
+    "配置已导入，重启程序后生效": "Config imported — restart to apply",
+    "守护模式运行中，无法恢复默认——请先停止守护": "Guard is running — stop it before factory reset",
+    "守护模式运行中，无法导入配置——请先停止守护": "Guard is running — stop it before importing",
+    "导入文件夹中没有配置包，请先将 .zip 配置包放入：\n": "No config package in the import folder. Put .zip packages into:\n",
+    "配置包版本较新（": "Config package is newer (",
+    "），请先升级程序": ") — please update the program first",
+    "配置包缺少清单文件或已损坏": "Config package is missing its manifest or is corrupted",
+    "配置包内容不符": "Config package content mismatch",
+    "缺少：": "missing: ",
+    "多出：": "extra: ",
+    "文件 ": "File ",
+    " 无法解析（可能已损坏）": " cannot be parsed (possibly corrupted)",
+    "无法导出：程序尚未生成任何状态文件": "Cannot export: no state files generated yet",
+    "配置包不存在": "Config package not found",
+    "  重置 — 恢复默认设置与数据\n": "  Reset — factory reset settings and data\n",
+    "  配置传输 — 导出与导入配置包\n": "  Config Transfer — export and import config packages\n",
+    "  export                    导出配置包到数据目录": "  export                    Export config package to the data directory",
+    "  import <文件名>            从导入文件夹导入配置包": "  import <name>              Import a config package from the import folder",
+    # 三份新 tooltip 整串精确键（2026-09-06：缺整串键时英文界面落入片段替换产生混合翻译）
+    "将程序所有配置、学习数据与调参结果等恢复为默认状态\n确认后将重启程序以生效默认配置\n当前配置会自动备份到程序数据目录，可供再次导入\n⚠ 此操作会清除所有使用数据，恢复前会再次确认防止误触\n⚠ 请确保守护模式未运行，否则无法重置": "Resets all settings, learned data, and tuning results to their defaults\nThe program restarts after confirmation to apply the defaults\nYour current configuration is automatically backed up to the program's data directory and can be imported again\n⚠ This clears all usage data; a confirmation is shown before resetting to prevent accidents\n⚠ Make sure Guard mode is not running, otherwise the reset cannot proceed",
+    "将当前全部配置、学习数据与调参结果打包导出到数据目录\n导出文件可用于本机恢复，也可分享给其他用户导入": "Packs all settings, learned data, and tuning results into a single file and exports it to the data directory\nThe exported file can be used to restore on this machine, or shared with other users for import",
+    "从配置包导入全部配置、学习数据与调参结果\n支持本程序导出与自动备份生成的配置包\n导入前可先备份当前状态，导入后将重启程序生效\n⚠ 请首先将配置文件包存入导入文件夹内\n⚠ 导入会覆盖当前全部数据，若想保留当前配置请备份\n⚠ 请确认文件来源可信，警惕被植入病毒等破坏性程序": "Imports all settings, learned data, and tuning results from a config package\nSupports config packages exported by this program and those created by automatic backup\nYou may back up the current state before importing; the program restarts afterwards to apply\n⚠ Place the config package file into the import folder first\n⚠ Importing overwrites all current data; back up first if you want to keep it\n⚠ Verify the source of the file — watch for trojans or other destructive programs",
 
     # ── CLI（memwise.py）──
     " 总内存: ": "  Total RAM: ",
@@ -605,10 +645,6 @@ _EN = {
     "  已备份: ": "  Backed up: ",
     "完成。下次启动使用默认配置。": "Done. Next launch uses default config.",
     "已恢复出厂设置": "Factory reset done",
-    "✓ 已启用": "enabled",
-    "✗ 启用失败": "failed to enable",
-    "✓ 已关闭": "disabled",
-    "✗ 关闭失败": "failed to disable",
     "Scheduled Task 已移除": "Scheduled Task removed",
     "✓ Scheduled Task 已安装 (系统启动时自动运行)": "Scheduled Task installed (runs at system startup)",
     "✗ 安装失败 (需管理员权限): ": "Install failed (needs admin): ",
@@ -643,7 +679,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.3.034 PARES —— 智能内存看护": "MemWise v4.3.034 PARES — Intelligent Memory Custodian",
+    "MemWise v4.4.021 PARES —— 智能内存看护": "MemWise v4.4.021 PARES — Intelligent Memory Custodian",
 }
 
 
@@ -701,5 +737,10 @@ def tr_msg(s):
     for k in _EN_SORTED:
         if len(k) >= 2 and k in out:
             out = out.replace(k, _EN[k])
+            changed = True
+        elif k.endswith("\n") and len(k) >= 3 and k[:-1] in out:
+            # 去尾 \n 变体（2026-09-06 对称补齐，与 tr 同规则）：目标串无尾换行时
+            # 带尾 \n 的键也能命中（多行消息经 tr_msg 渲染的残尾消除）
+            out = out.replace(k[:-1], _EN[k].rstrip("\n"))
             changed = True
     return out if changed else s

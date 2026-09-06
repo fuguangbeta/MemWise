@@ -13,10 +13,10 @@ from collections import deque
 
 WINDOW = 20  # 趋势窗口大小
 EWMA_LAMBDA = 0.5  # EWMA 衰减因子 (高=更快适应新数据)；EFIS learning_rate 可逐进程覆盖
-Z_SCORE_THRESHOLD = 3.0  # Z-score 异常阈值（预留：泄漏检测现用双阈值 0.005/2.0 硬编码，保留防未来启用）
-MIN_SAMPLES = 3  # 最小样本数（预留：现用 total_samples>=2/5 就地判定，保留防未来启用）
 TREND_SAMPLES = 3  # 趋势线使用的采样数（原6。缩短窗口让预判式清理更快响应）
 # 注：BETA_DECAY_RATE / CTX_LR_BASE 已随 Beta 衰减迁移至 record_clean 时间感知遗忘、上下文修正固定 0.15，此处不再保留常量
+# 注：Z_SCORE_THRESHOLD / MIN_SAMPLES 死常量已于 2026-09-06 审查 F12 移除（零消费方；
+# 泄漏检测用双阈值 0.005/2.0 与样本判定 2/5 均就地硬编码，未来启用时按需重定义）
 
 # 持久化写锁（2026-08-30 审查）：守护 30s 周期保存、手动优化保存、GUI 退出保存可并发——
 # 同一 tmp 路径双句柄交错写会损坏画像文件（实验实证 A/B 混写）；与 config._save_lock /
@@ -488,8 +488,10 @@ class PareLearner:
             try:
                 now = time.time()
                 cutoff = 86400 * 7
+                # dict() 快照迭代（2026-09-06 审查 F2）：_SAVE_LOCK 只防 save 间并发，
+                # 不防 get() 增键——快照防 RuntimeError 致该轮保存静默丢失
                 filtered = {
-                    k: v for k, v in self.profiles.items()
+                    k: v for k, v in dict(self.profiles).items()
                     if now - v.last_seen < cutoff or v.alpha != 2 or v.beta != 1
                 }
                 data = {
@@ -501,7 +503,10 @@ class PareLearner:
                     # 重启后沿用；旧格式无此键 → 加载端回退默认等权（完全向后兼容）
                     "policy": {m: list(w) for m, w in self.policy._mode_weights.items()},
                 }
-                tmp = path + ".tmp"
+                # tmp 附加进程号（2026-09-06 审查 F3）：进程内锁不跨进程——CLI daemon 与
+                # GUI 并发保存时各写各的 tmp，os.replace 原子替换，退化为"最后写者胜"
+                # 而非同 tmp 交错损坏
+                tmp = f"{path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(data, f)
                 os.replace(tmp, path)
