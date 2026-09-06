@@ -3,10 +3,10 @@
 本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
-Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.2.024（2026-08-16）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_v2.6.py`（241 项）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
+Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.3.034（2026-08-30）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_v2.6.py`（282 项）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
 
 ## 📚 知识库索引（工作前必读）
-项目记忆在项目记忆目录（路径见用户级指令，31 篇，按需读取）：
+项目记忆在项目记忆目录（路径见用户级指令，46 篇内容文件 + MEMORY.md 索引，按需读取）：
 
 | 文件 | 内容 | 何时读 |
 |---|---|---|
@@ -35,27 +35,25 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 5. **构建 exe 前必须确认 config 状态**（MemWise.spec datas=[] 冷启动，不打包本机 config.yaml）
 6. **发布新版本绝不修改/删除旧版本**：旧 tag、release、exe 资产一律保留原样，只创建新 tag + release + 新 exe
 
-## 🔧 工具使用手册（MCP 已配置 5 个）
-- **filesystem**：`D:\我的文件` 根的文件读写
-- **github**：仓库操作（token 已配在 env）。**注意**：GitHub 连接依赖 Steam++ 加速器，禁止停加速器直连（10061）；502/超时直接重试
-- **memory**：知识图谱记忆
-- **sequential-thinking**：复杂问题分步推理
-- **codegraph**：代码索引（`codegraph index` 手动更新）
+## 🔧 工具使用手册（MCP：项目级 2 个 + 内建 3 个）
+- **codegraph**（项目 `.mcp.json`）：代码索引（`codegraph index` 手动更新）。⚠ server 配置禁带 `tier` 键——会被配置校验拒绝整个跳过（2026-09-06 教训）
+- **github**（项目 `.mcp.json`）：仓库操作（token 已配在 env）。**注意**：GitHub 连接依赖 Steam++ 加速器，禁止停加速器直连（10061）；502/超时直接重试
+- **内建**：computer-use（桌面控制）/ node_repl / web_reader
 - 发布脚本：`scripts/release_tag.py`（建 tag+release，幂等）→ `release_upload.py`（上传 exe，改 RELEASE_ID）→ `release_body.py`（自动读 CHANGELOG 更新 body）——token 读环境变量 GITHUB_TOKEN 或项目根 `.gh_token`（禁硬编码、禁上传）
 
 ## 测试与构建
-- 回归：`python -B scripts\test_v2.6.py`（241 项断言，-B 避 pyc 缓存锁；本机已设 PYTHONPYCACHEPREFIX）
+- 回归：`python -B scripts\test_v2.6.py`（282 项断言，-B 避 pyc 缓存锁；本机已设 PYTHONPYCACHEPREFIX）
 - 语法检查：`compile()`；日常修改用回归验证，**非必要不构建 exe**（用户成本偏好）
 - 构建：`cmd /c "taskkill /f /im MemWise.exe >nul 2>&1 & cd /d D:\我的文件\memwise && pyinstaller MemWise.spec --distpath dist --workpath build --noconfirm 2>&1"`（版本/图标变更加 `--clean`）
 - 构建后清理 dist 残留（watchdog.json 等运行时文件）与根目录 `nul` 残留（PyInstaller/Python 3.14 副作用），**禁删 memwise.log**
 
 ## 发布流程（完整细节读 github-release-workflow.md）
-1. 修改完成 → 241 项回归全绿 → 更新 CHANGELOG（用户视角规范）
+1. 修改完成 → 282 项回归全绿 → 更新 CHANGELOG（用户视角规范）
 2. `git add -A && git commit && git push origin main`（最快）
 3. 版本号变更时同步 13 处（gui 4/memwise 2/engine 1/i18n 4/test 1/README 1，2026-08-30 实测普查口径）+ 构建 exe（--clean）
 4. 改 `release_tag.py` 版本号 → 运行（建 tag+release，拿新 release id）
 5. 改 `release_upload.py` RELEASE_ID → 运行（上传 exe）
-6. `release_body.py` 自动同步 body → **验证旧版本 5 个 release 资产逐一核验完好**
+6. `release_body.py` 自动同步 body → **验证全部旧版本 release 资产逐一核验完好**
 7. 发布前 `git status` 检查 untracked（防隐私文件误提交）
 
 ## 更新日志规范（详见 changelog-style-guide.md）
