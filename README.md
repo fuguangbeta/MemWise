@@ -535,6 +535,8 @@ python memwise.py [command] [options]
 | `language` | str | `"zh_CN"` | 界面语言（`zh_CN`=简体中文 / `en`=English） |
 | `efis_params` | dict | 10 参数默认值 | EFIS 参数 |
 
+`efis_params` 包含第 5 节所列的十个 EFIS 参数（各自默认值与范围如该节参数表所示）；同时提供 `efis_params.target_usage` 时，其优先于顶层 `target_usage`。
+
 *The complete configuration lives in `config/config.yaml`:*
 
 | Key | Type | Default | Description |
