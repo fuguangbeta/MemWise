@@ -13,7 +13,6 @@ from core.config import load as config_load, DEFAULT_CFG
 from core.efis import EfisController, PARAMS
 from core.policy import PolicyVoter
 from core.meta import MetaCognition
-from core.eris import iqr_dim, validate_state
 from collections import deque
 
 errors = []
@@ -211,41 +210,6 @@ pv_b.kalman.x_freed = 10 << 20; pv_b.kalman.x_cost = 5
 pv_b.ws_deque.append(50 << 20); pv_b.ws_deque.append(50 << 20)
 _, _, sc = pv.should_trim("big.exe", 300 << 20, {"mem_pct": 70, "mem_trend": 0.0}, learner_v)
 check("peers 排除自身→优势分=2", sc[4] == 2, f"scores={sc}")
-
-print("\n[11] ERIS 纯函数（core.eris，与生产共用）")
-buf = deque(maxlen=25)
-d, p50, iqr = iqr_dim(100.0, buf, 0.0, 0.0, update_state=True)
-check("冷启动中性 80", d == 80.0)
-for v in [50, 60, 70, 80, 90]:
-    iqr_dim(v, buf, p50, iqr, update_state=True)
-d, _, _ = iqr_dim(100.0, buf, p50, iqr, update_state=False)
-check("高于 p50→>80", d > 80.0)
-d2, _, _ = iqr_dim(50.0, buf, p50, iqr, update_state=False)
-check("低于 p50→<80", d2 < 80.0)
-# 早期窗口（nL=2/3）不再二值化且不虚高（修复：冷启动 p50 用原始中位，EWMA 未收敛不参与）
-buf2 = deque(maxlen=25)
-iqr_dim(80.0, buf2, 0.0, 0.0, update_state=True)
-d_early, p50e, _ = iqr_dim(84.0, buf2, 0.0, 0.0, update_state=True)
-check("早期窗口非二值非虚高", 70 < d_early < 110, f"d={d_early}")
-# nT=2 负索引窗口（修复）：不崩溃且输出在界内
-buf3 = deque(maxlen=25)
-for v in [50, 60, 70, 80]:
-    iqr_dim(v, buf3, 0.0, 0.0, update_state=True)
-d4, _, _ = iqr_dim(75.0, buf3, 0.0, 0.0, update_state=False)
-check("nT=2 窗口在界内", 1.0 <= d4 <= 130.0, f"d={d4}")
-check("clamp≤130", iqr_dim(1e9, deque([50.0, 60, 70, 80, 90], maxlen=25), 70.0, 5.0, update_state=False)[0] <= 130)
-check("clamp≥1", iqr_dim(-1e9, deque([50.0, 60, 70, 80, 90], maxlen=25), 70.0, 5.0, update_state=False)[0] >= 1)
-
-print("\n[12] ERIS Data Validation（共用 core.eris.validate_state）")
-W = [25, 25, 20, 8, 20]
-check("valid", validate_state([[1.0]*6]*5, [0.1]*5, W))
-check("dim mismatch", not validate_state([[1.0]]*3, [0.0]*3, W))
-check(">window elements", not validate_state([[1.0]*26]*5, [0.0]*5, W))
-check("NaN", not validate_state([[float('nan')]*10]*5, [0.0]*5, W))
-check("inf", not validate_state([[float('inf')]*10]*5, [0.0]*5, W))
-check("negative ewma", not validate_state([[1.0]*10]*5, [-0.1,0,0,0,0], W))
-check("not dict", not validate_state("string", [0.0]*5, W))
-check("empty bufs ok", validate_state([[]]*5, [0.0]*5, W))
 
 print("\n[13] 终极审查修复回归（2026-08-12）")
 # config 白名单清洗：历史遗留键（compress/combine 等）无消费方，load 后必须被过滤
@@ -1279,15 +1243,19 @@ check("因子下极性 ≤50（v7：阈值常量）",
 check("上极性 ≥100 不动（v7：阈值常量）",
       "elif eff >= E.SUPER_TH:" in _eng32_src and "SUPER_TH = 100.0" in _eris_v7_src
       and "over_100 = r_eff >= 100" in _gui32_src)
-# README 双语六处同步（≥/≤ 含等于 + 50 阈值 + 正常范围）
+# README 双语同步（v7 口径：五维标尺 + 阈值语义 + 词条规则）
 _readme32 = open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
-for _frag in ("效率 ≥100% 时折点显示金色、≤50% 时显示珊瑚红色以示警戒",
-              "≤50% 时追加\"⚠效率异常\"标签", "仅在正常范围（50-100）内",
-              "at or above 100%, coral-red dots warn at or below 50%",
-              "≤50% a ⚠ efficiency-abnormal tag", "normal range (50–100)"):
+for _frag in ("50 分 = 该维历史中位水平，100 分 = 突破历史高位",
+              "≥100% 折点显示金色并标注",
+              "≤50% 显示珊瑚红并标注",
+              "仅在 50–100% 区间内",
+              "50 = the dimension's historical median, 100 = beyond its historical best",
+              "≥100% marks gold dots",
+              "≤50% coral-red dots",
+              "within the 50–100% band only"):
     check(f"README 同步:{_frag[:16]}", _frag in _readme32)
-check("README 旧表述清零", ">100% 时折点" not in _readme32 and "warn below 60%" not in _readme32
-      and "（60-100）" not in _readme32)
+check("README 旧口径清零", "80 + 40" not in _readme32 and "IQR 分位数归一化" not in _readme32
+      and "trimmed-IQR" not in _readme32 and "（60-100）" not in _readme32)
 
 print("\n[33] 配置包：导出/导入/备份/恢复出厂（2026-09-06 任务3）")
 import zipfile as _zf33
