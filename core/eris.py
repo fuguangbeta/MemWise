@@ -352,14 +352,15 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
         st = dims[j]
         m_cold, span_cold = anchors_center_span(anchors_for(_m)[j], log_j)
         lim = CALIB_SHIFT_MAX * span_cold
-        shift = max(-lim, min(lim, st[1] - m_cold))
+        shift = max(-lim, min(lim, m_cold - st[1]))   # 中心校正量=冷启动中位−本机中位（缺多少补多少）
         lo, hi = CALIB_SCALE_RANGE
         ratio = max(lo, min(hi, span_cold / max(st[2] - st[0], 1e-9)))
         # 跨度校正随样本量淡入（暖机期只用中心校正）：否则中心跟踪器的滞后会让
         # "相对中心项"反向抵消中心校正（2026-09-11 对照实测发现）
         w_sp = min(1.0, int(calib.get("n", 0)) / float(CALIB_SPREAD_N)) if CALIB_SPREAD_N else 1.0
         ratio = 1.0 + (ratio - 1.0) * w_sp
-        u_cal = m_cold + shift + (u - st[1]) * ratio
+        u_cal = st[1] + (u - st[1]) * ratio + shift
+        u_cal = min(max(u_cal, 1e-9), 1e18)          # 数值双端保护
         u_use = u if w <= 0.0 else (1.0 - w) * u + w * u_cal
         scores.append(_score_u(u_use, [_u(a, log_j) for a in anchors_for(_m)[j]]))
     return scores, calib
