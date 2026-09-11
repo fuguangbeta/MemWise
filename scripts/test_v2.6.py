@@ -1651,6 +1651,11 @@ check("S5 使用率路径随用户阈值移动（阈值 90 ⇒ 77% 触发、70% 
 check("S5 使用率判据存在（结构性）", "_l3_usage" in _cl34 and "_em_l3 * 0.85" in _cl34)
 check("F6 quick 开关置灰 + 说明已接线", 'CFG.get("clean_mode", "normal") == "quick"' in _gui34
       and '_cb.state(["disabled"])' in _gui34 and "quick 模式下「释放进程闲置内存」" in _i18n34)
+# ── F50 开关标题名不副实（2026-09-11 用户实测指出）──
+check("F50 开机自启开关标题不再歧义",
+      '"以管理员权限开机自启动"' in _gui34 and "需搭配「以管理员权限开机自启动」" in _gui34
+      and "以管理员权限开机自启动" in _i18n34)
+check("F50 旧标题键已清除", '"管理员权限启动"' not in _i18n34 and 'tr("管理员权限启动")' not in _gui34)
 check("F22 两个活跃门已入 i18n 参数名", "CPU活跃门" in _i18n34 and "IO活跃门" in _i18n34)
 check("F31 崩溃恢复提示含退出指引", "如需彻底退出" in _gui34 and "如需彻底退出" in _i18n34)
 

@@ -871,7 +871,7 @@ class MemWiseGUI:
             "\n"
             "可配置的内容：\n"
             "  语言 — 中英文界面即时切换\n"
-            "  启动 — 管理员权限自启、启动时自动守护、开机自启动后最小化到托盘\n"
+            "  启动 — 以管理员权限开机自启动、启动时自动守护、开机自启动后最小化到托盘\n"
             "  窗口与托盘 — 关闭按钮行为、托盘左键行为\n"
             "  清理 — 6 种操作独立开关与清理深度\n"
             "  游戏模式 — 管理游戏进程名单\n"
@@ -1132,7 +1132,7 @@ class MemWiseGUI:
                 self._log("管理员权限开机自启已关闭")
             CFG["auto_start_admin"] = en if not en or ok else False
             _save_cfg()
-        ttk.Checkbutton(sf, text=tr("管理员权限启动"), variable=asa_var,
+        ttk.Checkbutton(sf, text=tr("以管理员权限开机自启动"), variable=asa_var,
                         command=on_autostart_admin).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
             "以管理员权限开机自启动\n"
@@ -1181,7 +1181,7 @@ class MemWiseGUI:
             "手动启动程序不受影响，窗口正常显示\n"
             "双击托盘图标恢复窗口，右键弹出菜单\n"
             "\n"
-            "需搭配「管理员权限启动」使用，实现开机静默运行")
+            "需搭配「以管理员权限开机自启动」使用，实现开机静默运行")
 
         # ─── 窗口与托盘（2026-08-16 归类整理：关闭行为与托盘左键行为同属窗口/托盘
         # 交互域——点窗口 X、点托盘图标；原分居"关闭行为"与"触发与日志"两栏）───
