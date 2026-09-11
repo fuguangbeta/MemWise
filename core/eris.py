@@ -57,7 +57,10 @@ SUPER_TH = 100.0
 WARN_TH = 50.0
 
 # ── ② 自校准参数 ──
-CALIB_ALPHA = 0.01                 # 每维分位估计的每轮步长（时间常数 ≈ 100 轮）
+CALIB_ALPHA = 0.01                 # 稳态每轮步长（时间常数 ≈ 100 轮，抗单轮噪声）
+CALIB_ALPHA_FAST = 0.03            # 暖机期步长（时间常数 ≈ 33 轮 ⇒ 新机器约 1~2 小时归位）
+CALIB_FAST_N = 200                 # 暖机期轮数（此后转稳态慢速）
+CALIB_SPREAD_N = 200               # 跨度校正淡入轮数：暖机期只用中心校正，避免两项互相抵消
 CALIB_BLEND_N = 100                # 淡入轮数（前 N 轮线性生效）
 CALIB_SHIFT_MAX = 0.5              # 中心位移限幅（相对冷启动 p10-p90 跨度）
 CALIB_SCALE_RANGE = (0.70, 1.40)   # 跨度比限幅（双向）
@@ -191,13 +194,17 @@ def _q_step(est, u, alpha, q):
     return est + (up if u > est else dn) * (u - est)
 
 
-def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=CALIB_ALPHA):
+def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=None):
     """② 冷启动 + 长周期自校准：返回 (五维分数, 校准状态)。
 
-    · 每维维护 q10/q50/q90 慢速分位估计（α 小 ⇒ 时间常数约 100 轮，不随单轮噪声抖）
+    · 每维维护 q10/q50/q90 分位估计，**暖机期用较大步长、之后转慢**（两段速率：
+      n < CALIB_FAST_N 用 CALIB_ALPHA_FAST，之后用 CALIB_ALPHA）——新机器约 1~2 小时归位，
+      长期又不会被单轮噪声带动（对照实测：单用慢速时 45 轮内几乎无校正）
     · 校正：u' = m_cold + shift + (u − q50) × (span_cold / span_local)
       shift = clamp(q50 − m_cold, ±0.5×span_cold)；跨度比 clamp 到 [0.70, 1.40]
     · 淡入：w = min(1, n/blend_n)，u_use = (1−w)·u + w·u' ⇒ 冷启动首轮即用、无突跳
+    · 播种：首轮用冷启动锚点填充 q10/q50/q90（而非首个观测）⇒ 暖机期校正恒等，
+      不会出现"跨度被低估 ⇒ 校正比放大 ⇒ 曲线被自抬"的暂态偏差
     · 不改变标尺形状（锚点仍是 DIM_ANCHORS）；删除校准数据即回到冷启动
     """
     dims = calib.get("dims")
@@ -205,16 +212,22 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=C
         dims = [[0.0, 0.0, 0.0] for _ in DIM_ANCHORS]
         calib["dims"] = dims
     init = bool(calib.get("init"))
+    a_now = CALIB_ALPHA if alpha is None else alpha
+    if int(calib.get("n", 0)) < CALIB_FAST_N:
+        a_now = max(a_now, CALIB_ALPHA_FAST)
     n_dim = min(len(raws), len(DIM_ANCHORS))
     for j in range(n_dim):
         u = _u(raws[j], j in LOG_DIMS)
         st = dims[j]
         if not init:
-            st[0] = st[1] = st[2] = u          # 首个观测初始化三个分位
+            # 用冷启动锚点播种（而非首个观测）：暖机期校正恒等 ⇒ 不会出现"跨度被低估 ⇒
+            # 校正比放大 ⇒ 曲线被自抬"的暂态偏差（2026-09-11 对照实测发现并修正）
+            au = [_u(a, j in LOG_DIMS) for a in DIM_ANCHORS[j]]
+            st[0], st[1], st[2] = au[0], au[1], au[2]
         elif update:
-            st[0] = _q_step(st[0], u, alpha, 0.10)
-            st[1] = _q_step(st[1], u, alpha, 0.50)
-            st[2] = _q_step(st[2], u, alpha, 0.90)
+            st[0] = _q_step(st[0], u, a_now, 0.10)
+            st[1] = _q_step(st[1], u, a_now, 0.50)
+            st[2] = _q_step(st[2], u, a_now, 0.90)
     if update:
         calib["init"] = True
         calib["n"] = int(calib.get("n", 0)) + 1
@@ -232,6 +245,10 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=C
         shift = max(-lim, min(lim, st[1] - m_cold))
         lo, hi = CALIB_SCALE_RANGE
         ratio = max(lo, min(hi, span_cold / max(st[2] - st[0], 1e-9)))
+        # 跨度校正随样本量淡入（暖机期只用中心校正）：否则中心跟踪器的滞后会让
+        # "相对中心项"反向抵消中心校正（2026-09-11 对照实测发现）
+        w_sp = min(1.0, int(calib.get("n", 0)) / float(CALIB_SPREAD_N)) if CALIB_SPREAD_N else 1.0
+        ratio = 1.0 + (ratio - 1.0) * w_sp
         u_cal = m_cold + shift + (u - st[1]) * ratio
         u_use = u if w <= 0.0 else (1.0 - w) * u + w * u_cal
         scores.append(_score_u(u_use, [_u(a, log_j) for a in DIM_ANCHORS[j]]))
