@@ -211,9 +211,19 @@ class PareJudger:
 
     # ── 决策 ──
 
-    def can_trim(self, snap):
-        """联合决策: PID × Thompson × 安全规则 (游戏模式下阈值更激进)"""
+    def can_trim(self, snap, manual=None, guard=None):
+        """联合决策: PID × Thompson × 安全规则 (游戏模式下阈值更激进)。
+        manual/guard 是**只读评估口径覆盖**（不改变对象状态）：手动优化的"候选预览"按
+        manual=True + guard=<本次模式> 评估，与随后实际执行时同口径；缺省 None 沿用当前状态
+        （守护周期与清理器内部调用保持原行为）。"""
         name = snap.name.lower()
+        _mm = self._manual_mode if manual is None else bool(manual)
+        if guard is None:
+            _guard = getattr(self, "_mode_guard", "normal")
+        else:
+            # 与清理器的模式归一化同口径（cleaner.optimize：非三档模式一律按 normal）——
+            # 否则 quick 模式下预览用旧 guard、实际执行用 normal，两边又会不一致
+            _guard = guard if guard in ("normal", "deep", "full") else "normal"
 
         # ── 游戏模式：游戏进程绝对保护（按实际检测 PID，精确到实例）──
         if self.game_mode and snap.pid in self._game_pid_set:
@@ -248,8 +258,7 @@ class PareJudger:
         #    （有窗口=用户可能随时切回），无窗口 5 分钟；deep 减半、full 跳过（极限=不等）；
         #    手动跳过（用户主动清理目标）；高压覆盖极端释放 ──
         now = time.time()
-        _guard = getattr(self, "_mode_guard", "normal")
-        if not is_fg and not self._manual_mode and not self._high_pressure() and _guard != "full":
+        if not is_fg and not _mm and not self._high_pressure() and _guard != "full":
             p_fg = self.learner.get_profile(name)
             if p_fg and p_fg.last_foreground_at:
                 _win = getattr(snap, 'has_visible', False)
@@ -277,7 +286,7 @@ class PareJudger:
         # ── 连续低活动确认（P0-C）：按 PID 键（同名多实例互不干扰）；
         #    防瞬时脉冲误判；手动/高压跳过；确认轮数按模式梯度：normal 2 轮 / deep 1 轮 / full 跳过
         #    （2026-08-14 梯度修复：原仅 full 跳过——deep 与 normal 同级，深度模式名不副实）
-        if _guard != "full" and not self._manual_mode and not self._high_pressure():
+        if _guard != "full" and not _mm and not self._high_pressure():
             _need = 2 if _guard == "normal" else 1
             _la = self._low_activity.get(snap.pid)
             if _la is None or _la[0] < _need:
@@ -304,7 +313,7 @@ class PareJudger:
         # ── 稳态锚点抑制（P1-D）：低于应用自然稳态+余量 → 清了也白清。
         #    手动/高压跳过；探索机制（EXPLORE_RATE 概率放行）保持 Thompson 学习闭环验证锚点；
         #    deep/full 跳过——极限模式解除稳态锁（梯度，2026-08-14）──
-        if not self._manual_mode and not self._high_pressure() and _guard not in ("deep", "full"):
+        if not _mm and not self._high_pressure() and _guard not in ("deep", "full"):
             path_a = getattr(snap, "path", None)
             if path_a and self.learner.stable_anchors.should_suppress(
                     path_a, snap.ws, self.cfg.get("efis_params", {}).get("anchor_margin", 0.15)):
@@ -316,7 +325,7 @@ class PareJudger:
         #    手动/高压跳过；EWMA 回落自动解除；探索放行（5%）保持数据流——
         #    防后退死锁：进程行为变化后探测清理产生新回弹数据，EWMA 快速回落解除；
         #    deep/full 跳过——极限模式不后退（梯度，2026-08-14）──
-        if not self._manual_mode and not self._high_pressure() and _guard not in ("deep", "full"):
+        if not _mm and not self._high_pressure() and _guard not in ("deep", "full"):
             path_b = getattr(snap, "path", None)
             if path_b and self.learner.rebound.in_backoff(path_b, now):
                 if random.random() >= EXPLORE_RATE:

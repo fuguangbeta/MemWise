@@ -669,7 +669,10 @@ class MemWiseEngine:
                 # 启动信息打包（2026-08-30 分组语义）：观察到+候选预览同批原子输出
                 start_lines = [f"观察到 {len(snaps)} 个进程"]
                 try:
-                    preview = [s.name for s in snaps if self.judger.can_trim(s)[0]]
+                    # 候选预览按手动优化口径评估（manual + 本次模式）：与随后实际执行同口径，
+                    # 否则会沿用守护周期遗留的保守门（刚切走/活动确认/稳态抑制/回弹后退 + 旧模式门），
+                    # 出现"有清理却没有候选行"或候选与实际名单对不上的混乱（2026-09-11 F53）
+                    preview = [s.name for s in snaps if self.judger.can_trim(s, manual=True, guard=mode)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
                         start_lines.append(f"📋 将清理 {len(preview)} 个进程候选：{shown}")
@@ -721,7 +724,10 @@ class MemWiseEngine:
                 snaps = self._snap()
                 # 候选预览（2026-08-30 与三轮版对齐）：点击后告知将清理范围
                 try:
-                    preview = [s.name for s in snaps if self.judger.can_trim(s)[0]]
+                    # 候选预览按手动优化口径评估（manual + 本次模式）：与随后实际执行同口径，
+                    # 否则会沿用守护周期遗留的保守门（刚切走/活动确认/稳态抑制/回弹后退 + 旧模式门），
+                    # 出现"有清理却没有候选行"或候选与实际名单对不上的混乱（2026-09-11 F53）
+                    preview = [s.name for s in snaps if self.judger.can_trim(s, manual=True, guard=mode)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
                         self.events.put(('log', f"📋 将清理 {len(preview)} 个进程候选：{shown}"))

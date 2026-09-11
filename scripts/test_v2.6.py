@@ -1735,6 +1735,41 @@ check("F52b 命令行标签字面量都是精确键（否则退化为片段翻�
       bool(_lits52) and all(L in _EN for L in _lits52),
       str([L for L in _lits52 if L not in _EN][:3]))
 
+# ── F53 手动/即时优化的"候选预览"与实际执行同口径（manual/guard 只读覆盖）──
+# 症状（日志实证 2026-09-07）：同一按钮有的轮次有「📋 将清理 N 个进程候选」，有的轮次没有，
+# 且候选名单与完成卡名单对不上——预览在 cleaner 同步 _manual_mode/_mode_guard 之前求值，
+# 沿用了上一轮守护遗留的保守门（刚切走/活动确认/稳态抑制/回弹后退 + 旧模式门）。
+_lr53 = PareLearner(); _j53 = PareJudger(_lr53, dict(_j34))
+class _S53: pass
+def _snap53(name, pid, ws=200 << 20, fg=False, cpu=0.0):
+    s = _S53(); s.name = name; s.pid = pid; s.ws = ws; s.fg = fg; s.cpu = cpu
+    s.path = r"d:\app53\%s" % name; s.has_visible = False
+    return s
+_s53 = _snap53("prev53.exe", 4353)
+_lr53.get("prev53.exe").last_foreground_at = time.time() - 60   # 刚切走（有窗口 10 分钟冷却）
+check("F53 保守门（刚切走）在守护口径下拦截", _j53.can_trim(_s53)[0] is False)
+check("F53 预览口径（manual=True + 本次模式）放行保守门，与实际执行同口径",
+      _j53.can_trim(_s53, manual=True, guard="normal")[0] is True)
+check("F53 保守门（活动确认中）守护口径拦截、预览口径放行",
+      _j53.can_trim(_snap53("act53.exe", 4354))[0] is False
+      and _j53.can_trim(_snap53("act53.exe", 4354), manual=True, guard="normal")[0] is True)
+check("F53 模式门按本次模式评估（CPU 活跃门：normal 拦 / full 放行）",
+      _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="normal")[0] is False
+      and _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="full")[0] is True)
+check("F53 非三档模式（quick）按 normal 归一，与清理器同口径",
+      _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="quick")[0] is False)
+_j53._mode_guard = "full"
+_ok53_def = _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0))[0]
+_j53._mode_guard = "normal"
+check("F53 缺省 guard 沿用当前状态（守护路径行为不变）",
+      _ok53_def is True and _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0))[0] is False)
+check("F53 口径覆盖是只读的（不改对象状态）",
+      _j53._manual_mode is False and _j53._mode_guard == "normal"
+      and _j53.can_trim(_s53)[0] is False)
+_eng53 = _io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "core", "engine.py"), encoding="utf-8").read()
+check("F53 引擎两处候选预览均按同口径调用", _eng53.count("can_trim(s, manual=True, guard=mode)") == 2)
+
 # 真实面板像素级核验：同一 Text（与应用同字体/同制表位）内，所有行的图标列与文字列必须一致
 _root52 = _tk51.Tk(); _root52.geometry("900x200+4000+4000")  # 映射到屏幕外：bbox 需已映射，但不闪窗口
 _stub52 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
