@@ -1097,6 +1097,33 @@ class MemWiseEngine:
                         import sys; print(f"[MemWise] 配置加载异常: {e}", file=_ERR)
                 if now - last_save > 30:
                     last_save = now
+                    # 学习状态摘要（2026-09-11）：画像/锚点/回退/抑制/探索 + 当前 EFIS 参数与分组
+                    try:
+                        _lr = self.learner
+                        _prof = len(_lr.profiles)
+                        _anch = len(getattr(_lr.stable_anchors, "anchors", {}) or {})
+                        _back = len(getattr(_lr.rebound, "ewma", {}) or {})
+                        _sup = getattr(self.judger, "suppress_cnt", 0)
+                        _lb = getattr(self.judger, "learner", None)
+                        _pw = []
+                        try:
+                            _pw = ["%.2f" % w for w in _lr.policy._weights()]
+                        except Exception:
+                            pass
+                        _ep = {}
+                        try:
+                            _ep = self.efis.get_params(CFG.get("clean_mode", "normal")) or {}
+                        except Exception:
+                            pass
+                        _key = ("target_usage", "pid_kp", "pid_kd", "learning_rate", "anchor_margin",
+                                "cpu_gate", "io_gate", "deepen_theta", "cooloff_base")
+                        _ps = " ".join("%s=%s" % (k, _ep.get(k)) for k in _key if k in _ep)
+                        _log_write("诊断", "学习状态: 画像 %d · 锚点 %d · 回退 %d · 稳态抑制计数 %d · "
+                                           "策略权重[%s] · 当前参数 %s · 模式 %s"
+                                   % (_prof, _anch, _back, _sup, " ".join(_pw), _ps,
+                                      CFG.get("clean_mode", "normal")))
+                    except Exception:
+                        pass
                     self.judger.purge_expired()
                     self.learner.save(self._state_file)
                     self._save_eris_state()  # ERIS 分位数窗随周期保存：运行中崩溃（watchdog 重启）不丢
@@ -1241,6 +1268,24 @@ class MemWiseEngine:
                                 f"模式 {CFG.get('clean_mode', 'normal')}")
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
+                    # 明细行（2026-09-11 用户要求"日志要能定位问题"）：系统操作计数 + 释放前三 +
+                    # 本轮判定拦截原因统计（为什么某些进程没被清理）
+                    try:
+                        _ops = "待机 %s · 修改页 %s · 文件缓存 %s · 卷 %s · 注册表 %s" % (
+                            s.get("standby", 0), s.get("modified", 0), s.get("filecache", 0),
+                            s.get("volume", 0), s.get("registry", 0))
+                        _top = sorted([t for t in (l2_results or []) if len(t) >= 3 and t[1]],
+                                      key=lambda t: -t[2])[:3]
+                        _top_s = ", ".join("%s %.0fMB" % (getattr(t[0], "name", "?"), t[2] / (1 << 20))
+                                           for t in _top) or "无"
+                        _rs = getattr(self.cleaner, "_cycle_reasons", {}) or {}
+                        _rs_s = ", ".join("%s %d" % (k, v) for k, v in
+                                          sorted(_rs.items(), key=lambda kv: -kv[1])[:8]) or "无"
+                        _log_write("清理", "明细: %s · 释放前三 %s · 拦截[%s] · 内存 %d%%(可用 %.1fGB)"
+                                   % (_ops, _top_s, _rs_s, (m or {}).get("pct", 0),
+                                      ((m or {}).get("avail", 0) or 0) / (1 << 30)))
+                    except Exception:
+                        pass
                 # 回涨状态机播报（2026-08-14 定稿）：进入回涨快提示一次 → 持续静默 → 回落提示恢复
                 if self._refill_cycle:
                     if not self._refill_hot:
@@ -1318,11 +1363,14 @@ class MemWiseEngine:
             self._eff_factors.append(result.get("factors", ["冷启动"]))
             # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
             try:
-                _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 校准 n=%s" % (
+                _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 校准 n=%s" % (
                     result.get("total", 0.0),
                     " ".join(result.get("factors", [])[:2]),
                     " ".join("%.0f" % x for x in result.get("scores", [])),
                     " ".join("%.4g" % x for x in result.get("raws", [])),
+                    self._cycle_trimmed, self._cycle_failed,
+                    (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
+                    getattr(self, "_cycle_pf", 0),
                     getattr(self, "_eris_calib", {}).get("n", "?")))
             except Exception:
                 pass

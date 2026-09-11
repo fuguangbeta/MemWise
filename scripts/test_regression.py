@@ -1969,6 +1969,22 @@ import core.backup as _bk36
 _bk36.reset_factory(backup=False, base=_t36)
 check("② 恢复默认清除四个状态文件 + 校准文件（功能性验证）",
       not [f for f in os.listdir(_t36) if f.endswith(".json")], str(os.listdir(_t36)))
+print("\n[35] 运行日志诊断性（2026-09-11 用户要求：只看日志即可定位问题）")
+_eng_log = _src26("core", "engine.py")
+_cl_log = _src26("core", "cleaner.py")
+check("日志：逐轮效率/五维分数/原始值/输入/校准进度",
+      all(k in _eng_log for k in ('"效率"', "result.get(\"scores\"", "result.get(\"raws\"",
+                                  "校准 n=", "输入[整理")))
+check("日志：周期明细含系统操作计数/释放前三/判定拦截原因/内存状态",
+      all(k in _eng_log for k in ("明细: %s · 释放前三", "拦截[%s]", "内存 %d%%(可用")))
+check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff）",
+      all(k in _eng_log for k in ("生效设置: 模式 %s", "_CFG_SNAPSHOT", '"配置"')))
+check("日志：学习状态周期摘要（画像/锚点/回退/抑制/策略权重/当前参数）",
+      all(k in _eng_log for k in ("学习状态: 画像 %d", "策略权重[%s]", "当前参数 %s")))
+check("日志：游戏启停入文件 + 周期行含所用模式",
+      '"决策", msg' in _eng_log and "模式 {CFG.get('clean_mode'" in _eng_log)
+check("日志：清理器逐轮统计判定拦截原因（can_trim 拒绝计数）",
+      "_cycle_reasons[reason]" in _cl_log and "self._cycle_reasons = {}" in _cl_log)
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

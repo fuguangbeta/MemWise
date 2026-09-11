@@ -45,6 +45,7 @@ class PareCleaner:
             "layer3_ran": 0, "layer3_extra": 0,
         }
         self._info_msgs = []
+        self._cycle_reasons = {}   # 本轮 can_trim 拦截原因计数（日志诊断用）
 
     def pop_info(self):
         msgs = self._info_msgs[:]
@@ -528,6 +529,7 @@ class PareCleaner:
         """进程级清理 — 游戏检测 + Thompson/ROI 选进程 + 内存优先级"""
         # 每轮同步手动标志 + 更新活动确认/锚点样本（can_trim 消费；手动优化跳过保守门）
         self.judger._manual_mode = self._manual_run
+        self._cycle_reasons = {}
         self.judger.update_activity(snaps)
         self.judger.update_anchors(snaps)
         # ── 检测游戏模式 ──
@@ -568,6 +570,11 @@ class PareCleaner:
                 continue
             # Trim 优先：能整理的不需要试探
             ok, reason = self.judger.can_trim(s)
+            if not ok:
+                try:
+                    self._cycle_reasons[reason] = self._cycle_reasons.get(reason, 0) + 1
+                except Exception:
+                    pass
             if ok:
                 candidates.append(s)
             else:
