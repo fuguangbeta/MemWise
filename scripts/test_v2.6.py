@@ -1688,6 +1688,67 @@ check("F51 英文态整行无中文残留",
 check("F51 切回中文后无英文残留（往返正确）",
       "内存" in _txt_zh51 and "维持高" in _txt_zh51
       and not _re34.search(r"[A-Za-z]{3,}", _txt_zh51.split("] ")[-1]), _txt_zh51.strip()[:70])
+
+# ── F52 日志图标位对齐（2026-09-11 用户要求：图标对图标、文字对文字）──
+# 实现为「固定制表位」：图标后接制表符跳到文字列；无图标则制表符独占图标位。
+# 实测 Consolas 9 各图标像素宽差异大（→ 7px、✓ 12px、⚡/⚠ 16px），空格补齐无法对齐。
+_AL52 = _mg29._align_log_line
+check("F52 图标识别（emoji/箭头/对勾/警告等）",
+      all(_mg29._log_is_icon(c) for c in "🎮📈🧹🔍⚠❌⚡✨✓✗→←↑↻🔄")
+      and not any(_mg29._log_is_icon(c) for c in "内存MB7z[("))
+check("F52 有图标行：图标独占位 + 制表到文字列", _AL52("🎮 检测到游戏运行") == "🎮\t检测到游戏运行")
+check("F52 无图标行：制表符留空图标位", _AL52("本轮释放 1.0MB") == "\t本轮释放 1.0MB")
+check("F52 对勾行（卡片名单）", _AL52("✓ 其余 21 个进程") == "✓\t其余 21 个进程")
+check("F52 卡片缩进被规范化到图标位", _AL52("  ✓ 7z.exe (PID=1) 512 MB") == "✓\t7z.exe (PID=1) 512 MB")
+check("F52 多行消息逐行处理", _AL52("🔍 err\nTraceback") == "🔍\terr\n\tTraceback")
+check("F52 幂等（重复对齐不变形）", _AL52(_AL52("📈 内存 70%")) == _AL52("📈 内存 70%"))
+check("F52 空串与纯空白行安全", _AL52("") == "" and _AL52("\n") == "\t\n\t")
+_i18n_icon_miss52 = [(z, e) for z, e in _EN.items()
+                     if isinstance(e, str) and e and _mg29._log_is_icon(z[0])
+                     and not _mg29._log_is_icon(e[0])]
+check("F52 译文不丢图标（中文带图标的条目，英文同样以图标开头）",
+      not _i18n_icon_miss52, str(_i18n_icon_miss52[:3]))
+
+# 真实面板像素级核验：同一 Text（与应用同字体/同制表位）内，所有行的图标列与文字列必须一致
+_root52 = _tk51.Tk(); _root52.geometry("900x200+4000+4000")  # 映射到屏幕外：bbox 需已映射，但不闪窗口
+_stub52 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
+_stub52.log = _tk51.Text(_root52, font=("Consolas", 9))
+_stub52.log.pack(fill="both", expand=True)
+_mg29._setup_log_widget(_stub52.log)
+_stub52._log_history = _dq51(maxlen=50)
+_stub52._last_msg = None
+set_language("zh_CN")
+_stub52._write_group(["📈 内存 70%（偏高）· 清理强度：维持高", "本轮释放 512MB · 整理 12 进程",
+                      "  ✓ 7z.exe (PID=1) 512 MB", "守护已停止"])
+_stub52._write_group(["⚡ normal 优化完成 · 释放 812 MB", "  ✓ chrome.exe (PID=12040) 322 MB",
+                      "✓ 其余 21 个进程"])
+_stub52.log.update_idletasks()
+_root52.update()
+# 索引一律走 Tk 自身（非 BMP emoji 在 Tk 里占 2 个字符，Python 下标会错位）
+_px52 = {"icon_x": set(), "text_x": set()}
+for _i, _ln in enumerate(_stub52.log.get("1.0", "end").splitlines(), start=1):
+    if not _ln.strip():
+        continue
+    _b_icon = _stub52.log.bbox(f"{_i}.11")            # 时间戳前缀恒 11 字符，其后即图标位
+    _i_tab = _stub52.log.search("\t", f"{_i}.11", f"{_i}.end")
+    if _b_icon:
+        _px52["icon_x"].add(_b_icon[0])
+    if _i_tab:
+        _b_text = _stub52.log.bbox(_stub52.log.index(f"{_i_tab} + 1c"))
+        if _b_text:
+            _px52["text_x"].add(_b_text[0])
+_tab52 = _mg29._log_tab_stop(_stub52.log)
+_x0_52 = _stub52.log.bbox("1.0")[0]                     # 文本区左缘（含边框偏移）
+_f52_f = _tk51.font.Font(font=_stub52.log.cget("font"))
+_f52_pre = _f52_f.measure("[00:00:00] ")
+_f52_room = _tab52 - _f52_pre
+_f52_wide = max(_f52_f.measure(c) for c in _mg29._LOG_ICON_PROBE)
+_stub52.log.destroy(); _root52.destroy()
+check("F52 真实面板：图标列像素一致 + 文字列像素一致且恰在制表位",
+      len(_px52["icon_x"]) == 1 and _px52["text_x"] == {_x0_52 + _tab52},
+      f"icon_x={_px52['icon_x']} text_x={_px52['text_x']} 期望={_x0_52 + _tab52}")
+check("F52 图标位宽容得下最宽图标（否则制表符跳不过去、该行错位）",
+      _f52_room >= _f52_wide, f"图标位={_f52_room} 最宽图标={_f52_wide}")
 check("F22 两个活跃门已入 i18n 参数名", "CPU活跃门" in _i18n34 and "IO活跃门" in _i18n34)
 check("F31 崩溃恢复提示含退出指引", "如需彻底退出" in _gui34 and "如需彻底退出" in _i18n34)
 

@@ -5,7 +5,7 @@ MemWise v4.4.021 GUI —— 图形界面
 
 import os, sys, time, tkinter as tk, queue
 from collections import deque
-from tkinter import ttk, simpledialog, messagebox
+from tkinter import ttk, simpledialog, messagebox, font as tkfont
 import ctypes
 import ctypes.wintypes as w
 
@@ -57,6 +57,65 @@ def _normalize_proc_name(raw):
 
 # ── 日志面板分组写入语义（2026-08-30）：组间 ≤7 接续 / >7 清屏，组内可超 7 完整呈现 ──
 PANEL_MAX_LINES = 7  # 日志面板组间刷新阈值（行）
+
+# ── 日志图标槽对齐（2026-09-11 用户要求：图标对图标、文字对文字）──
+# 每条播报预留一个图标位：有图标则图标独占该位，无图标则该位留空，文字统一从同一起列开始。
+# 采用「固定制表位」而非空格补齐——实测日志字体（Consolas 9，半角空格 7px）下各图标像素宽
+# 差异很大（→ 7px、✓ 12px、⚡/⚠ 16px），用空格凑宽永远对不齐；制表位是绝对像素列，
+# 与图标自身宽度、字形回退、DPI 无关，图标列与文字列都严格对齐。
+# 仅在显示层生效：日志历史与文件日志仍保存中文原文（语言切换可完整重渲染，见 F51）。
+_LOG_SLOT_PX = 24            # 图标位宽度下限（像素）：最宽图标 + 间隙，文字列不被图标挤动
+_LOG_ICON_PROBE = "→⚠⇒🎮↑↓✓⚡🔄🟢↻🔴❌✗🟠🟡📋⛨⚙☰📜📊🧠📈🚀🔥🕳🔍✅"
+# ↑ 项目内实际用到的图标全集（2026-09-11 扫描源码得出）：制表位按其中最宽者定位。
+#   必须让每一种图标都窄于制表位，否则制表符跳不过去，该行文字列会错位。
+_LOG_TAG = "logwrap"         # 换行悬挂缩进标签：续行也对齐到文字列
+
+
+def _log_is_icon(ch):
+    """该字符是否作图标使用（决定它独占图标位）"""
+    o = ord(ch)
+    return (0x2190 <= o <= 0x21FF or 0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF
+            or 0x1F000 <= o <= 0x1FAFF or 0x2710 <= o <= 0x2718)
+
+
+def _log_tab_stop(text_widget):
+    """制表位（像素）= 时间戳前缀宽 + 图标位宽；按面板实际字体实测，随字体/DPI 自适应"""
+    try:
+        f = tkfont.Font(font=text_widget.cget("font"))
+        pre = f.measure("[00:00:00] ")
+        slot = max([f.measure(c) for c in _LOG_ICON_PROBE] + [f.measure("\u3000")]) + f.measure(" ")
+        return int(pre + max(_LOG_SLOT_PX, slot))
+    except Exception:
+        return 77 + _LOG_SLOT_PX  # 兜底：Consolas 9 @100% 实测前缀宽（11 字符 × 7px）
+
+
+def _setup_log_widget(text_widget):
+    """日志面板排版：固定制表位（图标列 → 文字列）+ 续行悬挂缩进（换行文字同样对齐文字列）。
+    制表位用纯像素值（Tk 距离里的 "p" 是点不是像素，带单位会偏）。"""
+    try:
+        stop = _log_tab_stop(text_widget)
+        text_widget.configure(tabs=(stop,))
+        text_widget.tag_configure(_LOG_TAG, lmargin2=stop)
+    except Exception:
+        pass
+
+
+def _align_log_line(s):
+    """把一行播报规整为「图标位 + 文字」（多行消息逐行处理；原前导空白收进图标位）。
+    有图标 → 图标 + 制表（跳到文字列）；无图标 → 制表独占图标位（该位留空）。
+    制表位由 `_setup_log_widget` 按像素设定，故各图标宽窄不影响文字列对齐。"""
+    if not s:
+        return s
+    out = []
+    for line in str(s).split("\n"):
+        t = line.lstrip()
+        if t and _log_is_icon(t[0]):
+            out.append(t[0] + "\t" + t[1:].lstrip())
+        else:
+            out.append("\t" + t)
+    return "\n".join(out)
+
+
 
 def _msg_lines(msgs):
     """一组消息的实际渲染行数（内嵌换行的消息按多行计——"实际多少行就多少行"）"""
@@ -1014,6 +1073,7 @@ class MemWiseGUI:
 
         # 上半：文本日志
         self.log = tk.Text(lf, height=8, font=("Consolas",9), state="disabled", bg="#f5f5f5")
+        _setup_log_widget(self.log)  # 图标位对齐：固定制表位 + 续行悬挂缩进（F52）
         sc = ttk.Scrollbar(lf, command=self.log.yview); self.log.configure(yscrollcommand=sc.set)
         sc.pack(side="right", fill="y"); self.log.pack(fill="both", expand=True)
 
@@ -2136,7 +2196,7 @@ class MemWiseGUI:
         if _panel_needs_clear(cur_lines, _msg_lines(msgs)):
             self.log.delete("1.0", "end")
         for m in msgs:
-            self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {tr_msg(m)}\n")
+            self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {_align_log_line(tr_msg(m))}\n", _LOG_TAG)
         self.log.see("end")
         self.log.configure(state="disabled")
         self._last_msg = msgs[-1] if msgs else None
@@ -2172,7 +2232,7 @@ class MemWiseGUI:
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             for m in msgs:
-                self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {tr_msg(m)}\n")
+                self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {_align_log_line(tr_msg(m))}\n", _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
         except Exception:
