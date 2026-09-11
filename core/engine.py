@@ -335,6 +335,17 @@ def _log_open():
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
         _log_write("启动", f"MemWise v4.5.035 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        try:
+            _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
+            _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
+                               "清理深度 %s · 操作[%s] · 日志落盘 %s · 语言 %s · 排除 %d 项 · 游戏 %d 项"
+                      % (CFG.get("clean_mode", "normal"), CFG.get("interval", 60),
+                         CFG.get("gap_seconds", 12), CFG.get("emergency_threshold", 80),
+                         CFG.get("clean_passes", 4), _ops, bool(CFG.get("log_to_file")),
+                         CFG.get("language", "zh_CN"), len(CFG.get("never") or []),
+                         len(CFG.get("game_processes") or [])))
+        except Exception:
+            pass
     except Exception:
         _LOG_FD = None
 
@@ -412,8 +423,26 @@ def _event_log(msg):
 STATE_FILE = get_state_path()
 CFG = _load_cfg()
 set_language(CFG.get("language", "zh_CN"))  # 界面语言加载（设置面板可即时切换）
+_CFG_SNAPSHOT = dict(CFG)  # 配置变更日志基线（_save_cfg 输出 旧→新 diff）
 
 def _save_cfg():
+    """保存配置并记录变更（[配置] 类别：逐键 旧→新；供只凭日志定位设置问题）"""
+    global _CFG_SNAPSHOT
+    try:
+        changed = []
+        for k, v in CFG.items():
+            if k not in _CFG_SNAPSHOT:
+                changed.append(f"{k}=新增")
+            elif _CFG_SNAPSHOT[k] != v:
+                changed.append(f"{k} {_CFG_SNAPSHOT[k]}→{v}")
+        for k in _CFG_SNAPSHOT:
+            if k not in CFG:
+                changed.append(f"{k}=移除")
+        if changed:
+            _log_write("配置", "; ".join(changed)[:400])
+        _CFG_SNAPSHOT = dict(CFG)
+    except Exception:
+        pass
     _config.save(CFG)
 
 
@@ -1173,6 +1202,10 @@ class MemWiseEngine:
                 # ── 收集并显示算法日志消息 ──
                 # 游戏检测消息改走批量通道，防被 _log_batch 清屏擦除
                 for msg in self.cleaner.pop_game_msgs():
+                    try:
+                        _log_write("决策", msg)
+                    except Exception:
+                        pass
                     self._cycle_log_groups.append([msg])
                 for msg in self.learner.pop_info():
                     self._cycle_log_groups.append([msg])
@@ -1204,7 +1237,8 @@ class MemWiseEngine:
                 # 周期汇总：文件侧由 [清理] 直写（毫秒时间戳+独立类别）；GUI 仅显示不重复落盘
                 summary_line = (f"本轮释放 {fmt_label(cycle_freed)} · 系统杂项 {fmt_count(cycle_standby)} · "
                                 f"整理 {fmt_count(self._cycle_trimmed)} 进程 · "
-                                f"试探 {len(probe_results)} ({probe_ok}成功)")
+                                f"试探 {len(probe_results)} ({probe_ok}成功) · "
+                                f"模式 {CFG.get('clean_mode', 'normal')}")
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
                 # 回涨状态机播报（2026-08-14 定稿）：进入回涨快提示一次 → 持续静默 → 回落提示恢复
@@ -1282,6 +1316,16 @@ class MemWiseEngine:
                                         probe_ok=_pk, probe_total=_pt, update_state=True)
             self._eff_data.append(result["total"])
             self._eff_factors.append(result.get("factors", ["冷启动"]))
+            # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
+            try:
+                _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 校准 n=%s" % (
+                    result.get("total", 0.0),
+                    " ".join(result.get("factors", [])[:2]),
+                    " ".join("%.0f" % x for x in result.get("scores", [])),
+                    " ".join("%.4g" % x for x in result.get("raws", [])),
+                    getattr(self, "_eris_calib", {}).get("n", "?")))
+            except Exception:
+                pass
         except Exception:
             self._eff_data.append(80.0)
             self._eff_factors.append(["计算异常"])
@@ -1361,7 +1405,7 @@ class MemWiseEngine:
                     self._eris_trend = self._eris_trend[-10:]
                 self._eris_prev_scores = scores
                 self._eris_prev_eff = eff
-        return {"total": eff, "factors": factors}
+        return {"total": eff, "factors": factors, "scores": scores, "raws": sm}
     def _save_eris_state(self):
         with self._eris_save_lock:
             try:
