@@ -40,13 +40,13 @@ MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网
 
 MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 11.4 MB），零外部依赖。
 
-系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持 60 秒间隔内零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
+系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持每个守护周期内（默认 60 秒，可在设置中调整 10-3600 秒）零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
 *Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single ~11.4 MB executable.*
 
-*MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization at 60-second intervals in daemon mode. A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.*
+*MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization within each daemon cycle (60 s by default, adjustable from 10 to 3600 s). A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.*
 
 *An embedded watchdog subprocess restores daemon state within seconds of an unexpected crash. The program also enforces strict limits on its own memory footprint and power consumption.*
 
@@ -62,13 +62,13 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 1.2 守护模式（推荐）· *Daemon Mode (Recommended)*
 
-点击"守护"按钮启动，程序以 60 秒为日志/图表输出周期，在周期内执行零空闲持续优化。具体节奏为：
+点击"守护"按钮启动，程序以**守护周期**（默认 60 秒，可在设置中调整 10-3600 秒）为日志/图表输出周期，在周期内执行零空闲持续优化。具体节奏为：
 
 | 阶段 | 内容 |
 |------|------|
-| 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒基准，自适应上限 25 秒），释放多则缩短、释放少则延长 |
+| 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒基准，自适应不超出 20 秒），释放多则缩短、释放少则延长 |
 | gap fill 轻量压制 | 高频阶段系统级轻量操作（零磁盘影响）：normal 仅注册表缓存；deep/full 追加待机缓存与脏页写回持续回收（零缺页成本，缓存重建后立即清空，可用内存保持高位）；文件缓存与卷冲刷等重操作仅在周期收割执行——缓存有累积时间，单次释放量更大 |
-| gap 循环优化 | 每轮 gap 结束执行一次进程修剪与系统级轻量操作（normal 语义，不含深度聚合），次数随自适应 gap 变化（60 秒周期约 3-6 次） |
+| gap 循环优化 | 每轮 gap 结束执行一次进程修剪与系统级轻量操作（normal 语义，不含深度聚合），次数随自适应 gap 与周期长度变化（60 秒周期约 3-6 次，周期越长次数越多） |
 | 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含系统级全清：deep 中高压执行、full 无条件）→ Layer3 深度聚合（normal 在接近紧急阈值前先做一轮，deep/full 强制；full 追加进程回弹二轮） |
 
 守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。内存占用达到紧急阈值（默认 80%）时，立即跳过等待执行一次极限模式（full）清理；另可配置可用内存绝对兜底（默认禁用），使用率未达阈值但剩余可用内存过低时同样触发。
@@ -77,13 +77,13 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 守护判定自带多重保护：刚切走的程序 5-10 分钟内不清理（有可见窗口更久，内存高压时自动放宽）；正在工作的程序（CPU 或磁盘 IO 活跃）在 normal/deep 一律不清理（full 极限释放除外）；连续低活动确认后才被纳入清理候选（normal 两轮、deep 一轮、full 跳过）；对反复清理后迅速回填的常驻程序，程序会学习其自然内存占用基线并自动停止无效清理（稳态抑制与回弹后退，deep/full 跳过）。
 
-*Operates in 60-second log/chart cycles with uninterrupted optimization:*
+*Operates in daemon cycles (60 s by default, adjustable from 10 to 3600 s) as log/chart periods, with uninterrupted optimization:*
 
 | Phase | Description |
 |------|------|
 | Adaptive gap | The interval adjusts automatically (8–20s base, up to 25s) based on the previous round's average release volume per process — shorter when releases are large, longer when they are small |
 | Gap-fill light suppression | Lightweight system operations run at high frequency (zero disk impact): registry only in normal; deep/full additionally sustain standby and dirty-page reclamation (zero page-fault cost — caches are emptied as soon as they rebuild, keeping available memory high); heavyweight operations such as file-cache and volume flush run only in periodic harvests — the cache accumulates before each purge, yielding larger per-pass releases |
-| Gap-cycle optimization | One process-trimming pass with lightweight system operations runs at the end of each gap (normal semantics, no deep aggregation); the count follows the adaptive gap (roughly 3–6 times per 60-second cycle) |
+| Gap-cycle optimization | One process-trimming pass with lightweight system operations runs at the end of each gap (normal semantics, no deep aggregation); the count follows the adaptive gap (roughly 3–6 times per 60-second cycle; longer cycles mean more of them) |
 | Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the system-wide working-set flush — deep at moderate-to-high usage, full always), then Layer 3 deep aggregation (full adds a rebound second pass) |
 
 *The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. Timed-out processes are throttled by an escalating cooldown (×1~4) that decays after successful recovery. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting; an optional absolute fallback (default disabled) fires on the same logic when available memory is critically low even if the usage ratio has not reached the threshold.*
@@ -202,9 +202,9 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ### 2.4 持续优化架构 · *Continuous Optimization Architecture*
 
-守护模式的每个 60 秒周期内，在 deadline 驱动下交替执行轻量压制与全量收割。自适应 gap 根据每轮的单位进程释放量变化率自动在 8-25 秒间调节（游戏模式 ×1.5 拉长），用户可通过设置面板调节基准间隔（默认 12 秒）。高回填进程通过 fast-track 标记在压制阶段获得高频修剪，全量收割阶段再执行完整的系统级管线。守护周期有完整的超时保护体系——单进程 8 秒、单次 harvest 30 秒硬超时，超时后周期补偿机制自动在下一轮追回。
+守护模式的每个 60 秒周期内，在 deadline 驱动下交替执行轻量压制与全量收割。自适应 gap 根据每轮的单位进程释放量变化率自动在 8-20 秒间调节（游戏模式 ×1.5 拉长），用户可通过设置面板调节基准间隔（默认 12 秒）。高回填进程通过 fast-track 标记在压制阶段获得高频修剪，全量收割阶段再执行完整的系统级管线。守护周期有完整的超时保护体系——单进程 8 秒、单次 harvest 30 秒硬超时，超时后周期补偿机制自动在下一轮追回。
 
-*Each 60-second daemon cycle alternates between lightweight suppression and full harvesting under deadline-driven scheduling. The adaptive gap adjusts within 8–25 seconds (×1.5 in game mode) based on per-process release rate changes, with a user-configurable base interval (default 12s) in the settings panel. Fast-tracked high-refill processes receive frequent light trims during suppression; the complete pipeline executes during the harvesting phase. A comprehensive timeout defense — 8s per-process, 30s per-harvest — with automatic cycle compensation prevents any single operation from stalling the daemon.*
+*Each daemon cycle (60 s by default, adjustable) alternates between lightweight suppression and full harvesting under deadline-driven scheduling. The adaptive gap adjusts within 8–20 seconds (×1.5 in game mode) based on per-process release rate changes, with a user-configurable base interval (default 12s) in the settings panel. Fast-tracked high-refill processes receive frequent light trims during suppression; the complete pipeline executes during the harvesting phase. A comprehensive timeout defense — 8s per-process, 30s per-harvest — with automatic cycle compensation prevents any single operation from stalling the daemon.*
 
 ---
 
@@ -398,9 +398,9 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 8. 图表与效率评分 · *Charting & Efficiency Scoring*
 
-图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据，折线为 ERIS v6 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身特异性滚动窗（释放效率 25 轮、参数收敛 8 轮、其余 20 轮）的中位数和四分位距(IQR)为基准，经 trimmed IQR 去极值与内插分位，通过 80 + 40×(raw−p50)/IQR（scale=40）将原始值映射为独立分数，释放效率维度经对数压缩，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 ≥100% 时折点显示金色、≤50% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤50% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（50-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率与关键统计指标。
+图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据（每根柱对应一个守护周期，周期可调，图表覆盖的时长随之变化），折线为 ERIS v6 效率评分（0–100%+，上不封顶）。ERIS 以 IQR 分位数归一化五个维度——预测精准度、释放效率、副作用控制、参数收敛度、探索完备度——每个维度以自身特异性滚动窗（释放效率 25 轮、参数收敛 8 轮、其余 20 轮）的中位数和四分位距(IQR)为基准，经 trimmed IQR 去极值与内插分位，通过 80 + 40×(raw−p50)/IQR（scale=40）将原始值映射为独立分数，释放效率维度经对数压缩，五个加权求和后得到最终效率分。游戏模式切换时自动重置受影响维度的分位数窗。分数真实反映算法引擎相对于自身常态的运转质量。前 3 轮收敛期折线及折点以虚线标示；效率 ≥100% 时折点显示金色、≤50% 时显示珊瑚红色以示警戒。因子取自各维相对 IQR 中心(80)的偏离度——效率上升取正面偏离最大者，下降取负面偏离最大者；±2% 内波动显示相对平稳。效率 ≥100% 时追加"🚀效率超常"标签，≤50% 时追加"⚠效率异常"标签。"🔥持续改善"/"⚠持续下滑"标签仅在正常范围（50-100）内且最近三连轮次同向时触发，设有极性区间连续性保护。同维正负设有防振荡保护，平稳期自动重置防振荡状态防止方向残留。鼠标悬浮可查看真实数值及当轮主导因素。图表区域下方标注平均效率与关键统计指标。
 
-*A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars overlaid with the ERIS v6 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, release efficiency, side-effect control, parameter convergence, and exploration completeness — each with its own dimension-specific rolling window (25 cycles for release efficiency, 8 for parameter convergence, 20 for the rest), trimmed-IQR outlier removal, interpolated quantiles, EWMA-smoothed medians, and a log-compressed release-efficiency raw. Scores map via 80 + 40×(raw−p50)/IQR (scale=40) and are weighted-summed into the final efficiency score. Affected quantile windows auto-reset on game-mode transitions. The score genuinely reflects engine performance relative to its own norm. The first 3 data points render as dashed lines/dots during convergence; golden dots mark scores at or above 100%, coral-red dots warn at or below 50%. Factor selection uses each dimension's deviation from the IQR center (80) — rising efficiency picks the largest positive deviation, falling picks the largest negative; ±2% fluctuation shows as relatively stable. Scores ≥100% append a 🚀 efficiency-exceptional tag, ≤50% a ⚠ efficiency-abnormal tag; 🔥 sustained-improvement / ⚠ sustained-decline tags trigger only within the normal range (50–100) on three consecutive same-direction cycles, with polarity-continuity protection. Anti-oscillation guards prevent same-dimension flip-flopping, and stable periods auto-reset anti-oscillation state. Hover tooltips reveal true values and the dominant factors. Below the chart: average efficiency and key statistics.*
+*A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing — independent of the lazily-updated system API — keeping logs, the status bar, and the chart in lockstep. The chart renders recent-cycle bars (one bar per daemon cycle) overlaid with the ERIS v6 efficiency line (0–100%+, uncapped). ERIS employs IQR quantile normalization across five dimensions — prediction accuracy, release efficiency, side-effect control, parameter convergence, and exploration completeness — each with its own dimension-specific rolling window (25 cycles for release efficiency, 8 for parameter convergence, 20 for the rest), trimmed-IQR outlier removal, interpolated quantiles, EWMA-smoothed medians, and a log-compressed release-efficiency raw. Scores map via 80 + 40×(raw−p50)/IQR (scale=40) and are weighted-summed into the final efficiency score. Affected quantile windows auto-reset on game-mode transitions. The score genuinely reflects engine performance relative to its own norm. The first 3 data points render as dashed lines/dots during convergence; golden dots mark scores at or above 100%, coral-red dots warn at or below 50%. Factor selection uses each dimension's deviation from the IQR center (80) — rising efficiency picks the largest positive deviation, falling picks the largest negative; ±2% fluctuation shows as relatively stable. Scores ≥100% append a 🚀 efficiency-exceptional tag, ≤50% a ⚠ efficiency-abnormal tag; 🔥 sustained-improvement / ⚠ sustained-decline tags trigger only within the normal range (50–100) on three consecutive same-direction cycles, with polarity-continuity protection. Anti-oscillation guards prevent same-dimension flip-flopping, and stable periods auto-reset anti-oscillation state. Hover tooltips reveal true values and the dominant factors. Below the chart: average efficiency and key statistics.*
 
 ---
 
