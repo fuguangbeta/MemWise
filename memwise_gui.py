@@ -1,5 +1,5 @@
 """
-MemWise v4.5.040 GUI —— 图形界面
+MemWise v4.5.041 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -103,16 +103,18 @@ def _setup_log_widget(text_widget):
 # ── 播报默认图标（2026-09-11 用户要求）：程序自绘「圈 + M」，纯黑细线，给没有图标的播报统一占位 ──
 # 尺寸 11×10 像素，与日志字号等高；'#' 为黑像素，其余透明（不使用系统 emoji，保证大小完全一致）
 _LOG_ICON_ROWS = (
-    " ..#####.. ",
-    ".##.....##.",
-    ".#...#...#.",
-    ".#..###..#.",
-    ".#.#.#.#.#.",
-    ".#.#...#.#.",
-    ".#.#...#.#.",
-    ".#.#...#.#.",
-    ".##.....##.",
-    " ..#####.. ",
+    "...#######...",
+    ".##.......##.",
+    ".#..#...#..#.",
+    "##..#...#..##",
+    "#...##.##...#",
+    "#...#.#.#...#",
+    "#...#...#...#",
+    "#...#...#...#",
+    "##..#...#..##",
+    ".#..#...#..#.",
+    ".##.......##.",
+    "...#######...",
 )
 
 
@@ -137,7 +139,7 @@ def _insert_log_lines(text_widget, ts, msg, tag):
         head = ("[%s] " % ts) if k == 0 else ""
         if line.startswith(chr(9)) and img is not None:          # 无图标行 ⇒ 补默认图标
             text_widget.insert("end", head, tag)
-            text_widget.image_create("end", image=img)
+            text_widget.image_create("end", image=img, offset=2)
             text_widget.insert("end", line + chr(10), tag)
         else:
             text_widget.insert("end", head + line + chr(10), tag)
@@ -481,7 +483,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.5.040", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.5.041", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -505,7 +507,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.5.040")
+        self.root.title("MemWise v4.5.041")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -562,7 +564,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.5.040 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.5.041 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -621,7 +623,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.040")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.041")
                     if fw:
                         top = fw
                 except Exception:
