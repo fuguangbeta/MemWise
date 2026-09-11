@@ -368,7 +368,7 @@ if t2 >= 0.06:
     ok_f2, _ = jf_v.can_trim(sf2)
     check("full中低θ放行", ok_f2)
 else:
-    check("full中低θ放行", True)  # 画像实际 θ 低于底线则跳过（断言构造失效保护）
+    check("full中低θ清理放行", True)  # 画像实际 θ 低于底线则跳过（断言构造失效保护）
 # 极低 θ（≈0.01）→ full 也拒绝（monkeypatch betavariate 固定小值——防 Beta 抽样随机波动致断言不稳定）
 import random as _random
 _orig_beta = _random.betavariate
