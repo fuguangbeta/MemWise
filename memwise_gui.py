@@ -1,5 +1,5 @@
 """
-MemWise v4.5.039 GUI —— 图形界面
+MemWise v4.5.040 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -98,6 +98,49 @@ def _setup_log_widget(text_widget):
         text_widget.tag_configure(_LOG_TAG, lmargin2=stop)
     except Exception:
         pass
+
+
+# ── 播报默认图标（2026-09-11 用户要求）：程序自绘「圈 + M」，纯黑细线，给没有图标的播报统一占位 ──
+# 尺寸 11×10 像素，与日志字号等高；'#' 为黑像素，其余透明（不使用系统 emoji，保证大小完全一致）
+_LOG_ICON_ROWS = (
+    " ..#####.. ",
+    ".##.....##.",
+    ".#...#...#.",
+    ".#..###..#.",
+    ".#.#.#.#.#.",
+    ".#.#...#.#.",
+    ".#.#...#.#.",
+    ".#.#...#.#.",
+    ".##.....##.",
+    " ..#####.. ",
+)
+
+
+def _make_log_icon():
+    """生成默认图标（Tk PhotoImage；透明底 + 黑色像素）。失败返回 None（不影响面板）"""
+    try:
+        h, w = len(_LOG_ICON_ROWS), len(_LOG_ICON_ROWS[0])
+        img = tk.PhotoImage(width=w, height=h)
+        for y, row in enumerate(_LOG_ICON_ROWS):
+            for x, ch in enumerate(row):
+                img.put("#000000" if ch == "#" else "", (x, y))   # 空串 = 透明
+        return img
+    except Exception:
+        return None
+
+
+def _insert_log_lines(text_widget, ts, msg, tag):
+    """按物理行插入（默认图标需逐行插入）：无图标行 = 默认图标 + 制表符 + 正文；有图标行原样。
+    首行带时间戳前缀，续行不带（与原行为一致，制表位为绝对像素列，续行文字列仍对齐）。"""
+    img = getattr(text_widget, "_log_icon_img", None)
+    for k, line in enumerate(str(msg).split(chr(10))):
+        head = ("[%s] " % ts) if k == 0 else ""
+        if line.startswith(chr(9)) and img is not None:          # 无图标行 ⇒ 补默认图标
+            text_widget.insert("end", head, tag)
+            text_widget.image_create("end", image=img)
+            text_widget.insert("end", line + chr(10), tag)
+        else:
+            text_widget.insert("end", head + line + chr(10), tag)
 
 
 def _align_log_line(s):
@@ -438,7 +481,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.5.039", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.5.040", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -462,7 +505,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.5.039")
+        self.root.title("MemWise v4.5.040")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -519,7 +562,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.5.039 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.5.040 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -578,7 +621,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.039")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.040")
                     if fw:
                         top = fw
                 except Exception:
@@ -1074,6 +1117,7 @@ class MemWiseGUI:
         # 上半：文本日志
         self.log = tk.Text(lf, height=8, font=("Consolas",9), state="disabled", bg="#f5f5f5")
         _setup_log_widget(self.log)  # 图标位对齐：固定制表位 + 续行悬挂缩进（F52）
+        self.log._log_icon_img = _make_log_icon()  # 播报默认图标（圈+M）
         sc = ttk.Scrollbar(lf, command=self.log.yview); self.log.configure(yscrollcommand=sc.set)
         sc.pack(side="right", fill="y"); self.log.pack(fill="both", expand=True)
 
@@ -2196,7 +2240,7 @@ class MemWiseGUI:
         if _panel_needs_clear(cur_lines, _msg_lines(msgs)):
             self.log.delete("1.0", "end")
         for m in msgs:
-            self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {_align_log_line(tr_msg(m))}\n", _LOG_TAG)
+            _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(tr_msg(m)), _LOG_TAG)
         self.log.see("end")
         self.log.configure(state="disabled")
         self._last_msg = msgs[-1] if msgs else None
@@ -2232,7 +2276,7 @@ class MemWiseGUI:
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             for m in msgs:
-                self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] {_align_log_line(tr_msg(m))}\n", _LOG_TAG)
+                _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(tr_msg(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
         except Exception:
@@ -2492,12 +2536,12 @@ class MemWiseGUI:
             for i, e_val in enumerate(eff_pts):
                 cx = px0 + i * step2 + self.BAR_W // 2
                 r_eff = round(e_val)  # 与显示(.0f)一致的整数判定：99.6 显示"100%"→金色、60.4 显示"60%"→珊瑚红
-                over_100 = r_eff >= 100
+                over_100 = round(r_eff) >= 100          # 与显示值一致（四舍五入）
                 cy = py1 - (min(e_val, 100.0) / 100.0) * ph
                 r = 4
                 if over_100:
                     dot_fill = "#D4A017"
-                elif r_eff <= 50:
+                elif round(r_eff) <= 50:                 # 与显示值一致（消除'珊瑚点却无警告'）
                     dot_fill = "#FF6B6B"
                 else:
                     dot_fill = "#4488CC"

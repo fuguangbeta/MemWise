@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.5.039 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.5.040 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1237,12 +1237,12 @@ check("纵轴 GB≥10 取整", '_gb_v = lbl_v / 1024.0' in _gui32_src
       and 'f"{_gb_v:.0f}GB" if _gb_v >= 10 else f"{_gb_v:.1f}GB"' in _gui32_src)
 # ── 任务2: 效率异常下限 60→50（折点着色 + 因子极性，含等于语义不变）──
 _eng32_src = _src26("core", "engine.py")
-check("折点阈值 ≤50", "elif r_eff <= 50:" in _gui32_src and "elif r_eff <= 60" not in _gui32_src)
+check("折点阈值 ≤50（与显示值一致：四舍五入）", "elif round(r_eff) <= 50:" in _gui32_src and "elif r_eff <= 60" not in _gui32_src)
 check("因子下极性 ≤50（v7：阈值常量）",
-      "elif eff <= E.WARN_TH:" in _eng32_src and "WARN_TH = 50.0" in _eris_v7_src)
+      "elif round(eff) <= E.WARN_TH:" in _eng32_src and "WARN_TH = 50.0" in _eris_v7_src)
 check("上极性 ≥100 不动（v7：阈值常量）",
-      "elif eff >= E.SUPER_TH:" in _eng32_src and "SUPER_TH = 100.0" in _eris_v7_src
-      and "over_100 = r_eff >= 100" in _gui32_src)
+      "elif round(eff) >= E.SUPER_TH:" in _eng32_src and "SUPER_TH = 100.0" in _eris_v7_src
+      and "over_100 = round(r_eff) >= 100" in _gui32_src)
 # README 双语同步（v7 口径：五维标尺 + 阈值语义 + 词条规则）
 _readme32 = open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
 for _frag in ("50 分 = 该维历史中位水平，100 分 = 突破历史高位",

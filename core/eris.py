@@ -66,11 +66,12 @@ DEEP = [
 ]
 DIM_ANCHORS_BY_MODE = {
     "normal": NORMAL,
-    "deep": DEEP,
+    "deep": [list(a) for a in NORMAL],   # 实测（2026-09-11 用户 deep 日志）：deep 各维 raw 与 normal 同量级
+    # ※ 原"取 normal 与 full 中点"的估计被实测否决（曾使 deep 的清理畅通/释放彻底被判 0 分与满分）
     "quick": [list(a) for a in NORMAL],
     "full": FULL,
 }
-EFF_K_BY_MODE = {"normal": 290.1, "deep": 315.0, "quick": 290.1, "full": 341.0}
+EFF_K_BY_MODE = {"normal": 290.1, "deep": 290.1, "quick": 290.1, "full": 341.0}
 DIM_ANCHORS = DIM_ANCHORS_BY_MODE["normal"]      # 兼容别名（normal 模式）
 EFF_K = EFF_K_BY_MODE["normal"]
 
@@ -91,6 +92,25 @@ CALIB_SPREAD_N = 200               # 跨度校正淡入轮数：暖机期只用�
 CALIB_BLEND_N = 100                # 淡入轮数（前 N 轮线性生效）
 CALIB_SHIFT_MAX = 0.5              # 中心位移限幅（相对冷启动 p10-p90 跨度）
 CALIB_SCALE_RANGE = (0.70, 1.40)   # 跨度比限幅（双向）
+
+
+# 各模式"有效维度"（2026-09-11 用户定稿）：本模式有实际作用面的维度才参与效率合成。
+# 「维度取舍」由两层决定：①静态声明（下表，如 quick 几乎不做进程清理 ⇒ 进程类维度不参与）
+# ②运行时无数据排除（缺数据维不参与，其权重按比例分给其余有效维）。
+MODE_VALID_DIMS = {
+    "quick": (0, 3),
+    "normal": (0, 1, 2, 3, 4),
+    "deep": (0, 1, 2, 3, 4),
+    "full": (0, 1, 2, 3, 4),
+}
+
+
+def valid_dims(mode=None, nodata=None):
+    """该模式的有效维度索引（去掉无数据维）"""
+    dims = MODE_VALID_DIMS.get(mode or "normal", MODE_VALID_DIMS["normal"])
+    if nodata:
+        dims = tuple(j for j in dims if not (j < len(nodata) and nodata[j]))
+    return dims
 
 
 def anchors_for(mode=None):
@@ -163,10 +183,22 @@ def scores_of(raws, anchors=None, log_dims=LOG_DIMS, mode=None):
     return [dim_score(raws[j], A[j], log_scale=(j in log_dims)) for j in range(len(A))]
 
 
-def efficiency(scores, K=None, mode=None):
-    """总分 → 效率百分比（100% = 该模式的联合理想总分）"""
+def efficiency(scores, K=None, mode=None, valid=None):
+    """效率百分比：**有效维**均分权重后折算回五维尺度（100% = 该模式的联合理想总分）。
+
+    · 有效维 = 模式静态声明 ∩ 有数据维（调用方传 valid；缺省用全部）
+    · 等效于把缺失维的权重按比例分给其余有效维（用户 2026-09-11 定稿）：
+      eff = 有效维均值 × 5 ÷ K × 100
+    · 无任何有效维时返回中性值（五维各 50 的对应值），避免空数据被判为 0
+    """
     k = float(K or k_for(mode))
-    return (sum(scores) / k * 100.0) if k > 0 else 0.0
+    if k <= 0:
+        return 0.0
+    idx = list(valid) if valid else list(range(len(scores)))
+    idx = [j for j in idx if 0 <= j < len(scores)]
+    if not idx:
+        return 50.0 * len(scores) / k * 100.0
+    return (sum(scores[j] for j in idx) / len(idx) * len(scores) / k * 100.0)
 
 
 def pick_factor(scores, prev_scores, up):

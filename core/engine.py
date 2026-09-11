@@ -334,7 +334,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.5.039 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.5.040 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -1063,6 +1063,7 @@ class MemWiseEngine:
                             _g = float(getattr(_pr, "gain_ewma", 0) or 0)
                             if _g > 0:
                                 _det.append((float(_t[2]), _g))
+                    self._cycle_proc_mb = sum(f for f, _g in _det) / (1 << 20)   # 进程清理释放量（MB）
                     self._cycle_trim_detail = _det
                 except Exception:
                     self._cycle_trim_detail = []
@@ -1380,7 +1381,7 @@ class MemWiseEngine:
                         self._cycle_trimmed, self._cycle_failed,
                         (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
                         getattr(self, "_cycle_pf", 0),
-                        getattr(self._eris_calib.get("modes", {}).get(getattr(self.cleaner, "_last_mode", "normal"), {}), "n", "?"),
+                        self._eris_calib.get("modes", {}).get(getattr(self.cleaner, "_last_mode", "normal"), {}).get("n", "?"),
                         getattr(self.cleaner, "_last_mode", "normal")))
             except Exception:
                 pass
@@ -1417,9 +1418,11 @@ class MemWiseEngine:
         raw3 = (trimmed_cnt + 1.0) / max(failed_cnt + 1.0, 1.0)
         # ── ④ 副作用：释放MB ÷ PF 增量（PF=0 记无副作用，映射后钳到上限）──
         _pf = float(getattr(self, "_cycle_pf", 0) or 0)
+        pf_ok = _pf > 0
         # 「无数据」一律中性（2026-09-11 日志诊断修复）：旧实现用占位极值（PF=0→1e6、无试探→0.5）
         # 会被映射到分数上限 140 ⇒ 制造"副作用低/试探高效"假象并把总分顶到 145%（日志实测）
-        raw4 = (float(data[-1]) / _pf) if _pf > 0 else None
+        _proc_mb = float(getattr(self, "_cycle_proc_mb", 0.0) or 0.0)   # 本周期**进程清理**释放量
+        raw4 = (_proc_mb / _pf) if (pf_ok and _proc_mb > 0) else None       # 只与进程清理配对
         raw5 = (float(probe_ok) / float(probe_total)) if probe_total else None
         if not errs:
             raw1 = None
@@ -1436,18 +1439,19 @@ class MemWiseEngine:
             scores, self._eris_calib = E.calibrate_and_score(sm, self._eris_calib,
                                                               update=update_state, skip=_nodata,
                                                               mode=_mode)
-            eff = E.efficiency(scores, mode=_mode)
+            _valid = E.valid_dims(_mode, _nodata)
+            eff = E.efficiency(scores, mode=_mode, valid=_valid)
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             trend_val = 0
             if prev_eff is None or len(data) <= 3:
                 factors = ["影响因素分析中…"]
-            elif eff >= E.SUPER_TH:
+            elif round(eff) >= E.SUPER_TH:   # 与显示值一致（用户看到 ≥100% 才判超常）
                 j = E.pick_factor(scores, prev_scores, True)
                 if j is None:
                     j = max(range(5), key=lambda i: scores[i])
                 factors = [E.DIM_WORDS[j][0], "🚀效率超常"]
                 trend_val = 99
-            elif eff <= E.WARN_TH:
+            elif round(eff) <= E.WARN_TH:    # 与显示值一致（用户看到 ≤50% 才判异常）
                 j = E.pick_factor(scores, prev_scores, False)
                 if j is None:
                     j = min(range(5), key=lambda i: scores[i])
