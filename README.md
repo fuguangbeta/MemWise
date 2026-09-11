@@ -402,11 +402,15 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 效率评分取五个维度、各维 0~100 分（可超常溢出）：预测精准（卡尔曼预测误差的中位数）、释放彻底（本轮每进程实际释放量相对其惯常释放量的中位数）、清理畅通（整理成功与失败之比）、副作用（释放量与缺页代价之比）、试探高效（试探命中率）。各维原始值先取最近三轮的中位数平滑，再按长期实测的四个锚点分段映射计分——**50 分 = 该维历史中位水平，100 分 = 突破历史高位，0 分 = 历史最差水平**；锚点是一次冻结的标尺，持续优化会让分数整体上移。效率值 = 五维分数之和 ÷ 联合理想总分（长期实测的高位总分）× 100%：五维同时达到历史高位即为 100%，超过即超常。
 
+**标尺自校准**：上述锚点以长期实测为冷启动基准；使用中程序会按每维的慢速分位估计（时间常数约百轮）对本机做中心与跨度的双向校正，使不同机器的曲线都落在可比区间。校准随样本量线性淡入（首轮即可用、无突跳），并受限幅约束（中心最多偏移半个标尺跨度、跨度比限制在 0.7~1.4 倍），因此引擎若持续变好，分数仍能突破 100%。校准数据单独存放（`memwise_eris_calib.json`）：不随配置包导出、恢复默认时清除；删除该文件即回到出厂标尺。
+
 影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 2 个百分点显示"相对平稳"。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
 
 *A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing, keeping logs, the status bar, and the chart in lockstep. The X axis shows recent cycles (one bar per daemon cycle; the covered time span follows the adjustable cycle length).*
 
 *The efficiency score spans five dimensions, each scored 0–100 (overflowing above 100 for exceptional rounds): prediction accuracy (median Kalman error), release thoroughness (median release per trimmed process relative to that process's usual release), cleaning unobstructedness (trim success-to-failure ratio), side effects (released volume vs. page-fault cost), and probe effectiveness (probe hit rate). Each raw value is first smoothed by a three-cycle median, then mapped piecewise through four long-run measured anchors — **50 = the dimension's historical median, 100 = beyond its historical best, 0 = its historical worst**; the anchors are a frozen ruler, so sustained improvements raise the whole scale. The final score = sum of the five ÷ the joint ideal total (long-run measured) × 100%: all five at their historical best equals 100%, above that is exceptional.*
+
+*Scale self-calibration — the anchors above are a cold-start basis measured from long-run data; while running, a slow per-dimension quantile estimate (time constant around a hundred cycles) corrects the centre and spread for this machine, keeping curves comparable across machines. Calibration fades in linearly with the sample count (usable from the first round, no jumps) and is bounded (the centre shifts at most half the scale's span; the spread ratio is limited to 0.7–1.4×), so a steadily improving engine can still exceed 100%. Calibration data lives in its own file, is excluded from config packages, and is cleared by factory reset — deleting that file restores the factory scale.*
 
 *Factor wording: when efficiency rises, the highest-scoring dimension among those that also rose this round reports its positive word; when it falls, the lowest-scoring dimension among those that also fell reports its negative word; a change under 2 points shows "relatively steady". Three consecutive same-direction rounds append a 🔥 sustained-improvement / ⚠ sustained-decline tag (within the 50–100% band only). The first 3 rounds show "analysing factors…"; ≥100% marks gold dots with 🚀 exceptional efficiency, ≤50% coral-red dots with ⚠ efficiency anomaly. Hover tooltips reveal true values and the dominant factors; below the chart: average efficiency and key statistics.*
 ---
@@ -593,6 +597,7 @@ MemWise/
 │   ├── memwise_state.json      # 学习数据文件（自动保存/加载）· Learned State
 │   ├── memwise_efis_state.json # EFIS 状态文件 · EFIS State
 │   ├── memwise_eris_ewma.json  # ERIS 状态（五维滚动窗与上轮分数）· ERIS State (rolling windows & last scores)
+│   ├── memwise_eris_calib.json # 效率标尺自校准数据（不进配置包；恢复默认清除）· ERIS Calibration
 │   ├── import_export/          # 配置包（导出/自动备份/待导入）· Config Packages (Export / Backup / Import)
 │   ├── watchdog.json           # 看门狗标记文件（自动管理）· Watchdog Marker
 │   ├── memwise.log             # 统一运行日志（2MB×2 轮转）· Unified Runtime Log

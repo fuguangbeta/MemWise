@@ -24,6 +24,9 @@ APP_VERSION = "4.5.033"  # 版本同步面之一（manifest 记录用）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
                 "memwise_efis_state.json", "memwise_eris_ewma.json")
+# ② ERIS 自校准数据：**刻意不进配置包**（机器相关，跨机迁移会把曲线置于错误位置），
+# 但恢复默认必须清除（属"学习到的标尺"）——见记忆 learning-engine-specs §B5
+_CALIB_NAME = "memwise_eris_calib.json"
 
 
 def _data_root(base=None):
@@ -200,6 +203,13 @@ def reset_factory(backup=True, base=None):
     for p in _state_paths(base).values():
         if os.path.isfile(p):
             os.remove(p)
+    # ② 自校准数据单独清除（不在 _STATE_NAMES 中，故此处显式处理）
+    try:
+        cp = os.path.join(_data_root(base), _CALIB_NAME)
+        if os.path.isfile(cp):
+            os.remove(cp)
+    except Exception:
+        pass
     return True, bak or ""
 
 

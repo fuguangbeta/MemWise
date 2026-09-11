@@ -1178,7 +1178,7 @@ check("F3 GUI 启动失败区分 CLI 占用", "_daemon_busy_cli" in _eng26_src a
 check("F3 learner tmp 隔离", "{os.getpid()}.tmp" in _lm26_src)
 check("F3 efis tmp 隔离", "{os.getpid()}.tmp" in _src26("core", "efis.py"))
 check("F3 config tmp 隔离", "{os.getpid()}.tmp" in _src26("core", "config.py"))
-check("F3 engine tmp 隔离×3", _eng26_src.count("{os.getpid()}.tmp") == 3)
+check("F3 engine tmp 隔离×4（含 ② 校准文件）", _eng26_src.count("{os.getpid()}.tmp") == 4)
 # ── F6 游戏模式实时化（确认计数器全清，启用/退出即时生效）──
 check("F6 游戏退出即时化", "game_gone_count" not in _eng26_src and "game_gone_count" not in _cl26_src)
 check("F6 实时退出注释接线", "实时退出" in _eng26_src and "实时退出" in _cl26_src)
@@ -1887,6 +1887,88 @@ check("v7 旧状态（v6 分位数窗格式）自动忽略：加载入口只认 
       'payload.get("v") == 7' in _eng7 and "memwise_eris_ewma.json" in _eng7)
 
 import re
+print("\n[36] ERIS v7 ② 自校准（冷启动 + 长周期爬行；独立存储 / 恢复默认清除）")
+from core.eris import (new_calib as _nc7, calib_valid as _cv7, calibrate_and_score as _cs7,
+                       anchors_center_span as _ac7, DIM_ANCHORS as _A7b,
+                       dim_score as _ds7b)
+import random as _r36
+_r36.seed(11)
+# ① 分位估计收敛（喂入已知分布，估计应贴近真分位）
+_c36 = _nc7()
+for _ in range(6000):
+    _cs7([_r36.gauss(100, 10), _r36.gauss(1.0, 0.2), 2.0, 0.05, 0.35], _c36)
+_q10, _q50, _q90 = _c36["dims"][0]
+check("② 分位估计收敛（q50 贴近真中位，q10<q50<q90）",
+      abs(_q50 - 100) < 1.5 and _q10 < _q50 < _q90, f"{_q10:.1f}/{_q50:.1f}/{_q90:.1f}")
+check("② 计数与初始化标记", _c36["n"] == 6000 and _c36["init"] is True)
+# ② 冷启动首轮 ≈ 不校准（淡入自 1/100 起步）
+_c36b = _nc7()
+_s_first, _ = _cs7([0.35, 1.0, 2.0, 0.03, 0.35], _c36b)
+_s_cold = [_ds7b(0.35, _A7b[0]), _ds7b(1.0, _A7b[1]), _ds7b(2.0, _A7b[2]),
+           _ds7b(0.03, _A7b[3], log_scale=True), _ds7b(0.35, _A7b[4])]
+check("② 冷启动首轮≈不校准（淡入生效）",
+      all(abs(a - b) < 1.2 for a, b in zip(_s_first, _s_cold)), f"{[round(x,1) for x in _s_first]}")
+# ③ 他机（整体偏低）经校准不再贴底，且中心位移被限幅
+_c36c = _nc7()
+for _ in range(3000):
+    _cs7([0.32, 0.60, 2.0, 0.05, 0.35], _c36c)
+_s3, _ = _cs7([0.32, 0.60, 2.0, 0.05, 0.35], _c36c)
+_m_cold36, _sp_cold36 = _ac7(_A7b[1])
+check("② 他机中位由「贴底」升至限幅允许的区间（20~55 分）", 20.0 < _s3[1] < 55.0, f"{_s3[1]:.1f}")
+_c36f = _nc7()
+for _ in range(3000):
+    _cs7([0.32, 0.10, 2.0, 0.05, 0.35], _c36f)
+_s6, _ = _cs7([0.32, 0.10, 2.0, 0.05, 0.35], _c36f)
+_exp36 = _ds7b(_m_cold36 - 0.5 * _sp_cold36, _A7b[1])
+check("② 中心位移限幅：极偏离机器的分数恰为「限幅边界」对应分值",
+      abs(_s6[1] - _exp36) < 3.0, f"{_s6[1]:.1f} vs {_exp36:.1f}")
+# ④ 跨度比限幅
+_c36d = _nc7()
+for _ in range(2000):
+    _cs7([0.32, 0.05 if _r36.random() < 0.5 else 3.0, 2.0, 0.05, 0.35], _c36d)
+_sp_local = max(_c36d["dims"][1][2] - _c36d["dims"][1][0], 1e-9)
+_ratio36 = max(0.70, min(1.40, _sp_cold36 / _sp_local))
+check("② 跨度比限幅落在 [0.70, 1.40]", 0.70 - 1e-9 <= _ratio36 <= 1.40 + 1e-9, f"{_ratio36:.2f}")
+# ⑤ ② 的核心目的：他机失配下词条仍能轮换
+_c36e = _nc7()
+_spec = [0.32, 0.60, 1.2, 0.02, 0.28]
+for _ in range(1500):
+    _cs7([_r36.gauss(a, abs(a) * 0.05) for a in _spec], _c36e)
+_picks36, _prev36, _prevs36 = [], None, None
+for _ in range(60):
+    _raw = [_r36.gauss(a, abs(a) * 0.06) for a in _spec]
+    _sc, _ = _cs7(_raw, _c36e)
+    _e = sum(_sc)
+    if _prev36 is not None and _e != _prev36:
+        _up = _e > _prev36
+        _cand = [j for j in range(5) if (_sc[j] > _prevs36[j]) == _up and _sc[j] != _prevs36[j]]
+        if _cand:
+            _picks36.append(max(_cand, key=lambda k: _sc[k]) if _up
+                            else min(_cand, key=lambda k: _sc[k]))
+    _prev36, _prevs36 = _e, _sc
+check("② 他机失配下词条仍轮换（≥3 个维度被点名）",
+      len(set(_picks36)) >= 3, str(sorted(set(_picks36))))
+# ⑥ 结构校验 + 存储策略（不进配置包 / 恢复默认清除）
+check("② 校准结构校验（好样本通过，版本/维度/负计数被拒）",
+      _cv7(_nc7()) and not _cv7({"v": 2, "dims": [[0, 0, 0]] * 5})
+      and not _cv7({"v": 1, "dims": []})
+      and not _cv7({"v": 1, "dims": [[0, 0, 0]] * 5, "n": -1}))
+_bk_src36 = _src26("core", "backup.py")
+check("② 校准文件不进配置包、但恢复默认显式清除",
+      "_CALIB_NAME" in _bk_src36 and "memwise_eris_calib.json" in _bk_src36
+      and "memwise_eris_calib.json" not in _bk_src36.split("_STATE_NAMES")[1].split(")")[0])
+check("② 引擎接线（独立文件 + 结构校验 + 只读评估不更新校准）",
+      "memwise_eris_calib.json" in _eng32_src and "calib_valid" in _eng32_src
+      and "update=update_state" in _eng32_src)
+# ⑦ 恢复默认功能性验证（临时目录：四状态文件 + 校准文件全清）
+_t36 = tempfile.mkdtemp(prefix="mw_rst36_")
+for _n36 in ("config.yaml", "memwise_state.json", "memwise_efis_state.json",
+             "memwise_eris_ewma.json", "memwise_eris_calib.json"):
+    open(os.path.join(_t36, _n36), "w", encoding="utf-8").write("{}")
+import core.backup as _bk36
+_bk36.reset_factory(backup=False, base=_t36)
+check("② 恢复默认清除四个状态文件 + 校准文件（功能性验证）",
+      not [f for f in os.listdir(_t36) if f.endswith(".json")], str(os.listdir(_t36)))
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

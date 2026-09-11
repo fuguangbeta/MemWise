@@ -521,6 +521,8 @@ class MemWiseEngine:
         # ── ERIS v7 状态（2026-09-11 用户定稿：五维绝对标尺 + N=3 平滑 + Σ÷K）──
         from collections import deque as _dq
         from core.eris import SMOOTH_N as _SN
+        from core.eris import new_calib as _new_calib
+        self._eris_calib = _new_calib()  # ② 自校准状态（独立文件持久化，缺文件=冷启动）
         self._eris_hist = [_dq(maxlen=_SN) for _ in range(5)]   # 每维滚动窗（平滑用）
         self._eris_prev_scores = None    # 上轮五维分（词条同向判定）
         self._eris_prev_eff = None       # 上轮效率（平稳/趋势判定）
@@ -1318,7 +1320,9 @@ class MemWiseEngine:
         # ── 平滑 → 赋分 → 效率 → 词条/趋势 ──
         with self._eris_lock:
             sm = [E.smooth3_append(self._eris_hist[j], raws[j]) for j in range(5)]
-            scores = E.scores_of(sm)
+            # ② 冷启动 + 长周期自校准（只改取数，不改标尺形状；update_state=False 时只读）
+            scores, self._eris_calib = E.calibrate_and_score(sm, self._eris_calib,
+                                                              update=update_state)
             eff = E.efficiency(scores)
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             trend_val = 0
@@ -1367,11 +1371,21 @@ class MemWiseEngine:
                            "prev_scores": getattr(self, "_eris_prev_scores", None),
                            "prev_eff": getattr(self, "_eris_prev_eff", None),
                            "trend": list(getattr(self, "_eris_trend", []))}
-                path = os.path.join(os.path.dirname(self._state_file), "memwise_eris_ewma.json")
+                root = os.path.dirname(self._state_file)
+                path = os.path.join(root, "memwise_eris_ewma.json")
                 tmp = f"{path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(payload, f)
                 os.replace(tmp, path)
+                # ② 校准数据独立成文件（不进配置包、恢复默认单独清除，见记忆 §B5）
+                try:
+                    cpath = os.path.join(root, "memwise_eris_calib.json")
+                    ctmp = f"{cpath}.{os.getpid()}.tmp"
+                    with open(ctmp, "w", encoding="utf-8") as f:
+                        json.dump(getattr(self, "_eris_calib", {}), f)
+                    os.replace(ctmp, cpath)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -1409,3 +1423,16 @@ class MemWiseEngine:
         self._eris_prev_scores = None
         self._eris_prev_eff = None
         self._eris_trend = []
+        # ② 自校准状态（独立文件；缺失/损坏/版本不符 ⇒ 冷启动，恢复默认后即此状态）
+        try:
+            import json as _json, os as _os
+            from core.eris import new_calib as _new_calib, calib_valid as _calib_valid
+            _cpath = _os.path.join(_os.path.dirname(self._state_file), "memwise_eris_calib.json")
+            _cal = None
+            if _os.path.exists(_cpath):
+                with open(_cpath, "r", encoding="utf-8") as _f:
+                    _cal = _json.load(_f)
+            self._eris_calib = _cal if (_cal and _calib_valid(_cal)) else _new_calib()
+        except Exception:
+            from core.eris import new_calib as _new_calib
+            self._eris_calib = _new_calib()
