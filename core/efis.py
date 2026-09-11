@@ -1,6 +1,6 @@
 """
 E.F.I.S. v3 - 全程序智能调优大脑
-因果诊断驱动，9 参数联动，覆盖优化管线全部 5 层
+因果诊断驱动，12 参数联动，覆盖优化管线全部 5 层
 """
 import os, time, json
 from collections import deque

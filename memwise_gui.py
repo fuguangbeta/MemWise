@@ -1,5 +1,5 @@
 """
-MemWise v4.5.032 GUI —— 图形界面
+MemWise v4.5.033 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -438,7 +438,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.5.032", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.5.033", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -462,7 +462,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.5.032")
+        self.root.title("MemWise v4.5.033")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -519,7 +519,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.5.032 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.5.033 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -578,7 +578,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.032")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.033")
                     if fw:
                         top = fw
                 except Exception:
@@ -890,7 +890,7 @@ class MemWiseGUI:
         self.btn_dae = ttk.Button(bf, text=tr("⛨ 守护"), command=self._on_daemon)
         self.btn_dae.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_dae,
-            "开启内存循环优化，约将每分钟整理一轮内存优化结果\n"
+            "开启内存循环优化：每个守护周期结束输出一轮结果（周期默认 60 秒，可在设置中调整）\n"
             "\n"
             "采用阶段性多次轻量压制与周期末全量收割：\n"
             "  · 轻量阶段 — 高频温和，以系统级清理为主\n"
@@ -1213,7 +1213,7 @@ class MemWiseGUI:
             "程序启动后立即自动进入守护模式\n"
             "\n"
             "无需手动点击守护按钮，程序一打开就在后台运行\n"
-            "约每分钟输出一轮优化结果，同时持续自动调整优化策略\n"
+            "每个守护周期输出一轮优化结果（周期可调），同时持续自动调整优化策略\n"
             "配合「开机自启动后最小化到托盘」使用效果更佳")
 
         asm_var = tk.BooleanVar(value=CFG.get("auto_start_minimize", False))

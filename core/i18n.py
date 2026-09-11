@@ -25,7 +25,7 @@ _EN = {
     "游戏模式下游戏进程受完全保护，其余进程将由进程决策优化": "In Game Mode, game processes are fully protected; others follow normal process decisions",
     "同时启动守护模式也会按当前的清理模式执行一次即时优化": "While Guard is running, manual optimization also runs instantly in the current mode",
     "（若还同时处于游戏模式，会无视手动优化操作，避免影响流畅）": "(If Game Mode is also active, the manual request is ignored for smoothness)",
-    "开启内存循环优化，约将每分钟整理一轮内存优化结果": "Start cyclical memory optimization — roughly one round of results per minute",
+    "开启内存循环优化：每个守护周期结束输出一轮结果（周期默认 60 秒，可在设置中调整）": "Start cyclical memory optimization — one result round per daemon cycle (60 s by default, adjustable in Settings)",
     "采用阶段性多次轻量压制与周期末全量收割：": "A staged approach: repeated gentle suppression, plus a full harvest at cycle end:",
     "  · 轻量阶段 — 高频温和，以系统级清理为主": "  · Gentle phase — frequent, mild, mostly system-level cleanup",
     "  · 收割阶段 — 按选择的清理模式进行进程内存的释放": "  · Harvest phase — releases process memory per the selected mode",
@@ -94,7 +94,7 @@ _EN = {
     "以最高权限启动后受限的功能可完整执行": "With full privileges, restricted operations run completely",
     "⚠ 需先以管理员身份运行过一次本程序才能启用": "⚠ Requires having run this app as admin at least once",
     "无需手动点击守护按钮，程序一打开就在后台运行": "No need to click Guard — it runs in the background as soon as the app opens",
-    "约每分钟输出一轮优化结果，同时持续自动调整优化策略": "Roughly one optimization round per minute, with strategy kept adapting",
+    "每个守护周期输出一轮优化结果（周期可调），同时持续自动调整优化策略": "One optimization round per daemon cycle (adjustable), with strategy kept adapting",
     "配合「开机自启动后最小化到托盘」使用效果更佳": "Pairs best with “Minimize to Tray on auto-start”",
     "双击托盘图标恢复窗口，右键弹出菜单": "Double-click the tray icon to restore the window; right-click for the menu",
     "  · 最小化到托盘 — 隐藏到托盘继续守护": "  · Minimize to tray — keep guarding in the background",
@@ -403,7 +403,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.5.032 启动· ": "MemWise v4.5.032 started · ",
+    "MemWise v4.5.033 启动· ": "MemWise v4.5.033 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -694,7 +694,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.5.032 PARES —— 智能内存看护": "MemWise v4.5.032 PARES — Intelligent Memory Custodian",
+    "MemWise v4.5.033 PARES —— 智能内存看护": "MemWise v4.5.033 PARES — Intelligent Memory Custodian",
 }
 
 
