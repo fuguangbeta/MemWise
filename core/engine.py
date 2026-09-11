@@ -334,7 +334,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.5.036 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.5.037 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -1363,15 +1363,16 @@ class MemWiseEngine:
             self._eff_factors.append(result.get("factors", ["冷启动"]))
             # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
             try:
-                _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 校准 n=%s" % (
-                    result.get("total", 0.0),
-                    " ".join(result.get("factors", [])[:2]),
-                    " ".join("%.0f" % x for x in result.get("scores", [])),
-                    " ".join(("-" if x is None else "%.4g" % x) for x in result.get("raws", [])),
-                    self._cycle_trimmed, self._cycle_failed,
-                    (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
-                    getattr(self, "_cycle_pf", 0),
-                    getattr(self, "_eris_calib", {}).get("n", "?")))
+                    _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 校准 n=%s · 模式 %s" % (
+                        result.get("total", 0.0),
+                        " ".join(result.get("factors", [])[:2]),
+                        " ".join("%.0f" % x for x in result.get("scores", [])),
+                        " ".join(("-" if x is None else "%.4g" % x) for x in result.get("raws", [])),
+                        self._cycle_trimmed, self._cycle_failed,
+                        (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
+                        getattr(self, "_cycle_pf", 0),
+                        getattr(self._eris_calib.get("modes", {}).get(_mode or "normal", {}), "n", "?"),
+                        _mode))
             except Exception:
                 pass
         except Exception:
@@ -1386,6 +1387,7 @@ class MemWiseEngine:
         词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
         |Δ效率| < 2 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；不设防振荡硬规则。"""
         from core import eris as E
+        _mode = CFG.get("clean_mode", "normal")   # 按清理模式分套锚点/K/校准（2026-09-11）
         if not data:
             return {"total": 0.0, "factors": ["冷启动"]}
         # ── ① 预测精准：1 − Kalman 预测的中位相对误差 ──
@@ -1420,8 +1422,9 @@ class MemWiseEngine:
             sm = [(None if _nodata[j] else E.smooth3_append(self._eris_hist[j], raws[j]))
                   for j in range(5)]
             scores, self._eris_calib = E.calibrate_and_score(sm, self._eris_calib,
-                                                              update=update_state, skip=_nodata)
-            eff = E.efficiency(scores)
+                                                              update=update_state, skip=_nodata,
+                                                              mode=_mode)
+            eff = E.efficiency(scores, mode=_mode)
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             trend_val = 0
             if prev_eff is None or len(data) <= 3:

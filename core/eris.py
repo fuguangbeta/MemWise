@@ -40,17 +40,37 @@ DIM_WORDS = [
 # ── 冻结锚点（每维 [p10, p50, p90, p99] 原始值 → 20/50/80/110 分）──
 # 来源：2026-09-11 标定（受控长跑 45 轮 N=3 平滑序列；维度 5 用历史日志 1344 轮）
 # 顺序：0 预测精准 / 1 释放彻底(释放÷惯常释放) / 2 清理畅通(成功率比) / 3 副作用(释放MB÷PF，对数维) / 4 试探高效
-DIM_ANCHORS = [
-    [0.319025, 0.341208, 0.349051, 0.352497],
-    [0.858544, 0.990660, 1.036130, 1.101300],
-    [1.176470, 2.000000, 2.750000, 3.500000],
-    [0.0178382, 0.0298446, 0.0887109, 0.3430170],
-    [0.281690, 0.356083, 0.409556, 0.453988],
+NORMAL = [
+    [0.319025, 0.341208, 0.349051, 0.352497],   # 0 预测精准
+    [0.858544, 0.990660, 1.036130, 1.101300],   # 1 释放彻底
+    [1.176470, 2.000000, 2.750000, 3.500000],   # 2 清理畅通
+    [0.0178382, 0.0298446, 0.0887109, 0.3430170],  # 3 副作用（对数维）
+    [0.281690, 0.356083, 0.409556, 0.453988],   # 4 试探高效
 ]
+FULL = [
+    [0.2746, 0.2937, 0.3005, 0.3034],      # 0 预测精准（full：预测基于常态样本，误差更大）
+    [0.6701, 0.7732, 0.8087, 0.8596],      # 1 释放彻底
+    [32.12, 54.60, 75.08, 95.55],          # 2 清理畅通（full 成功远多于失败 ⇒ 比值量级完全不同）
+    [0.03036, 0.05079, 0.1510, 0.5838],    # 3 副作用（对数维）
+    [0.3955, 0.5000, 0.5751, 0.6375],      # 4 试探高效（full 模式样本少，后续由自校准细化）
+]
+# 按清理模式分别标定（2026-09-11 用户定稿）：模式间同一维度的量级差异极大（如"清理畅通"在
+# full 下是 normal 的 10~20 倍），共用一套必然被顶到分数上限 ⇒ 按模式分套；deep/quick 样本
+# 不足，先以 normal 起步，由**按模式分桶的自校准**在使用中细化。
+DIM_ANCHORS_BY_MODE = {
+    "normal": NORMAL,
+    "deep": [list(a) for a in NORMAL],
+    "quick": [list(a) for a in NORMAL],
+    "full": FULL,
+}
+EFF_K_BY_MODE = {"normal": 290.1, "deep": 290.1, "quick": 290.1, "full": 341.0}
+DIM_ANCHORS = DIM_ANCHORS_BY_MODE["normal"]      # 兼容别名（normal 模式）
+EFF_K = EFF_K_BY_MODE["normal"]
+
+
 # 副作用维长尾（p99/p50 ≈ 65 倍）：进入映射前先取对数
 LOG_DIMS = (3,)
 
-EFF_K = 290.1         # 总分分布 p90（2026-09-11 实测：该点恰为 100%）
 # 极性阈值：超常 = 效率分布 p90（= K 定义处，约一成轮次）；异常固定 50%（用户定稿：
 # 不要求必有一成预警，只要 0~50% 理论可达）
 SUPER_TH = 100.0
@@ -64,6 +84,16 @@ CALIB_SPREAD_N = 200               # 跨度校正淡入轮数：暖机期只用�
 CALIB_BLEND_N = 100                # 淡入轮数（前 N 轮线性生效）
 CALIB_SHIFT_MAX = 0.5              # 中心位移限幅（相对冷启动 p10-p90 跨度）
 CALIB_SCALE_RANGE = (0.70, 1.40)   # 跨度比限幅（双向）
+
+
+def anchors_for(mode=None):
+    """该清理模式的锚点（未知模式回退 normal）"""
+    return DIM_ANCHORS_BY_MODE.get(mode or "normal", DIM_ANCHORS_BY_MODE["normal"])
+
+
+def k_for(mode=None):
+    """该清理模式的联合理想总分（100% 对应处）"""
+    return EFF_K_BY_MODE.get(mode or "normal", EFF_K_BY_MODE["normal"])
 
 
 def _u(x, log_scale=False):
@@ -120,15 +150,15 @@ def anchors_center_span(anchors, log_scale=False):
     return au[1], max(au[2] - au[0], 1e-9)
 
 
-def scores_of(raws, anchors=None, log_dims=LOG_DIMS):
+def scores_of(raws, anchors=None, log_dims=LOG_DIMS, mode=None):
     """五维原始值 → 五维分数（冷启动口径，不做自校准）"""
-    A = anchors or DIM_ANCHORS
+    A = anchors or anchors_for(mode)
     return [dim_score(raws[j], A[j], log_scale=(j in log_dims)) for j in range(len(A))]
 
 
-def efficiency(scores, K=None):
-    """总分 → 效率百分比（100% = 联合理想 K 分）"""
-    k = float(K or EFF_K)
+def efficiency(scores, K=None, mode=None):
+    """总分 → 效率百分比（100% = 该模式的联合理想总分）"""
+    k = float(K or k_for(mode))
     return (sum(scores) / k * 100.0) if k > 0 else 0.0
 
 
@@ -159,27 +189,56 @@ def new_state():
 # ══════════════════════════════════════════════════════════════════════
 
 def new_calib():
-    """校准状态容器（可持久化；文件缺失即冷启动）"""
-    return {"v": 1, "n": 0, "init": False, "dims": [[0.0, 0.0, 0.0] for _ in DIM_ANCHORS]}
+    """校准状态容器（v2：按模式分桶；文件缺失即冷启动）"""
+    return {"v": 2, "modes": {}}
+
+
+def _bucket(calib, mode):
+    """取该模式的校准桶（v1 旧结构自动迁入 normal 桶）"""
+    if calib.get("v") != 2:
+        old = {"n": int(calib.get("n", 0)), "init": bool(calib.get("init")),
+               "dims": calib.get("dims") if isinstance(calib.get("dims"), list)
+               else [[0.0, 0.0, 0.0] for _ in DIM_ANCHORS]}
+        calib.clear()
+        calib.update({"v": 2, "modes": {"normal": old}})
+    return calib.setdefault("modes", {}).setdefault(
+        mode, {"n": 0, "init": False, "dims": [[0.0, 0.0, 0.0] for _ in DIM_ANCHORS]})
 
 
 def calib_valid(calib):
     """校验持久化结构（版本/维度数/每维三分位/数值合法性）"""
     try:
-        if not isinstance(calib, dict) or calib.get("v") != 1:
+        if not isinstance(calib, dict):
             return False
-        dims = calib.get("dims")
-        if not isinstance(dims, list) or len(dims) != len(DIM_ANCHORS):
-            return False
-        for one in dims:
-            if not isinstance(one, list) or len(one) != 3:
+        if calib.get("v") == 1:                     # 旧结构（单桶）兼容
+            dims = calib.get("dims")
+            if not isinstance(dims, list) or len(dims) != len(DIM_ANCHORS):
                 return False
-            for v in one:
-                if not isinstance(v, (int, float)) or not math.isfinite(v):
-                    return False
-        n = calib.get("n", 0)
-        if not isinstance(n, int) or n < 0:
+            n = calib.get("n", 0)
+            if not isinstance(n, int) or n < 0:
+                return False
+            return all(isinstance(o, list) and len(o) == 3 and
+                       all(isinstance(v, (int, float)) and math.isfinite(v) for v in o) for o in dims)
+        if calib.get("v") != 2:
             return False
+        modes = calib.get("modes")
+        if not isinstance(modes, dict):
+            return False
+        for one in modes.values():
+            if not isinstance(one, dict):
+                return False
+            dims = one.get("dims")
+            if not isinstance(dims, list) or len(dims) != len(DIM_ANCHORS):
+                return False
+            for o in dims:
+                if not isinstance(o, list) or len(o) != 3:
+                    return False
+                for v in o:
+                    if not isinstance(v, (int, float)) or not math.isfinite(v):
+                        return False
+            n = one.get("n", 0)
+            if not isinstance(n, int) or n < 0:
+                return False
         return True
     except Exception:
         return False
@@ -196,7 +255,8 @@ def _q_step(est, u, alpha, q):
     return est + (up if u > est else dn) * (u - est)
 
 
-def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=None, skip=None):
+def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=None,
+                        skip=None, mode=None):
     """② 冷启动 + 长周期自校准：返回 (五维分数, 校准状态)。
 
     · 每维维护 q10/q50/q90 分位估计，**暖机期用较大步长、之后转慢**（两段速率：
@@ -209,13 +269,16 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
       不会出现"跨度被低估 ⇒ 校正比放大 ⇒ 曲线被自抬"的暂态偏差
     · 不改变标尺形状（锚点仍是 DIM_ANCHORS）；删除校准数据即回到冷启动
     """
-    dims = calib.get("dims")
+    # 按模式分桶（2026-09-11）：各模式的分布不同 ⇒ 校准数据必须分模式存储，互不污染
+    _m = mode or "normal"
+    bucket = _bucket(calib, _m)
+    dims = bucket.get("dims")
     if not isinstance(dims, list) or len(dims) != len(DIM_ANCHORS):
         dims = [[0.0, 0.0, 0.0] for _ in DIM_ANCHORS]
-        calib["dims"] = dims
-    init = bool(calib.get("init"))
+        bucket["dims"] = dims
+    init = bool(bucket.get("init"))
     a_now = CALIB_ALPHA if alpha is None else alpha
-    if int(calib.get("n", 0)) < CALIB_FAST_N:
+    if int(bucket.get("n", 0)) < CALIB_FAST_N:
         a_now = max(a_now, CALIB_ALPHA_FAST)
     n_dim = min(len(raws), len(DIM_ANCHORS))
     for j in range(n_dim):
@@ -228,16 +291,16 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
         if not init:
             # 用冷启动锚点播种（而非首个观测）：暖机期校正恒等 ⇒ 不会出现"跨度被低估 ⇒
             # 校正比放大 ⇒ 曲线被自抬"的暂态偏差（2026-09-11 对照实测发现并修正）
-            au = [_u(a, j in LOG_DIMS) for a in DIM_ANCHORS[j]]
+            au = [_u(a, j in LOG_DIMS) for a in anchors_for(_m)[j]]
             st[0], st[1], st[2] = au[0], au[1], au[2]
         elif update:
             st[0] = _q_step(st[0], u, a_now, 0.10)
             st[1] = _q_step(st[1], u, a_now, 0.50)
             st[2] = _q_step(st[2], u, a_now, 0.90)
     if update:
-        calib["init"] = True
-        calib["n"] = int(calib.get("n", 0)) + 1
-    w = min(1.0, int(calib.get("n", 0)) / float(blend_n)) if blend_n else 1.0
+        bucket["init"] = True
+        bucket["n"] = int(bucket.get("n", 0)) + 1
+    w = min(1.0, int(bucket.get("n", 0)) / float(blend_n)) if blend_n else 1.0
     scores = []
     for j in range(len(DIM_ANCHORS)):
         if (skip and skip[j]) or j >= n_dim or raws[j] is None:
@@ -246,7 +309,7 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
         log_j = j in LOG_DIMS
         u = _u(raws[j], log_j)
         st = dims[j]
-        m_cold, span_cold = anchors_center_span(DIM_ANCHORS[j], log_j)
+        m_cold, span_cold = anchors_center_span(anchors_for(_m)[j], log_j)
         lim = CALIB_SHIFT_MAX * span_cold
         shift = max(-lim, min(lim, st[1] - m_cold))
         lo, hi = CALIB_SCALE_RANGE
@@ -257,5 +320,5 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
         ratio = 1.0 + (ratio - 1.0) * w_sp
         u_cal = m_cold + shift + (u - st[1]) * ratio
         u_use = u if w <= 0.0 else (1.0 - w) * u + w * u_cal
-        scores.append(_score_u(u_use, [_u(a, log_j) for a in DIM_ANCHORS[j]]))
+        scores.append(_score_u(u_use, [_u(a, log_j) for a in anchors_for(_m)[j]]))
     return scores, calib

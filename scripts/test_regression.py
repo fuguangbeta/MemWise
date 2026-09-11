@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.5.036 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.5.037 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1897,10 +1897,10 @@ _r36.seed(11)
 _c36 = _nc7()
 for _ in range(6000):
     _cs7([_r36.gauss(100, 10), _r36.gauss(1.0, 0.2), 2.0, 0.05, 0.35], _c36)
-_q10, _q50, _q90 = _c36["dims"][0]
+_q10, _q50, _q90 = _c36["modes"]["normal"]["dims"][0]
 check("② 分位估计收敛（q50 贴近真中位，q10<q50<q90）",
       abs(_q50 - 100) < 1.5 and _q10 < _q50 < _q90, f"{_q10:.1f}/{_q50:.1f}/{_q90:.1f}")
-check("② 计数与初始化标记", _c36["n"] == 6000 and _c36["init"] is True)
+check("② 计数与初始化标记", _c36["modes"]["normal"]["n"] == 6000 and _c36["modes"]["normal"]["init"] is True)
 # ② 冷启动首轮 ≈ 不校准（淡入自 1/100 起步）
 _c36b = _nc7()
 _s_first, _ = _cs7([0.35, 1.0, 2.0, 0.03, 0.35], _c36b)
@@ -1926,7 +1926,7 @@ check("② 中心位移限幅：极偏离机器的分数恰为「限幅边界」
 _c36d = _nc7()
 for _ in range(2000):
     _cs7([0.32, 0.05 if _r36.random() < 0.5 else 3.0, 2.0, 0.05, 0.35], _c36d)
-_sp_local = max(_c36d["dims"][1][2] - _c36d["dims"][1][0], 1e-9)
+_sp_local = max(_c36d["modes"]["normal"]["dims"][1][2] - _c36d["modes"]["normal"]["dims"][1][0], 1e-9)
 _ratio36 = max(0.70, min(1.40, _sp_cold36 / _sp_local))
 check("② 跨度比限幅落在 [0.70, 1.40]", 0.70 - 1e-9 <= _ratio36 <= 1.40 + 1e-9, f"{_ratio36:.2f}")
 # ⑤ ② 的核心目的：他机失配下词条仍能轮换
