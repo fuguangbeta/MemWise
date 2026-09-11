@@ -63,7 +63,7 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 7. 发布前 `git status` 检查 untracked（防隐私文件误提交）
 
 ## 更新日志规范（详见 doc-style-guide.md）
-标题 `## vX.X (年·月)` + `>` 概要；小节 `###` 先 `>` 叙述段（可稍详细）再条列；条目动词四式（修复了/新增了/优化了/移除了），**只说解决了什么问题，禁源码细节/函数名/API**；增量口径不保留旧版本；**已发布版本后不追加维护项——积累到 pending-release-notes 记忆，下次发布新版本时全面编写**；release body 与 CHANGELOG 逐字一致。
+标题 `## vX.X (年·月)` + `>` 概要；小节 `###` 先 `>` 叙述段（可稍详细）再条列；条目动词四式（修复了/新增了/优化了/移除了），**只说解决了什么问题，禁源码细节/函数名/API**；增量口径不保留旧版本（**写新版章节时必须同步删除旧版文字说明**——发布脚本取 `CHANGELOG[idx:]` 到文件末尾作 release body，留旧章节会连带发出去）；**已发布版本后不追加维护项——积累到 pending-release-notes 记忆，下次发布新版本时全面编写**；release body 与 CHANGELOG 逐字一致。
 
 ## 全局适配（8 面，详见 doc-style-guide.md）
 一次功能改动后同步：实现 / 文案（tooltip 八规则：纯中文零英文三段式，功能按键名加「」）/ CLI / 配置 / 文档（README 双语）/ 测试 / 版本（15 处同步面）/ 记忆（写法见 memory-writing-rules.md）。
