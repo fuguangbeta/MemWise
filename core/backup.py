@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "4.5.033"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "4.5.035"  # 版本同步面之一（manifest 记录用）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
                 "memwise_efis_state.json", "memwise_eris_ewma.json")
