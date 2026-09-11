@@ -6,7 +6,7 @@ Layer 3: 深度聚合 (高压力时重复执行)
 """
 import time, concurrent.futures, threading, os, functools
 from . import winapi
-from .learner import _is_system_core
+from .learner import _is_system_core, _is_self_process, _is_self_path
 
 # ── 游戏进程名单（2026-08-11：默认不再内置，由用户自行配置——内置通用进程名
 # （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
@@ -29,7 +29,7 @@ class PareCleaner:
         self._low_pri_pids = set()
         self._mem_pri_set = set()  # 已设 MemoryPriority 的 PID（Nt 42 一次性特性：防重复无效调用）
         self._pri_refresh_counter = 0
-        self._fast_track = set()  # 高回填率 PID，gap-fill 期间快速重清
+        self._fast_track = {}  # {pid: create} 高回填率进程，gap-fill 期间快速重清（create 供身份复检）
         self._last_standby_time = 0
         self._lock = threading.Lock()
         self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
@@ -58,9 +58,11 @@ class PareCleaner:
             self.stats[key] = self.stats.get(key, 0) + amount
 
     def pop_game_msgs(self):
-        """实时提取游戏检测/退出消息（其余消息留给 pop_info 批量处理）"""
+        """实时提取游戏检测/退出消息（其余消息留给 pop_info 批量处理）。
+        就地切片赋值而非重新绑定（2026-09-11 审查 F30）：trim 池线程可能正 append 到旧列表
+        对象，重新绑定会让那条消息永久丢失。"""
         game_msgs = [m for m in self._info_msgs if "🎮" in m]
-        self._info_msgs = [m for m in self._info_msgs if "🎮" not in m]
+        self._info_msgs[:] = [m for m in self._info_msgs if "🎮" not in m]
         return game_msgs
 
     def __del__(self):
@@ -96,12 +98,26 @@ class PareCleaner:
             self._stats_inc("standby", 2)  # 多轮，计数加2
         return ok
 
-    def quick_retrim(self, pid):
+    def quick_retrim(self, pid, create=None):
         """Fast trim for gap-fill; tracks release into freed_bytes.
-        执行前复检（与 _trim_process 同款）：gap 期间用户可能切到该进程——低压前台拦截"""
+        执行前复检（与 _trim_process 同款）：gap 期间用户可能切到该进程——低压前台拦截。
+        身份与名单复检（2026-09-11 审查 F12）：PID 会被复用 ⇒ 创建时间不符即放弃，防止清到
+        一个从未被决策过的进程；同时按可执行路径复核系统核心/用户黑名单/本程序自身
+        （该路径原先只检查游戏 PID 集，其余保护名单全部缺失）。"""
         try:
             if self.judger.aggressiveness < 0.35 and winapi.get_foreground_pid() == pid:
                 return 0
+            path = winapi.get_process_path(pid)
+            if create:
+                t = winapi.get_process_times(pid)
+                if not t or not t.get("create") or t["create"] != create:
+                    return 0
+            if path:
+                if _is_self_path(path):
+                    return 0
+                _nl = path.rsplit("\\", 1)[-1].lower()
+                if _is_system_core(_nl) or _nl in self.judger.cfg.get("never", []):
+                    return 0
         except Exception:
             pass
         mem_pre = winapi.get_process_memory(pid)
@@ -309,9 +325,12 @@ class PareCleaner:
                     break
                 prev_ws_ck = m_ck["ws"]
 
-        # 等待 PF 反馈测量（按实际执行轮数）
+        # 等待 PF 反馈测量：等待时长按【实际执行轮数】等比（2026-09-11 审查 F33 实测修正）——
+        # 原先按"用户设定上限"计算，使空闲进程在 4/5/6 档时纯粹多等（实测 3 进程：2 档 3.4 s
+        # vs 6 档 6.4 s，释放量完全相同 782.4 MB，多出的 ~3 s 全是未执行轮次的等待）；
+        # 档位是用户意图的上限，程序在进程无更多可释放时自动提前结束 ⇒ 不再为未跑的轮次付费。
         elapsed = t_wait * max(0, rounds_done - 1)
-        time.sleep(max(0.5, total_wait - elapsed))
+        time.sleep(max(0.5, total_wait * (rounds_done / max(passes, 1)) - elapsed))
         mem = winapi.get_process_memory(pid)
         if mem is None:
             with self._lock:
@@ -331,8 +350,13 @@ class PareCleaner:
             if freed > 0:
                 self.stats["freed_bytes"] += freed
             learner.record_clean_result(name, ok, freed, pf_delta, self._efis_lr())
-            if ok:
+            # 清后基线与学习判定解耦（2026-09-11 审查 F47）：活跃回填进程会因 PF 判据恒判失败，
+            # 若基线只在成功时记录，这类进程将永远没有清后基线、Layer3 阶段 D 只能走 θ 门槛
+            # （而 θ 又已被负向信号压低）⇒ 清理能力被系统性削弱。确有释放（或判定成功）即记基线；
+            # 统计计数（ws_trim/deepen）仍只认成功，语义不变。
+            if ws_after > 0 and (ok or freed > 0):
                 self.judger.mark_trimmed(name, freed, ws_before, pf_delta, ws_after)
+            if ok:
                 self.stats["ws_trim"] += 1
                 if passes >= 2:
                     self.stats["deepen_cnt"] += 1
@@ -539,8 +563,8 @@ class PareCleaner:
 
         SELF_PID = os.getpid()
         for s in snaps:
-            # 排除自身进程
-            if s.pid == SELF_PID:
+            # 排除本程序自身（含看门狗子进程/多实例——按可执行路径精确匹配，2026-09-11 审查 F48）
+            if s.pid == SELF_PID or _is_self_process(s):
                 continue
             # Trim 优先：能整理的不需要试探
             ok, reason = self.judger.can_trim(s)
@@ -588,7 +612,7 @@ class PareCleaner:
                 else:
                     continue
             name = s.name.lower()
-            if _is_system_core(name) or name in self.judger.cfg.get("never", []):
+            if _is_system_core(name) or name in self.judger.cfg.get("never", []) or _is_self_process(s):
                 continue
             # 游戏名单进程跳过 EcoQoS 降级：Nt PowerThrottling 实测每进程一经设置即不可撤销
             # （二次设置恒 ALREADY_COMPLETE）——游戏运行时需保持默认节能状态，从源头避免被降级
@@ -682,14 +706,15 @@ class PareCleaner:
         # Fast-track: high-refill PIDs for gap-fill re-trim
         # 梯度（2026-08-14）：normal >500KB/s；deep >350KB/s（深度模式回填压制更积极）；
         # full >200KB/s 或大 WS≥300MB——极限模式高频重清回填进程，抑制"压缩后回弹"
-        self._fast_track = set()
+        self._fast_track = {}   # {pid: create}（2026-09-11 审查 F12：记录创建时间供重清前身份复检）
         _ft_g = getattr(self.judger, "_mode_guard", "normal")
         _ft_thr = (350 << 10) if _ft_g == "deep" else ((200 << 10) if _ft_g == "full" else (500 << 10))
         for s in candidates:
             p = learner.get_profile(s.name)
             if p and (getattr(p, 'refill_ewma', 0) > _ft_thr or
                       (_ft_g == "full" and s.ws >= (300 << 20))):
-                self._fast_track.add(s.pid)
+                # 记录创建时间（2026-09-11 审查 F12）：重清前用它做身份复检，防 PID 复用误清
+                self._fast_track[s.pid] = getattr(s, "create", None)
         candidates.sort(key=lambda s: -self._composite_score_v2(s, learner) - getattr(s, '_growth_bonus', 0))
         results = []
         if candidates:
@@ -750,25 +775,34 @@ class PareCleaner:
             if pre and post:
                 freed_l3 += max(0, post["avail"] - pre["avail"])
             return True
-        # 预处理：使用简化的 deep_compress（无 sleep 管线）；游戏模式跳过——
-        # deep_compress 内部 flush_modified(3)+purge_standby(4)，与阶段 C 一样会打断游戏读盘
+        # 预处理（游戏模式跳过：flush/purge 会打断游戏读盘）
+        # 开关语义（2026-09-11 审查 F2）：融合函数 deep_compress / empty_standby_deep 会把多个内核
+        # 操作一并执行，使"只勾 modified"也清待机列表、"只勾 standby"也写回脏页 —— 开关契约被穿透。
+        # 现按 ops_filter 逐项调用（底层单一入口均已存在），仅在内部全量调用（None）时保留融合快路径。
         if not self.game_mode:
-            # 深度预处理由 modified/standby 开关共同控制（取消两者则不执行）
-            if ops_filter is None or "modified" in ops_filter or "standby" in ops_filter:
+            if ops_filter is None:
                 _capture(winapi.deep_compress)
-            if ops_filter is None or "modified" in ops_filter:
                 _capture(self.clean_modified_pages)
+            else:
+                if "modified" in ops_filter:
+                    _capture(self.clean_modified_pages)
+                if "standby" in ops_filter:
+                    _capture(winapi.empty_standby)
         # 内核操作已同步完成，无需等待
 
         # 阶段 C: 收前（游戏模式跳过——standby/压缩/文件缓存会打断游戏读盘）
         if not self.game_mode:
-            if ops_filter is None or "standby" in ops_filter:
-                # 单次深度清空（低优先+全量+脏页写回一次完成），替代重复的四次调用
+            if ops_filter is None:
+                # 单次深度清空（低优先+全量+脏页写回一次完成），保留内部全量快路径
                 _capture(self.clean_deep_standby)
+            elif "standby" in ops_filter:
+                # 低优先回收（阶段 C 特有部分）；全量回收已在预处理按同一开关执行过一次
+                # ——不再重复调用（原融合函数 deep_compress + empty_standby_deep 会把同一操作
+                # 执行 2-3 次，见 2026-09-11 审查 F2/S3 说明）
+                _capture(winapi.purge_low_priority_standby)
             if ops_filter is None or "volume" in ops_filter:
                 _capture(self._flush_volume_cache)
             if ops_filter is None or "filecache" in ops_filter:
-                # 有效实现统一（MAXSIZE 版 clear_system_file_cache 从未生效，见 Layer1 注释）
                 _capture(winapi.clear_system_file_cache_ex, "filecache")
         if freed_l3 > 0:
             self._stats_inc("freed_bytes", freed_l3)
@@ -788,8 +822,8 @@ class PareCleaner:
         never = self.judger.cfg.get("never", []) or []
         d_candidates = []
         for s in snaps:
-            if s.pid == os.getpid():
-                continue  # 自身进程不清理（与 Layer2 同规则）
+            if s.pid == os.getpid() or _is_self_process(s):
+                continue  # 本程序自身（含看门狗/多实例）不清理（与 Layer2 同规则，2026-09-11 F48）
             if s.pid in layer2_pids:
                 continue  # Already trimmed in Layer2, skip
             if self.game_mode and s.pid in getattr(self.judger, '_game_pid_set', set()):
@@ -838,18 +872,20 @@ class PareCleaner:
 
     def optimize(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None, allow_layer3=True):
         """
-        统一优化入口 — 已激活 8 步内核快速管线
+        统一优化入口 —— 四模式行为矩阵与参数契约（2026-09-11 审查 F40 重写为与实现一致）
 
-        mode: quick|normal|deep|full
-            quick  = layer1（轻量 3 步 ∩ 用户勾选），零进程清理
-            normal = layer1(按勾选映射，无系统级全清) + layer2(full) + layer3(if agg>=EFIS gate)
-            deep   = layer1(含 ws_all，使用率<33% 门控豁免) + layer2 + layer3(恒)
-            full   = layer1(含 ws_all 无条件) + layer2 + layer3 + 回弹二轮
+        mode 行为（各层按 operations 逐项授权执行；安全门全模式生效）：
+            quick  = 仅系统级轻量三项（待机缓存/脏页写回/注册表缓存 ∩ 勾选），零进程清理
+            normal = 系统级（按勾选映射，无系统级全清）+ 进程清理 + 深度聚合（agg ≥ EFIS 门控）
+            deep   = 同上 + 系统级全清 WS（使用率 ≥ DEEP_WSALL_PCT_GATE 时）+ 深度聚合恒触发
+            full   = 同上 + 无条件全清 WS + agg 强制 ≥0.8 + 进程回弹二轮
 
-        operations: 可选列表，限制允许的清理操作，如 ["ws","standby","modified","filecache"]
-        aggressiveness: 可选，预计算的 aggressiveness 值（daemon 模式避免 PID 双重更新）
-        allow_layer3: 高频路径（gap-fill）传 False，Layer3 深度操作只在 harvest 执行
-        注: standby 开关同时覆盖低优先与全量两级待机页回收
+        operations: 用户清理操作集合（clean_operations 白名单键）
+            None = 内部全量调用（保留融合快路径，供内部/测试使用）
+            []   = 用户全部取消勾选 ⇒ 不执行任何系统操作、不做进程清理（勾选即授权）
+        aggressiveness: 预计算的 PID 攻性（daemon 传入避免 PID 双重更新）
+        allow_layer3: 高频路径（gap-fill）传 False —— 深度操作只在 harvest 执行
+        注: standby 开关同时覆盖低优先与全量两级待机页回收（与 _layer1_ops 映射同口径）
         """
         # 整轮互斥（RLock 可重入）：手动优化（_opt_worker 持锁期间设 _manual_run）与守护周期
         # 串行执行——守护的 optimize 等待手动完成，杜绝 _manual_run 被守护轮误读/双份 trim 叠加
@@ -866,8 +902,15 @@ class PareCleaner:
             agg = self.judger.update_pressure(mem["pct"]) if mem else 0.5
         else:
             agg = aggressiveness
-        ops_filter = set(operations) if operations else None
+        # 开关语义（2026-09-11 审查 F1）：None = 内部调用（全量）；[] = 用户全部取消勾选（什么都不做）。
+        # 旧实现用真值判断，使"全部取消"被折叠成"全量 8 项 + 进程清理照跑"——语义完全反转。
+        ops_filter = set(operations) if operations is not None else None
         run_ws = ops_filter is None or "ws" in ops_filter
+        # 每轮入口状态归零（2026-09-11 审查 F11）：未走 _layer2_process 的模式（ws 未勾选 / quick）
+        # 会让 _fast_track 与 _last_layer2_results 保留上一轮数据 ⇒ gap 重清陈旧 PID、
+        # Layer3 误过滤本轮该清的进程。
+        self._fast_track = {}
+        self._last_layer2_results = []
         # 管线上下文：层间传递执行状态（局部变量；self._pipeline_ctx 只写不读已删，2026-08-30）
         pipeline_ctx = {"layer1_done": False, "layer2_trimmed": set()}
         # Helper to build result with net_freed tracking
@@ -945,7 +988,7 @@ class PareCleaner:
                 game_pids = getattr(self.judger, '_game_pid_set', set()) if self.game_mode else set()
                 _agg = agg  # 局部 agg（daemon 传参模式下 judger.aggressiveness 是上一轮旧值）
                 for s in snaps:
-                    if s.pid == os.getpid() or s.pid in game_pids:
+                    if s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
                         continue
                     name_l = s.name.lower()
                     if _is_system_core(name_l) or name_l in never or s.pid in never:

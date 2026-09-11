@@ -9,13 +9,20 @@ import os, sys, time, threading, math, queue, concurrent.futures, datetime, atex
 from collections import deque
 
 # ── 数据/资源路径（与原 GUI 同规则：exe 旁；dist 目录特判上移）──
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
+# 进程级副作用（DPI 感知 + 目录预建）改为显式调用 init_runtime()（2026-09-11 审查 F38）：
+# 原先在 import 时执行 ⇒ 任何 `import core.engine`（例如 CLI 只想取守护互斥名/常量）都会
+# 设置进程 DPI 并创建目录，使"库导入"变成有副作用的初始化。现在由入口显式触发。
+def init_runtime():
+    """进程级初始化：DPI 感知 + 数据/配置目录预建 + 旧根目录数据一次性迁移。
+    必须在任何状态文件读写之前调用（GUI __init__ 首行 / CLI main 首段）；幂等。"""
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    _migrate_runtime_data()
 
 if getattr(sys, "frozen", False):
     exe_dir = os.path.dirname(sys.executable)
@@ -50,8 +57,8 @@ def _migrate_runtime_data():
         os.makedirs(os.path.join(base, "data"), exist_ok=True)
         os.makedirs(os.path.join(base, "config"), exist_ok=True)
         # 配置包目录（2026-09-06 任务3）：导出/自动备份/待导入三合一，启动即预建
+        # （曾另建空壳 data/import/——全仓零消费方，导入只扫 import_export，2026-09-10 移除）
         os.makedirs(os.path.join(base, "data", "import_export"), exist_ok=True)
-        os.makedirs(os.path.join(base, "data", "import"), exist_ok=True)
         for name in ("memwise_state.json", "memwise_efis_state.json", "memwise_eris_ewma.json",
                      "watchdog.json", "memwise.log", "memwise.log.1"):
             src = os.path.join(base, name)
@@ -60,9 +67,6 @@ def _migrate_runtime_data():
                 os.replace(src, dst)
     except Exception:
         pass
-
-
-_migrate_runtime_data()
 
 
 if "--watchdog" in sys.argv:
@@ -226,6 +230,10 @@ _ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
 # 常驻崩溃现场 fd（_install_crash_sink 接管；None=未安装，统一日志兜底 faulthandler）
 _CRASH_FD = None
 
+# atexit 一次性注册标志（2026-09-11 审查 F27）：日志开关反复"关→开"时原先每次都注册一个
+# 退出钩子（实测 1→2→3→4 累积）；同一幂等函数多注册无功能害处但属无界累积，故只注册一次
+_ATEXIT_REGISTERED = False
+
 
 def _log_ts():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -309,7 +317,7 @@ def _log_close():
 
 def _log_open():
     """按开关打开统一日志（幂等；主进程；看门狗跳过）；关闭状态不调用"""
-    global _LOG_FD, _LOG_DIR
+    global _LOG_FD, _LOG_DIR, _ATEXIT_REGISTERED
     if _LOG_FD is not None or "--watchdog" in sys.argv:
         return
     _LOG_DIR = os.environ.get("MEMWISE_LOG_DIR") or os.path.join(base, "data")
@@ -324,7 +332,9 @@ def _log_open():
             except Exception:
                 pass
         # 未捕获异常钩子由 _install_crash_sink 统一安装（写 memwise_crash.log + 此处统一日志）
-        atexit.register(_log_close)
+        if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
+            atexit.register(_log_close)
+            _ATEXIT_REGISTERED = True
         _log_write("启动", f"MemWise v4.4.021 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
@@ -452,7 +462,9 @@ def _emergency_active(m):
     if m.get("pct", 0) >= CFG.get("emergency_threshold", 80):
         return True
     ap = CFG.get("emergency_abs_pct", 0) or 0
-    if ap > 0 and m.get("total") and m.get("avail"):
+    # 防御性自检（2026-09-11 审查 F3）：ap ≥ 100 时"可用率 ≤ ap"恒真 ⇒ 每周期恒紧急 full。
+    # 配置层已钳制到 0-99，这里再兜一层：即便配置被绕过也绝不进入恒触发。
+    if 0 < ap <= 99 and m.get("total") and m.get("avail"):
         return m["avail"] / m["total"] * 100 <= ap
     return False
 
@@ -893,10 +905,11 @@ class MemWiseEngine:
                                 # set 无序轮转自然覆盖全池）——full 池扩大后防循环拖慢
                                 for ft_pid in list(self.cleaner._fast_track)[:5]:
                                     if ft_pid in self.cleaner.judger._game_pid_set:
-                                        self.cleaner._fast_track.discard(ft_pid)
+                                        self.cleaner._fast_track.pop(ft_pid, None)
                                         continue
-                                    if not self.cleaner.quick_retrim(ft_pid):
-                                        self.cleaner._fast_track.discard(ft_pid)
+                                    # 带回记录时的创建时间做身份复检（PID 复用防护，2026-09-11 审查 F12）
+                                    if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid)):
+                                        self.cleaner._fast_track.pop(ft_pid, None)
                         snap_skip -= 1
                         m2 = winapi.get_memory_status()
                         if m2:
@@ -935,7 +948,9 @@ class MemWiseEngine:
                         if per_proc > prev_per_proc * 1.3:
                             gap = max(8.0, gap - 2)
                         elif per_proc < prev_per_proc * 0.7:
-                            gap = min(25.0, gap + 3)
+                            # 上界收敛到配置文档区间 8-20（2026-09-11 审查 F10）：原 25 会越出
+                            # 用户可设范围（UI 明示 8~20 秒），设 20 的用户被意外改成 25
+                            gap = min(20.0, gap + 3)
                     prev_per_proc = per_proc
                 while time.time() < deadline - 4 and self._running:
                     if mode != "quick":

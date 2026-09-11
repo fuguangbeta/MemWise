@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<!-- MemWise 应用清单（2026-09-11 引入：F32 —— 标准账户可用性）
+     ⚠ 执行级别说明：PyInstaller 6.x 会用 uac_admin/uac_uiaccess 参数**改写**本文件的
+     requestedExecutionLevel（见 PyInstaller/utils/win32/winmanifest.py:
+     create_application_manifest → _set_execution_level），因此此处只能与打包参数保持一致
+     （uac_admin=False ⇒ asInvoker）。原先的 requireAdministrator 会让标准用户账户被系统直接
+     拒绝、连界面都看不到；改用 asInvoker 后：管理员账户由程序在启动时**显式请求提权**
+     （ShellExecuteW runas，见 memwise_gui._relaunch_elevated），用户取消或标准账户则以受限
+     模式启动并获得明确提示。本文件只保留兼容性声明。 -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="MemWise" version="4.4.0.21" processorArchitecture="*" />
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- 声明支持 Windows 10 20H1+ / Windows 11（同一 GUID） -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

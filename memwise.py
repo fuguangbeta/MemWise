@@ -219,6 +219,15 @@ def cmd_daemon(args):
                 except Exception:
                     pass
             if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH); import gc; gc.collect()
+            # 消息缓冲消费（2026-09-11 审查 F28）：CLI 原先从不 pop_info，学习器的提示
+            # （泄漏疑似/游戏启停等）在内存里无界累积且完全不可见；现按周期输出并释放。
+            try:
+                for _msg in learner.pop_info():
+                    print("\n" + tr_msg(_msg))
+                for _msg in cleaner.pop_info():
+                    print("\n" + tr_msg(_msg))
+            except Exception:
+                pass
             stats = cleaner.summary()
             sys.stdout.write(tr_msg(f"\r内存 {m['pct']}% | 清理强度={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
                              f"释放 {stats['freed_mb']}MB | SB={stats['standby']} MP={stats['modified']} "
@@ -345,13 +354,26 @@ def main():
         sys.stdout.reconfigure(errors="replace")
     except Exception:
         pass
-    # 数据/配置目录预建（2026-08-14 审查：GUI 由 engine 建，CLI 独立进程需自建——
-    # 否则全新环境下 learner.save 静默失败，学习/优化结果不持久化）
+    # 进程级初始化（2026-09-11 审查 F38/F11 统一入口）：DPI + 数据/配置目录预建 + 旧根目录
+    # 数据一次性迁移。CLI 是独立进程，不初始化则全新环境下 learner.save 静默失败、学习与
+    # 优化结果不持久化（2026-08-14 审查结论保留为兜底分支）。
     try:
-        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-        os.makedirs(os.path.dirname(_config.CONFIG_PATH), exist_ok=True)
+        from core.engine import init_runtime
+        init_runtime()
     except Exception:
-        pass
+        try:
+            os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+            os.makedirs(os.path.dirname(_config.CONFIG_PATH), exist_ok=True)
+        except Exception:
+            pass
+    # 统一日志（2026-09-11 审查 F39）：CLI 原先完全不写日志文件，使 log_to_file 在命令行
+    # 路径下形同虚设；现与界面模式同口径按开关开启（写入内容由同一开关总控）
+    if CFG.get("log_to_file"):
+        try:
+            from core.engine import _log_open
+            _log_open()
+        except Exception:
+            pass
     # 启用清理所需权限（2026-08-15 审查）：GUI 启动即启用，CLI 缺失致 deep/full 的
     # ws_all（系统级全清）静默失效；管理员下 SeProfileSingleProcessPrivilege 必须
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害

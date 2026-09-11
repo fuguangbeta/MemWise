@@ -81,9 +81,26 @@ def export_state(source="export", base=None):
     return pkg_path, sorted(set(paths.keys()) - set(files.keys()))
 
 
+BACKUP_KEEP = 10   # 自动备份包保留个数（2026-09-11 审查 F29）
+
+
+def _prune_backups(pkg_dir):
+    """只保留最近 BACKUP_KEEP 个自动备份包：原先每次重置/导入都新增一个包且永不清理 ⇒
+    磁盘无界增长（包内含画像 JSON，单个可达数百 KB~数 MB）。
+    仅清理 MemWise_Backup_*（程序自动产物）；MemWise_Export_* 是用户主动导出资产，一律不动。"""
+    try:
+        bs = sorted((f for f in os.listdir(pkg_dir) if f.startswith("MemWise_Backup_")), reverse=True)
+        for f in bs[BACKUP_KEEP:]:
+            os.remove(os.path.join(pkg_dir, f))
+    except Exception:
+        pass
+
+
 def create_backup(base=None):
-    """当前状态打包为 Backup 包（重置/导入前自动备份），返回包路径"""
+    """当前状态打包为 Backup 包（重置/导入前自动备份），返回包路径。
+    生成后按 BACKUP_KEEP 保留最近若干个（2026-09-11 审查 F29）"""
     p, _ = export_state("backup", base=base)
+    _prune_backups(import_export_dir(base))
     return p
 
 

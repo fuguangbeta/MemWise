@@ -16,7 +16,12 @@ PARAMS = {
     "learning_rate":      {"min": 0.10, "max": 0.90, "default": 0.50, "step": 0.05},  # EWMA 反馈学习率（λ）：接入 record_clean 的 gain/cost EWMA 主通道，fast/slow 趋势通道固定
     "composite_kalman_w": {"min": 0.10, "max": 0.50, "default": 0.30, "step": 0.05},
     "kalman_r":           {"min": 1.0,  "max": 20.0,  "default": 5.0,   "step": 1.0},
-    "anchor_margin":      {"min": 0.05, "max": 0.30, "default": 0.15, "step": 0.05},  # 稳态锚点抑制余量（P1-D：余量小=抑制更严/清理更多；余量大=更保守）
+    "anchor_margin":      {"min": 0.05, "max": 0.30, "default": 0.15,  "step": 0.05},  # 稳态锚点抑制余量（P1-D：余量小=抑制更严/清理更多；余量大=更保守）
+    # ── 活跃门（2026-09-11 审查 F22 新增）：原为硬编码常量，而这两个门是量化收益最大的单点
+    #    （CPU 门在浏览器高峰/IDE 编译场景影响 18-26% 释放量、IO 门在下载/播放场景 4.9%），
+    #    交给 EFIS 自适应才可能吃到上限。默认值与原常量逐字一致 ⇒ 行为零变化。──
+    "cpu_gate":           {"min": 3.0,  "max": 25.0, "default": 8.0,   "step": 1.0},   # CPU 活跃门（%，占全机算力口径）
+    "io_gate":            {"min": 1.0,  "max": 16.0, "default": 4.0,   "step": 1.0},   # IO 活跃门（MB/s）
 }
 
 WINDOW = 5
@@ -108,10 +113,17 @@ class EfisController:
         """返回指定（或当前）模式当前场景的参数快照（浅拷贝，防外部修改污染组）"""
         return dict(self._group(mode)["params"])
 
+    def _efis_state_path(self):
+        """EFIS 状态文件路径 = 状态文件同目录下的 memwise_efis_state.json。
+        2026-09-11 审查：原实现用 `state_path.replace("state.json", "efis_state.json")`——依赖
+        文件名子串，一旦状态文件不叫 memwise_state.json（自定义/调试路径）就会推出错误路径并
+        静默回退默认值（本次验收即因此暴露）。改为显式拼接，对真实路径行为逐字一致。"""
+        return os.path.join(os.path.dirname(self.state_path), "memwise_efis_state.json")
+
     def load(self):
         if not self.state_path:
             return
-        efis_path = self.state_path.replace("state.json", "efis_state.json")
+        efis_path = self._efis_state_path()
         if not os.path.exists(efis_path):
             return
         try:
@@ -188,7 +200,7 @@ class EfisController:
     def save(self):
         if not self.state_path:
             return
-        efis_path = self.state_path.replace("state.json", "efis_state.json")
+        efis_path = self._efis_state_path()
         mp = {}
         for mode, scenes in self.mode_params.items():
             mp[mode] = {}
@@ -345,17 +357,27 @@ class EfisController:
             results["anchor_margin"] = -1
         elif suppress_avg == 0 and mem_avg < target - 5:
             results["anchor_margin"] = +1
+        # 活跃门自平衡（2026-09-11 审查 F22）：内存高于目标却清不动（每轮能清的进程数不足 1）
+        # → 放宽门限，让更忙的进程也参与清理；清理失败偏多 → 收紧门限，少碰活跃进程以降低无谓 PF
+        if mem_avg > target and trimmed_total < n:
+            results["cpu_gate"] = +1
+            results["io_gate"] = +1
+        elif repeat_fail > max(trimmed_total * 0.05, 2):
+            results["cpu_gate"] = -1
+            results["io_gate"] = -1
         return results
 
     def _apply(self, diag):
         # 协方差监控：检测参数反向调整，冻结变动幅度较小的一方
-        # anchor_margin 例外：其"-1"语义=收紧抑制=更激进，与 pid_kp+/target_usage+ 语义同向
-        # （符号相反但非补偿振荡）——排除防误冻结（曾见抑制自平衡被 pid_kp 反向冻结失效）
+        # 豁免：anchor_margin 的"-1"语义=收紧抑制=更激进（与 pid_kp+/target_usage+ 同向，符号相反
+        # 但非补偿振荡）；cpu_gate/io_gate 是活跃准入量（放宽≠与 PID 反向调节）——一并排除防误冻结
+        # （曾见抑制自平衡被 pid_kp 反向冻结失效）
+        _no_freeze = ("anchor_margin", "cpu_gate", "io_gate")
         conflicting = {}
         for p1, d1 in diag.items():
-            if d1 == 0 or p1 == "anchor_margin": continue
+            if d1 == 0 or p1 in _no_freeze: continue
             for p2, d2 in diag.items():
-                if p2 <= p1 or d2 == 0 or p2 == "anchor_margin": continue
+                if p2 <= p1 or d2 == 0 or p2 in _no_freeze: continue
                 if (d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0):
                     # 反向调整 → 冻结 step 较小的
                     if PARAMS[p1]["step"] < PARAMS[p2]["step"]:
@@ -407,7 +429,8 @@ class EfisController:
                     "pid_kd":"抑制震荡","target_usage":"目标内存",
                     "cooloff_base":"失败冷却","composite_kalman_w":"卡尔曼权重",
                     "learning_rate":"学习速率",
-                    "kalman_r":"卡尔曼噪声","anchor_margin":"锚点余量"}
+                    "kalman_r":"卡尔曼噪声","anchor_margin":"锚点余量",
+                    "cpu_gate":"CPU活跃门","io_gate":"IO活跃门"}
         last = self._adjust_log[-1]
         cn = PARAM_CN.get(last['param'], last['param'])
         return f"EFIS调整{cn}: {last['old']:.2f}→{last['new']:.2f}"

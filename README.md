@@ -104,7 +104,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 ### 2.1 Layer1 — 系统级内核清理 · *System-Level Kernel Reclamation*
 
-系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），零 sleep，<10ms。
+系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），零 sleep，<10ms。全部取消勾选时不执行任何系统操作，也不做进程清理（勾选即授权，界面文案同此口径）；quick 模式仅执行待机缓存、脏页写回、注册表缓存三项，其余开关在该模式不适用。
 
 | 操作 | 配置键 | 默认 | Win32 API | 说明 |
 |------|--------|:----:|-----------|------|
@@ -302,7 +302,7 @@ deep 模式末次 optimize 及 full 模式全程执行。依次为：
 
 ## 5. EFIS v3 全程序智能调参 · *System-Wide Intelligent Parameter Tuning*
 
-EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调参引擎，9 参数自动寻优（`deepen_theta`/`layer3_agg_gate`/`pid_kp`/`pid_kd`/`target_usage`/`cooloff_base`/`learning_rate`/`composite_kalman_w`/`anchor_margin`）+ `kalman_r` 配置可调。
+EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调参引擎，11 参数自动寻优（`deepen_theta`/`layer3_agg_gate`/`pid_kp`/`pid_kd`/`target_usage`/`cooloff_base`/`learning_rate`/`composite_kalman_w`/`anchor_margin`/`cpu_gate`/`io_gate`）+ `kalman_r` 配置可调。
 
 **参数一览**：
 
@@ -318,8 +318,10 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 | `composite_kalman_w` | 0.30 | 0.10-0.50 | 复合评分中 Kalman 分量的权重 |
 | `kalman_r` | 5.0 | 1.0-20.0 | 卡尔曼观测噪声——值越大对新观测越不敏感 |
 | `anchor_margin` | 0.15 | 0.05-0.30 | 稳态锚点抑制余量——值小则抑制更严（清理更多），值大更保守；抑制过多导致内存压不下去时自动收紧 |
+| `cpu_gate` | 8% | 3-25% | CPU 活跃门：占用达到此值的进程本轮不清理（内存高于目标却清不动时自动放宽，清理失败偏多时自动收紧） |
+| `io_gate` | 4 MB/s | 1-16 MB/s | IO 活跃门：读写速率达到此值的进程本轮不清理（同上的自适应方向） |
 
-**诊断方式**：每个参数配备专属的症状规则，基于滑动窗口内的释放效率、缺页速率、内存振幅等多维指标综合评估。症状须持续达到确认周期后才触发调整，防止单次噪声误调。参数调整步长经过约束，不会剧烈震荡。协方差监控层在检测到两个参数反向调整时冻结步长较小的一方，防止补偿性震荡（`anchor_margin` 与其余参数语义同向，不参与该检测）。
+**诊断方式**：每个参数配备专属的症状规则，基于滑动窗口内的释放效率、缺页速率、内存振幅等多维指标综合评估。症状须持续达到确认周期后才触发调整，防止单次噪声误调。参数调整步长经过约束，不会剧烈震荡。协方差监控层在检测到两个参数反向调整时冻结步长较小的一方，防止补偿性震荡（`anchor_margin`、`cpu_gate`、`io_gate` 与其余参数语义同向，不参与该检测）。
 
 **持久化**：独立状态文件，写入采用原子化操作，防止中途崩溃导致配置损坏。
 
@@ -345,6 +347,8 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 | `composite_kalman_w` | 0.30 | 0.10-0.50 | Kalman component weight in the composite score |
 | `kalman_r` | 5.0 | 1.0-20.0 | Kalman observation noise — larger values mean less sensitivity to new observations |
 | `anchor_margin` | 0.15 | 0.05-0.30 | Stable-state suppression margin — smaller trims more aggressively, larger is more conservative; tightened automatically when suppression keeps memory too high |
+| `cpu_gate` | 8% | 3-25% | CPU activity gate — processes at or above this usage are skipped this round (loosened automatically when memory stays above target yet little can be cleaned; tightened when cleanups fail often) |
+| `io_gate` | 4 MB/s | 1-16 MB/s | I/O activity gate — processes at or above this transfer rate are skipped this round (same automatic direction as above) |
 
 *Each parameter has dedicated symptom rules evaluated over sliding windows of release efficiency, PF rate, and memory amplitude. Adjustments require symptom persistence across a confirmation interval to prevent noise-induced false positives. Step magnitudes are bounded. A covariance monitor detects opposing adjustment signals between parameter pairs and freezes the one with the smaller step size to prevent compensatory oscillation.*
 
@@ -434,7 +438,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **游戏模式**：管理游戏进程名单（一体化窗口：列出/添加/删除，逗号分隔批量输入、重复项提示、删除带确认）。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
-**守护**：紧急触发阈值（50-99%，默认 80%）、守护清理间隔（8-20 秒，默认 12）。
+**守护**：紧急触发阈值（50-99%，默认 80%）、周期内轻量压制间隔（8-20 秒，默认 12）、守护周期（10-3600 秒，默认 60，决定完整收割节奏）。
 
 **日志**：记录运行日志到文件（统一日志 memwise.log，2MB×2 轮转，详见日志系统节）。
 
@@ -442,7 +446,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **重置**：恢复默认——将全部配置、学习数据与调参结果恢复为默认状态，确认时可选先备份当前状态为配置包（存放于数据目录 import_export 文件夹，可再次导入），确认后自动重启程序生效；守护运行中无法执行。
 
-**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。
+**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
 
 *All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, daemon interval, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.*
 
@@ -455,7 +459,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
 - *Global hotkeys — manual optimize (default ctrl+shift+m) and game-mode toggle (default ctrl+shift+g), independently configurable with format validation (at least one modifier + a letter or F1-F24), conflict detection, and busy-key fallback, taking effect instantly*
 - *Reset — factory reset restores all settings, learned data, and tuning results to defaults; optionally backs up the current state as a config package first (stored in the import_export folder of the data directory, re-importable), then restarts automatically to apply; unavailable while the daemon is running*
-- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running)*
+- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running). The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
 
 ---
 
@@ -522,7 +526,7 @@ python memwise.py [command] [options]
 | `auto_start_minimize` | bool | `false` | 启动后最小化 |
 | `close_action` | str | `"ask"` | 关闭按钮行为 |
 | `interval` | int | `60` | 守护周期（秒；daemon 按此调度日志/图表与收割节奏） |
-| `gap_seconds` | int | `12` | 守护清理间隔（秒） |
+| `gap_seconds` | int | `12` | 周期内轻量压制间隔（秒，8-20） |
 | `emergency_threshold` | int | `80` | 紧急触发阈值（%） |
 | `clean_passes` | int | `4` | 进程清理深度（2-6） |
 | `tray_left_action` | str | `"show"` | 托盘左键行为 |
@@ -535,7 +539,7 @@ python memwise.py [command] [options]
 | `language` | str | `"zh_CN"` | 界面语言（`zh_CN`=简体中文 / `en`=English） |
 | `efis_params` | dict | 10 参数默认值 | EFIS 参数 |
 
-`efis_params` 包含第 5 节所列的十个 EFIS 参数（各自默认值与范围如该节参数表所示）；同时提供 `efis_params.target_usage` 时，其优先于顶层 `target_usage`。
+`efis_params` 包含第 5 节所列的十二个 EFIS 参数（各自默认值与范围如该节参数表所示）；同时提供 `efis_params.target_usage` 时，其优先于顶层 `target_usage`。
 
 *The complete configuration lives in `config/config.yaml`:*
 
@@ -552,7 +556,7 @@ python memwise.py [command] [options]
 | `auto_start_minimize` | bool | `false` | Start minimized to tray |
 | `close_action` | str | `"ask"` | Close-button behavior |
 | `interval` | int | `60` | Daemon cycle in seconds (drives log/chart cadence and harvesting) |
-| `gap_seconds` | int | `12` | Daemon clean interval in seconds |
+| `gap_seconds` | int | `12` | In-cycle suppression interval in seconds (8-20) |
 | `emergency_threshold` | int | `80` | Emergency trigger threshold (percent) |
 | `clean_passes` | int | `4` | Process cleaning depth (2-6) |
 | `tray_left_action` | str | `"show"` | Tray left-click action |
@@ -576,6 +580,7 @@ MemWise/
 ├── memwise_gui.py              # GUI 主程序 · GUI Application
 ├── memwise.py                  # CLI 命令行入口 · CLI Entry Point
 ├── MemWise.spec                # PyInstaller 打包配置（冷启动 datas=[]）· Build Spec
+├── MemWise.manifest            # 应用清单（支持的系统声明；执行级别由打包参数决定）· App Manifest
 ├── config/config.yaml          # 配置文件（自动持久化）· Configuration
 ├── data/                       # 运行时数据（自动迁移归拢）· Runtime Data
 │   ├── memwise_state.json      # 学习数据文件（自动保存/加载）· Learned State
@@ -609,7 +614,7 @@ MemWise/
 │   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py            # 回归测试（339 项断言）· Regression Suite
+│   └── test_v2.6.py            # 回归测试（403 项断言）· Regression Suite
 ```
 
 ---
@@ -617,10 +622,10 @@ MemWise/
 ## 系统要求 · *System Requirements*
 
 - Windows 10 20H1+ / Windows 11（部分缓存操作依赖较新版本）
-- 管理员权限（缓存清理需要；进程 EmptyWorkingSet 不受限制）
+- 管理员权限（缓存清理需要；进程 EmptyWorkingSet 不受限制）。程序启动时自动请求提权；若取消提权或使用标准账户，程序仍会以受限模式启动并给出明确提示——进程级清理照常，系统缓存类清理不可用
 - 无需安装任何第三方运行库
 
-*Windows 10 20H1+ or Windows 11. Administrator elevation required for cache operations; per-process EmptyWorkingSet has no elevation requirement. No third-party runtime dependencies.*
+*Windows 10 20H1+ or Windows 11. Administrator elevation is requested automatically at startup for cache operations; per-process EmptyWorkingSet has no elevation requirement. If elevation is declined (or on a standard account), the app still starts in a limited mode with a clear notice — process-level cleanup keeps working while system cache cleanup is unavailable. No third-party runtime dependencies.*
 
 ---
 

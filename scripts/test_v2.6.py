@@ -169,7 +169,7 @@ c2 = config_load()
 check("默认列表不被污染", "zzz_test" not in c2["clean_operations"])
 
 print("\n[9] EFIS")
-check("PARAMS 10 keys", len(PARAMS)==10)
+check("PARAMS 12 keys", len(PARAMS)==12)
 for k,v in PARAMS.items():
     check(f"{k} valid range", v["min"]<=v["default"]<=v["max"])
 check("learning_rate 默认 0.5 且范围覆盖 0.1-0.9", PARAMS["learning_rate"]["default"] == 0.5 and PARAMS["learning_rate"]["min"] == 0.10 and PARAMS["learning_rate"]["max"] == 0.90)
@@ -826,10 +826,11 @@ from core.efis import MODE_DEFAULTS, MODE_TUNE_WHITELIST
 check("deep 初始 target_usage=45", MODE_DEFAULTS["deep"].get("target_usage") == 45)
 check("full 初始 target_usage=35", MODE_DEFAULTS["full"].get("target_usage") == 35)
 check("deep 初始 pid_kp=0.8", MODE_DEFAULTS["deep"].get("pid_kp") == 0.8)
-check("full 白名单 7 参数", MODE_TUNE_WHITELIST["full"] ==
-      ["pid_kp", "pid_kd", "target_usage", "cooloff_base", "learning_rate", "composite_kalman_w", "kalman_r"])
+check("full 白名单 9 参数", MODE_TUNE_WHITELIST["full"] ==
+      ["pid_kp", "pid_kd", "target_usage", "cooloff_base", "learning_rate", "composite_kalman_w",
+       "kalman_r", "cpu_gate", "io_gate"])
 check("deep 白名单排除 L3 门与锚点", "layer3_agg_gate" not in MODE_TUNE_WHITELIST["deep"]
-      and "anchor_margin" not in MODE_TUNE_WHITELIST["deep"] and len(MODE_TUNE_WHITELIST["deep"]) == 8)
+      and "anchor_margin" not in MODE_TUNE_WHITELIST["deep"] and len(MODE_TUNE_WHITELIST["deep"]) == 10)
 check("quick 白名单空", MODE_TUNE_WHITELIST["quick"] == [])
 # ── 16 组隔离:normal 调参不污染 full、切回 normal 参数保持 ──
 _ef25 = EfisController(state_path=None)
@@ -856,8 +857,8 @@ check("full 组 pid_kp 可调(白名单内,gap 阶段消费)", _ef25.get_params(
 check("normal 组不受 full 调参影响", abs(_ef25.get_params("normal")["pid_kp"] - _pid_n) < 1e-9,
       f"normal pid_kp={_ef25.get_params('normal')['pid_kp']}")
 # ── v3 → v4 迁移 ──
-_tmp25 = os.path.join(tempfile.mkdtemp(), "state.json")
-_tmp25e = _tmp25.replace("state.json", "efis_state.json")
+_tmp25 = os.path.join(tempfile.mkdtemp(), "memwise_state.json")   # 与真实命名一致：EFIS/ERIS 状态由目录推导
+_tmp25e = os.path.join(os.path.dirname(_tmp25), "memwise_efis_state.json")
 with open(_tmp25e, "w", encoding="utf-8") as f:
     json.dump({"efis": {"version": 3, "params": {"pid_kp": 0.9, "target_usage": 55},
                         "scene_params": {"general": {"pid_kp": 0.7}, "browser": {"pid_kp": 0.8}},
@@ -1201,7 +1202,7 @@ _rebound26_src = _src26("core", "rebound.py")
 check("F2 prior 快照迭代", "dict(profiles).items()" in _prior26_src)
 check("F2 meta 探索覆盖快照迭代", _meta26_src.count("dict(self.learner.profiles)") == 2)
 check("F2 policy 树5 快照迭代", "list(learner.profiles.values())" in _policy26_src)
-check("F2 learner save 快照迭代", _lm26_src.count("dict(self.profiles)") == 2)
+check("F2 learner save 快照迭代", _lm26_src.count("dict(self.profiles)") == 3)
 check("F2 engine 周期统计快照迭代", "dict(self.learner.profiles).values()" in _eng26_src)
 check("F2 engine kalman_r 遍历快照迭代", "list(self.learner.profiles.values())" in _eng26_src)
 # ── F3 守护互斥 + tmp 进程隔离 ──
@@ -1365,6 +1366,264 @@ check("backup 模块核心面", "PACKAGE_VERSION = 1" in _src26("core", "backup.
       and "watchdog" in _src26("core", "backup.py"))
 check("T6 分区联动两行", "  重置 — 恢复默认设置与数据" in _gui26_src
       and "  配置传输 — 导出与导入配置包" in _gui26_src)
+
+# ═══════════════════════════════════════════
+print("\n[34] 2026-09-11 全量审查修复回归（F1/F2/F3/F6/F7/F8/F9/F10/F11/F12/F24/F26/F27/F28/F29/F30/F32/F38/F39/F42/F43/F45/F47/F48 + 兼容性）")
+import io as _io34, os as _os34, subprocess as _sp34, tempfile as _tf34
+_ROOT34 = _os34.path.dirname(_os34.path.dirname(_os34.path.abspath(__file__)))
+def _src34(*parts):
+    return _io34.open(_os34.path.join(_ROOT34, *parts), encoding="utf-8").read()
+_wa34 = _src34("core", "winapi.py"); _cl34 = _src34("core", "cleaner.py")
+_jd34 = _src34("core", "judger.py"); _lm34 = _src34("core", "learner.py")
+_eg34 = _src34("core", "engine.py"); _gui34 = _src34("memwise_gui.py")
+_mw34 = _src34("memwise.py"); _i18n34 = _src34("core", "i18n.py")
+_cf34 = _src34("core", "config.py"); _bk34 = _src34("core", "backup.py")
+_sn34 = _src34("core", "sniffer.py")
+import core.winapi as _w34, core.engine as _e34, core.backup as _b34
+from core.learner import _is_self_path
+
+# ── F42/F43 批量快照：同量纲自证 + 失败缓存 + 时间字段同源 ──
+check("F42 交叉校验同量纲(100ns)", "if abs(kt - self_kt) > 500_000" in _wa34)
+check("F42 布局失败态缓存", "_spi_layout = False" in _wa34 and "if _spi_layout is False" in _wa34)
+check("F43 批量时间字段不再 ×100",
+      "kernel_off).value * 100" not in _wa34 and "user_off).value * 100" not in _wa34)
+check("F42 回退路径同样提供 create", 'create": t.get("create")' in _sn34)
+check("F42 get_process_times 返回 create", '"create": _ft_to_ns(ct)' in _wa34)
+# 行为实证：本回归进程已运行较久（CPU 时间远超旧实现 ~50ms 阈值）——批量路径必须仍然可用
+_pid34 = _os34.getpid()
+_s034 = _w34.get_system_times(); _b034 = _w34.get_process_times(_pid34)
+_t34a = time.time()
+while time.time() - _t34a < 0.25:
+    pass
+_s134 = _w34.get_system_times(); _b134 = _w34.get_process_times(_pid34)
+_bulk34 = _w34.get_all_processes_memory()
+_sd34 = (_s134["kernel"] + _s134["user"]) - (_s034["kernel"] + _s034["user"])
+check("F42 长运行进程内批量快照仍可用", len(_bulk34) > 20, "count=%d" % len(_bulk34))
+if _bulk34.get(_pid34) and _sd34 > 0:
+    _cpu_fb = ((_b134["kernel"] + _b134["user"]) - (_b034["kernel"] + _b034["user"])) / _sd34 * 100.0
+    _cpu_bk = ((_bulk34[_pid34]["kernel"] + _bulk34[_pid34]["user"]) - (_b034["kernel"] + _b034["user"])) / _sd34 * 100.0
+    check("F43 批量/回退 CPU% 口径一致", abs(_cpu_bk - _cpu_fb) <= max(0.15 * abs(_cpu_fb), 0.5),
+          "bulk=%.3f fallback=%.3f" % (_cpu_bk, _cpu_fb))
+    check("F42 批量提供 create（PID 复用防护）", bool(_bulk34[_pid34].get("create")))
+else:
+    check("F42/F43 批量路径可用性", False, "bulk 空或 sys_delta=0")
+
+# ── F1 开关语义 / F6 quick 开关面 / F2 Layer3 开关契约 / F11 每轮归零 ──
+check("F1 空集不再折叠为全量", "set(operations) if operations is not None else None" in _cl34)
+_j34 = {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}}
+_ms34, _mu34 = _w34.get_memory_status, _w34.get_memory_used_bytes
+_w34.get_memory_status = lambda: {"pct": 40, "total": 16 << 30, "avail": 9 << 30, "used": 7 << 30}
+_w34.get_memory_used_bytes = lambda: 7 << 30
+_OPS34 = ("empty_all_working_sets", "clear_system_file_cache_ex", "flush_modified_pages",
+          "empty_standby", "purge_low_priority_standby", "flush_volume_cache", "clear_registry_cache")
+try:
+    _cap34 = {}; _l2c34 = []
+    _lr34a = PareLearner(); _c34a = PareCleaner(PareJudger(_lr34a, dict(_j34)))
+    _c34a._layer1_memreduct = lambda **kw: _cap34.update(ops=kw.get("ops"))
+    _c34a._layer2_process = lambda *a, **k: (_l2c34.append(1), ([], []))[1]
+    _c34a._layer3_deep = lambda *a, **k: None
+    _c34a.optimize([], _lr34a, "normal", operations=[])
+    check("F1 [] ⇒ 零系统操作且不做进程清理",
+          _cap34.get("ops") == set() and not _l2c34, "ops=%r l2=%s" % (_cap34.get("ops"), _l2c34))
+
+    _orig34 = {n: getattr(_w34, n) for n in _OPS34}
+    _calls34 = []
+    for _n34 in _OPS34:
+        setattr(_w34, _n34, (lambda nm: (lambda *a, **k: (_calls34.append(nm), True)[1]))(_n34))
+    try:
+        _lr34q = PareLearner(); _c34q = PareCleaner(PareJudger(_lr34q, dict(_j34)))
+        _calls34.clear(); _c34q.optimize([], _lr34q, "quick", operations=["ws", "filecache", "volume"])
+        _q_inert = list(_calls34)
+        _calls34.clear(); _c34q.optimize([], _lr34q, "quick", operations=["standby", "modified", "registry"])
+        _q_act = sorted(_calls34)
+    finally:
+        for _n34, _f34 in _orig34.items():
+            setattr(_w34, _n34, _f34)
+    check("F6 quick 只勾 ws/filecache/volume ⇒ 零系统调用", _q_inert == [], str(_q_inert))
+    check("F6 quick 勾 standby/modified/registry ⇒ 执行三项",
+          _q_act == ["clear_registry_cache", "empty_standby", "flush_modified_pages"], str(_q_act))
+
+    _orig34b = {n: getattr(_w34, n) for n in _OPS34}
+    _calls34b = []
+    for _n34 in _OPS34:
+        setattr(_w34, _n34, (lambda nm: (lambda *a, **k: (_calls34b.append(nm), True)[1]))(_n34))
+    try:
+        _lr34b = PareLearner(); _c34b = PareCleaner(PareJudger(_lr34b, dict(_j34)))
+        _calls34b.clear(); _c34b._layer3_deep([], _lr34b, ops_filter={"ws", "modified"})
+        _mod_only = list(_calls34b)
+        _calls34b.clear(); _c34b._layer3_deep([], _lr34b, ops_filter={"ws", "standby"})
+        _stb_only = list(_calls34b)
+    finally:
+        for _n34, _f34 in _orig34b.items():
+            setattr(_w34, _n34, _f34)
+    check("F2 只勾 modified ⇒ 不清待机列表", not any("standby" in x for x in _mod_only), str(_mod_only))
+    check("F2 只勾 standby ⇒ 不写回脏页",
+          not any(("modified" in x or "deep_compress" in x) for x in _stb_only), str(_stb_only))
+    check("F2 standby 全量回收同轮只执行一次", _stb_only.count("empty_standby") <= 1, str(_stb_only))
+
+    _lr34r = PareLearner(); _c34r = PareCleaner(PareJudger(_lr34r, dict(_j34)))
+    _c34r._fast_track = {999: 1}; _c34r._last_layer2_results = ["stale"]
+    _c34r._layer1_memreduct = lambda **kw: None; _c34r._layer3_deep = lambda *a, **k: None
+    _c34r.optimize([], _lr34r, "normal", operations=["standby"])
+    check("F11 每轮入口状态归零", _c34r._fast_track == {} and _c34r._last_layer2_results == [],
+          "%r %r" % (_c34r._fast_track, _c34r._last_layer2_results))
+finally:
+    _w34.get_memory_status, _w34.get_memory_used_bytes = _ms34, _mu34
+
+# ── F3 紧急绝对阈值：钳制 + 判定内自检 ──
+check("F3 配置钳制含 emergency_abs_pct", '("emergency_abs_pct", 0, 99)' in _cf34)
+_old_ap34 = _e34.CFG.get("emergency_abs_pct")
+_e34.CFG["emergency_abs_pct"] = 200
+check("F3 判定内自检：越界值不再恒触发", _e34._emergency_active(
+    {"pct": 30, "total": 16 << 30, "avail": int(0.7 * (16 << 30))}) is False)
+_e34.CFG["emergency_abs_pct"] = _old_ap34
+
+# ── F12/F48 身份复检与自身排除 ──
+_lr34s = PareLearner(); _j34s = PareJudger(_lr34s, dict(_j34)); _c34s = PareCleaner(_j34s)
+check("F12 quick_retrim 创建时间不符即放弃", _c34s.quick_retrim(_os34.getpid(), 1) == 0)
+check("F48 自身可执行路径被重清拒绝", _c34s.quick_retrim(_os34.getpid(), None) == 0)
+check("F48 自身进程判据（按完整路径）",
+      _is_self_path(sys.executable) is True and _is_self_path(r"D:\other\python.exe") is False)
+class _S48: pass
+_s48 = _S48(); _s48.name = "self48.exe"; _s48.pid = 4243; _s48.ws = 200 << 20
+_s48.path = sys.executable; _s48.fg = False
+check("F48 自身进程不清理、不试探", _j34s.can_trim(_s48)[0] is False and _j34s.can_probe(_s48) is False)
+_s48t = _S48(); _s48t.name = "tiny48.exe"; _s48t.pid = 4242; _s48t.ws = 512 * 1024
+_s48t.path = r"d:\app\tiny.exe"; _s48t.fg = False
+check("F48 WS<1MB 不试探", _j34s.can_probe(_s48t) is False)
+
+# ── F48 零释放不抬 α + 零释放退避 ──
+_p48 = Profile("p48.exe"); _a0_48 = _p48.alpha
+_p48.record_probe(True, freed=0); _p48.record_probe(True, freed=0)
+check("F48 零释放试探不抬 α、累计退避计数", _p48.alpha == _a0_48 and _p48.probe_zero == 2)
+_p48.record_probe(True, freed=5 << 20)
+check("F48 出现释放后退避计数清零", _p48.probe_zero == 0 and _p48.alpha > _a0_48)
+_lr48 = PareLearner(); _j48 = PareJudger(_lr48, dict(_j34))
+_s48c = _S48(); _s48c.name = "zero48.exe"; _s48c.pid = 4244; _s48c.ws = 100 << 20
+_s48c.path = r"d:\app\zero.exe"; _s48c.fg = False
+_pz = _lr48.get("zero48.exe"); _pz.ws_deque.append(100 << 20); _pz.probe_zero = 5
+_j48._probe_dynamic_interval = 120
+_j48._probe_last_time["zero48.exe"] = time.time() - 300
+check("F48 零释放退避：间隔×20 后 300s 内不再试探", _j48.can_probe(_s48c) is False)
+_lr48n = PareLearner(); _j48n = PareJudger(_lr48n, dict(_j34))
+_pn = _lr48n.get("zero48.exe"); _pn.ws_deque.append(100 << 20)
+_j48n._probe_dynamic_interval = 120
+_j48n._probe_last_time["zero48.exe"] = time.time() - 300
+check("F48 无零释放记录时 300s 后可再试探", _j48n.can_probe(_s48c) is True)
+
+# ── F47 PF 判据扣除进程自身速率 + 清后基线与 ok 解耦 ──
+_lr47 = PareLearner(); _j47 = PareJudger(_lr47, dict(_j34))
+_j47.pf_before[555] = (1000, time.time() - 2.0)
+_ok_a47, _fa47, _pfa47 = _j47.check_feedback(555, 1000 + 90000, 100 << 20, 60 << 20, 2)
+_j47._pf_rate[555] = 100000.0
+_j47.pf_before[555] = (1000, time.time() - 2.0)
+_ok_b47, _fb47, _pfb47 = _j47.check_feedback(555, 1000 + 90000, 100 << 20, 60 << 20, 2)
+check("F47 同一 PF 增量：无自身速率判失败、计入后判成功", _ok_a47 is False and _ok_b47 is True)
+check("F47 清后基线与 ok 解耦", "if ws_after > 0 and (ok or freed > 0):" in _cl34)
+check("F47 PF 速率缓存有过期清理", "self._pf_rate.pop(k, None)" in _jd34)
+
+# ── F45 filecache 四步（单位/恢复/校验）──
+check("F45 用权威字节上下限恢复", "get_system_file_cache_limits()" in _wa34
+      and "SetSystemFileCacheSize(orig[0], orig[1], 0)" in _wa34)
+check("F45 不再把字节 PeakSize 写进页字段", "info.MinimumWorkingSet = info.PeakSize" not in _wa34)
+check("F45 回收目标为页口径常量", "_SFCI_CACHE_TARGET_PAGES = 4096" in _wa34)
+check("F45 恢复后回读校验", "if get_system_file_cache_limits() == orig:" in _wa34)
+
+# ── F38/F39/F40 初始化显式化 / CLI 日志与消息 / docstring ──
+check("F38 init_runtime 已抽取且 import 不再调用",
+      "def init_runtime()" in _eg34 and "_migrate_runtime_data()\n\n\nif \"--watchdog\"" not in _eg34)
+_r38 = _sp34.run([sys.executable, "-B", "-c",
+                  ("import sys,ctypes;sys.path.insert(0,r'%s');"
+                   "a=ctypes.c_int();ctypes.windll.shcore.GetProcessDpiAwareness(None,ctypes.byref(a));b0=a.value;"
+                   "import core.engine;"
+                   "b=ctypes.c_int();ctypes.windll.shcore.GetProcessDpiAwareness(None,ctypes.byref(b));"
+                   "print(b0,b.value)") % _ROOT34],
+                 capture_output=True, text=True, timeout=90)
+_out38 = (_r38.stdout or "").strip().split()
+check("F38 import core.engine 不改变 DPI 感知（子进程实证）",
+      len(_out38) == 2 and _out38[0] == _out38[1], "%r" % _out38)
+check("F38 GUI/CLI 入口调用 init_runtime", "init_runtime()" in _gui34 and "init_runtime()" in _mw34)
+check("F39 CLI 按开关打开统一日志", 'CFG.get("log_to_file")' in _mw34 and "from core.engine import _log_open" in _mw34)
+check("F40 optimize docstring 与实现一致",
+      "四模式行为矩阵与参数契约" in _cl34 and "已激活 8 步内核快速管线" not in _cl34)
+check("F28 CLI 消费 learner/cleaner 消息", "learner.pop_info()" in _mw34 and "cleaner.pop_info()" in _mw34)
+check("F27 atexit 只注册一次", "_ATEXIT_REGISTERED" in _eg34)
+check("F26 save 内做内存侧同口径淘汰", "self.profiles.pop(_k, None)" in _lm34)
+
+# ── F30 消息清空就地化（对象同一性 + 不丢消息）──
+_lr30 = PareLearner(); _j30 = PareJudger(_lr30, dict(_j34)); _c30 = PareCleaner(_j30)
+_c30._info_msgs.append("🎮 检测到游戏运行 · 启用 游戏模式")
+_bid30 = id(_c30._info_msgs)
+_gm30 = _c30.pop_game_msgs()
+check("F30 pop_game_msgs 就地清空", id(_c30._info_msgs) == _bid30 and len(_gm30) == 1
+      and _c30._info_msgs == [])
+
+# ── F29 备份包保留上限（用户导出包永不自动清理）──
+_bkb34 = _os34.path.join(_tf34.mkdtemp(), "data")
+_os34.makedirs(_bkb34, exist_ok=True)
+_os34.makedirs(_os34.path.join(_os34.path.dirname(_bkb34), "config"), exist_ok=True)
+_io34.open(_os34.path.join(_os34.path.dirname(_bkb34), "config", "config.yaml"), "w", encoding="utf-8").write("interval: 60\n")
+_io34.open(_os34.path.join(_bkb34, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4}')
+_orig_stamp34 = _b34._now_stamp
+_cnt34 = [0]
+def _stamp34():
+    _cnt34[0] += 1
+    return "20260911-%06d" % _cnt34[0]
+_b34._now_stamp = _stamp34
+try:
+    _b34.export_state("export", base=_bkb34)
+    for _i34 in range(13):
+        _b34.create_backup(base=_bkb34)
+finally:
+    _b34._now_stamp = _orig_stamp34
+_files34 = _os34.listdir(_os34.path.join(_bkb34, "import_export"))
+check("F29 自动备份包保留上限生效",
+      len([f for f in _files34 if f.startswith("MemWise_Backup_")]) == _b34.BACKUP_KEEP,
+      "backups=%d" % len([f for f in _files34 if f.startswith("MemWise_Backup_")]))
+check("F29 用户导出包不被自动清理", len([f for f in _files34 if f.startswith("MemWise_Export_")]) == 1)
+
+# ── F7/F8/F9/F10/F24/F32/F31 结构性 ──
+check("F7 处理资源管理器重启消息", "_TASKBAR_CREATED" in _gui34 and "action == 'readd'" in _gui34
+      and "def _readd_tray" in _gui34)
+check("F8 跨用户会话退出前有提示", "MessageBoxW" in _gui34 and "只允许运行一个实例" in _gui34)
+check("F9 日志文件名文案订正", "memwise1.log" not in _i18n34 and "memwise1.log" not in _gui34
+      and "memwise.log.1" in _i18n34)
+check("F10 自适应 gap 收敛到 8-20", "min(20.0, gap + 3)" in _eg34 and "min(25.0, gap + 3)" not in _eg34)
+check("F24 新增守护周期控件与更名后的标签",
+      "守护周期: " in _gui34 and "周期内轻量压制间隔: " in _gui34 and "ttk.Spinbox" in _gui34)
+check("F32 标准权限显式提示", "当前为标准权限运行" in _gui34 and "当前为标准权限运行" in _i18n34)
+check("F32 运行时显式提权 + 防重启循环",
+      "def _relaunch_elevated" in _gui34 and '"runas"' in _gui34 and "--elevated-retry" in _gui34)
+check("F32 提权重启路径的互斥接管重试", "--elevated-retry" in _gui34 and "for _ in range(20)" in _gui34)
+check("F32 清单改为 asInvoker 且不再用 uac_admin",
+      "asInvoker" in _io34.open(_os34.path.join(_ROOT34, "MemWise.manifest"), encoding="utf-8").read()
+      and "\n    uac_admin=True," not in _io34.open(_os34.path.join(_ROOT34, "MemWise.spec"), encoding="utf-8").read()
+      and "manifest='MemWise.manifest'" in _io34.open(_os34.path.join(_ROOT34, "MemWise.spec"), encoding="utf-8").read())
+check("F48 自身进程原因串已入 i18n", "程序自身" in _i18n34)
+check("F49 EFIS 状态路径显式拼接（不再依赖文件名子串）",
+      "_efis_state_path" in _src34("core", "efis.py")
+      and 'efis_path = self.state_path.replace' not in _src34("core", "efis.py"))
+check("F45 缓存极小则跳过钳制（零副作用快路径）", "if before <= (32 << 20):" in _wa34)
+check("F33 等待时长按实际执行轮数等比（档位不再带来无收益等待）",
+      "total_wait * (rounds_done / max(passes, 1))" in _cl34)
+check("F22 两个活跃门已入 i18n 参数名", "CPU活跃门" in _i18n34 and "IO活跃门" in _i18n34)
+check("F31 崩溃恢复提示含退出指引", "如需彻底退出" in _gui34 and "如需彻底退出" in _i18n34)
+
+# ── 旧数据 / 升级兼容性 ──
+check("兼容：旧画像无 probe_zero 字段可加载", Profile.from_dict({"name": "old.exe"}).probe_zero == 0)
+check("兼容：新参数在旧 efis_state 下有默认值",
+      EfisController(state_path=None).get_params("normal").get("cpu_gate") == 8.0
+      and EfisController(state_path=None).get_params("full").get("io_gate") == 4.0)
+check("兼容：v3 迁移后新参数同样有默认值", _efm25.get_params("normal").get("cpu_gate") == 8.0)
+_t_old34 = _os34.path.join(_tf34.mkdtemp(), "old_state.json")
+_io34.open(_t_old34, "w", encoding="utf-8").write(json.dumps({
+    "version": 4,
+    "profiles": {"legacy.exe": {"name": "legacy.exe", "alpha": 5, "beta": 2, "ws": [1, 2, 3]}},
+    "stable_anchors": {}, "rebound": {}}))
+_l_old34 = PareLearner.load(_t_old34)
+check("兼容：旧版 state（无 probe_zero/policy 键）加载且数据保留",
+      "legacy.exe" in _l_old34.profiles and _l_old34.profiles["legacy.exe"].probe_zero == 0
+      and _l_old34.profiles["legacy.exe"].alpha == 5)
 
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))

@@ -16,6 +16,7 @@ from core.engine import (
     fmt_label, fmt_count, MemWiseEngine,
     _watchdog_path, _spawn_watchdog, _update_watchdog_daemon,
     read_watchdog_daemon, remove_watchdog, _install_crash_sink, _event_log,
+    init_runtime,
 )
 
 from core import winapi
@@ -150,6 +151,36 @@ _tray_action = None  # 'left' | 'right' | 'hotkey' | None
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p)
 
+# 资源管理器重启广播消息（2026-09-11 审查 F7）：explorer 崩溃/重启后未处理此消息，
+# 托盘图标会永久消失（用户以为程序已退出）——必须在 wndproc 里识别并重挂
+_Usr32.RegisterWindowMessageW.restype = w.UINT
+_TASKBAR_CREATED = _Usr32.RegisterWindowMessageW("TaskbarCreated")
+
+
+def _relaunch_elevated():
+    """以管理员身份重启自身（2026-09-11 审查 F32）。返回 True = 已成功派生提权实例，
+    调用方应立即让位退出；False = 用户取消 / 无法提权，调用方以受限模式继续。
+
+    背景：打包清单为 asInvoker（PyInstaller 6.x 会用 uac_admin 参数改写清单里的执行级别，
+    highestAvailable 无法表达），管理员账户不再自动弹 UAC ⇒ 在此显式请求提权，得到
+    "优先管理员、失败降级标准"的语义。--elevated-retry 标记防止无限重启。"""
+    try:
+        if getattr(sys, "frozen", False):
+            exe, params = sys.executable, ""
+        else:
+            pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+            exe = pythonw if os.path.isfile(pythonw) else sys.executable
+            params = '"%s"' % os.path.abspath(__file__)
+        args = [a for a in sys.argv[1:] if a != "--elevated-retry"]
+        tail = " ".join(('"%s"' % a) if " " in a else a for a in args)
+        params = (params + " " + tail).strip()
+        params = (params + " --elevated-retry").strip()
+        ctypes.windll.shell32.ShellExecuteW.restype = ctypes.c_void_p
+        r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
+        return int(r or 0) > 32     # ShellExecuteW >32 = 成功
+    except Exception:
+        return False
+
 
 @WNDPROC
 def _wnd_proc(hwnd, msg, wp, lp):
@@ -166,6 +197,9 @@ def _wnd_proc(hwnd, msg, wp, lp):
             except Exception:
                 pass
             return winapi.CallWindowProcW(_orig_wndproc, hwnd, msg, wp, lp)
+        if msg == _TASKBAR_CREATED and _gui_ref is not None:
+            _tray_action = 'readd'   # 资源管理器重启 → 由 Tk 轮询器安全重挂托盘图标
+            return 0
         if msg == winapi.WM_TRAYICON and _gui_ref is not None:
             # LOWORD 解析（2026-08-30 审查）：legacy 格式 lParam=事件原值、v4 格式
             # HIWORD=uID——低字在两种格式下均为事件值，与托盘 ADD→SETVERSION（文档
@@ -302,6 +336,9 @@ def _activate_existing_instance():
 
 class MemWiseGUI:
     def __init__(self):
+        # 进程级初始化（DPI 感知 + 数据/配置目录预建，2026-09-11 审查 F38：
+        # 不再由 `import core.engine` 触发副作用，改为入口显式调用）
+        init_runtime()
         # 常驻崩溃现场（2026-08-30）：独立于「记录运行日志到文件」开关——默认关日志的
         # 分发用户崩溃后仍有 data/memwise_crash.log 可反馈（看门狗子进程不安装）
         _install_crash_sink()
@@ -323,12 +360,42 @@ class MemWiseGUI:
         # mutex 名固定不带版本号：版本升级后新旧实例互斥（原带版本号可双实例并存）
         self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
         _mutex_err = ctypes.windll.kernel32.GetLastError()
+        if _mutex_err in (0xB7, 5) and "--elevated-retry" in sys.argv:
+            # 自我提权重启的竞态（2026-09-11 审查 F32）：旧实例正在退出，短暂重试接管互斥
+            # （仅限本程序自身的提权重启路径，最多 4 秒；普通双开仍走下方即时退出分支）
+            for _ in range(20):
+                time.sleep(0.2)
+                self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
+                _mutex_err = ctypes.windll.kernel32.GetLastError()
+                if _mutex_err not in (0xB7, 5):
+                    break
         if _mutex_err in (0xB7, 5):
-            # mutex 冲突但窗口未找到（残留句柄或启动早期竞态）：防双开，直接退出
+            # mutex 冲突但本会话未找到窗口（残留句柄 / 启动早期竞态 / 另一用户会话）：
+            # 防双开直接退出，但静默退出会让用户以为程序坏了 ⇒ 弹原生提示
+            # （2026-09-11 审查 F8：跨用户会话场景下 EnumWindows 看不到他会话窗口，必然走到这里）
             if _mutex_err == 0xB7 or not self._mutex:
                 self._mutex = None
+                try:
+                    ctypes.windll.user32.MessageBoxW(
+                        None,
+                        tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
+                        "MemWise v4.4.021", 0x00000040)  # MB_ICONINFORMATION
+                except Exception:
+                    pass
                 sys.exit(0)
             _log_write("诊断", "单实例互斥权限受限且无窗口，继续运行")
+
+        # 优先以管理员权限启动（2026-09-11 审查 F32）：管理员账户未提权时显式请求提权，
+        # 成功则让位退出（提权实例接管）；用户取消或标准账户 ⇒ 以受限模式继续并给提示。
+        # --restored（崩溃自动恢复）不请求，避免恢复过程弹 UAC 打断用户。
+        if (not winapi.is_elevated()) and winapi.is_admin() and "--restored" not in sys.argv:
+            if _relaunch_elevated():
+                try:
+                    ctypes.windll.kernel32.CloseHandle(self._mutex)
+                except Exception:
+                    pass
+                self._mutex = None
+                sys.exit(0)
         
         # 崩溃恢复检测
         self._restored = "--restored" in sys.argv
@@ -393,11 +460,16 @@ class MemWiseGUI:
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
         self._log(f"MemWise v4.4.021 启动· 当前是否管理员权限:{adm}")
+        if not winapi.is_elevated():
+            # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
+            self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
         else:
-            self._log("🔄 检测到上次崩溃，已自动恢复")
+            # 崩溃恢复提示（2026-09-11 审查 F31）：补上"如何彻底退出"，避免用户用任务管理器
+            # 结束进程后被自动恢复、误以为程序无法关闭
+            self._log("🔄 检测到上次崩溃，已自动恢复（如需彻底退出，请用托盘右键菜单的「退出」）")
             # 恢复守护模式（仅当崩溃前守护运行中；否则保持空闲，尊重用户意图）
             # 延迟触发，让窗口完全初始化后再启动
             self.root.after(800, self._maybe_restore_daemon)
@@ -1016,7 +1088,7 @@ class MemWiseGUI:
             "  · 简体中文 — 默认\n"
             "  · English — 全界面切换为英文\n"
             "\n"
-            "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise1.log)作保留")
+            "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise.log.1)作保留")
         ttk.Label(langf, text=tr("（切换后立即生效）"), foreground="#888").pack(anchor="w", pady=(4,0))
 
         sf = ttk.LabelFrame(inner_frame, text=tr("启动"), padding=8)
@@ -1228,7 +1300,7 @@ class MemWiseGUI:
             _save_cfg()
         ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(ps_lbl, "每个进程反复清理的轮数（2~6，默认 4）\n越高释放越彻底，但耗时越长\n欲降低本程序性能占用建议 2~3\n对于更彻底的优化需求可设 5~6")
+        self._add_tip(ps_lbl, "每个进程反复清理的轮数（2~6，默认 4）\n越高释放越彻底，但耗时越长\n欲降低本程序性能占用建议 2~3\n对于更彻底的优化需求可设 5~6\n程序会在进程已无更多可释放内存时自动提前结束，不会为未执行的轮次额外等待")
         ps_sl = ttk.Scale(cf, from_=2, to=6, variable=passes_val, orient="horizontal",
                          command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
         ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
@@ -1274,18 +1346,44 @@ class MemWiseGUI:
             global CFG
             CFG["gap_seconds"] = int(float(v))
             _save_cfg()
-        gp_lbl = ttk.Label(gf, text=tr("守护清理间隔: ") + f"{gap_val.get()} " + tr("秒"), foreground="#555")
+        gp_lbl = ttk.Label(gf, text=tr("周期内轻量压制间隔: ") + f"{gap_val.get()} " + tr("秒"), foreground="#555")
         gp_lbl.pack(anchor="w", pady=(6,0))
         self._add_tip(gp_lbl, "守护模式每轮周期内的轻量阶段频率（8~20 秒，默认 12）\n"
                          "用于控制周期内清理操作的密集程度\n"
                          "间隔越短，同周期内清理次数越多，释放效果越彻底\n"
                          "但对性能的消耗也越高\n"
                          "欲降低本程序性能占用建议 15~20\n"
-                         "对于更彻底的优化需求可设 8~10")
+                         "对于更彻底的优化需求可设 8~10\n"
+                         "（完整收割周期见下方「守护周期」）")
         gp_sl = ttk.Scale(gf, from_=8, to=20, variable=gap_val, orient="horizontal",
-                         command=lambda v: gp_lbl.config(text=tr("守护清理间隔: ") + f"{int(float(v))} " + tr("秒")))
+                         command=lambda v: gp_lbl.config(text=tr("周期内轻量压制间隔: ") + f"{int(float(v))} " + tr("秒")))
         gp_sl.bind("<ButtonRelease-1>", lambda e: set_gap(gap_val.get()))
         gp_sl.pack(fill="x", pady=(0,6))
+        # ─── 守护周期（2026-09-11 审查 F24 新增）：真正的"多久收割一轮" ───
+        # 原先 interval 只能改配置文件，而界面上的「守护清理间隔」实际是周期内压制间隔，
+        # 用户极易误解 ⇒ 补一个真正的周期控件（10-3600 秒，与 config.load 钳制同域）
+        iv_val = tk.IntVar(value=CFG.get("interval", 60))
+        def set_iv(*_a):
+            try:
+                v = int(float(iv_val.get()))
+            except (TypeError, ValueError):
+                v = CFG.get("interval", 60)
+            v = max(10, min(3600, v))
+            CFG["interval"] = v
+            iv_val.set(v)
+            _save_cfg()
+        iv_row = ttk.Frame(gf); iv_row.pack(fill="x", pady=(6,0))
+        ttk.Label(iv_row, text=tr("守护周期: "), foreground="#555").pack(side="left")
+        iv_sp = ttk.Spinbox(iv_row, from_=10, to=3600, increment=10, width=7, textvariable=iv_val,
+                            command=set_iv)
+        iv_sp.pack(side="left", padx=(2,2))
+        ttk.Label(iv_row, text=tr("秒"), foreground="#555").pack(side="left")
+        iv_sp.bind("<FocusOut>", set_iv)   # 手动输入：失焦或回车生效（与热键输入同款，防高频写盘）
+        iv_sp.bind("<Return>", set_iv)
+        self._add_tip_row(iv_row,
+            "完整收割周期：每个周期内先做多次轻量压制，周期末按当前模式执行一次完整收割\n"
+            "范围 10-3600 秒，默认 60\n"
+            "周期越短响应越及时，越长越省资源")
 
         # ─── 日志（2026-08-16 归类整理：独立成栏）───
         lgf = ttk.LabelFrame(inner_frame, text=tr("日志"), padding=8)
@@ -1303,7 +1401,7 @@ class MemWiseGUI:
         lg_cb = ttk.Checkbutton(lgf, text=tr("记录运行日志到文件"),
                                 variable=lg_var, command=set_log)
         lg_cb.pack(anchor="w")
-        self._add_tip(lg_cb, "开启后，运行期间的全部信息写入日志文件（memwise.log/memwise1.log）：\n"
+        self._add_tip(lg_cb, "开启后，运行期间的全部信息写入日志文件（memwise.log/memwise.log.1）：\n"
                       "每轮清理摘要、界面日志消息、启动/退出、异常、调参、游戏模式切换等\n"
                       "日志自动轮转保留最近两份，无需手动清理")
 
@@ -2069,6 +2167,16 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    def _readd_tray(self):
+        """资源管理器重启后重挂托盘图标（2026-09-11 审查 F7）。
+        复用已缓存的 HICON（零新增 GDI 对象），随后按当前内存状态刷新颜色与提示。"""
+        try:
+            hwnd = int(self.root.winfo_id())
+            if winapi.tray_add(hwnd, TRAY_UID, self._tray_icon_handle, tr("MemWise — 智能内存看护")):
+                self._update_tray_status(getattr(self, '_mem_pct', 0) or 50)
+        except Exception:
+            pass
+
     def _poll_msg_queue(self):
         # ── 托盘事件 — 从 wndproc 标志安全分发（零 Tkinter 调用于 wndproc）──
         global _tray_action
@@ -2084,6 +2192,8 @@ class MemWiseGUI:
                     self._on_hotkey()
                 elif action == 'game':
                     self._on_toggle_game()
+                elif action == 'readd':
+                    self._readd_tray()   # 资源管理器重启：重挂托盘图标（2026-09-11 审查 F7）
         except Exception:
             pass
         # ── 消息队列 ──

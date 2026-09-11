@@ -3,7 +3,7 @@ PARES Judger — PID 压力控制器 + Thompson Sampling 联合判定
 """
 import time
 import os, sys, random, threading
-from .learner import _is_system_core
+from .learner import _is_system_core, _is_self_process
 from . import winapi
 from .stable import EXPLORE_RATE
 from .i18n import tr
@@ -136,6 +136,20 @@ class PareJudger:
         #    can_trim 的 suppress_cnt 自增）与守护主线程（update_activity 重置）并发——
         #    无锁 += 会因 read-modify-write 交错丢更新（EFIS 诊断输入失真）──
         self._lock = threading.Lock()
+        # ── PF 自身速率基线（2026-09-11 审查 F47）：{pid: (pf, t)} 上次观测 + {pid: 速率 EWMA} ──
+        # 用途：把"进程本来就在干活产生的页错"从"本次清理的副作用"里扣除，否则活跃回填进程
+        # 会被 PF 判据恒判失败（实测连续 6 次 6/6 判 PF超标、β 2→7、清后基线永不建立）
+        self._pf_hist = {}
+        self._pf_rate = {}
+
+    def _gate(self, key, default):
+        """读取 EFIS 可调门限（2026-09-11 审查 F22 接线；缺失/非法时回退默认值——
+        旧状态文件、旧 config、内部调用路径都安全）"""
+        try:
+            v = float(self.cfg.get("efis_params", {}).get(key, default))
+            return v if v > 0 else default
+        except (TypeError, ValueError):
+            return default
 
     # ── PID ──
 
@@ -183,6 +197,10 @@ class PareJudger:
         # ── 游戏模式：游戏进程绝对保护（按实际检测 PID，精确到实例）──
         if self.game_mode and snap.pid in self._game_pid_set:
             return False, "游戏进程(保护)"
+
+        # ── 本程序自身（含看门狗子进程/多实例）：按可执行路径精确排除（2026-09-11 审查 F48）──
+        if _is_self_process(snap):
+            return False, "程序自身"
         
         # 安全规则 (不变)
         if _is_system_core(name):
@@ -224,7 +242,9 @@ class PareJudger:
         #    full 模式跳过——极限释放不设 CPU 门槛（量化：12% 门在浏览器高峰/IDE 编译场景
         #    拖累 18-26% 释放量，大内存进程恰是 CPU 活跃大户；3.x 无此门，full 回归同口径）──
         if _guard != "full":
-            _cpu_gate = 8.0
+            # 门限由 EFIS 自适应（2026-09-11 审查 F22）：cpu_gate 已纳入 PARAMS，默认 8% 与
+            # 现状一致；该门在真实负载下影响 18-26% 释放量（见 optimization-specs），值得自调
+            _cpu_gate = self._gate("cpu_gate", 8.0)
             if (getattr(snap, "cpu", 0.0) or 0.0) >= _cpu_gate:
                 return False, "CPU活跃"
 
@@ -330,7 +350,9 @@ class PareJudger:
     def can_probe(self, snap):
         """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""
         name = snap.name.lower()
-        if _is_system_core(name):return False
+        # 系统核心 / 本程序自身（含看门狗）不试探（2026-09-11 审查 F48）
+        if _is_system_core(name) or _is_self_process(snap):
+            return False
         # 游戏模式：不试探（流畅优先，只做确定性清理）
         if self.game_mode:
             return False
@@ -338,7 +360,11 @@ class PareJudger:
         never = self.cfg.get("never", [])
         if name in never or snap.pid in never:
             return False
-        # WS 门槛已移除
+        # WS 下限（2026-09-11 审查 F48 恢复）：与 _trim_process 的"WS太小"门槛同为 1 MB。
+        # 低于此值的进程即便清到极限也只释放几百 KB，却要为每次试探付出 0.2 s 等待 + PF 抖动；
+        # 实测 373 个画像累计试探 207.6 万次、53 个"WS<20MB 却试探>5000 次"的画像即源于此。
+        if (getattr(snap, "ws", 0) or 0) < (1 << 20):
+            return False
         # 前台进程不 probe，避免干扰
         if getattr(snap, "fg", False):return False
         # θ 过低且有足够样本时暂时跳过探测，但冷却后重新评估
@@ -357,7 +383,11 @@ class PareJudger:
                      "probe_last_time": self._probe_last_time}
             ok, _ = self.learner.policy.should_probe(name, snap.ws, state, self.learner)
             boost = 0.3 if ok else 1.0
-        dynamic_interval = int(getattr(self, '_probe_dynamic_interval', 120) * boost)
+        # 零释放退避（2026-09-11 审查 F48）：连续多次"成功但零释放"= 该目标无收益，
+        # 拉长间隔 20 倍（能力保留，只是不再空耗 0.2 s/次 + PF 抖动）
+        _zz = getattr(profile, "probe_zero", 0) if profile else 0
+        dynamic_interval = int(getattr(self, '_probe_dynamic_interval', 120) * boost
+                               * (20 if _zz >= 3 else 1))
         last = self._probe_last_time.get(name, 0)
         if last > 0 and time.time() - last < dynamic_interval:return False
         return True
@@ -402,10 +432,24 @@ class PareJudger:
     # ── PF 反馈 ──
 
     def record_pf_before(self, pid, pf):
-        self.pf_before[pid] = (pf, time.time())
+        """记录清理前 PF，并同步维护该进程"自身 PF 速率"（2026-09-11 审查 F47）：
+        两次观测差分/时间 → EWMA。用于把"进程本来就在工作产生的页错"从清理副作用里扣除。"""
+        now = time.time()
+        prev = self._pf_hist.get(pid)
+        if prev is not None:
+            dpf = pf - prev[0]
+            dtp = now - prev[1]
+            if dpf >= 0 and dtp >= 0.5:
+                r = dpf / dtp
+                self._pf_rate[pid] = 0.5 * r + 0.5 * self._pf_rate.get(pid, r)
+        self._pf_hist[pid] = (pf, now)
+        self.pf_before[pid] = (pf, now)
 
     def check_feedback(self, pid, pf_after, ws_before, ws_after, passes=2):
-        """检查清理效果，返回 (ok, freed, pf_delta)"""
+        """检查清理效果，返回 (ok, freed, pf_delta)。PF 判据的允许量在原有基线之上叠加工序
+        自身的 PF 速率推算量（2026-09-11 审查 F47）：活跃回填进程的页错主要来自它自己在工作，
+        原先一律算作"本次清理的副作用"⇒ 这类进程恒判失败（实测 6/6）、β 单调升、清后基线永不
+        建立。扣除自身速率后，判据重新只衡量"清理本身带来的额外代价"，原基线全部保留。"""
         entry = self.pf_before.pop(pid, None)
         if entry is None:
             return True, ws_before, 0
@@ -415,8 +459,9 @@ class PareJudger:
         with self._lock:  # trim 池并发调用，锁内累加防丢更新
             self.pf_delta_total = getattr(self, "pf_delta_total", 0) + pf_delta
         freed = max(0, ws_before - ws_after)
-        # PF 成本：empty_ws 每轮 ~40 PF
-        allowed_pf = max(120, int(50 * dt), int(freed / (1 << 20) * 10), passes * 40)
+        # PF 成本：empty_ws 每轮 ~40 PF；own = 按该进程自身速率推算的正常页错
+        own = int(self._pf_rate.get(pid, 0.0) * dt)
+        allowed_pf = max(120, int(50 * dt), int(freed / (1 << 20) * 10), passes * 40) + own
         ok = pf_delta <= allowed_pf
         return ok, freed, pf_delta
 
@@ -434,6 +479,11 @@ class PareJudger:
         for k in list(self.pf_before.keys()):
             if now - self.pf_before[k][1] > 60:
                 del self.pf_before[k]
+        # 清理过期 PF 速率基线（与 pf_before 同窗口，2026-09-11 审查 F47）
+        for k in list(self._pf_hist.keys()):
+            if now - self._pf_hist[k][1] > 600:
+                del self._pf_hist[k]
+                self._pf_rate.pop(k, None)
         # 清理过期试探时间戳（>30分钟无活动的进程）
         for k in list(self._probe_last_time.keys()):
             if now - self._probe_last_time[k] > 1800:
@@ -467,13 +517,14 @@ class PareJudger:
         with self._lock:
             self.suppress_cnt = 0
         now = time.time()
+        _cpu_gate = self._gate("cpu_gate", 8.0)   # 与 can_trim 同一门限来源（EFIS 可调）
         for s in snaps:
             cpu = getattr(s, "cpu", 0.0) or 0.0
             create = getattr(s, "create", None)
             prev = self._low_activity.get(s.pid)
             if prev is not None and len(prev) >= 3 and prev[2] != create:
                 prev = None  # 进程重启：旧计数作废，重新确认
-            if cpu < 8.0:
+            if cpu < _cpu_gate:
                 self._low_activity[s.pid] = (prev[0] + 1 if prev else 1, now, create)
             else:
                 self._low_activity.pop(s.pid, None)
@@ -492,7 +543,7 @@ class PareJudger:
         dt = now - prev[1]
         if dt <= 0.1 or io < prev[0]:
             return False
-        return (io - prev[0]) / dt > (4 << 20)
+        return (io - prev[0]) / dt > (self._gate("io_gate", 4.0) * (1 << 20))
 
     def update_anchors(self, snaps, now=None):
         """喂锚点自然 WS 样本：排除清理后回填期（120s——回填不是自然稳态，防锚点被压低）；

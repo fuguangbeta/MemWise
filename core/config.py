@@ -121,11 +121,13 @@ def load():
                     float(d["efis_params"][_k])
                 except (TypeError, ValueError):
                     del d["efis_params"][_k]
-        # 数值键范围钳制（2026-08-30 审查）：GUI 滑块范围是唯一合法面，手改 config 的越界值
-        # 原样透传会绕过全部门槛（emergency_threshold: 0 → 每周期紧急 full，实验实证）——
-        # 与 efis_params 的 min/max 夹取同理念补齐；正常用户（GUI 写入）零感知
-        for _k, _lo, _hi in (("emergency_threshold", 50, 99), ("clean_passes", 2, 6),
-                             ("interval", 10, 3600), ("gap_seconds", 8, 20)):
+        # 数值键范围钳制（2026-08-30 审查；2026-09-11 扩充）：GUI 滑块范围是唯一合法面，手改
+        # 越界值会绕过全部门槛——已实证两例：emergency_threshold:0 → 每周期固定紧急 full；
+        # emergency_abs_pct ≥100 → "可用率 ≤ ap" 恒真 → 同样每周期恒紧急 full（本次新增钳制）。
+        # target_usage 是 EFIS 同名参数的兜底（EFIS 恒提供该键），按其边界 35-65 钳制。
+        for _k, _lo, _hi in (("emergency_threshold", 50, 99), ("emergency_abs_pct", 0, 99),
+                             ("clean_passes", 2, 6), ("interval", 10, 3600),
+                             ("gap_seconds", 8, 20), ("target_usage", 35, 65)):
             try:
                 _v = int(float(d.get(_k, DEFAULT_CFG[_k])))
             except (TypeError, ValueError):

@@ -2,7 +2,7 @@
 PARES Learner — Predictive Adaptive Reinforcement Engine
 Thompson Sampling + 3x EWMA + Z-score + 趋势线
 """
-import json, os, time, math, random, threading
+import json, os, sys, time, math, random, threading
 from .kalman import KalmanProfile
 from .prior import HierarchicalPrior
 from .policy import PolicyVoter
@@ -44,6 +44,34 @@ def _is_system_core(name):
         return False
     return n in SYSTEM_CORE_EXE or n in SYSTEM_CORE
 
+
+_SELF_EXE_PATH = None   # 模块级缓存：本程序可执行文件的规范化路径
+
+def _is_self_path(path):
+    """给定可执行路径是否为『本程序自身的可执行文件』（含看门狗子进程与多实例）。
+    按规范化【完整路径】精确匹配——同名但不同路径的他人程序不受影响。
+    用途（2026-09-11 审查 F48）：看门狗是同一 exe 的 --watchdog 子进程，主程序原先只按 PID
+    排除自身，实测对看门狗累计清理 7,786 次 / 试探 50,186 次（零收益且挤占预算）。
+    注：脚本方式运行时 sys.executable 为解释器路径，同解释器启动的其它进程也会被排除——
+    这是冻结分发（唯一权威形态）下的精确语义，脚本态偏保守属可接受代价。"""
+    global _SELF_EXE_PATH
+    if _SELF_EXE_PATH is None:
+        try:
+            _SELF_EXE_PATH = os.path.normcase(os.path.abspath(sys.executable)) if sys.executable else ""
+        except Exception:
+            _SELF_EXE_PATH = ""
+    if not _SELF_EXE_PATH or not path:
+        return False
+    try:
+        return os.path.normcase(os.path.abspath(path)) == _SELF_EXE_PATH
+    except Exception:
+        return False
+
+
+def _is_self_process(snap):
+    """快照对应的进程是否为本程序自身（统一入口，与 _is_self_path 同判据）"""
+    return _is_self_path(getattr(snap, "path", None))
+
 class Profile:
     """进程画像 — 每个进程一个"""
     __slots__ = ("name", "alpha", "beta", "_theta_cache", "_theta_dirty", "ws_deque",
@@ -53,7 +81,7 @@ class Profile:
                  "ws_ewma_mu", "ws_ewma_sigma",
                  "last_ok", "ok_cnt", "fail_cnt",
                  "last_seen", "last_ws",
-                 "probe_ok", "probe_fail",
+                 "probe_ok", "probe_fail", "probe_zero",
                  "leak_suspect", "leak_tick_count",
                  "clean_count", "refill_ewma",
                  "kalman", "last_feedback_time",
@@ -91,6 +119,7 @@ class Profile:
         # Probe 计数器
         self.probe_ok = 0
         self.probe_fail = 0
+        self.probe_zero = 0  # 连续"试探成功但零释放"次数（零释放退避用，2026-09-11 审查 F48）
         # 泄漏检测
         self.leak_suspect = False
         self.leak_tick_count = 0
@@ -237,8 +266,7 @@ class Profile:
                 freed_mb = max(1, freed / (1 << 20))
                 scale = 1.0 + min(1.5, math.log2(freed_mb + 1) / 6)
                 self.alpha += scale * (1 + min(2.0, bonus))
-            else:
-                self.alpha += 0.5  # 成功但没释放到内存 → 部分奖励
+            # （原"成功但零释放 → α += 0.5"已移除：见 record_probe 同款说明，2026-09-11 审查 F48）
         else:
             self.fail_cnt += 1
             self.ok_cnt = 0
@@ -262,10 +290,16 @@ class Profile:
             self.probe_ok += 1
             # 释放越多 → 奖励越多
             if freed > 0:
+                self.probe_zero = 0
                 ratio = min(3.0, freed / max(self.gain_ewma + 1, 1))
                 self.alpha += 1 + min(2.0, (ratio - 1) * 1.5)
             else:
-                self.alpha += 0.7  # 成功但没释放 → 部分奖励
+                # ⚠ 2026-09-11 审查 F48 修复：原对"成功但零释放"给 α += 0.7，对 WS≈0 的目标
+                # 形成正反馈（越试 θ 越高 ⇒ 越容易被再试）。实测 373 个画像累计试探 207.6 万次、
+                # 单个 2.9 MB 进程 18.1 万次、程序自身看门狗 5.0 万次。零释放只是"此处无收益"
+                # 的信息，不构成"值得清"的证据 ⇒ 不再抬升 α，改为累计零释放计数驱动退避
+                # （成本由退避控制，不削减对高价值目标的试探能力）
+                self.probe_zero += 1
         else:
             self.probe_fail += 1
             self.beta += 1
@@ -324,6 +358,7 @@ class Profile:
             "last_foreground_at": self.last_foreground_at,
             "last_ws": self.last_ws,
             "probe_ok": self.probe_ok, "probe_fail": self.probe_fail,
+            "probe_zero": self.probe_zero,
             "leak_suspect": self.leak_suspect,
             "leak_tick_count": self.leak_tick_count,
             "clean_count": self.clean_count,
@@ -362,6 +397,7 @@ class Profile:
         p.last_ws = max(0, int(_num(d.get("last_ws", 0))))
         p.probe_ok = max(0, int(_num(d.get("probe_ok", 0))))
         p.probe_fail = max(0, int(_num(d.get("probe_fail", 0))))
+        p.probe_zero = max(0, int(_num(d.get("probe_zero", 0))))
         p.leak_suspect = bool(d.get("leak_suspect", False))
         p.leak_tick_count = max(0, int(_num(d.get("leak_tick_count", 0))))
         p.clean_count = max(0, int(_num(d.get("clean_count", 0))))
@@ -494,6 +530,12 @@ class PareLearner:
                     k: v for k, v in dict(self.profiles).items()
                     if now - v.last_seen < cutoff or v.alpha != 2 or v.beta != 1
                 }
+                # 内存侧同口径淘汰（2026-09-11 审查 F26）：落盘过滤只作用在文件上，内存字典会
+                # 无界增长（实测 200 条画像仅 0 条落盘）。判据与落盘完全一致 ⇒ 行为差为零
+                # （这些画像重启后本就不复存在），只是把内存也一并释放。
+                for _k in [k for k, v in dict(self.profiles).items()
+                           if now - v.last_seen >= cutoff and v.alpha == 2 and v.beta == 1]:
+                    self.profiles.pop(_k, None)
                 data = {
                     "version": 4,
                     "profiles": {k: v.to_dict() for k, v in filtered.items()},

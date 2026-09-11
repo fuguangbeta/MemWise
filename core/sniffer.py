@@ -65,10 +65,11 @@ class Sniffer:
             if mem.get("kernel") is not None:
                 now = {"kernel": mem["kernel"], "user": mem["user"], "create": mem.get("create")}
             else:
-                # 回退路径（bulk 失败逐进程读）：无创建时间，PID 复用检测降级
+                # 回退路径（bulk 失败逐进程读）：创建时间同样可取 ⇒ PID 复用防护两条路径一致
+                # （2026-09-11 审查 F42 附修：原回退路径置 create=None，数据源切换即静默失去防护）
                 t = winapi.get_process_times(pid)
                 if t:
-                    now = {"kernel": t["kernel"], "user": t["user"], "create": None}
+                    now = {"kernel": t["kernel"], "user": t["user"], "create": t.get("create")}
             cpu = 0.0
             if now and sys_delta > 0 and pid in self._prev_times:
                 prev = self._prev_times[pid]

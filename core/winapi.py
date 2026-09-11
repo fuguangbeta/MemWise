@@ -236,12 +236,15 @@ def is_foreground_fullscreen():
     return rect.left <= 0 and rect.top <= 0 and rect.right >= screen_w and rect.bottom >= screen_h
 
 def get_process_times(pid):
+    """进程时间（FILETIME 100ns 单位；与 get_all_processes_memory 同源）。
+    create 供 PID 复用防护使用——两条路径（批量/回退）都必须提供，否则复用防护会随
+    数据源切换而静默失效（2026-09-11 审查 F42 附修）"""
     h = OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
     if not h: return None
     try:
         ct, et, kt, ut = FILETIME(), FILETIME(), FILETIME(), FILETIME()
         if GetProcessTimes(h, ctypes.byref(ct), ctypes.byref(et), ctypes.byref(kt), ctypes.byref(ut)):
-            return {"kernel": _ft_to_ns(kt), "user": _ft_to_ns(ut)}
+            return {"create": _ft_to_ns(ct), "kernel": _ft_to_ns(kt), "user": _ft_to_ns(ut)}
         return None
     finally:
         CloseHandle(h)
@@ -430,13 +433,18 @@ _SPI_LAYOUTS = (
     (0x68, 0x1E8, 0x200, 0x28, 0x30, 0x20),  # Win10 1809-1903 附近
     (0x68, 0x1C8, 0x1E0, 0x28, 0x30, 0x20),  # 更早版本
 )
-_spi_layout = None  # 模块级缓存：首次自校验后锁定
+_spi_layout = None  # 模块级缓存：首次自校验后锁定；False = 已确认全候选不匹配（防每轮重复重试）
 
 def _resolve_spi_layout(buf, ret_len):
-    """用自身进程的已知 PID/WS/CPU 时间交叉校验，选定结构布局（失败返回 None，调用方有兜底）"""
+    """用自身进程的已知 PID/WS/CPU 时间交叉校验，选定结构布局（失败返回 None，调用方有兜底）。
+    单位口径（2026-09-11 审查 F42 修复）：缓冲区内的 KernelTime/UserTime 与 get_process_times()
+    同为 FILETIME 100ns 单位——旧实现把缓冲值 ×100 与未换算的自身值比较（差 100 倍），
+    使"自证"只在进程 CPU 时间 ≤ 约 50 ms 时偶然通过；一旦进程已运行稍久（GUI 真实启动序列
+    实测 kernel 171.9 ms），布局永远解析失败 ⇒ 批量快照整条链路失效（退回逐进程 OpenProcess、
+    create 恒空 ⇒ PID 复用防护与锚点代际隔离双双失效）。现两侧同单位比较，不再依赖调用时机。"""
     global _spi_layout
-    if _spi_layout:
-        return _spi_layout
+    if _spi_layout is not None:
+        return _spi_layout or None
     import os
     self_pid = os.getpid()
     self_ws = 0
@@ -460,16 +468,17 @@ def _resolve_spi_layout(buf, ret_len):
                 ws = ctypes.c_size_t.from_buffer(buf, off + ws_off).value
                 if abs(ws - self_ws) <= (1 << 20):  # 1MB 容差（两次读取间瞬时抖动）
                     if self_kt is not None:
-                        # CPU 时间交叉校验（buffer 100ns 单位 → ns；容差 50ms）
-                        kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value * 100
-                        ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value * 100
-                        if abs(kt - self_kt) > 50_000_000 or abs(ut - self_ut) > 50_000_000:
+                        # CPU 时间交叉校验（同单位 100ns；容差 50ms = 500000）
+                        kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value
+                        ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value
+                        if abs(kt - self_kt) > 500_000 or abs(ut - self_ut) > 500_000:
                             break  # 该候选布局 CPU 偏移不符，试下一个
                     _spi_layout = (pid_off, ws_off, priv_off, user_off, kernel_off, create_off)
                     return _spi_layout
             if ne == 0:
                 break
             off += ne
+    _spi_layout = False  # 全部候选不匹配：缓存失败态，调用方据此走回退路径且不再重复重试
     return None
 
 def get_all_processes_memory():
@@ -497,6 +506,8 @@ def get_all_processes_memory():
             continue
         layout = _resolve_spi_layout(buf, ret_len)
         if not layout:
+            if _spi_layout is False:
+                return {}   # 布局已确认不匹配：直接回退，不再重复 3 次 NtQuery（省重复系统调用）
             continue
         pid_off, ws_off, priv_off, user_off, kernel_off, create_off = layout
         result = {}
@@ -507,9 +518,12 @@ def get_all_processes_memory():
             if pid and pid > 4:
                 ws = ctypes.c_size_t.from_buffer(buf, off + ws_off).value
                 priv = ctypes.c_size_t.from_buffer(buf, off + priv_off).value
-                kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value * 100
-                ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value * 100
-                ct = ctypes.c_ulonglong.from_buffer(buf, off + create_off).value * 100
+                # 时间字段统一 FILETIME 100ns（与 get_process_times/get_system_times 同源）
+                # ——旧实现 ×100 转 ns 而消费方按 100ns 折算，令 CPU% 放大 100 倍并被
+                # min(100.0) 截断（2026-09-11 审查 F43：修 F42 后此缺陷会立即暴露）
+                kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value
+                ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value
+                ct = ctypes.c_ulonglong.from_buffer(buf, off + create_off).value
                 result[pid] = {"ws": ws, "priv": priv, "pf": 0,
                                "kernel": kt, "user": ut, "create": ct}
             if ne == 0:
@@ -654,42 +668,90 @@ def purge_low_priority_standby():
     except Exception:
         return False
 
+# ── 文件缓存上下限（字节口径权威 API）与 SystemFileCacheInformation（Nt 类 0x15）──
+# 字段单位（2026-09-11 审查 F45 实测确认）：CurrentSize/PeakSize = 字节；
+# Minimum/MaximumWorkingSet = 页（×page_size 恰好等于 GetSystemFileCacheSize 返回的字节值）
+GetSystemFileCacheSize = k32.GetSystemFileCacheSize
+GetSystemFileCacheSize.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(w.DWORD)]
+GetSystemFileCacheSize.restype = w.BOOL
+SetSystemFileCacheSize = k32.SetSystemFileCacheSize
+SetSystemFileCacheSize.argtypes = [ctypes.c_size_t, ctypes.c_size_t, w.DWORD]
+SetSystemFileCacheSize.restype = w.BOOL
+
+_SFCI_CACHE_TARGET_PAGES = 4096   # 回收目标 4096 页 = 16 MB（实测回收 99.7%，且远离 0 更安全）
+
+
+class _SFCI(ctypes.Structure):
+    _fields_ = [
+        ("CurrentSize", ctypes.c_size_t),
+        ("PeakSize", ctypes.c_size_t),
+        ("PageFaultCount", ctypes.c_ulong),
+        ("MinimumWorkingSet", ctypes.c_size_t),
+        ("MaximumWorkingSet", ctypes.c_size_t),
+        ("Unused", ctypes.c_size_t * 4),
+    ]
+
+
+def get_system_file_cache_limits():
+    """文件缓存上下限（字节，权威 API）——供恢复与回读校验使用"""
+    mn = ctypes.c_size_t(); mx = ctypes.c_size_t(); fl = w.DWORD()
+    if GetSystemFileCacheSize(ctypes.byref(mn), ctypes.byref(mx), ctypes.byref(fl)):
+        return (mn.value, mx.value)
+    return None
+
+
 def clear_system_file_cache_ex():
-    """SystemFileCacheInformationEx — 强制 OS 回收文件缓存。
-    正确序列：查询当前 → Min=Max=PeakSize 强制回收 → 恢复原始 Min/Max 默认上限。
-    2026-08-11 专项排查：原 Min=Max=MAXSIZE 实现返回 0xC000009A（资源不足）从未生效；
-    恢复返回 0x40000002 为警告级（最终状态正确），视为成功；恢复失败时如实返回 False，
-    防止文件缓存上限被静默锁死在回收后大小（恢复用 step1 查询到的原始 Min/Max，最精确）。"""
-    try:
-        _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        class _SFCI(ctypes.Structure):
-            _fields_ = [
-                ("CurrentSize", ctypes.c_size_t),
-                ("PeakSize", ctypes.c_size_t),
-                ("PageFaultCount", ctypes.c_ulong),
-                ("MinimumWorkingSet", ctypes.c_size_t),
-                ("MaximumWorkingSet", ctypes.c_size_t),
-                ("Unused", ctypes.c_size_t * 4),
-            ]
-        info = _SFCI()
-        ret_len = w.ULONG()
-        # 1. 查询当前（完整字段，Min/Max 原始值供恢复用）
-        if NtQuerySystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(ret_len)) != 0:
-            return False
-        orig_min, orig_max = info.MinimumWorkingSet, info.MaximumWorkingSet
-        # 2. Min=Max=PeakSize → 强制回收
-        info.MinimumWorkingSet = info.PeakSize
-        info.MaximumWorkingSet = info.PeakSize
-        if NtSetSystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info)) != 0:
-            return False
-        # 3. 恢复原始上限（0x40000002 警告级部分成功，最终状态正确；失败如实返回 False）
-        info2 = _SFCI()
-        info2.MinimumWorkingSet = orig_min
-        info2.MaximumWorkingSet = orig_max
-        ret = NtSetSystemInformation(0x15, ctypes.byref(info2), ctypes.sizeof(info2))
-        return ret == 0 or (ret & 0xFFFFFFFF) == 0x40000002
-    except Exception:
+    """强制 OS 回收文件缓存 —— 可回收 + 可验证 + 不留系统级副作用（2026-09-11 审查 F45 重写）。
+    旧实现两处缺陷（均实测）：① 把字节口径的 PeakSize 写进页口径的 Min/Max 字段 ⇒ 等于请求
+    1.1 TB 上限，实测回收 0 字节；② "恢复"用新建结构写回（其余字段清零）且不回读校验，实测把
+    系统文件缓存上限从 16 TiB 改写成 4 GiB 后不再回滚。
+    新序列：① GetSystemFileCacheSize 取原始字节上下限（权威，供恢复）
+            ② 保留查询到的真实字段，仅把 Min=Max 设为 4096 页（16 MB）强制回收
+            ③ **短暂驻留并轮询**等待缓存管理器执行裁剪（实测：钳制后立刻恢复会被合并/忽略 ⇒
+               回收 0；驻留 ~0.4 s 时回收 99.7%）
+            ④ SetSystemFileCacheSize 恢复①的字节值 + 回读校验（≤3 次）
+    返回值：仅当"上限已确认恢复"且"确实回收了缓存（或缓存本就不足 32 MB 无需回收）"时为 True
+            —— 与 Layer1/Layer3 的"按 API 真实成功计数"口径一致，不虚增统计。"""
+    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
         return False
+    orig = get_system_file_cache_limits()
+    if not orig:
+        return False
+    _pi0 = get_performance_info()
+    before = _pi0["system_cache"] if _pi0 else 0
+    # 缓存本已极小（清理待机列表后常见，实测 2114→25 MB）⇒ 无需钳制：直接视为达成，
+    # 零耗时且完全不触碰系统上限（2026-09-11 实测：此状态下钳制收益恒为 0）
+    if before <= (32 << 20):
+        return True
+    info = _SFCI()
+    ret_len = w.ULONG()
+    if NtQuerySystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(ret_len)) != 0:
+        return False
+    # ② 保留 CurrentSize/PeakSize/PageFaultCount 等真实字段，只改页口径的上下限
+    info.MinimumWorkingSet = _SFCI_CACHE_TARGET_PAGES
+    info.MaximumWorkingSet = _SFCI_CACHE_TARGET_PAGES
+    ret = NtSetSystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info))
+    ok_set = ret == 0 or (ret & 0xFFFFFFFF) == 0x40000002
+    # ③ 驻留 + 轮询观察裁剪是否落实（实测：钳制后立刻恢复会被合并/忽略 ⇒ 回收 0；驻留
+    #    ~0.4 s 时曾实测回收 99.7%。上限 0.8 s，多数情况提前命中）
+    low = before
+    if ok_set:
+        for _ in range(10):
+            time.sleep(0.08)
+            pi = get_performance_info()
+            if pi:
+                low = min(low, pi["system_cache"])
+                if low < max(1 << 20, before // 10):
+                    break
+    # ④ 恢复原始字节上下限 + 回读校验
+    restored = False
+    for _ in range(3):
+        SetSystemFileCacheSize(orig[0], orig[1], 0)
+        if get_system_file_cache_limits() == orig:
+            restored = True
+            break
+    released = max(0, before - low)
+    return bool(restored and ok_set and (released > (1 << 20) or before <= (32 << 20)))
 
 
 # ============================================================
