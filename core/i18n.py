@@ -368,6 +368,13 @@ _EN = {
     "↓频繁调参": "↓ Tuning too often",
     "↑覆盖广泛": "↑ Wide coverage",
     "↓覆盖狭窄": "↓ Narrow coverage",
+    # ── ERIS v7 因子词条（四字统一，2026-09-11 用户定稿）──
+    "↑释放彻底": "↑ Thorough release",
+    "↓释放不全": "↓ Incomplete release",
+    "↑清理畅通": "↑ Cleaning unobstructed",
+    "↓清理受阻": "↓ Cleaning obstructed",
+    "↑试探高效": "↑ Probes effective",
+    "↓试探低效": "↓ Probes ineffective",
     "🚀效率超常": "🚀 Exceptional efficiency",
     "⚠效率异常": "⚠ Abnormal efficiency",
     "🔥持续改善": "🔥 Improving steadily",

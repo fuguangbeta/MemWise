@@ -210,7 +210,6 @@ def remove_watchdog():
 
 
 from core import winapi
-from core.eris import iqr_dim, validate_state  # ERIS 纯函数核心（与回归测试共用）
 from core.i18n import set_language  # 界面语言（tr 由各算法模块独立导入）
 from core.config import load as _load_cfg
 from core.config import get_state_path
@@ -519,15 +518,18 @@ class MemWiseEngine:
         # ERIS 状态（分位数窗/平滑/趋势/防振荡）
         self._eris_lock = threading.Lock()
         self._eris_save_lock = threading.Lock()    # ERIS 状态持久化互斥锁（守护线程与退出线程可能并发写）
-        self._eris_bufs = None
-        self._eris_p50_ewma = [0.0] * 5
-        self._eris_iqr_ewma = [0.0] * 5
-        self._eris_ewma_trend = []
-        self._eris_prev = None
-        self._eris_prev_factor_dim = -1
-        self._eris_prev_factor_pos = None
+        # ── ERIS v7 状态（2026-09-11 用户定稿：五维绝对标尺 + N=3 平滑 + Σ÷K）──
+        from collections import deque as _dq
+        from core.eris import SMOOTH_N as _SN
+        self._eris_hist = [_dq(maxlen=_SN) for _ in range(5)]   # 每维滚动窗（平滑用）
+        self._eris_prev_scores = None    # 上轮五维分（词条同向判定）
+        self._eris_prev_eff = None       # 上轮效率（平稳/趋势判定）
+        self._eris_trend = []            # 方向序列（含 <2 的轮次，±1/0；极性轮 99/-99 打断）
+        self._cycle_pf = 0               # 本周期 PF 增量（副作用维）
+        self._cycle_probe = (0, 0)       # 本周期 试探(成功, 总数)（试探维）
+        self._cycle_trim_detail = []     # 本周期每进程 (释放量, 惯常释放量)（释放彻底维）
         self._last_eris_game_mode = None
-        self._load_eris_ewma()  # 在 daemon 首次调用 _compute_eris 前完成加载
+        self._load_eris_state()  # 在 daemon 首次调用 _compute_eris 前完成加载
 
         # 周期基线/去重状态
         self._cycle_trimmed = 0
@@ -583,7 +585,7 @@ class MemWiseEngine:
         self._eff_factors.clear()
         self._chart_cycle_meta.clear()
         self._chart_bar_seq = 0
-        self._load_eris_ewma()  # 恢复 EWMA 基线
+        self._load_eris_state()  # 恢复 ERIS v7 状态
         self._last_sys_ops = 0
         self._cycle_trimmed = 0
         self._cycle_failed = 0
@@ -629,7 +631,7 @@ class MemWiseEngine:
             self.learner.save(self._state_file)
         except Exception:
             pass
-        self._save_eris_ewma()
+        self._save_eris_state()
 
     def shutdown(self):
         """停止守护并释放资源（退出流程用）"""
@@ -1017,6 +1019,18 @@ class MemWiseEngine:
                 probe_all.extend(result.get("probe", []))
                 l2_results = l2_all
                 probe_results = probe_all
+                # ERIS v7 释放彻底维：本周期每进程 (实际释放, 该进程惯常释放量)
+                try:
+                    _det = []
+                    for _t in (l2_results or []):
+                        if len(_t) >= 4 and _t[1] and _t[2]:
+                            _pr = self.learner.get_profile(getattr(_t[0], "name", ""))
+                            _g = float(getattr(_pr, "gain_ewma", 0) or 0)
+                            if _g > 0:
+                                _det.append((float(_t[2]), _g))
+                    self._cycle_trim_detail = _det
+                except Exception:
+                    self._cycle_trim_detail = []
                 s = self.cleaner.summary()
                 # 计算本周期 delta
                 cur_trim = s['ws_trim']
@@ -1054,7 +1068,7 @@ class MemWiseEngine:
                     last_save = now
                     self.judger.purge_expired()
                     self.learner.save(self._state_file)
-                    self._save_eris_ewma()  # ERIS 分位数窗随周期保存：运行中崩溃（watchdog 重启）不丢
+                    self._save_eris_state()  # ERIS 分位数窗随周期保存：运行中崩溃（watchdog 重启）不丢
                 trimmed = [(snap, ok, freed, reason) for snap, ok, freed, reason in l2_results if ok]
                 failed = [r for r in l2_results if not r[1]]
                 ratios = []
@@ -1068,6 +1082,7 @@ class MemWiseEngine:
                         ratios.append(0.5)  # 无画像或预期为零，默认半值
                 self._failed_weight = sum(ratios) / len(ratios) if ratios else 0.5
                 probe_ok = sum(1 for _, ok, _ in probe_results if ok)
+                self._cycle_probe = (probe_ok, len(probe_results or []))
 
                 # 累计图表数据 — 每轮必定推送，chart_accum 即本轮净释放
                 cur_freed = float(s['freed_mb'])
@@ -1078,6 +1093,7 @@ class MemWiseEngine:
                 self._push_round(chart_accum, m["pct"], harvest_partial)
                 # 每周期无条件清零 PF 计数（harvest 超时/游戏降频周期也丢弃，防跨周期污染诊断窗口）
                 pf_delta_cycle = _drain_pf_delta(self.judger)
+                self._cycle_pf = float(pf_delta_cycle or 0)
                 # Layer3 周期增量基线（累计口径会让诊断误判"持续触发"，导致 gate 持续爬升）
                 l3_ran_cur = s.get('layer3_ran', 0)
                 l3_extra_cur = s.get('layer3_extra', 0)
@@ -1258,9 +1274,10 @@ class MemWiseEngine:
                 self._cycle_failed, mem_pct, self._failed_weight, harvest_partial))
         # ERIS：数据产生时逐点计算（原逻辑在图表渲染时按 seq 增量处理——等价：每轮一点一次计算）
         try:
+            _pk, _pt = getattr(self, "_cycle_probe", (0, 0))
             result = self._compute_eris(list(self._chart_data), self._cycle_trimmed,
                                         self._cycle_failed, mem_pct, self._failed_weight,
-                                        update_state=True)
+                                        probe_ok=_pk, probe_total=_pt, update_state=True)
             self._eff_data.append(result["total"])
             self._eff_factors.append(result.get("factors", ["冷启动"]))
         except Exception:
@@ -1268,228 +1285,127 @@ class MemWiseEngine:
             self._eff_factors.append(["计算异常"])
 
     # ── ERIS v6：IQR分位数归一化五维加权和（80±40×(raw−p50)/IQR，trimmed IQR + 维级窗口）──
-    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5, probe_ok=0, probe_total=0, update_state=True):
-        """返回 {"total": eff, "factors": ["↑预测精准","↓PF偏高"]}"""
+    # ── ERIS v7：五维绝对标尺（四锚点分段线性 + N=3 平滑 + Σ÷K；设计见记忆 learning-engine-specs §B4）──
+    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5,
+                      probe_ok=0, probe_total=0, update_state=True):
+        """返回 {"total": 效率%, "factors": [...]}（接口与 v6 一致，展示层无需改动）。
+        词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
+        |Δ效率| < 2 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；不设防振荡硬规则。"""
+        from core import eris as E
         if not data:
-            return {"total": 0, "factors": ["冷启动"]}
-        visible = list(data)
-        learner = self.learner
-        profiles = learner.profiles
-        cycle_freed = visible[-1] if visible else 1
-
-        # ── 分位数窗初始化 / 趋势列表初始化 ──
-        # 窗口长度按维度特异性分配：raw2(释放)需要长窗应对幂律，raw4(EFIS)短窗够用
-        _WINDOWS = [25, 25, 20, 8, 20]
-        if not hasattr(self, '_eris_bufs') or self._eris_bufs is None:
-            self._eris_bufs = [deque(maxlen=_WINDOWS[j]) for j in range(5)]
-            self._eris_p50_ewma = [0.0] * 5  # p50 平滑（λ=0.15）
-        if not hasattr(self, '_eris_iqr_ewma') or not self._eris_iqr_ewma:
-            self._eris_iqr_ewma = [0.0] * 5
-        if not hasattr(self, '_eris_ewma_trend') or not self._eris_ewma_trend:
-            self._eris_ewma_trend = []
-
-        # ── 维度1 raw: Kalman 预测精准度 ──
-        # 迭代前快照：daemon 线程可能随时 get() 增键，直接迭代会 RuntimeError（dictionary changed size）；
-        # dict() 拷贝在 GIL 下原子完成
-        profiles_snapshot = list(dict(profiles).values())
-        kalman_errors = []
-        for p in profiles_snapshot:
-            if p.clean_count < 1 and p.total_samples < 1:
-                continue
-            if p.gain_ewma <= 0:
-                continue
-            k_freed, _ = p.kalman.predict()
-            if k_freed > 0:
-                kalman_errors.append(abs(k_freed - p.gain_ewma) / p.gain_ewma)
-        if kalman_errors:
-            raw1 = 1.0 - sorted(kalman_errors)[len(kalman_errors)//2]
-        else:
-            raw1 = 0.50
-
-        # ── 维度2 raw: 单进程释放效率 (MB/trim) — log10 压缩幂律分布 ──
-        trimmed_n = max(trimmed_cnt, 1)
-        raw2 = math.log10(max(1.0, cycle_freed / trimmed_n))
-
-        # ── 维度3 raw: 副作用控制 (trim+1)/(fail+1) ──
+            return {"total": 0.0, "factors": ["冷启动"]}
+        # ── ① 预测精准：1 − Kalman 预测的中位相对误差 ──
+        errs = []
+        for p in list(self.learner.profiles.values()):
+            try:
+                kf, _ = p.kalman.predict()
+                if kf > 0 and getattr(p, "gain_ewma", 0) > 0:
+                    errs.append(abs(kf - p.gain_ewma) / p.gain_ewma)
+            except Exception:
+                pass
+        raw1 = 1.0 - (sorted(errs)[len(errs) // 2] if errs else 0.5)
+        # ── ② 释放彻底：本轮每进程 实际释放 ÷ 该进程惯常释放量 的中位 ──
+        ratios = [f / g for f, g in (getattr(self, "_cycle_trim_detail", []) or []) if f and g]
+        raw2 = sorted(ratios)[len(ratios) // 2] if ratios else 0.0
+        # ── ③ 清理畅通：整理成功/失败比 ──
         raw3 = (trimmed_cnt + 1.0) / max(failed_cnt + 1.0, 1.0)
-
-        # ── 维度4 raw: EFIS 参数稳定度 ──
-        efis = self.efis
-        if efis:
-            cycle = getattr(efis, '_cycle', 0)
-            adjust_log = getattr(efis, '_adjust_log', [])
-            recent_adjusts = sum(1 for a in adjust_log[-15:] if a.get("cycle", 0) > cycle - 15)
-            raw4 = max(0.0, 1.0 - recent_adjusts / 5.0)
-        else:
-            raw4 = 0.50
-
-        # ── 维度5 raw: 探索完备度 ──
-        never_tried = sum(1 for p in profiles_snapshot if p.clean_count == 0 and p.last_feedback_time == 0)
-        raw5 = 1.0 - never_tried / max(len(profiles_snapshot), 1)
-
+        # ── ④ 副作用：释放MB ÷ PF 增量（PF=0 记无副作用，映射后钳到上限）──
+        _pf = float(getattr(self, "_cycle_pf", 0) or 0)
+        raw4 = (float(data[-1]) / _pf) if _pf > 0 else 1e6
+        # ── ⑤ 试探高效：试探命中率 ──
+        raw5 = (float(probe_ok) / float(probe_total)) if probe_total else 0.5
         raws = [raw1, raw2, raw3, raw4, raw5]
-
-        # ── 游戏模式切换检测：重置受影响维度的分位数窗（防虚高/低谷）──
-        # ── IQR 归一化 v6: trimmed IQR + 内插分位 + p50平滑 + 幂律压缩 + 维级窗口 ──
+        # ── 平滑 → 赋分 → 效率 → 词条/趋势 ──
         with self._eris_lock:
+            sm = [E.smooth3_append(self._eris_hist[j], raws[j]) for j in range(5)]
+            scores = E.scores_of(sm)
+            eff = E.efficiency(scores)
+            prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
+            trend_val = 0
+            if prev_eff is None or len(data) <= 3:
+                factors = ["影响因素分析中…"]
+            elif eff >= E.SUPER_TH:
+                j = E.pick_factor(scores, prev_scores, True)
+                if j is None:
+                    j = max(range(5), key=lambda i: scores[i])
+                factors = [E.DIM_WORDS[j][0], "🚀效率超常"]
+                trend_val = 99
+            elif eff <= E.WARN_TH:
+                j = E.pick_factor(scores, prev_scores, False)
+                if j is None:
+                    j = min(range(5), key=lambda i: scores[i])
+                factors = [E.DIM_WORDS[j][1], "⚠效率异常"]
+                trend_val = -99
+            else:
+                delta = eff - prev_eff
+                trend_val = 1 if delta > 0 else (-1 if delta < 0 else 0)
+                if abs(delta) < 2.0:
+                    factors = ["相对平稳"]
+                else:
+                    up = delta > 0
+                    j = E.pick_factor(scores, prev_scores, up)
+                    if j is None:
+                        diffs = [scores[i] - (prev_scores[i] if prev_scores else 0.0) for i in range(5)]
+                        j = max(range(5), key=lambda i: abs(diffs[i]))
+                        up = diffs[j] >= 0
+                    factors = [E.DIM_WORDS[j][0] if up else E.DIM_WORDS[j][1]]
+                    if len(self._eris_trend) >= 2 and self._eris_trend[-1] == self._eris_trend[-2] == trend_val:
+                        factors.append("🔥持续改善" if trend_val > 0 else "⚠持续下滑")
             if update_state:
-                cur_gm = getattr(self.cleaner, 'game_mode', False)
-                last_gm = self._last_eris_game_mode
-                if last_gm is not None and cur_gm != last_gm:
-                    self._eris_bufs[1] = deque(maxlen=_WINDOWS[1])
-                    self._eris_bufs[2] = deque(maxlen=_WINDOWS[2])
-                    # 用当前 raw 预填充 p50，避免切换后首轮从中性 80 起步
-                    self._eris_p50_ewma[1] = raws[1]
-                    self._eris_p50_ewma[2] = raws[2]
-                self._last_eris_game_mode = cur_gm
-
-            dims = []
-            for j in range(5):
-                # 纯函数核心（core.eris.iqr_dim，与回归测试共用同一实现）
-                dim, _p50, _iqr = iqr_dim(
-                    raws[j], self._eris_bufs[j],
-                    self._eris_p50_ewma[j], self._eris_iqr_ewma[j],
-                    update_state=update_state)
-                self._eris_p50_ewma[j] = _p50
-                self._eris_iqr_ewma[j] = _iqr
-                dims.append(dim)
-
-        weights = [0.25, 0.25, 0.20, 0.15, 0.15]
-        eff = sum(d * w for d, w in zip(dims, weights))
-        eff = max(0.0, eff)
-
-        dim_pairs = [("↑预测精准", "↓预测偏差"), ("↑释放改善", "↓释放退步"),
-                     ("↑副作用低", "↓副作用高"), ("↑参数稳定", "↓频繁调参"),
-                     ("↑覆盖广泛", "↓覆盖狭窄")]
-
-        # ── 因子选择（含防振荡：同维正负不来回跳）──
-        prev = self._eris_prev
-        prev_f_dim = self._eris_prev_factor_dim
-        prev_f_pos = self._eris_prev_factor_pos
-        if len(visible) <= 3:
-            factors = ["影响因素分析中…"]
-        elif round(eff) >= 100:
-            best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
-            factors = [dim_pairs[best_i][0]]
-            # 防振荡：同维+上一轮方向不是True（即上次是负面或未记录）→ 跳到候选2
-            if prev_f_dim == best_i and prev_f_pos is not None and prev_f_pos is not True:
-                ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
-                best_i = ranked[1] if len(ranked) > 1 else best_i
-                factors = [dim_pairs[best_i][0]]
-            factors.append("🚀效率超常")
-            if update_state:
-                # 99 标记极性轮，打断趋势连续性
-                self._eris_ewma_trend.append(99)
-                self._eris_prev_factor_dim = best_i
-                self._eris_prev_factor_pos = True
-        elif round(eff) <= 50:
-            best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
-            factors = [dim_pairs[best_i][1]]
-            # 防振荡：同维+上一轮方向不是False（即上次是正面或未记录）→ 跳到候选2
-            if prev_f_dim == best_i and prev_f_pos is not None and prev_f_pos is not False:
-                ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
-                best_i = ranked[1] if len(ranked) > 1 else best_i
-                factors = [dim_pairs[best_i][1]]
-            factors.append("⚠效率异常")
-            if update_state:
-                # -99 标记极性轮，打断趋势连续性
-                self._eris_ewma_trend.append(-99)
-                self._eris_prev_factor_dim = best_i
-                self._eris_prev_factor_pos = False
-        elif prev and isinstance(prev, dict) and "eff" in prev and abs(eff - prev["eff"]) >= 2.0:
-            is_pos = eff > prev["eff"]
-            best_i = max(range(5), key=lambda i: abs(dims[i] - 80.0))
-            factors = [dim_pairs[best_i][0]] if is_pos else [dim_pairs[best_i][1]]
-            # 防振荡：同维+方向与上次反转 → 跳到候选2
-            if prev_f_dim == best_i and prev_f_pos is not None and prev_f_pos != (factors[0].startswith("↑")):
-                ranked = sorted(range(5), key=lambda i: abs(dims[i] - 80.0), reverse=True)
-                best_i = ranked[1] if len(ranked) > 1 else ranked[0]
-                factors = [dim_pairs[best_i][0]] if factors[0].startswith("↑") else [dim_pairs[best_i][1]]
-            if update_state:
-                is_pos = factors[0].startswith("↑")
-                self._eris_ewma_trend.append(1 if is_pos else -1)
-                self._eris_prev_factor_dim = best_i
-                self._eris_prev_factor_pos = is_pos
-            if len(self._eris_ewma_trend) >= 3 and len(set(self._eris_ewma_trend[-3:])) == 1:
-                last_val = self._eris_ewma_trend[-1]
-                if last_val == 1:
-                    factors.append("🔥持续改善")
-                elif last_val == -1:
-                    factors.append("⚠持续下滑")
-        else:
-            factors = ["相对平稳"]
-            if update_state:
-                self._eris_ewma_trend.append(0)
-                # 平稳期重置防振荡状态：旧方向不应影响后续活跃期的判断
-                self._eris_prev_factor_dim = -1
-                self._eris_prev_factor_pos = None
-        if update_state and len(self._eris_ewma_trend) > 10:
-            self._eris_ewma_trend = self._eris_ewma_trend[-10:]
-
-        if update_state:
-            self._eris_prev = {"eff": eff, "dims": dims}
+                self._eris_trend.append(trend_val)
+                if len(self._eris_trend) > 10:
+                    self._eris_trend = self._eris_trend[-10:]
+                self._eris_prev_scores = scores
+                self._eris_prev_eff = eff
         return {"total": eff, "factors": factors}
-
-    # ── ERIS 分位数窗持久化（原子写入；守护线程与退出线程可能并发写，加锁防 tmp 交错截断）──
-    def _save_eris_ewma(self):
+    def _save_eris_state(self):
         with self._eris_save_lock:
             try:
                 import json, os
-                bufs = getattr(self, '_eris_bufs', None)
-                if bufs and any(bufs):
-                    data = {"bufs": [list(b) for b in bufs],
-                            "iqr_ewma": getattr(self, "_eris_iqr_ewma", [0.0]*5),
-                            "p50_ewma": getattr(self, "_eris_p50_ewma", [0.0]*5)}
-                    path = os.path.join(os.path.dirname(self._state_file), "memwise_eris_ewma.json")
-                    # tmp 附加进程号（2026-09-06 审查 F3）：跨进程并发写防交错损坏
-                    tmp = f"{path}.{os.getpid()}.tmp"
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump(data, f)
-                    os.replace(tmp, path)
+                payload = {"v": 7,
+                           "hist": [list(h) for h in getattr(self, "_eris_hist", [])],
+                           "prev_scores": getattr(self, "_eris_prev_scores", None),
+                           "prev_eff": getattr(self, "_eris_prev_eff", None),
+                           "trend": list(getattr(self, "_eris_trend", []))}
+                path = os.path.join(os.path.dirname(self._state_file), "memwise_eris_ewma.json")
+                tmp = f"{path}.{os.getpid()}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+                os.replace(tmp, path)
             except Exception:
                 pass
 
-    def _load_eris_ewma(self):
-        """加载 ERIS 分位数窗（热重启保留/冷启动重建），严格校验"""
-        # 若已有数据（热重启：daemon 重开但程序未退出），保留不重建
-        if getattr(self, '_eris_bufs', None) and any(self._eris_bufs):
-            self._eris_prev = None
-            self._eris_prev_factor_dim = -1
-            self._eris_prev_factor_pos = None
-            self._eris_ewma_trend = []
-            self._last_eris_game_mode = getattr(getattr(self, 'cleaner', None), 'game_mode', False)
-            return
-        _WINDOWS = [25, 25, 20, 8, 20]
-        loaded_ok = False
+    def _load_eris_state(self):
+        """加载 ERIS v7 状态；v6 旧格式（分位数窗）自动忽略并重建（文件保留不删）。
+        会话隔离沿用 v6 规则：prev_scores/prev_eff/trend 每次 daemon 启动重置，仅滚动窗跨重启保留。"""
+        from collections import deque as _dq
+        from core.eris import SMOOTH_N as _SN
+        try:
+            if getattr(self, "_eris_hist", None) and any(self._eris_hist):     # 热重启：窗内数据保留
+                self._eris_prev_scores = None
+                self._eris_prev_eff = None
+                self._eris_trend = []
+                return
+        except Exception:
+            pass
+        hist = [_dq(maxlen=_SN) for _ in range(5)]
         try:
             import json, os
-            from collections import deque
             path = os.path.join(os.path.dirname(self._state_file), "memwise_eris_ewma.json")
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict) and isinstance(data.get("bufs"), list) and len(data["bufs"]) == 5:
-                    bufs_raw = data["bufs"]
-                    iqr_ewma = data.get("iqr_ewma", [0.0]*5)
-                    p50_ewma = data.get("p50_ewma", [0.0]*5)
-                    if (isinstance(iqr_ewma, list) and len(iqr_ewma) == 5 and
-                        isinstance(p50_ewma, list) and len(p50_ewma) == 5):
-                        # 校验逻辑与回归测试共用 core.eris.validate_state（防测试副本与生产分歧）
-                        if validate_state(bufs_raw, iqr_ewma, _WINDOWS) and validate_state(bufs_raw, p50_ewma, _WINDOWS):
-                            self._eris_bufs = [deque(b, maxlen=_WINDOWS[j]) for j, b in enumerate(bufs_raw)]
-                            self._eris_iqr_ewma = [float(v) for v in iqr_ewma]
-                            self._eris_p50_ewma = [float(v) for v in p50_ewma]
-                            loaded_ok = True
+                    payload = json.load(f)
+                if isinstance(payload, dict) and payload.get("v") == 7:
+                    h = payload.get("hist")
+                    if isinstance(h, list) and len(h) == 5:
+                        for j, one in enumerate(h):
+                            if isinstance(one, list):
+                                for v in one[-_SN:]:
+                                    if isinstance(v, (int, float)):
+                                        hist[j].append(float(v))
         except Exception:
             pass
-        if not loaded_ok:
-            from collections import deque
-            self._eris_bufs = [deque(maxlen=_WINDOWS[j]) for j in range(5)]
-            self._eris_iqr_ewma = [0.0] * 5
-            self._eris_p50_ewma = [0.0] * 5
-        # 重置因子状态
-        self._eris_prev = None
-        self._eris_prev_factor_dim = -1
-        self._eris_prev_factor_pos = None
-        self._eris_ewma_trend = []
-        self._last_eris_game_mode = getattr(getattr(self, 'cleaner', None), 'game_mode', False)
+        self._eris_hist = hist
+        self._eris_prev_scores = None
+        self._eris_prev_eff = None
+        self._eris_trend = []

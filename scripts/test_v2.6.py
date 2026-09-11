@@ -1268,13 +1268,17 @@ set_language("zh_CN")
 print("\n[32] 图表标度与效率阈值适配（2026-09-06 用户定稿）")
 # ── 任务1: 纵轴 GB 标度 ≥10 取整 ──
 _gui32_src = _src26("memwise_gui.py")
+_eris_v7_src = _src26("core/eris.py")   # ERIS v7 纯函数核心
 check("纵轴 GB≥10 取整", '_gb_v = lbl_v / 1024.0' in _gui32_src
       and 'f"{_gb_v:.0f}GB" if _gb_v >= 10 else f"{_gb_v:.1f}GB"' in _gui32_src)
 # ── 任务2: 效率异常下限 60→50（折点着色 + 因子极性，含等于语义不变）──
 _eng32_src = _src26("core", "engine.py")
 check("折点阈值 ≤50", "elif r_eff <= 50:" in _gui32_src and "elif r_eff <= 60" not in _gui32_src)
-check("因子下极性 ≤50", "elif round(eff) <= 50:" in _eng32_src and "round(eff) <= 60" not in _eng32_src)
-check("上极性 ≥100 不动", "round(eff) >= 100" in _eng32_src and "over_100 = r_eff >= 100" in _gui32_src)
+check("因子下极性 ≤50（v7：阈值常量）",
+      "elif eff <= E.WARN_TH:" in _eng32_src and "WARN_TH = 50.0" in _eris_v7_src)
+check("上极性 ≥100 不动（v7：阈值常量）",
+      "elif eff >= E.SUPER_TH:" in _eng32_src and "SUPER_TH = 100.0" in _eris_v7_src
+      and "over_100 = r_eff >= 100" in _gui32_src)
 # README 双语六处同步（≥/≤ 含等于 + 50 阈值 + 正常范围）
 _readme32 = open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
 for _frag in ("效率 ≥100% 时折点显示金色、≤50% 时显示珊瑚红色以示警戒",
@@ -1877,6 +1881,42 @@ _l_old34 = PareLearner.load(_t_old34)
 check("兼容：旧版 state（无 probe_zero/policy 键）加载且数据保留",
       "legacy.exe" in _l_old34.profiles and _l_old34.profiles["legacy.exe"].probe_zero == 0
       and _l_old34.profiles["legacy.exe"].alpha == 5)
+
+
+print("\n[35] ERIS v7 五维绝对标尺（2026-09-11 用户定稿；设计见记忆 learning-engine-specs §B4）")
+from core.eris import (DIM_ANCHORS as _A7, EFF_K as _K7, SUPER_TH as _ST7, WARN_TH as _WT7,
+                       DIM_WORDS as _W7, dim_score as _ds7, efficiency as _ef7,
+                       pick_factor as _pf7, smooth3_append as _sm7, SMOOTH_N as _SN7,
+                       new_state as _ns7)
+check("v7 锚点/词条维度数一致", len(_A7) == 5 and len(_W7) == 5)
+check("v7 四锚点映射精确（p10/p50/p90/p99 → 20/50/80/110）",
+      all(round(_ds7(a[0], a)) == 20 and round(_ds7(a[1], a)) == 50
+          and round(_ds7(a[2], a)) == 80 and round(_ds7(a[3], a)) == 110 for a in _A7))
+check("v7 分数钳制（下限 0 / 上限 140）", _ds7(-1e9, _A7[0]) == 0.0 and _ds7(1e9, _A7[0]) == 140.0)
+check("v7 副作用为对数维（单调且 p50 命中 50 分）",
+      round(_ds7(_A7[3][1], _A7[3], log_scale=True)) == 50
+      and _ds7(_A7[3][0], _A7[3], log_scale=True) < _ds7(_A7[3][2], _A7[3], log_scale=True))
+check("v7 效率合成（五维各 K/5 ⇒ 恰 100%）", abs(_ef7([_K7 / 5] * 5) - 100.0) < 0.01)
+check("v7 极性阈值（超常 100 / 异常 50）", _ST7 == 100.0 and _WT7 == 50.0)
+_dq7 = _dq51(maxlen=_SN7)
+check("v7 平滑 N=3 滚动中位", [_sm7(_dq7, x) for x in (1.0, 3.0, 2.0, 10.0)] == [1.0, 2.0, 2.0, 3.0])
+check("v7 词条：升→上升维中最高分；降→下降维中最低分",
+      _pf7([70, 60, 55, 50, 51], [60, 60, 50, 50, 50], True) == 0
+      and _pf7([70, 40, 55, 50, 51], [60, 50, 50, 50, 50], False) == 1)
+check("v7 词条：无同向变化维 ⇒ None（调用方兜底）",
+      _pf7([10, 20, 30, 40, 50], [10, 20, 30, 40, 50], True) is None)
+check("v7 五维词条统一四字", all(len(w.strip("↑↓")) == 4 for pair in _W7 for w in pair))
+_es7 = _ns7()
+check("v7 状态容器（5 个滚动窗 + 上轮分/趋势）",
+      len(_es7["hist"]) == 5 and _es7["prev_scores"] is None and _es7["trend"] == [])
+_eng7 = _eng32_src
+check("v7 引擎接线（五维原始值 + 平滑 + 同向门槛；无 v6 残留/防振荡硬规则）",
+      all(k in _eng7 for k in ("_cycle_trim_detail", "_cycle_pf", "_cycle_probe",
+                               "_eris_hist", "E.pick_factor", "E.smooth3_append"))
+      and all(k not in _eng7 for k in ("_eris_bufs", "_eris_iqr_ewma", "prev_factor",
+                                       "iqr_dim", "round(eff) >= 100")))
+check("v7 旧状态（v6 分位数窗格式）自动忽略：加载入口只认 v==7",
+      'payload.get("v") == 7' in _eng7 and "memwise_eris_ewma.json" in _eng7)
 
 import re
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
