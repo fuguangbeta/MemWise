@@ -1184,9 +1184,9 @@ _vis30 = _stub30.log.get('1.0', 'end').rstrip(chr(10)).splitlines()
 check("周期大整体完整可见", len(_vis30) == 3 and any("周期汇总" in l for l in _vis30)
       and any("[EFIS]" in l for l in _vis30) and any("📈" in l for l in _vis30))
 _root30.destroy()
-check("守护异常同批", 'tr("❌ 守护异常，详见下方错误信息"), f"🔍 {err}"' in _gui26_src)
+check("守护异常同批", '["❌ 守护异常，详见下方错误信息", f"🔍 {err}"]' in _gui26_src)
 check("崩溃恢复单条", _gui26_src.count("🔄 从崩溃中恢复 — 守护模式已自动继续") == 1
-      and 'log_msg or tr("守护模式启动")' in _gui26_src)
+      and 'log_msg or "守护模式启动"' in _gui26_src)
 check("热键只报变更键", 'changed={hk["key"]} if spec != old else set()' in _gui26_src
       and 'not initial and hk["key"] in changed' in _gui26_src)
 check("事件契约更新", "'display_groups', [组, …]" in _eng26_src)
@@ -1369,7 +1369,7 @@ check("T6 分区联动两行", "  重置 — 恢复默认设置与数据" in _gu
 
 # ═══════════════════════════════════════════
 print("\n[34] 2026-09-11 全量审查修复回归（F1/F2/F3/F6/F7/F8/F9/F10/F11/F12/F24/F26/F27/F28/F29/F30/F32/F38/F39/F42/F43/F45/F47/F48 + 兼容性）")
-import io as _io34, os as _os34, subprocess as _sp34, tempfile as _tf34
+import io as _io34, os as _os34, re as _re34, subprocess as _sp34, tempfile as _tf34
 _ROOT34 = _os34.path.dirname(_os34.path.dirname(_os34.path.abspath(__file__)))
 def _src34(*parts):
     return _io34.open(_os34.path.join(_ROOT34, *parts), encoding="utf-8").read()
@@ -1656,6 +1656,38 @@ check("F50 开机自启开关标题不再歧义",
       '"以管理员权限开机自启动"' in _gui34 and "需搭配「以管理员权限开机自启动」" in _gui34
       and "以管理员权限开机自启动" in _i18n34)
 check("F50 旧标题键已清除", '"管理员权限启动"' not in _i18n34 and 'tr("管理员权限启动")' not in _gui34)
+
+# ── F51 语言往返正确性：日志历史必须是中文原文（写进历史的东西不得提前翻译）──
+_bad51 = [m.group(0)[:40] for m in _re34.finditer(
+    r"self\._log(?:_op|_batch)?\(\s*(?:\[\s*)?(?:tr|tr_msg)\(", _gui34)]
+_bad51 += [m.group(0)[:40] for m in _re34.finditer(r"append\(\s*(?:tr|tr_msg)\(", _gui34)]
+check("F51 日志调用不得提前翻译（历史只存中文原文）", not _bad51, str(_bad51[:3]))
+check("F51 judger 标签返回中文原文（不在构造期翻译）",
+      'return "极高"' in _jd34 and 'return tr("极高")' not in _jd34
+      and 'return "高"' in _jd34 and 'return tr("高")' not in _jd34)
+# 行为级：直接复现用户观察到的那一行（引擎拼装 → 显示层渲染 → 往返切换）
+import tkinter as _tk51
+from collections import deque as _dq51
+_root51 = _tk51.Tk(); _root51.withdraw()
+_stub51 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
+_stub51.log = _tk51.Text(_root51)
+_stub51._log_history = _dq51(maxlen=300)
+_stub51._last_msg = None
+set_language("zh_CN")
+_stub51._write_group(["📈 内存 70%（偏高）· 清理强度：维持高"])
+set_language("en")
+_stub51._rerender_log()
+_txt_en51 = _stub51.log.get("1.0", "end")
+set_language("zh_CN")
+_stub51._rerender_log()
+_txt_zh51 = _stub51.log.get("1.0", "end")
+_root51.destroy()
+check("F51 英文态整行无中文残留",
+      "Memory" in _txt_en51 and "intensity" in _txt_en51
+      and not _re34.search(r"[\u4e00-\u9fff]", _txt_en51), _txt_en51.strip()[:70])
+check("F51 切回中文后无英文残留（往返正确）",
+      "内存" in _txt_zh51 and "维持高" in _txt_zh51
+      and not _re34.search(r"[A-Za-z]{3,}", _txt_zh51.split("] ")[-1]), _txt_zh51.strip()[:70])
 check("F22 两个活跃门已入 i18n 参数名", "CPU活跃门" in _i18n34 and "IO活跃门" in _i18n34)
 check("F31 崩溃恢复提示含退出指引", "如需彻底退出" in _gui34 and "如需彻底退出" in _i18n34)
 

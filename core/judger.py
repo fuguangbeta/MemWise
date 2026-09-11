@@ -172,16 +172,19 @@ class PareJudger:
     # ── PID ──
 
     def _agg_label(self, v):
-        if v <= 0.01: return tr("极低")
-        if v < 0.40: return tr("低")
-        if v < 0.60: return tr("中")
-        return tr("高")
+        """返回中文原文标签（2026-09-11 审查 F51：不得在此翻译——引擎把标签拼进日志消息，
+        若提前翻译，日志历史里就固定了渲染期语言，来回切换语言时无法还原 ⇒ 翻译一律交给显示层）"""
+        if v <= 0.01: return "极低"
+        if v < 0.40: return "低"
+        if v < 0.60: return "中"
+        return "高"
 
     def _mem_label(self, pct):
-        if pct < 30: return tr("充裕")
-        if pct < 60: return tr("正常")
-        if pct < 80: return tr("偏高")
-        return tr("极高")
+        """返回中文原文标签（同 _agg_label：翻译上移到显示层）"""
+        if pct < 30: return "充裕"
+        if pct < 60: return "正常"
+        if pct < 80: return "偏高"
+        return "极高"
 
     def update_pressure(self, mem_usage_pct):
         """根据内存压力更新 PID，返回当前 aggressiveness；同时维护 30s 采样内存趋势（供策略树2）"""

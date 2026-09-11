@@ -1165,13 +1165,13 @@ class MemWiseGUI:
             if CFG.get("auto_start_admin"):
                 target, task_args = _admin_task_args()
                 if winapi.set_auto_start_admin("MemWise", target, task_args):
-                    self._log(tr("开机自启动已按新的最小化设置更新"))
+                    self._log("开机自启动已按新的最小化设置更新")
                 else:
                     # 重建失败（权限）回退勾选，保持配置与实际任务一致（与 on_autostart_admin 失败分支同语义）
                     asm_var.set(not asm_var.get())
                     CFG["auto_start_minimize"] = asm_var.get()
                     _save_cfg()
-                    self._log(tr("管理员权限自启设置失败（请以管理员身份运行一次本程序）"))
+                    self._log("管理员权限自启设置失败（请以管理员身份运行一次本程序）")
         ttk.Checkbutton(sf, text=tr("开机自启动后最小化到托盘"), variable=asm_var,
                         command=on_minimize).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
@@ -1547,7 +1547,7 @@ class MemWiseGUI:
                 self.btn_opt.configure(state="disabled")
             self._last_msg = None  # 重建后去重上下文清零（防跨语言首条消息被误去重）
             self._update_tray_status(getattr(self, '_mem_pct', 0) or 50)  # 托盘 tip 即时刷新
-            self._log_op(tr("语言已切换"))
+            self._log_op("语言已切换")
         except Exception as e:
             import sys; print(f"[MemWise] 语言切换异常: {e}", file=_ERR)
             try:
@@ -1556,10 +1556,10 @@ class MemWiseGUI:
                 self._build_ui()
                 self._refresh_mem()
                 self._upd_stats()
-                self._log_op(tr("语言已切换"))
+                self._log_op("语言已切换")
             except Exception:
                 try:
-                    self._log_op(tr("语言切换失败，请重启程序"))
+                    self._log_op("语言切换失败，请重启程序")
                 except Exception:
                     pass
 
@@ -2564,14 +2564,14 @@ class MemWiseGUI:
                 return
             self._once_optimizing = True  # 防连点排队多轮即时优化（_opt_done 统一复位）
             # 即时反馈（2026-08-30）：守护分支原点击后零提示，完成前数秒界面无响应痕迹
-            self._log_op(tr_msg(f"⚡ 即时优化（{CFG.get('clean_mode', 'normal')}）已启动"))
+            self._log_op(f"⚡ 即时优化（{CFG.get('clean_mode', 'normal')}）已启动")
             self.lbl_st["text"] = tr("⚡ 即时优化中…")  # 下一守护周期 upd_ui 自动恢复
             self.engine.optimize_manual_once(CFG.get("clean_mode", "normal"),
                                              CFG.get("clean_operations"))
             return
         self._optimizing = True
         self.btn_opt.configure(state="disabled"); self.lbl_st["text"] = tr("优化中...")
-        self._log_op(tr_msg(f"开始优化（{CFG.get('clean_mode', 'normal')}·三轮）…"))
+        self._log_op(f"开始优化（{CFG.get('clean_mode', 'normal')}·三轮）…")
         self.engine.optimize_manual_async(CFG.get("clean_mode", "normal"),
                                           CFG.get("clean_operations"))
 
@@ -2592,9 +2592,9 @@ class MemWiseGUI:
         for snap, _ok, freed, _reason in by_freed[:4]:
             card.append(f"  ✓ {snap.name} (PID={snap.pid}) {freed / (1 << 20):.0f} MB")
         if len(by_freed) > 4:
-            card.append(tr_msg(f"✓ 其余 {len(by_freed) - 4} 个进程"))
+            card.append(f"✓ 其余 {len(by_freed) - 4} 个进程")
         elif not by_freed:
-            card.append(tr("没有找到值得清理的进程（全部受保护或无闲置内存）"))
+            card.append("没有找到值得清理的进程（全部受保护或无闲置内存）")
         self._log_batch(card, to_file=True)
         # 统计栏始终显示程序运行以来累计总量
         winapi.report_event("MemWise", tr_msg(f"GUI 优化: {s['freed_mb']}MB 释放, {len(trimmed)} 进程"))
@@ -2615,13 +2615,13 @@ class MemWiseGUI:
             return
         if not self.engine.start_daemon():  # 含防双守护/CLI 互斥与周期基线/图表/ERIS 状态重置
             if getattr(self.engine, '_daemon_busy_cli', False):
-                self._log_op(tr("命令行守护模式运行中，无法开启界面守护"))
+                self._log_op("命令行守护模式运行中，无法开启界面守护")
             else:
                 self._log_op("上一守护线程仍在收尾，请稍候再试")
             return
         self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
         self.lbl_st["text"] = tr("守护运行中")
-        self._log_op(log_msg or tr("守护模式启动"))  # 崩溃恢复路径传恢复文案（单条不重复）
+        self._log_op(log_msg or "守护模式启动")  # 崩溃恢复路径传恢复文案（单条不重复；均为中文原文）
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
@@ -2647,10 +2647,10 @@ class MemWiseGUI:
             self.lbl_st["text"] = tr("⚠ 守护异常")
             # 同批原子输出（2026-08-30 分组语义）：头行+详情一组——拆散时边界下面板
             # 恰满 6 行会让 ❌ 头行被滚动清掉、只剩详情
-            self._log_batch([tr("❌ 守护异常，详见下方错误信息"), f"🔍 {err}"])
+            self._log_batch(["❌ 守护异常，详见下方错误信息", f"🔍 {err}"])
             del self.engine._dae_error
         else:
-            self.lbl_st["text"] = tr("就绪 · ") + self._hk_display(); self._log_op(tr("守护已停止"))
+            self.lbl_st["text"] = tr("就绪 · ") + self._hk_display(); self._log_op("守护已停止")
         self.engine.save_state(); self._upd_stats(); self.root.after(100, self._draw_chart)
 
     # ---- 窗口事件 ----
@@ -2699,7 +2699,7 @@ class MemWiseGUI:
         恢复提示单条合并（2026-08-30 审查 C2：原"守护模式启动"+"从崩溃中恢复"两条语义重叠）"""
         try:
             if read_watchdog_daemon():
-                self._on_daemon(log_msg=tr("🔄 从崩溃中恢复 — 守护模式已自动继续"))
+                self._on_daemon(log_msg="🔄 从崩溃中恢复 — 守护模式已自动继续")
         except Exception:
             pass
 
