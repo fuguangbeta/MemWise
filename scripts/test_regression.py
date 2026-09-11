@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.5.042 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.5.043 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1995,6 +1995,25 @@ check("日志：游戏启停入文件 + 模式仅切换时标注（日常行不�
       and "模式 {CFG.get('clean_mode'" not in _eng_log)
 check("日志：清理器逐轮统计判定拦截原因（can_trim 拒绝计数）",
       "_cycle_reasons[reason]" in _cl_log and "self._cycle_reasons = {}" in _cl_log)
+print("\n[36] 播报默认图标（真实 Tk 插入路径，防「启动即崩」）")
+_ic_root = _tk51.Tk(); _ic_root.geometry("600x120+4000+4000")
+_ic_txt = _tk51.Text(_ic_root, font=("Consolas", 9))
+_ic_txt.pack(fill="both", expand=True)
+_mg29._setup_log_widget(_ic_txt)
+_ic_img = _mg29._make_log_icon()
+_ic_txt._log_icon_img = _ic_img
+_ic_err = None
+try:
+    _mg29._insert_log_lines(_ic_txt, "00:00:00", "\t无图标行\n" + "✓\t有图标行", _mg29._LOG_TAG)
+    _ic_root.update()
+except Exception as _e_ic:
+    _ic_err = repr(_e_ic)
+_ic_lines = int(_ic_txt.index("end-1c").split(".")[0])
+_ic_wh = (_ic_img.width(), _ic_img.height()) if _ic_img is not None else (0, 0)
+_ic_root.destroy()          # 必须在读取 Tk 对象属性之后销毁（此前顺序写反致 TclError）
+check("默认图标：图片生成成功且尺寸为 13×12", _ic_wh == (13, 12), str(_ic_wh))
+check("默认图标：真实 Text 插入不报错（align 选项有效）", _ic_err is None, str(_ic_err))
+check("默认图标：插入后行数正确（无图标行仍占一行，末尾换行使末行号为 3）", _ic_lines >= 2, str(_ic_lines))
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:
