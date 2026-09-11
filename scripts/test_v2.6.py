@@ -1606,6 +1606,51 @@ check("F49 EFIS 状态路径显式拼接（不再依赖文件名子串）",
 check("F45 缓存极小则跳过钳制（零副作用快路径）", "if before <= (32 << 20):" in _wa34)
 check("F33 等待时长按实际执行轮数等比（档位不再带来无收益等待）",
       "total_wait * (rounds_done / max(passes, 1))" in _cl34)
+
+# ── S5 压力判据统一 + 门槛重标定（F4/F5/F21/F44）──
+_j5 = PareJudger(PareLearner(), {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [],
+                                 "efis_params": {}, "emergency_threshold": 80})
+_j5.aggressiveness = 0.5; _j5._last_mem_pct = 50
+check("S5 高压让路：agg 未达且使用率未达⇒否", _j5._high_pressure() is False)
+_j5.aggressiveness = 0.85
+check("S5 agg≥0.8 仍判高压", _j5._high_pressure() is True)
+_j5.aggressiveness = 0.5; _j5._last_mem_pct = 80
+check("S5 使用率达用户紧急阈值即高压", _j5._high_pressure() is True)
+_j5._last_mem_pct = 79.9
+check("S5 阈值下方不触发", _j5._high_pressure() is False)
+_j5.cfg["emergency_threshold"] = 90
+_j5._last_mem_pct = 85
+check("S5 阈值调高后 85% 不触发", _j5._high_pressure() is False)
+_j5._last_mem_pct = 90
+check("S5 阈值调高后 90% 触发", _j5._high_pressure() is True)
+_pv5 = PolicyVoter(); _l5 = PareLearner()
+_, _, _sc5 = _pv5.should_trim("x.exe", 10 << 20, {"mem_pct": 85, "mem_trend": 0, "emergency": 80}, _l5)
+_, _, _sc5b = _pv5.should_trim("x.exe", 10 << 20, {"mem_pct": 84, "mem_trend": 0, "emergency": 90}, _l5)
+_, _, _sc5c = _pv5.should_trim("x.exe", 10 << 20, {"mem_pct": 92, "mem_trend": 0, "emergency": 90}, _l5)
+check("S5 树2 阈值随用户设定（80%@85=+2 / 90%@84=+1 / 90%@92=+2）",
+      _sc5[1] == 2 and _sc5b[1] == 1 and _sc5c[1] == 2, "%r %r %r" % (_sc5[1], _sc5b[1], _sc5c[1]))
+
+def _run_l3_5(pct, em):
+    lr_o = PareLearner()
+    j_o = PareJudger(lr_o, {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [],
+                            "efis_params": {}, "emergency_threshold": em})
+    c_o = PareCleaner(j_o); hit = []
+    c_o._layer3_deep = lambda *a, **k: hit.append(1)
+    _oms5, _omu5 = _w34.get_memory_status, _w34.get_memory_used_bytes
+    _w34.get_memory_status = lambda: {"pct": pct, "total": 16 << 30, "avail": 9 << 30, "used": 7 << 30}
+    _w34.get_memory_used_bytes = lambda: 7 << 30
+    try:
+        c_o.optimize([], lr_o, "normal", operations=["ws"], aggressiveness=0.1)
+    finally:
+        _w34.get_memory_status, _w34.get_memory_used_bytes = _oms5, _omu5
+    return bool(hit)
+check("S5 normal 深度聚合使用率路径（68% 触发 / 60% 不触发）",
+      _run_l3_5(68, 80) is True and _run_l3_5(60, 80) is False)
+check("S5 使用率路径随用户阈值移动（阈值 90 ⇒ 77% 触发、70% 不触发）",
+      _run_l3_5(77, 90) is True and _run_l3_5(70, 90) is False)
+check("S5 使用率判据存在（结构性）", "_l3_usage" in _cl34 and "_em_l3 * 0.85" in _cl34)
+check("F6 quick 开关置灰 + 说明已接线", 'CFG.get("clean_mode", "normal") == "quick"' in _gui34
+      and '_cb.state(["disabled"])' in _gui34 and "quick 模式下「释放进程闲置内存」" in _i18n34)
 check("F22 两个活跃门已入 i18n 参数名", "CPU活跃门" in _i18n34 and "IO活跃门" in _i18n34)
 check("F31 崩溃恢复提示含退出指引", "如需彻底退出" in _gui34 and "如需彻底退出" in _i18n34)
 

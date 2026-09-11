@@ -1037,6 +1037,8 @@ class MemWiseEngine:
                             self.judger.cfg["never"] = CFG.get("never", [])
                             self.judger.cfg["game_processes"] = CFG.get("game_processes", [])
                             self.judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
+                            # 紧急阈值同步（2026-09-11 S5）：高压让路判据与策略树阈值同口径
+                            self.judger.cfg["emergency_threshold"] = CFG.get("emergency_threshold", 80)
                             # EFIS 参数以状态文件为权威（审查 P3）：config.yaml 的 efis_params 是
                             # 上次调参的模式快照,热加载回灌会覆盖当前模式组——改为直接从 EFIS 取
                             self.judger.cfg["efis_params"] = self.efis.get_params()

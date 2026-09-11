@@ -48,6 +48,16 @@ class PolicyVoter:
             delta = direction * (1.0 if contrib > 0 else -1.0) * 0.05
             w[i] = max(-2.0, min(2.0, w[i] + delta))
 
+    @staticmethod
+    def _emergency_of(state):
+        """用户设定的紧急触发阈值（缺省 80，非法回退）——树阈值与用户配置同口径
+        （2026-09-11 审查 F21：原树2/树3 硬编码 80/65，与可配置的紧急阈值矛盾）"""
+        try:
+            v = float(state.get("emergency", 80))
+            return v if v > 0 else 80.0
+        except (TypeError, ValueError):
+            return 80.0
+
     def should_trim(self, name, ws, state, learner, threshold=0):
         """是否清理此进程 → (True/False, 理由, 各树贡献)
         threshold: 投票通过阈值（模式梯度：normal=0 标准 / deep=-1 略宽 / full=-2 大幅放宽但保留
@@ -74,12 +84,15 @@ class PolicyVoter:
                 reasons.append("收益中")
 
         # 树2: 内存压力与趋势
+        # 阈值随用户设定的紧急阈值（2026-09-11 审查 F21）：达到阈值=紧张(+2)；接近阈值
+        # （阈值×80%，默认 64，与原 65 基本一致）=偏紧(+1)；<30% 充足(-1)
         mem_pct = state.get("mem_pct", 50)
         mem_trend = state.get("mem_trend", 0)
-        if mem_pct > 80:
+        _em = self._emergency_of(state)
+        if mem_pct >= _em:
             scores[1] += 2
             reasons.append("内存紧张")
-        elif mem_pct > 65:
+        elif mem_pct >= _em * 0.8:
             scores[1] += 1
         elif mem_pct < 30:
             scores[1] -= 1
@@ -136,7 +149,7 @@ class PolicyVoter:
         
         # 树3: 资源约束 (内存压力大时少probe)（框架预留编号：树1/2 为信息价值与记忆空缺）
         mem_pct = state.get("mem_pct", 50)
-        if mem_pct > 80:
+        if mem_pct >= self._emergency_of(state):
             score -= 1
             reasons.append("内存紧张,少试探")
         elif mem_pct < 50:

@@ -425,6 +425,7 @@ class MemWiseGUI:
         jcfg = {"kp":CFG.get("kp",0.6),"ki":CFG.get("ki",0.15),"kd":CFG.get("kd",0.1),
                 "target_usage":CFG.get("target_usage",60),"never":CFG.get("never",[]),
                 "game_processes":CFG.get("game_processes",[]),
+                "emergency_threshold":CFG.get("emergency_threshold",80),  # 高压让路/树阈值同口径（2026-09-11 S5）
                 "efis_params":CFG.get("efis_params",{})}
         self.judger = Judger(self.learner, jcfg)
         self.cleaner = Cleaner(self.judger)
@@ -1292,6 +1293,16 @@ class MemWiseGUI:
         self._add_tip(cb_rg, "清空系统注册表的读写缓存\n"
                       "无磁盘读写操作，不中断正在运行的程序\n"
                       "守护模式下始终执行，取消勾选后完全跳过")
+        # quick 模式下三个开关不适用（2026-09-11 审查 F6 的界面半边）：置灰 + 说明，
+        # 避免用户"勾选了却没有执行"（quick 只执行待机缓存/脏页写回/注册表缓存三项）
+        if CFG.get("clean_mode", "normal") == "quick":
+            for _cb in (cb_ews, cb_fc, cb_vc):
+                try:
+                    _cb.state(["disabled"])
+                except Exception:
+                    pass
+            ttk.Label(cf, text=tr("quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」不执行"),
+                      foreground="#888", wraplength=470, justify="left").pack(anchor="w")
         # ─── 清理深度（2026-08-16 归类整理：清理强度归"清理"栏，原在触发与日志栏）───
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):

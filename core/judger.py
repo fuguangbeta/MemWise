@@ -151,6 +151,24 @@ class PareJudger:
         except (TypeError, ValueError):
             return default
 
+    def _emergency_pct(self):
+        """用户设定的紧急触发阈值（默认 80，非法值回退）"""
+        try:
+            v = float(self.cfg.get("emergency_threshold", 80))
+            return v if v > 0 else 80.0
+        except (TypeError, ValueError):
+            return 80.0
+
+    def _high_pressure(self):
+        """是否处于"高压让路"状态（2026-09-11 审查 F5 修正判据）。
+        原判据只看 `aggressiveness >= 0.8`，而 normal 现有标定下全域 agg 上限仅 0.78
+        （kp=0.6/target=60，实测）⇒ 该设计路径在 normal 下永不成立、锚点/回弹/WS 基线/前台冷却
+        在高压时仍绝对拦截。现改为"agg≥0.8 或 使用率达到用户设定的紧急阈值"：正常值域内与原
+        行为一致（默认 80%，而 80% 起本就由紧急 full 接管），用户调高阈值时高压让路即按新值生效。"""
+        if self.aggressiveness >= 0.8:
+            return True
+        return float(getattr(self, "_last_mem_pct", 0) or 0) >= self._emergency_pct()
+
     # ── PID ──
 
     def _agg_label(self, v):
@@ -228,7 +246,7 @@ class PareJudger:
         #    手动跳过（用户主动清理目标）；高压覆盖极端释放 ──
         now = time.time()
         _guard = getattr(self, "_mode_guard", "normal")
-        if not is_fg and not self._manual_mode and self.aggressiveness < 0.8 and _guard != "full":
+        if not is_fg and not self._manual_mode and not self._high_pressure() and _guard != "full":
             p_fg = self.learner.get_profile(name)
             if p_fg and p_fg.last_foreground_at:
                 _win = getattr(snap, 'has_visible', False)
@@ -256,7 +274,7 @@ class PareJudger:
         # ── 连续低活动确认（P0-C）：按 PID 键（同名多实例互不干扰）；
         #    防瞬时脉冲误判；手动/高压跳过；确认轮数按模式梯度：normal 2 轮 / deep 1 轮 / full 跳过
         #    （2026-08-14 梯度修复：原仅 full 跳过——deep 与 normal 同级，深度模式名不副实）
-        if _guard != "full" and not self._manual_mode and self.aggressiveness < 0.8:
+        if _guard != "full" and not self._manual_mode and not self._high_pressure():
             _need = 2 if _guard == "normal" else 1
             _la = self._low_activity.get(snap.pid)
             if _la is None or _la[0] < _need:
@@ -283,7 +301,7 @@ class PareJudger:
         # ── 稳态锚点抑制（P1-D）：低于应用自然稳态+余量 → 清了也白清。
         #    手动/高压跳过；探索机制（EXPLORE_RATE 概率放行）保持 Thompson 学习闭环验证锚点；
         #    deep/full 跳过——极限模式解除稳态锁（梯度，2026-08-14）──
-        if not self._manual_mode and self.aggressiveness < 0.8 and _guard not in ("deep", "full"):
+        if not self._manual_mode and not self._high_pressure() and _guard not in ("deep", "full"):
             path_a = getattr(snap, "path", None)
             if path_a and self.learner.stable_anchors.should_suppress(
                     path_a, snap.ws, self.cfg.get("efis_params", {}).get("anchor_margin", 0.15)):
@@ -295,7 +313,7 @@ class PareJudger:
         #    手动/高压跳过；EWMA 回落自动解除；探索放行（5%）保持数据流——
         #    防后退死锁：进程行为变化后探测清理产生新回弹数据，EWMA 快速回落解除；
         #    deep/full 跳过——极限模式不后退（梯度，2026-08-14）──
-        if not self._manual_mode and self.aggressiveness < 0.8 and _guard not in ("deep", "full"):
+        if not self._manual_mode and not self._high_pressure() and _guard not in ("deep", "full"):
             path_b = getattr(snap, "path", None)
             if path_b and self.learner.rebound.in_backoff(path_b, now):
                 if random.random() >= EXPLORE_RATE:
@@ -328,7 +346,8 @@ class PareJudger:
         try:
             if hasattr(self, 'learner') and hasattr(self.learner, 'policy'):
                 state = {"mem_pct": getattr(self, '_last_mem_pct', 50), "is_fg": getattr(snap, 'fg', False),
-                         "mem_trend": getattr(self, '_mem_trend', 0.0)}
+                         "mem_trend": getattr(self, '_mem_trend', 0.0),
+                         "emergency": self._emergency_pct()}
                 if ws_override:
                     ok, reason = True, "WS回弹覆盖"
                 elif not self._post_clean_ws:

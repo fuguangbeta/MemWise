@@ -37,6 +37,7 @@ def _build_pipeline():
             "never": CFG.get("never",[]),
             "game_processes": CFG.get("game_processes",[]),
             "clean_passes": CFG.get("clean_passes", 4),
+            "emergency_threshold": CFG.get("emergency_threshold", 80),  # 高压让路/树阈值同口径（2026-09-11 S5）
             "efis_params": CFG.get("efis_params",{})}
     # 与 GUI 同权威源（2026-08-15 审查）：EFIS 调参状态以 efis_state.json 为准，
     # config.yaml 可能滞后——CLI 与 GUI 优化参数一致；按当前清理模式取对应参数组
@@ -212,6 +213,7 @@ def cmd_daemon(args):
                         judger.cfg["never"] = CFG.get("never", [])
                         judger.cfg["game_processes"] = CFG.get("game_processes", [])
                         judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
+                        judger.cfg["emergency_threshold"] = CFG.get("emergency_threshold", 80)
                         # EFIS 参数按当前模式取（状态文件权威，config 快照不回灌，审查 P3/P8）
                         if _efis is not None:
                             _efis.set_mode(mode)

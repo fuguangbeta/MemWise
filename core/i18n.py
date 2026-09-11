@@ -141,6 +141,7 @@ _EN = {
     "欲降低本程序性能占用建议 2~3": "Use 2–3 to reduce this app's overhead",
     "对于更彻底的优化需求可设 5~6": "Use 5–6 for a more thorough optimization",
     "程序会在进程已无更多可释放内存时自动提前结束，不会为未执行的轮次额外等待": "The app ends early once a process has nothing left to release, and never waits for rounds that did not run",
+    "quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」不执行": "In quick mode, \u201cRelease idle process memory\u201d, \u201cSystem file cache\u201d and \u201cVolume cache flush\u201d are not run",
     "守护模式每轮周期内的轻量阶段频率（8~20 秒，默认 12）": "Frequency of gentle-phase runs within each Guard cycle (8–20 s, default 12)",
     "用于控制周期内清理操作的密集程度": "Controls how densely cleanup runs within a cycle",
     "间隔越短，同周期内清理次数越多，释放效果越彻底": "Shorter intervals mean more cleanups per cycle and more thorough releases",

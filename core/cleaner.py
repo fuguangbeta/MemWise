@@ -944,7 +944,18 @@ class PareCleaner:
             # 高频 gap-fill 路径传 allow_layer3=False，深度操作只在 harvest 执行
             if allow_layer3:
                 _l3_gate = self.judger.cfg.get("efis_params", {}).get("layer3_agg_gate", 0.3)
-                if agg >= _l3_gate:
+                # 使用率路径（2026-09-11 审查 F4）：agg 判据在 normal 现有标定下要到 ~90% 使用率
+                # 才可达，而 80% 起已被紧急 full 接管 ⇒ 深度聚合在"设计意图的高压区间"内不工作。
+                # 补一条与 DEEP_WSALL_PCT_GATE 同思路的使用率判据（阈值 = 用户紧急阈值×85%，
+                # 默认 68%）：低压/中压零影响，且能在紧急清理之前先做深度聚合。
+                _em_l3 = self.judger.cfg.get("emergency_threshold", 80)
+                try:
+                    _em_l3 = float(_em_l3)
+                except (TypeError, ValueError):
+                    _em_l3 = 80.0
+                _mp_l3 = winapi.get_memory_status()
+                _l3_usage = bool(_mp_l3 and _mp_l3["pct"] >= _em_l3 * 0.85)
+                if agg >= _l3_gate or _l3_usage:
                     self._layer3_deep(snaps, learner, ops_filter)
             return _mk_result(l2_results, probe_results)
         
