@@ -1,4 +1,4 @@
-﻿# MemWise v4.5.038
+﻿# MemWise v4.5.039
 
 ## 关于本工具 · *About This Tool*
 

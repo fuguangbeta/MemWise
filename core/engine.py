@@ -334,7 +334,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.5.038 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.5.039 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -434,7 +434,11 @@ def _save_cfg():
             if k not in _CFG_SNAPSHOT:
                 changed.append(f"{k}=新增")
             elif _CFG_SNAPSHOT[k] != v:
-                changed.append(f"{k} {_CFG_SNAPSHOT[k]}→{v}")
+                _ov, _nv = _CFG_SNAPSHOT[k], v
+                if isinstance(_nv, (dict, list)) or isinstance(_ov, (dict, list)):
+                    changed.append(f"{k} 已更新")     # 大结构不倾倒（2026-09-11：曾整段打印 efis_params）
+                else:
+                    changed.append(f"{k} {_ov}→{_nv}")
         for k in _CFG_SNAPSHOT:
             if k not in CFG:
                 changed.append(f"{k}=移除")
@@ -1264,10 +1268,15 @@ class MemWiseEngine:
                 # 周期汇总：文件侧由 [清理] 直写（毫秒时间戳+独立类别）；GUI 仅显示不重复落盘
                 summary_line = (f"本轮释放 {fmt_label(cycle_freed)} · 系统杂项 {fmt_count(cycle_standby)} · "
                                 f"整理 {fmt_count(self._cycle_trimmed)} 进程 · "
-                                f"试探 {len(probe_results)} ({probe_ok}成功) · "
-                                f"模式 {CFG.get('clean_mode', 'normal')}")
+                                f"试探 {len(probe_results)} ({probe_ok}成功)")
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
+                    # 模式切换标注（2026-09-11 用户定稿）：只在与上一周期模式不同的周期末追加「 · 模式 xx→xx」，
+                    # 表示下一个周期起由 xx 切换为 xx（该周期实际执行仍是旧模式）；其余周期只输出日常字段
+                    _cur_mode = getattr(self.cleaner, "_last_mode", CFG.get("clean_mode", "normal"))
+                    if getattr(self, "_last_logged_mode", None) not in (None, _cur_mode):
+                        _log_write("清理", " · 模式 %s→%s" % (self._last_logged_mode, _cur_mode))
+                    self._last_logged_mode = _cur_mode
                     # 明细行（2026-09-11 用户要求"日志要能定位问题"）：系统操作计数 + 释放前三 +
                     # 本轮判定拦截原因统计（为什么某些进程没被清理）
                     try:
@@ -1371,8 +1380,8 @@ class MemWiseEngine:
                         self._cycle_trimmed, self._cycle_failed,
                         (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
                         getattr(self, "_cycle_pf", 0),
-                        getattr(self._eris_calib.get("modes", {}).get(_mode or "normal", {}), "n", "?"),
-                        _mode))
+                        getattr(self._eris_calib.get("modes", {}).get(getattr(self.cleaner, "_last_mode", "normal"), {}), "n", "?"),
+                        getattr(self.cleaner, "_last_mode", "normal")))
             except Exception:
                 pass
         except Exception:
@@ -1416,6 +1425,8 @@ class MemWiseEngine:
             raw1 = None
         if not ratios:
             raw2 = None
+        if trimmed_cnt <= 0 and failed_cnt <= 0:
+            raw3 = None            # 本轮无任何进程清理 ⇒ 成功率无意义（旧实现 1:1 ⇒ 14 分，长期压低效率）
         raws = [raw1, raw2, raw3, raw4, raw5]
         _nodata = [r is None for r in raws]
         # ── 平滑 → 赋分 → 效率 → 词条/趋势 ──
