@@ -1709,6 +1709,32 @@ _i18n_icon_miss52 = [(z, e) for z, e in _EN.items()
 check("F52 译文不丢图标（中文带图标的条目，英文同样以图标开头）",
       not _i18n_icon_miss52, str(_i18n_icon_miss52[:3]))
 
+# ── F52b 画像输出标签列宽一致（命令行 profile 输出；中英各自成列）──
+import unicodedata as _uda52
+def _dw52(s):
+    return sum(2 if _uda52.east_asian_width(c) in ("W", "F") else 1 for c in s)
+_PROF52 = ("路径:", "工作集:", "页面错误:", "Thompson θ:", "ROI:", "Z-score:", "趋势:", "泄漏:", "清理:")
+def _pkeys52(lang):
+    set_language(lang)
+    out = []
+    for core in _PROF52:
+        for k in _EN:
+            if k.startswith("  ") and k.strip() == core:
+                out.append(_dw52(tr(k)) if lang == "en" else _dw52(k))
+    return out
+_zhw52, _enw52 = _pkeys52("zh_CN"), _pkeys52("en")
+set_language("zh_CN")
+check("F52b 画像标签列宽一致（中文 9 行同列）",
+      len(_zhw52) == 9 and len(set(_zhw52)) == 1, str(sorted(set(_zhw52))))
+check("F52b 画像标签列宽一致（英文 9 行同列）",
+      len(_enw52) == 9 and len(set(_enw52)) == 1, str(sorted(set(_enw52))))
+_mw_py52 = _io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memwise.py"),
+                    encoding="utf-8").read()
+_lits52 = _re.findall(r'tr\("(  [^"]*?)"\)', _mw_py52)
+check("F52b 命令行标签字面量都是精确键（否则退化为片段翻译、列宽失准）",
+      bool(_lits52) and all(L in _EN for L in _lits52),
+      str([L for L in _lits52 if L not in _EN][:3]))
+
 # 真实面板像素级核验：同一 Text（与应用同字体/同制表位）内，所有行的图标列与文字列必须一致
 _root52 = _tk51.Tk(); _root52.geometry("900x200+4000+4000")  # 映射到屏幕外：bbox 需已映射，但不闪窗口
 _stub52 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)

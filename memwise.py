@@ -339,16 +339,16 @@ def cmd_profile(args):
     path = winapi.get_process_path(pid)
     p = Learner.load(STATE_PATH).get_profile(name)
     print(f"PID {pid} — {name}")
-    if path: print(tr("  路径:    ") + f"{path}")
-    print(tr("  工作集:  ") + f"{_mb(mem['ws']):.1f} MB")
-    print(tr("  页面错误: ") + f"{mem['pf']}")
+    if path: print(tr("  路径:        ") + f"{path}")
+    print(tr("  工作集:      ") + f"{_mb(mem['ws']):.1f} MB")
+    print(tr("  页面错误:    ") + f"{mem['pf']}")
     if p:
-        print(f"  Thompson θ: {p.thompson_theta:.2f}")
-        print(f"  ROI:        {p.roi:.2f} MB/PF")
-        print(f"  Z-score:    {p.z_score:.2f}")
-        print(tr("  趋势:       ") + f"{p.slope:.1f}" + tr(" bytes/tick"))
-        print(tr("  泄漏:       ") + (tr("⚠ 疑似") if p.leak_suspect else tr("正常")))
-        print(tr("  清理:       ") + f"{p.clean_count}" + tr(" 次 | Probe: ") + f"{p.probe_ok}/{p.probe_ok+p.probe_fail}")
+        print(tr("  Thompson θ:  ") + f"{p.thompson_theta:.2f}")
+        print(tr("  ROI:         ") + f"{p.roi:.2f} MB/PF")
+        print(tr("  Z-score:     ") + f"{p.z_score:.2f}")
+        print(tr("  趋势:        ") + f"{p.slope:.1f}" + tr(" bytes/tick"))
+        print(tr("  泄漏:        ") + (tr("⚠ 疑似") if p.leak_suspect else tr("正常")))
+        print(tr("  清理:        ") + f"{p.clean_count}" + tr(" 次 | Probe: ") + f"{p.probe_ok}/{p.probe_ok+p.probe_fail}")
 
 def main():
     # GBK 控制台/重定向时 emoji 输出不崩溃（替换为 ? 而非抛 UnicodeEncodeError）
