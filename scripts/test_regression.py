@@ -211,7 +211,7 @@ pv_b.ws_deque.append(50 << 20); pv_b.ws_deque.append(50 << 20)
 _, _, sc = pv.should_trim("big.exe", 300 << 20, {"mem_pct": 70, "mem_trend": 0.0}, learner_v)
 check("peers 排除自身→优势分=2", sc[4] == 2, f"scores={sc}")
 
-print("\n[13] 终极审查修复回归（2026-08-12）")
+print("\n[11] 终极审查修复回归（2026-08-12）")
 # config 白名单清洗：历史遗留键（compress/combine 等）无消费方，load 后必须被过滤
 _WL = {"ws", "standby", "modified", "filecache", "volume", "registry"}
 cfg_w = config_load()
@@ -230,7 +230,7 @@ check("judger 无 _prev_agg 死字段", not hasattr(j_tmp, "_prev_agg"))
 # 未知模式防御：optimize else 分支回退 normal 语义（不再无参全量 layer1）——走纯配置检查
 check("clean_mode 默认 normal", config_load().get("clean_mode", "normal") in ("quick","normal","deep","full"))
 
-print("\n[14] 稳定锚点与安全门（P0/P1 批次）")
+print("\n[12] 稳定锚点与安全门（P0/P1 批次）")
 # ── 前台历史冷却：刚切走的进程拒绝；窗口过后放行 ──
 j_fg = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_fg._low_activity[7001] = (2, time.time(), None)
@@ -294,7 +294,7 @@ os.remove(tmp2)
 # ── EFIS anchor_margin 参数 ──
 check("anchor_margin 范围", PARAMS["anchor_margin"]["min"] <= 0.15 <= PARAMS["anchor_margin"]["max"])
 
-print("\n[15] 清理模式严格度适配（四模式×守卫）")
+print("\n[13] 清理模式严格度适配（四模式×守卫）")
 # full：跳过冷却/确认/CPU门/IO门（极限=立即清、不设活跃门槛；量化：CPU门 12% 在真实负载拖累 18-26%）
 j_full = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_full._mode_guard = "full"
@@ -341,7 +341,7 @@ sd2 = Snap(); sd2.name="deeptest.exe"; sd2.ws=200<<20; sd2.path="d:\\app\\deepte
 ok_no2, reason_no2 = j_norm2.can_trim(sd2)
 check("normal冷却200s拦截", not ok_no2 and "刚切走" in reason_no2, reason_no2)
 
-print("\n[16] 模式价值底线梯度（θ：deep 0.12 / full 0.06 / normal 无）")
+print("\n[14] 模式价值底线梯度（θ：deep 0.12 / full 0.06 / normal 无）")
 # deep：θ<0.12 拒绝
 jd_v = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 jd_v._mode_guard = "deep"
@@ -391,7 +391,7 @@ sf4 = Snap(); sf4.name="floor4.exe"; sf4.ws=200<<20; sf4.path="d:\\app\\floor4.e
 ok_f4, reason_f4 = jn_v.can_trim(sf4)
 check("normal无价值底线", "价值不足" not in reason_f4, reason_f4)
 
-print("\n[17] 稳态锁梯度（deep/full 跳过 WS基线/锚点/回弹，normal 保留）")
+print("\n[15] 稳态锁梯度（deep/full 跳过 WS基线/锚点/回弹，normal 保留）")
 # 核心修复验证：稳态豁免（agg≥0.8）与 PID 实际输出不匹配（默认参数高压峰值仅 0.38）——
 # 曾导致稳态锁全局锁死 deep/full 压缩能力（卡 37%）。现按模式梯度：normal 保留，deep/full 解除
 import random as _random
@@ -440,7 +440,7 @@ _random.random = _orig_random
 check("pid_kp 下限防触底", PARAMS["pid_kp"]["min"] == 0.45)
 check("pid_kd 上限防触顶", PARAMS["pid_kd"]["max"] == 0.35)
 
-print("\n[18] 投票 threshold 模式梯度接线（normal=0 / deep=-1 / full=-2）")
+print("\n[16] 投票 threshold 模式梯度接线（normal=0 / deep=-1 / full=-2）")
 # policy 早已支持 threshold 参数但调用处未传——2026-08-14 接线验证（设计意图补全）
 def _mk_vote_j(mode):
     j = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
@@ -463,7 +463,7 @@ for mode, expect in (("normal", 0), ("deep", -1), ("full", -2)):
     check(f"投票threshold {mode}={expect}", _captured.get(mode) == expect, f"实际 {_captured.get(mode)}")
 
 
-print("\n[19] 窗口冷却与回弹学习（A/B 方案批次）")
+print("\n[17] 窗口冷却与回弹学习（A/B 方案批次）")
 # ── 窗口冷却：有可见窗口 600s / 无窗口 300s（301-599s 区间区分）──
 j_win = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_win._low_activity[8001] = (2, time.time(), None)
@@ -545,7 +545,7 @@ try:
 except Exception as ex:
     check("review regression", False, repr(ex))
 
-print("\n[20] 多实例计数独立（A1 修复：确认键按 PID）")
+print("\n[18] 多实例计数独立（A1 修复：确认键按 PID）")
 j_mi = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 # 两个同名进程（如 chrome 子进程）：一个活跃一个低活动——计数互不干扰
 s_m1 = Snap(); s_m1.name="chrome.exe"; s_m1.pid=9501; s_m1.cpu=50.0; s_m1.create=1
@@ -556,7 +556,7 @@ check("低活动实例独立计数", j_mi._low_activity.get(9502, (0, 0, 0))[0] 
 j_mi.update_activity([s_m1, s_m2])
 check("低活动实例累计2", j_mi._low_activity.get(9502, (0, 0, 0))[0] == 2)
 
-print("\n[21] i18n 语言支持（原文即 key / 前缀匹配 / 递归 / 回退）")
+print("\n[19] i18n 语言支持（原文即 key / 前缀匹配 / 递归 / 回退）")
 from core.i18n import tr, tr_msg, set_language, get_language, LANGUAGES, _EN
 # 中文模式：原样返回
 set_language("zh_CN")
@@ -597,7 +597,7 @@ for m in _re.finditer(r'tr\("([^"]*[\u4e00-\u9fff][^"]*)"\)', _src):
         _missing.append(lit[:30])
 check("GUI tr 字面量全覆盖", not _missing, f"缺映射: {_missing[:5]}")
 
-print("\n[22] 2026-08-14 全量审查修复回归")
+print("\n[20] 2026-08-14 全量审查修复回归")
 # ── A1 稳态锚点多实例聚合（同路径多实例锚点不再每轮重置）──
 class _Snap:
     pass
@@ -658,7 +658,7 @@ for _p in _lr.profiles.values():
     _p.kalman.r = 8.0
 check("B10 kalman_r 遍历生效", _pa.kalman.r == 8.0)
 
-print("\n[23] 四模式梯度修复回归（2026-08-14 梯度专项）")
+print("\n[21] 四模式梯度修复回归（2026-08-14 梯度专项）")
 # ── 活动确认梯度：normal 2 轮 / deep 1 轮 / full 跳过 ──
 j_g = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
 j_g._mode_guard = "normal"; j_g.aggressiveness = 0.1
@@ -725,7 +725,7 @@ def _run_ft(mode, refill_kb):
 check("fast_track deep 400KB/s 进池", _run_ft("deep", 400) is True)
 check("fast_track normal 400KB/s 不进池", _run_ft("normal", 400) is False)
 
-print("\n[24] 2026-08-15 全量审查修复回归")
+print("\n[22] 2026-08-15 全量审查修复回归")
 # ── efis_params 类型清洗：畸形配置不崩溃（回退空 dict），坏值键删除 ──
 import core.config as _cfg3
 _ocp3 = _cfg3.CONFIG_PATH
@@ -784,7 +784,7 @@ check("T6 八分区键", "  窗口与托盘 — 关闭按钮行为、托盘左�
 check("托盘初始 tip 键", "MemWise — 智能内存看护" in _EN_A)
 set_language("zh_CN")
 
-print("\n[25] 模式×场景参数组隔离（2026-08-16 用户定稿）")
+print("\n[23] 模式×场景参数组隔离（2026-08-16 用户定稿）")
 from core.efis import MODE_DEFAULTS, MODE_TUNE_WHITELIST
 # ── 激进初始值与调参白名单 ──
 check("deep 初始 target_usage=45", MODE_DEFAULTS["deep"].get("target_usage") == 45)
@@ -894,7 +894,7 @@ _evs = [m for t, m in list(eng_x.events.queue)]
 check("once 输出即时优化载荷", any(isinstance(m, dict) and m.get("mode") == "full"
                                    and "released" in m for m in _evs), str(_evs)[:120])
 
-print("\n[26] 2026-08-30 全量审查批次回归")
+print("\n[24] 2026-08-30 全量审查批次回归")
 import re as _re26, threading as _th26
 _ROOT26 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _src26(*parts):
@@ -1035,7 +1035,7 @@ check("排行学习标记口径统一", 'p.total_samples >= 2 else ""' in _gui26
 check("GUI 死导入已清", "from core.eris import" not in _gui26_src
       and "res_dir," not in _gui26_src)
 
-print("\n[27] 游戏态调参冻结（2026-08-30）")
+print("\n[25] 游戏态调参冻结（2026-08-30）")
 _ef27 = EfisController(state_path=None)
 def _st27(i, game):
     return {"mem_pct": 50 + (i % 2) * 30, "trimmed_cnt": 10, "failed_cnt": 2,
@@ -1065,7 +1065,7 @@ check("引擎游戏态接线", "'game': game_seen" in _eng26_src
       and "if not game_seen:" in _eng26_src
       and "game_seen = self.cleaner.game_mode" in _eng26_src)
 
-print("\n[28] 手动优化播报重设计（2026-08-30）")
+print("\n[26] 手动优化播报重设计（2026-08-30）")
 # 结果卡头行翻译（tr_msg 片段全覆盖）
 set_language("en")
 _head28 = tr_msg("⚡ full 优化完成 · 系统缓存 453 MB + 进程 15 MB = 共 468 MB · 净下降 296 MB（可用 62%→71%）")
@@ -1087,7 +1087,7 @@ check("旧重复摘要已移除", "三轮优化合计释放" not in _eng26_src
 check("旧键已清理", "📊 三轮优化合计释放" not in _i18n26_src
       and "即时优化完成 · 释放" not in _i18n26_src and "开始优化..." not in _i18n26_src)
 
-print("\n[29] 日志面板分组写入语义（2026-08-30）")
+print("\n[27] 日志面板分组写入语义（2026-08-30）")
 import memwise_gui as _mg29
 check("面板阈值常量", _mg29.PANEL_MAX_LINES == 7)
 check("实际行数计数", _mg29._msg_lines(["a", "b\nc", "d\ne\nf"]) == 6)
@@ -1126,7 +1126,7 @@ check("三路径统一委托", _gui26_src.count("_write_group([m])") == 2
       and "_write_group(msgs, to_file)" in _gui26_src)
 check("engine 启动信息打包", "'log_batch', start_lines" in _eng26_src)
 
-print("\n[30] 周期批分组化 + 同批修复（2026-08-30）")
+print("\n[28] 周期批分组化 + 同批修复（2026-08-30）")
 check("周期批分组化", "'display_groups', cycle_groups" in _eng26_src
       and "_cycle_log_groups" in _eng26_src and "_cycle_log_buffer" not in _eng26_src)
 check("紧急消息统一入批", 'self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])' in _eng26_src)
@@ -1157,7 +1157,7 @@ check("热键只报变更键", 'changed={hk["key"]} if spec != old else set()' i
       and 'not initial and hk["key"] in changed' in _gui26_src)
 check("事件契约更新", "'display_groups', [组, …]" in _eng26_src)
 
-print("\n[31] 2026-09-06 全量审查批次回归（F1-F13）")
+print("\n[29] 2026-09-06 全量审查批次回归（F1-F13）")
 # ── F1 消息队列 log/log_batch 分支唯一（重复 if 链已删）──
 check("F1 消息队列 log 分支唯一", _gui26_src.count("if action == 'log': self._log(args)") == 1)
 # ── F2 dict 快照防护全景（2026-08-30 修复的残留漏网收口）──
@@ -1229,7 +1229,7 @@ _t25en = tr_msg("清空系统文件读取缓存\n会降低文件操作速度直�
 check("tr_msg 尾\\n 变体对称", "谨慎" not in _t25en and "Use with care" in _t25en, _t25en[-60:])
 set_language("zh_CN")
 
-print("\n[32] 图表标度与效率阈值适配（2026-09-06 用户定稿）")
+print("\n[30] 图表标度与效率阈值适配（2026-09-06 用户定稿）")
 # ── 任务1: 纵轴 GB 标度 ≥10 取整 ──
 _gui32_src = _src26("memwise_gui.py")
 _eris_v7_src = _src26("core/eris.py")   # ERIS v7 纯函数核心
@@ -1257,7 +1257,7 @@ for _frag in ("50 分 = 该维历史中位水平，100 分 = 突破历史高位"
 check("README 旧口径清零", "80 + 40" not in _readme32 and "IQR 分位数归一化" not in _readme32
       and "trimmed-IQR" not in _readme32 and "（60-100）" not in _readme32)
 
-print("\n[33] 配置包：导出/导入/备份/恢复出厂（2026-09-06 任务3）")
+print("\n[31] 配置包：导出/导入/备份/恢复出厂（2026-09-06 任务3）")
 import zipfile as _zf33
 from core import backup as _bk33
 _b33 = os.path.join(tempfile.mkdtemp(), "data")
@@ -1342,7 +1342,7 @@ check("T6 分区联动两行", "  重置 — 恢复默认设置与数据" in _gu
       and "  配置传输 — 导出与导入配置包" in _gui26_src)
 
 # ═══════════════════════════════════════════
-print("\n[34] 2026-09-11 全量审查修复回归（F1/F2/F3/F6/F7/F8/F9/F10/F11/F12/F24/F26/F27/F28/F29/F30/F32/F38/F39/F42/F43/F45/F47/F48 + 兼容性）")
+print("\n[32] 2026-09-11 全量审查修复回归（F1/F2/F3/F6/F7/F8/F9/F10/F11/F12/F24/F26/F27/F28/F29/F30/F32/F38/F39/F42/F43/F45/F47/F48 + 兼容性）")
 import io as _io34, os as _os34, re as _re34, subprocess as _sp34, tempfile as _tf34
 _ROOT34 = _os34.path.dirname(_os34.path.dirname(_os34.path.abspath(__file__)))
 def _src34(*parts):
@@ -1851,7 +1851,7 @@ check("兼容：旧版 state（无 probe_zero/policy 键）加载且数据保留
       and _l_old34.profiles["legacy.exe"].alpha == 5)
 
 
-print("\n[35] ERIS v7 五维绝对标尺（2026-09-11 用户定稿；设计见记忆 learning-engine-specs §B4）")
+print("\n[33] ERIS v7 五维绝对标尺（2026-09-11 用户定稿；设计见记忆 learning-engine-specs §B4）")
 from core.eris import (DIM_ANCHORS as _A7, EFF_K as _K7, SUPER_TH as _ST7, WARN_TH as _WT7,
                        DIM_WORDS as _W7, dim_score as _ds7, efficiency as _ef7,
                        pick_factor as _pf7, smooth3_append as _sm7, SMOOTH_N as _SN7,
@@ -1887,7 +1887,7 @@ check("v7 旧状态（v6 分位数窗格式）自动忽略：加载入口只认 
       'payload.get("v") == 7' in _eng7 and "memwise_eris_ewma.json" in _eng7)
 
 import re
-print("\n[36] ERIS v7 ② 自校准（冷启动 + 长周期爬行；独立存储 / 恢复默认清除）")
+print("\n[34] ERIS v7 ② 自校准（冷启动 + 长周期爬行；独立存储 / 恢复默认清除）")
 from core.eris import (new_calib as _nc7, calib_valid as _cv7, calibrate_and_score as _cs7,
                        anchors_center_span as _ac7, DIM_ANCHORS as _A7b,
                        dim_score as _ds7b)
