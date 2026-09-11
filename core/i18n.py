@@ -251,8 +251,6 @@ _EN = {
     "🎮 游戏已退出 · 恢复正常模式": "🎮 Game exited · normal mode restored",
     "⚠ 紧急触发清理(full模式)": "⚠ Emergency cleanup triggered (full)",
     "⚠ 周期内紧急触发清理(full模式)": "⚠ Emergency cleanup during cycle (full)",
-    "📋 将清理 ": "📋 Will clean ",
-    " 个进程候选：": " candidate processes: ",
     " MB": " MB",
     "→": "→",
     "%）": "%)",
@@ -405,7 +403,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.4.021 启动· ": "MemWise v4.4.021 started · ",
+    "MemWise v4.5.032 启动· ": "MemWise v4.5.032 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -537,9 +535,13 @@ _EN = {
     "·三轮）…": " · three rounds)…",
     "第 ": "Round ",
     "/3 轮完成 · 本轮释放 ": "/3 done · this round freed ",
-    " 优化完成 · 释放 ": " optimization done · freed ",
     " MB · 净下降 ": " MB · net drop ",
     " MB（可用 ": " MB (available ",
+    " 优化完成 · 系统缓存 ": " optimization done · system cache ",
+    " MB + 进程 ": " MB + processes ",
+    " MB = 共 ": " MB = total ",
+    "📋 本次将评估 ": "📋 Evaluating ",
+    " 个进程：": " processes: ",
     "✓ 其余 ": "✓ plus ",
     "没有找到值得清理的进程（全部受保护或无闲置内存）": "No processes worth cleaning found (all protected or no idle memory)",
 
@@ -692,7 +694,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.4.021 PARES —— 智能内存看护": "MemWise v4.4.021 PARES — Intelligent Memory Custodian",
+    "MemWise v4.5.032 PARES —— 智能内存看护": "MemWise v4.5.032 PARES — Intelligent Memory Custodian",
 }
 
 
@@ -733,7 +735,7 @@ def tr(s):
     return out if replaced else s
 
 
-def tr_msg(s):
+def _tr_msg_raw(s):
     """动态消息翻译：精确匹配 → 前缀匹配（参数后缀递归翻译）→ 片段全替换（一轮遍历全部可替键）。
     覆盖 "WS未填满(80/120)"、"🔴 守护中 90% — 内存紧张" 与多片段摘要（"释放 X · 整理 Y · 试探 Z"）三类；
     门槛 len>=2（"释放 "/"效率 "/"试探 "/"成功)" 等 3 字符键）；模板有限，微秒级——仅日志展示等低频路径"""
@@ -744,7 +746,7 @@ def tr_msg(s):
         return hit
     for k in _EN_SORTED:
         if len(k) >= 2 and s.startswith(k) and len(s) > len(k):
-            return _EN[k] + tr_msg(s[len(k):])  # 后缀递归翻译（参数保留）
+            return _EN[k] + _tr_msg_raw(s[len(k):])  # 后缀递归翻译（参数保留）
     out = s
     changed = False
     for k in _EN_SORTED:
@@ -757,3 +759,13 @@ def tr_msg(s):
             out = out.replace(k[:-1], _EN[k].rstrip("\n"))
             changed = True
     return out if changed else s
+
+
+def tr_msg(s):
+    """显示层消息翻译入口：翻译结果再做标点归一（2026-09-11）。
+    动态拼接的消息（如候选进程名用「、」连接）源串是中文原文，顿号由逻辑层拼出来、
+    不经过翻译表——英文界面下会残留中文顿号，故在显示层统一转半角逗号。"""
+    out = _tr_msg_raw(s)
+    if _current != "zh_CN" and "、" in out:
+        out = out.replace("、", ", ")
+    return out

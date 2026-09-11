@@ -335,7 +335,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.4.021 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.5.032 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
     except Exception:
         _LOG_FD = None
 
@@ -675,7 +675,7 @@ class MemWiseEngine:
                     preview = [s.name for s in snaps if self.judger.can_trim(s, manual=True, guard=mode)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
-                        start_lines.append(f"📋 将清理 {len(preview)} 个进程候选：{shown}")
+                        start_lines.append(f"📋 本次将评估 {len(preview)} 个进程：{shown}")
                 except Exception:
                     pass
                 self.events.put(('log_batch', start_lines))
@@ -730,7 +730,7 @@ class MemWiseEngine:
                     preview = [s.name for s in snaps if self.judger.can_trim(s, manual=True, guard=mode)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
-                        self.events.put(('log', f"📋 将清理 {len(preview)} 个进程候选：{shown}"))
+                        self.events.put(('log', f"📋 本次将评估 {len(preview)} 个进程：{shown}"))
                 except Exception:
                     pass
                 m0 = winapi.get_memory_status()

@@ -1,5 +1,5 @@
 """
-MemWise v4.4.021 GUI —— 图形界面
+MemWise v4.5.032 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -438,7 +438,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.4.021", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.5.032", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -462,7 +462,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.4.021")
+        self.root.title("MemWise v4.5.032")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -519,7 +519,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.4.021 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.5.032 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -578,7 +578,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.4.021")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.032")
                     if fw:
                         top = fw
                 except Exception:
@@ -2646,7 +2646,13 @@ class MemWiseGUI:
         # 自食（实测 10 个名字最终只剩 1-2 个可见），整卡输出名单恒完整；
         # 名单按单进程释放量降序取头部（用户最关心谁被清得最多）+ 余量聚合行
         pct_str = f"（可用 {p0}%→{p1}%）" if p0 is not None and p1 is not None else ""
-        card = [f"⚡ {result.get('mode', '')} 优化完成 · 释放 {released:.0f} MB"
+        # 释放量拆解（2026-09-11 用户定稿）：系统缓存与进程分列再给合计——否则第一行的大数字
+        # 会被读成"下面这几条进程清出来的"，而系统缓存通道（待机/文件缓存等）才是大头。
+        # 进程部分 = Layer2 成功项释放量求和，其余归系统级通道；两者之和恒等于 released。
+        _proc_mb = min(released, sum(t[2] for t in result.get("layer2", []) if t[1]) / (1 << 20))
+        _sys_mb = max(0.0, released - _proc_mb)
+        card = [f"⚡ {result.get('mode', '')} 优化完成 · 系统缓存 {_sys_mb:.0f} MB"
+                f" + 进程 {_proc_mb:.0f} MB = 共 {released:.0f} MB"
                 f" · 净下降 {net / (1 << 20):.0f} MB{pct_str}"]
         by_freed = sorted(trimmed, key=lambda t: -t[2])
         for snap, _ok, freed, _reason in by_freed[:4]:

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.4.021 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.5.032 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1104,8 +1104,10 @@ check("引擎游戏态接线", "'game': game_seen" in _eng26_src
 print("\n[28] 手动优化播报重设计（2026-08-30）")
 # 结果卡头行翻译（tr_msg 片段全覆盖）
 set_language("en")
-_head28 = tr_msg("⚡ full 优化完成 · 释放 512 MB · 净下降 480 MB（可用 43%→31%）")
-check("结果卡头行翻译", _head28 == "⚡ full optimization done · freed 512 MB · net drop 480 MB (available 43%→31%)", _head28)
+_head28 = tr_msg("⚡ full 优化完成 · 系统缓存 453 MB + 进程 15 MB = 共 468 MB · 净下降 296 MB（可用 62%→71%）")
+check("结果卡头行翻译（系统缓存/进程分列）",
+      _head28 == "⚡ full optimization done · system cache 453 MB + processes 15 MB = total 468 MB"
+                 " · net drop 296 MB (available 62%→71%)", _head28)
 check("三轮启动文案", tr_msg("开始优化（full·三轮）…") == "Start optimization (full · three rounds)…")
 check("轮次节拍文案", tr_msg("第 2/3 轮完成 · 本轮释放 152 MB") == "Round 2/3 done · this round freed 152 MB")
 check("余量聚合行", tr_msg("✓ 其余 21 个进程") == "✓ plus 21 processes")
@@ -1769,6 +1771,53 @@ check("F53 口径覆盖是只读的（不改对象状态）",
 _eng53 = _io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "core", "engine.py"), encoding="utf-8").read()
 check("F53 引擎两处候选预览均按同口径调用", _eng53.count("can_trim(s, manual=True, guard=mode)") == 2)
+
+# ── F54 结果卡信息结构：系统缓存 / 进程分列（2026-09-11 用户定稿）+ 候选行口径 ──
+check("F54 候选行文案改为「本次将评估」",
+      _eng53.count('f"📋 本次将评估 {len(preview)} 个进程：{shown}"') == 2
+      and "📋 将清理" not in _eng53)
+class _Snap54:
+    def __init__(self, name, pid):
+        self.name = name; self.pid = pid
+class _Cleaner54:
+    def summary(self):
+        return {"freed_mb": 468.0}
+class _Engine54:
+    daemon_running = True
+_root54 = _tk51.Tk(); _root54.geometry("900x200+4000+4000")
+_g54 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
+_g54.log = _tk51.Text(_root54, font=("Consolas", 9))
+_g54.log.pack(fill="both", expand=True)
+_mg29._setup_log_widget(_g54.log)
+_g54._log_history = _dq51(maxlen=50); _g54._last_msg = None
+_g54.cleaner = _Cleaner54(); _g54.engine = _Engine54()
+_g54._upd_stats = lambda: None
+_g54._once_optimizing = True
+_cfg54 = _mg29.CFG.get("log_to_file")
+_mg29.CFG["log_to_file"] = False          # 仅内存：防测试写真实 memwise.log
+_rep54 = _mg29.winapi.report_event
+_mg29.winapi.report_event = lambda *a, **k: None
+set_language("zh_CN")
+_g54._opt_done({"mode": "full",
+                "layer2": [(_Snap54("chrome.exe", 12040), True, 10 << 20, ""),
+                           (_Snap54("7z.exe", 3311), True, 5 << 20, ""),
+                           (_Snap54("skip.exe", 999), False, 0, "CPU活跃")],
+                "probe": [], "released": 468.0, "net": 296 << 20, "pct0": 62, "pct1": 71})
+_txt54 = _g54.log.get("1.0", "end")
+_mg29.winapi.report_event = _rep54
+_mg29.CFG["log_to_file"] = _cfg54
+_root54.destroy()
+check("F54 结果卡分列且合计一致（系统缓存 453 + 进程 15 = 共 468）",
+      "系统缓存 453 MB + 进程 15 MB = 共 468 MB" in _txt54, _txt54.strip().replace("\n", " | ")[:110])
+check("F54 失败项不计入进程释放量、明细仍只列成功项",
+      "chrome.exe" in _txt54 and "7z.exe" in _txt54 and "skip.exe" not in _txt54,
+      _txt54.strip().replace("\n", " | ")[:110])
+set_language("en")
+check("F54 英文界面下动态拼接的顿号转半角逗号",
+      tr_msg("本次将评估 3 个进程：a.exe、b.exe、c.exe") == "Evaluating 3 processes: a.exe, b.exe, c.exe"
+      or "、" not in tr_msg("a、b"))
+set_language("zh_CN")
+check("F54 中文界面顿号保持原样", tr_msg("a、b") == "a、b")
 
 # 真实面板像素级核验：同一 Text（与应用同字体/同制表位）内，所有行的图标列与文字列必须一致
 _root52 = _tk51.Tk(); _root52.geometry("900x200+4000+4000")  # 映射到屏幕外：bbox 需已映射，但不闪窗口

@@ -1,4 +1,4 @@
-﻿# MemWise v4.4.021
+﻿# MemWise v4.5.032
 
 ## 关于本工具 · *About This Tool*
 
@@ -614,7 +614,7 @@ MemWise/
 │   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_v2.6.py            # 回归测试（443 项断言）· Regression Suite
+│   └── test_v2.6.py            # 回归测试（448 项断言）· Regression Suite
 ```
 
 ---
