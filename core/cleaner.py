@@ -45,6 +45,7 @@ class PareCleaner:
             "layer3_ran": 0, "layer3_extra": 0,
         }
         self._info_msgs = []
+        self._last_mode = "normal"   # 最近一次 optimize 的模式（ERIS 按模式分桶取真值）
         self._cycle_reasons = {}   # 本轮 can_trim 拦截原因计数（日志诊断用）
 
     def pop_info(self):
@@ -903,6 +904,7 @@ class PareCleaner:
         """optimize 加锁后的实际主体（保持原逻辑，仅被 optimize 壳调用）"""
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
         self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
+        self._last_mode = self.judger._mode_guard   # ERIS 按模式分桶取真值（2026-09-11）
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()

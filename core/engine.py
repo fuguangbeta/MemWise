@@ -334,7 +334,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.5.037 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.5.038 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -1387,7 +1387,8 @@ class MemWiseEngine:
         词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
         |Δ效率| < 2 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；不设防振荡硬规则。"""
         from core import eris as E
-        _mode = CFG.get("clean_mode", "normal")   # 按清理模式分套锚点/K/校准（2026-09-11）
+        # 实际生效模式（优先取本轮 optimize 的真实模式：紧急轮等会走 full，必须让分桶学真值）
+        _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
         if not data:
             return {"total": 0.0, "factors": ["冷启动"]}
         # ── ① 预测精准：1 − Kalman 预测的中位相对误差 ──

@@ -57,13 +57,20 @@ FULL = [
 # 按清理模式分别标定（2026-09-11 用户定稿）：模式间同一维度的量级差异极大（如"清理畅通"在
 # full 下是 normal 的 10~20 倍），共用一套必然被顶到分数上限 ⇒ 按模式分套；deep/quick 样本
 # 不足，先以 normal 起步，由**按模式分桶的自校准**在使用中细化。
+DEEP = [
+    [0.296813, 0.317454, 0.324775, 0.327948],
+    [0.764322, 0.88193, 0.922415, 0.98045],
+    [16.6482, 28.3, 38.915, 49.525],
+    [0.024099, 0.040317, 0.119855, 0.463409],
+    [0.338595, 0.428041, 0.492328, 0.545744],
+]
 DIM_ANCHORS_BY_MODE = {
     "normal": NORMAL,
-    "deep": [list(a) for a in NORMAL],
+    "deep": DEEP,
     "quick": [list(a) for a in NORMAL],
     "full": FULL,
 }
-EFF_K_BY_MODE = {"normal": 290.1, "deep": 290.1, "quick": 290.1, "full": 341.0}
+EFF_K_BY_MODE = {"normal": 290.1, "deep": 315.0, "quick": 290.1, "full": 341.0}
 DIM_ANCHORS = DIM_ANCHORS_BY_MODE["normal"]      # 兼容别名（normal 模式）
 EFF_K = EFF_K_BY_MODE["normal"]
 

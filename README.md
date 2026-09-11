@@ -1,4 +1,4 @@
-﻿# MemWise v4.5.037
+﻿# MemWise v4.5.038
 
 ## 关于本工具 · *About This Tool*
 
@@ -402,6 +402,8 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 效率评分取五个维度、各维 0~100 分（可超常溢出）：预测精准（卡尔曼预测误差的中位数）、释放彻底（本轮每进程实际释放量相对其惯常释放量的中位数）、清理畅通（整理成功与失败之比）、副作用（释放量与缺页代价之比）、试探高效（试探命中率）。各维原始值先取最近三轮的中位数平滑，再按长期实测的四个锚点分段映射计分——**50 分 = 该维历史中位水平，100 分 = 突破历史高位，0 分 = 历史最差水平**；锚点是**冷启动基准**——运行中会按本机情况自动校正（见下段），持续优化会让分数整体上移。效率值 = 五维分数之和 ÷ 联合理想总分 × 100%（联合理想总分为长期实测的高位门槛）——100% 表示五维**合起来**达到历史高位水平（平均每维约 58 分即可），五维彼此可互相补足：某一维偏低时，只要其他维度更高，合计仍可达到 100%；超过 100% 即为超常。（五维都处于各自历史中位时，效率约 86%）
 
+每种清理模式各有一套标尺与自校准数据（模式间同一维度的量级差异极大，如「清理畅通」在极限模式下可达常规模式的十几倍），校准数据按模式分别积累、互不污染。
+
 **标尺自校准（默认开启）**：上述锚点以长期实测为冷启动基准；使用中程序会按每维的分位估计（时间常数约百轮）对本机做中心与跨度的双向校正，使不同机器的曲线都落在可比区间。校准随样本量线性淡入（首轮即可用、无突跳），并受限幅约束（中心最多偏移半个标尺跨度、跨度比限制在 0.7~1.4 倍），因此引擎若持续变好，分数仍能突破 100%。校准数据单独存放（`memwise_eris_calib.json`）：不随配置包导出、恢复默认时清除；删除该文件即回到出厂标尺。
 
 影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 2 个百分点显示"相对平稳"。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
@@ -409,6 +411,8 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 *A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing, keeping logs, the status bar, and the chart in lockstep. The X axis shows recent cycles (one bar per daemon cycle; the covered time span follows the adjustable cycle length).*
 
 *The efficiency score spans five dimensions, each scored 0–100 (overflowing above 100 for exceptional rounds): prediction accuracy (median Kalman error), release thoroughness (median release per trimmed process relative to that process's usual release), cleaning unobstructedness (trim success-to-failure ratio), side effects (released volume vs. page-fault cost), and probe effectiveness (probe hit rate). Each raw value is first smoothed by a three-cycle median, then mapped piecewise through four long-run measured anchors — **50 = the dimension's historical median, 100 = beyond its historical best, 0 = its historical worst**; the anchors are a **cold-start basis** that self-calibrates to this machine while running (see below), so sustained improvements raise the whole scale. The final score = the sum of the five ÷ the joint ideal total (a long-run measured high bar) × 100% — 100% means the five **together** reach their historical high level (about 58 points per dimension on average), and they offset one another: a weak dimension can be compensated by stronger ones; above 100% is exceptional. (With all five at their own historical median, the score is about 86%.)*
+
+*Each cleaning mode has its own scale and calibration data (the same dimension can differ by more than ten times between modes — for example cleaning unobstructedness under full mode), so calibration accumulates per mode without cross-contamination.*
 
 *Scale self-calibration (enabled by default) — the anchors above are a cold-start basis measured from long-run data; while running, a slow per-dimension quantile estimate (settles within a few hours, then a time constant around a hundred cycles) corrects the centre and spread for this machine, keeping curves comparable across machines. Calibration fades in linearly with the sample count (usable from the first round, no jumps) and is bounded (the centre shifts at most half the scale's span; the spread ratio is limited to 0.7–1.4×), so a steadily improving engine can still exceed 100%. Calibration data lives in its own file, is excluded from config packages, and is cleared by factory reset — deleting that file restores the factory scale.*
 
