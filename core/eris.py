@@ -67,7 +67,9 @@ CALIB_SCALE_RANGE = (0.70, 1.40)   # 跨度比限幅（双向）
 
 
 def _u(x, log_scale=False):
-    """原始值 → 标尺空间值（对数维取自然对数；非数值/非有限安全回退 0）"""
+    """原始值 → 标尺空间值（对数维取自然对数）；None 表示"无数据"（返回 None，由调用方中性处理）"""
+    if x is None:
+        return None
     try:
         v = float(x)
     except Exception:
@@ -194,7 +196,7 @@ def _q_step(est, u, alpha, q):
     return est + (up if u > est else dn) * (u - est)
 
 
-def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=None):
+def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=None, skip=None):
     """② 冷启动 + 长周期自校准：返回 (五维分数, 校准状态)。
 
     · 每维维护 q10/q50/q90 分位估计，**暖机期用较大步长、之后转慢**（两段速率：
@@ -217,7 +219,11 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
         a_now = max(a_now, CALIB_ALPHA_FAST)
     n_dim = min(len(raws), len(DIM_ANCHORS))
     for j in range(n_dim):
+        if skip and skip[j]:
+            continue                      # 无数据维：不更新分位跟踪器（防被占位值污染）
         u = _u(raws[j], j in LOG_DIMS)
+        if u is None:
+            continue
         st = dims[j]
         if not init:
             # 用冷启动锚点播种（而非首个观测）：暖机期校正恒等 ⇒ 不会出现"跨度被低估 ⇒
@@ -234,8 +240,8 @@ def calibrate_and_score(raws, calib, blend_n=CALIB_BLEND_N, update=True, alpha=N
     w = min(1.0, int(calib.get("n", 0)) / float(blend_n)) if blend_n else 1.0
     scores = []
     for j in range(len(DIM_ANCHORS)):
-        if j >= n_dim:
-            scores.append(50.0)                # 维度不足补中性分
+        if (skip and skip[j]) or j >= n_dim or raws[j] is None:
+            scores.append(50.0)                # 无数据/维度不足 ⇒ 中性 50 分（不进映射）
             continue
         log_j = j in LOG_DIMS
         u = _u(raws[j], log_j)

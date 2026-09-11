@@ -1367,7 +1367,7 @@ class MemWiseEngine:
                     result.get("total", 0.0),
                     " ".join(result.get("factors", [])[:2]),
                     " ".join("%.0f" % x for x in result.get("scores", [])),
-                    " ".join("%.4g" % x for x in result.get("raws", [])),
+                    " ".join(("-" if x is None else "%.4g" % x) for x in result.get("raws", [])),
                     self._cycle_trimmed, self._cycle_failed,
                     (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
                     getattr(self, "_cycle_pf", 0),
@@ -1405,16 +1405,22 @@ class MemWiseEngine:
         raw3 = (trimmed_cnt + 1.0) / max(failed_cnt + 1.0, 1.0)
         # ── ④ 副作用：释放MB ÷ PF 增量（PF=0 记无副作用，映射后钳到上限）──
         _pf = float(getattr(self, "_cycle_pf", 0) or 0)
-        raw4 = (float(data[-1]) / _pf) if _pf > 0 else 1e6
-        # ── ⑤ 试探高效：试探命中率 ──
-        raw5 = (float(probe_ok) / float(probe_total)) if probe_total else 0.5
+        # 「无数据」一律中性（2026-09-11 日志诊断修复）：旧实现用占位极值（PF=0→1e6、无试探→0.5）
+        # 会被映射到分数上限 140 ⇒ 制造"副作用低/试探高效"假象并把总分顶到 145%（日志实测）
+        raw4 = (float(data[-1]) / _pf) if _pf > 0 else None
+        raw5 = (float(probe_ok) / float(probe_total)) if probe_total else None
+        if not errs:
+            raw1 = None
+        if not ratios:
+            raw2 = None
         raws = [raw1, raw2, raw3, raw4, raw5]
+        _nodata = [r is None for r in raws]
         # ── 平滑 → 赋分 → 效率 → 词条/趋势 ──
         with self._eris_lock:
-            sm = [E.smooth3_append(self._eris_hist[j], raws[j]) for j in range(5)]
-            # ② 冷启动 + 长周期自校准（只改取数，不改标尺形状；update_state=False 时只读）
+            sm = [(None if _nodata[j] else E.smooth3_append(self._eris_hist[j], raws[j]))
+                  for j in range(5)]
             scores, self._eris_calib = E.calibrate_and_score(sm, self._eris_calib,
-                                                              update=update_state)
+                                                              update=update_state, skip=_nodata)
             eff = E.efficiency(scores)
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             trend_val = 0
