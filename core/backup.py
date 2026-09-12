@@ -20,7 +20,8 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "4.5.043"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "4.5.059"  # 版本同步面之一（manifest 记录用）
+PACKAGE_FILE_MAX = 64 * 1024 * 1024   # 单个状态文件上限（2026-09-11 加固：拒绝异常/恶意大包）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
                 "memwise_efis_state.json", "memwise_eris_ewma.json")
@@ -148,7 +149,21 @@ def validate_package(pkg_path):
                 if extra:
                     parts.append(tr("多出：") + "、".join(extra))
                 return manifest, [tr("配置包内容不符") + "（" + "；".join(parts) + "）"]
+            # 清单只允许声明程序认识的四类状态文件（2026-09-11 加固）：否则"完整复刻"语义
+            # 会因包内不含任何已知文件而清空本机数据；且未知目标一律不落盘（防路径穿越）
+            unknown = sorted(set(expected) - set(_STATE_NAMES))
+            if unknown:
+                return manifest, [tr("配置包内容不符") + "（" + tr("含未知文件：")
+                                   + "、".join(unknown) + "）"]
             for name in expected:
+                try:
+                    _sz = zf.getinfo(name).file_size
+                except Exception:
+                    _sz = 0
+                if _sz > PACKAGE_FILE_MAX:
+                    errors.append(tr("文件 ") + name + tr(" 过大，已拒绝导入")
+                                  + "（%d MB）" % (_sz // (1 << 20)))
+                    continue
                 data = zf.read(name)
                 ok = True
                 if name.endswith(".json"):

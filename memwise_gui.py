@@ -1,5 +1,5 @@
 """
-MemWise v4.5.043 GUI —— 图形界面
+MemWise v4.5.059 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -64,11 +64,14 @@ PANEL_MAX_LINES = 7  # 日志面板组间刷新阈值（行）
 # 差异很大（→ 7px、✓ 12px、⚡/⚠ 16px），用空格凑宽永远对不齐；制表位是绝对像素列，
 # 与图标自身宽度、字形回退、DPI 无关，图标列与文字列都严格对齐。
 # 仅在显示层生效：日志历史与文件日志仍保存中文原文（语言切换可完整重渲染，见 F51）。
-_LOG_SLOT_PX = 24            # 图标位宽度下限（像素）：最宽图标 + 间隙，文字列不被图标挤动
+_LOG_SLOT_PX = 19            # 图标位宽度下限（像素）；实际位宽 = max(下限, 最宽图标 + _LOG_ICON_GAP)
+_LOG_ICON_GAP = 4            # 图标与文字之间的最小间隙（图标位宽 = 最宽图标 + 该间隙）
 _LOG_ICON_PROBE = "→⚠⇒🎮↑↓✓⚡🔄🟢↻🔴❌✗🟠🟡📋⛨⚙☰📜📊🧠📈🚀🔥🕳🔍✅"
-# ↑ 项目内实际用到的图标全集（2026-09-11 扫描源码得出）：制表位按其中最宽者定位。
-#   必须让每一种图标都窄于制表位，否则制表符跳不过去，该行文字列会错位。
+# ↑ 项目内实际用到的图标全集（2026-09-11 扫描源码得出）：图标位宽按其中最宽者定位。
 _LOG_TAG = "logwrap"         # 换行悬挂缩进标签：续行也对齐到文字列
+# 图标位里保留原字形的图标（2026-09-11 用户定稿）：勾叉（正确/错误）与方向箭头（升/降）含义明确；
+# 其余行首图标都是纯象形装饰（📈⚡🧠🚀🔥📋🎮🔄🟢…），各字形大小/基线/字体回退不一，一律换成统一绘制的默认图标。
+_LOG_ICON_KEEP = frozenset("✓✗✅❌↑↓")
 
 
 def _log_is_icon(ch):
@@ -78,84 +81,202 @@ def _log_is_icon(ch):
             or 0x1F000 <= o <= 0x1FAFF or 0x2710 <= o <= 0x2718)
 
 
-def _log_tab_stop(text_widget):
-    """制表位（像素）= 时间戳前缀宽 + 图标位宽；按面板实际字体实测，随字体/DPI 自适应"""
+def _log_slot_px(text_widget):
+    """图标位宽（像素）= max(下限, 最宽图标 + 最小间隙)；按面板实际字体实测，随字体/DPI 自适应"""
     try:
         f = tkfont.Font(font=text_widget.cget("font"))
-        pre = f.measure("[00:00:00] ")
-        slot = max([f.measure(c) for c in _LOG_ICON_PROBE] + [f.measure("\u3000")]) + f.measure(" ")
-        return int(pre + max(_LOG_SLOT_PX, slot))
+        return int(max(_LOG_SLOT_PX, max(f.measure(c) for c in _LOG_ICON_PROBE) + _LOG_ICON_GAP))
     except Exception:
-        return 77 + _LOG_SLOT_PX  # 兜底：Consolas 9 @100% 实测前缀宽（11 字符 × 7px）
+        return _LOG_SLOT_PX
+
+
+def _log_tab_stop(text_widget):
+    """制表位（像素）= 时间戳前缀宽 + 图标位宽（续行悬挂缩进、消息里散落的制表符都对齐到文字列）"""
+    try:
+        f = tkfont.Font(font=text_widget.cget("font"))
+        return int(f.measure("[00:00:00] ") + _log_slot_px(text_widget))
+    except Exception:
+        return 77 + _log_slot_px(text_widget)  # 兜底：Consolas 9 @100% 实测前缀宽（11 字符 × 7px）
 
 
 def _setup_log_widget(text_widget):
-    """日志面板排版：固定制表位（图标列 → 文字列）+ 续行悬挂缩进（换行文字同样对齐文字列）。
-    制表位用纯像素值（Tk 距离里的 "p" 是点不是像素，带单位会偏）。"""
+    """日志面板排版：图标位宽 + 默认图标 + 制表位 + 续行悬挂缩进（换行文字同样对齐文字列）。
+    制表位用纯像素值（Tk 距离里的 "p" 是点不是像素，带单位会偏）。
+    默认图标宽度 = 整个图标位（图样居中）：无图标行只放这一张图，文字即严格起于图标位末端。"""
     try:
+        slot = _log_slot_px(text_widget)
         stop = _log_tab_stop(text_widget)
+        text_widget._log_slot = slot
+        text_widget._log_icon_img = _make_log_icon(slot)
         text_widget.configure(tabs=(stop,))
         text_widget.tag_configure(_LOG_TAG, lmargin2=stop)
     except Exception:
         pass
 
 
-# ── 播报默认图标（2026-09-11 用户要求）：程序自绘「圈 + M」，纯黑细线，给没有图标的播报统一占位 ──
-# 尺寸 11×10 像素，与日志字号等高；'#' 为黑像素，其余透明（不使用系统 emoji，保证大小完全一致）
+# ── 播报默认图标（2026-09-11 用户要求）：程序自绘「圈 + M」，纯黑描边 ──
+# 18×14 像素（用户 2026-09-11 复核：图形很好但偏小 ⇒ 在有效范围内放满）：
+# 高度 14 = 日志字体行高（Consolas 9 实测 linespace=14）⇒ **恰好不撑高行距**；
+# 图标位 20px ⇒ 两侧各留 1px。圆环 1~3px、M 笔画 1px 且与圆环留 2~3px 空隙
+# （笔画挤在一起 1× 下会糊成一团——前两版都放大核验过才定稿）；'#' 为黑像素，其余透明。
+# 4× 超采样取阈值生成：边缘平滑、无锯齿。不使用系统 emoji（各字形大小/基线不一）。
 _LOG_ICON_ROWS = (
-    "...#######...",
-    ".##.......##.",
-    ".#..#...#..#.",
-    "##..#...#..##",
-    "#...##.##...#",
-    "#...#.#.#...#",
-    "#...#...#...#",
-    "#...#...#...#",
-    "##..#...#..##",
-    ".#..#...#..#.",
-    ".##.......##.",
-    "...#######...",
+    ".....#######......",
+    "...###.....###....",
+    "...##.......##....",
+    "..##.#.....#.##...",
+    "..##.#.....#.##...",
+    ".##..###.###..##..",
+    ".##..###.###..##..",
+    ".##..#.###.#..##..",
+    "..##.#..#..#.##...",
+    "..##.#.....#.##...",
+    "...###.....###....",
+    "...###.....###....",
+    ".....#######......",
+    ".......###........",
 )
 
 
-def _make_log_icon():
-    """生成默认图标（Tk PhotoImage；透明底 + 黑色像素）。失败返回 None（不影响面板）"""
+def _make_log_icon(slot=None):
+    """生成默认图标（Tk PhotoImage；透明底 + 黑色像素）。给 slot 时画在 slot 宽画布正中——
+    这一张图即占满整个图标位，无图标行的文字列由此精确成立。失败返回 None（不影响面板）"""
     try:
-        h, w = len(_LOG_ICON_ROWS), len(_LOG_ICON_ROWS[0])
-        img = tk.PhotoImage(width=w, height=h)
-        for y, row in enumerate(_LOG_ICON_ROWS):
+        rows = _LOG_ICON_ROWS
+        iw, ih = len(rows[0]), len(rows)
+        w = max(iw, int(slot or iw))
+        off = (w - iw) // 2
+        img = tk.PhotoImage(width=w, height=ih)
+        for y, row in enumerate(rows):
             for x, ch in enumerate(row):
-                img.put("#000000" if ch == "#" else "", (x, y))   # 空串 = 透明
+                if ch == "#":
+                    img.put("#000000", (x + off, y))
         return img
     except Exception:
         return None
 
 
+def _log_fill_image(text_widget, width):
+    """透明占位图（宽=给定像素，高=图标高）：把保留字形的图标补足到整个图标位宽。
+    按宽度缓存在控件上——Tk 图像随 Python 对象回收，必须持续持有引用（否则文字会跳到图前）。"""
+    if width <= 0:
+        return None
+    cache = getattr(text_widget, "_log_fill_cache", None)
+    if cache is None:
+        cache = {}
+        text_widget._log_fill_cache = cache
+    img = cache.get(width)
+    if img is None:
+        try:
+            img = tk.PhotoImage(width=int(width), height=len(_LOG_ICON_ROWS))
+        except Exception:
+            return None
+        cache[width] = img
+    return img
+
+
+def _log_advances(text_widget, measure=False):
+    """保留字形图标的**真实排版推进宽**（像素）缓存 —— 占位图宽度必须精确，否则该行文字偏移。
+
+    Tk 的 font.measure 对回退字形会偏大（2026-09-11 实测：✓ 报 12、实际排版 9；✗ 报 12、实际 10），
+    故离屏实测：插「图标 ×2」，两次墨迹起点之差 ÷2（两次同一字形的左留白抵消 ⇒ 恰为推进宽）。
+
+    measure=False（插入路径）：只读缓存，未测到就返回空 ⇒ 调用方用制表符/默认图标兜底，
+      绝不在插入过程中驱动事件循环（否则会与面板刷新重入交错）。
+    measure=True（启动后的预热回调）：真正实测一次（需窗口已映射），成功后全程复用。"""
+    cache = getattr(text_widget, "_log_adv_cache", None)
+    if not measure or (cache is not None and cache.get("ok")):
+        return (cache or {}).get("adv") or {}
+    try:
+        font = text_widget.cget("font")
+    except Exception:
+        return {}
+    adv, ok = {}, False
+    top = None
+    try:
+        top = tk.Toplevel(text_widget)
+        top.geometry("160x40+4000+4000")          # 屏幕外：需要已映射才量得到 bbox，但不闪窗
+        t = tk.Text(top, font=font, height=1, width=20)
+        t.pack()
+        t.update_idletasks()
+        top.update()                              # 新窗口要跑一次完整事件循环才映射（否则 bbox 全 None）
+        for c in sorted(_LOG_ICON_KEEP):
+            t.delete("1.0", "end")
+            t.insert("1.0", c + c)
+            t.update_idletasks()
+            b0, b2 = t.bbox("1.0"), t.bbox("1.0 + 2c")
+            if b0 and b2:
+                adv[c] = int(round((b2[0] - b0[0]) / 2.0))
+        ok = bool(adv)
+    except Exception:
+        ok = False
+    finally:
+        if top is not None:
+            try:
+                top.destroy()
+            except Exception:
+                pass
+    if not ok:
+        adv = {}      # 量不到就返回空 —— 调用方退回制表符跳位；**不用 measure 值**（它对回退字形偏大，
+                      # 用它算占位图反而会把该行文字左移 2~3px），下次调用会重测
+    text_widget._log_adv_cache = {"ok": ok, "adv": adv}
+    return adv
+
+
 def _insert_log_lines(text_widget, ts, msg, tag):
-    """按物理行插入（默认图标需逐行插入）：无图标行 = 默认图标 + 制表符 + 正文；有图标行原样。
-    首行带时间戳前缀，续行不带（与原行为一致，制表位为绝对像素列，续行文字列仍对齐）。"""
+    """按物理行插入：图标位恒占满固定像素宽（默认图标，或保留字形的勾叉/箭头 + 透明占位补足），
+    正文严格从图标位末端起列；首行带时间戳前缀，续行不带（续行用 lmargin2 悬挂缩进对齐文字列）。
+
+    不靠制表符定位文字列——实测制表符在距制表位不足约 5px 时会退化成一个空格宽（2026-09-11
+    日志实测：⚡⚠❌⚙ 这类 16px 宽图标正踩此边界，该行文字右移 7px）；改用「图标 + 精确宽度的
+    透明占位图」，像素级精确，与字体/DPI/图标宽窄无关。"""
     img = getattr(text_widget, "_log_icon_img", None)
+    slot = getattr(text_widget, "_log_slot", None) or _log_slot_px(text_widget)
+    adv = _log_advances(text_widget)
     for k, line in enumerate(str(msg).split(chr(10))):
         head = ("[%s] " % ts) if k == 0 else ""
-        if line.startswith(chr(9)) and img is not None:          # 无图标行 ⇒ 补默认图标
-            text_widget.insert("end", head, tag)
-            text_widget.image_create("end", image=img, align="center")   # Tk 垂直居中（-offset 不存在，曾致启动崩溃）
-            text_widget.insert("end", line + chr(10), tag)
+        icon = line[:1] if line[:1] in _LOG_ICON_KEEP else ""
+        rest = line[1:] if icon else (line[1:] if line.startswith(chr(9)) else line)
+        rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
+        text_widget.insert("end", head, tag)
+        if not icon:
+            if img is not None:
+                text_widget.image_create("end", image=img, align="center")    # 整位宽的默认图标
+        elif icon in adv:
+            text_widget.insert("end", icon, tag)
+            fill = _log_fill_image(text_widget, slot - adv[icon])             # 精确占位图补足整位宽
+            if fill is not None:
+                text_widget.image_create("end", image=fill, align="center")
+            else:
+                text_widget.insert("end", chr(9), tag)
         else:
-            text_widget.insert("end", head + line + chr(10), tag)
+            # 窗口尚未映射、量不到真实推进宽：窄字形（勾叉/箭头）用制表符跳位；
+            # 宽到跳不过去的（✅❌ 16px）宁可退化为默认图标，也不让该行文字错位
+            try:
+                _w = tkfont.Font(font=text_widget.cget("font")).measure(icon)
+            except Exception:
+                _w = 0
+            if img is not None and _w > slot - 5:
+                text_widget.image_create("end", image=img, align="center")
+            else:
+                text_widget.insert("end", icon + chr(9), tag)
+        text_widget.insert("end", rest + chr(10), tag)
 
 
 def _align_log_line(s):
     """把一行播报规整为「图标位 + 文字」（多行消息逐行处理；原前导空白收进图标位）。
-    有图标 → 图标 + 制表（跳到文字列）；无图标 → 制表独占图标位（该位留空）。
-    制表位由 `_setup_log_widget` 按像素设定，故各图标宽窄不影响文字列对齐。"""
+    · 保留字形图标（勾叉/箭头）→ 该图标 + 制表
+    · 纯象形图标（📈⚡🧠…）→ **丢弃**字形，改为图标位放默认图标（该行与无图标行同形）
+    · 无图标 → 制表独占图标位
+    图标位与文字列由 `_setup_log_widget` 按像素设定，故各图标宽窄不影响对齐。"""
     if not s:
         return s
     out = []
     for line in str(s).split("\n"):
         t = line.lstrip()
         if t and _log_is_icon(t[0]):
-            out.append(t[0] + "\t" + t[1:].lstrip())
+            body = t[1:].lstrip()
+            out.append((t[0] + "\t" + body) if t[0] in _LOG_ICON_KEEP else ("\t" + body))
         else:
             out.append("\t" + t)
     return "\n".join(out)
@@ -483,7 +604,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.5.043", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.5.059", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -507,7 +628,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.5.043")
+        self.root.title("MemWise v4.5.059")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -564,7 +685,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.5.043 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.5.059 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -623,7 +744,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.043")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.059")
                     if fw:
                         top = fw
                 except Exception:
@@ -1036,7 +1157,7 @@ class MemWiseGUI:
             new_mode = self.mode_var.get()
             last_mode = getattr(self, '_last_logged_mode', '')
             if new_mode != last_mode:
-                self._log(f"调整清理模式为：{new_mode}")
+                self._log(f"后续周期的清理模式调整为：{new_mode}")
                 self._last_logged_mode = new_mode
             CFG["clean_mode"] = new_mode
             _save_cfg()
@@ -1118,8 +1239,11 @@ class MemWiseGUI:
 
         # 上半：文本日志
         self.log = tk.Text(lf, height=8, font=("Consolas",9), state="disabled", bg="#f5f5f5")
-        _setup_log_widget(self.log)  # 图标位对齐：固定制表位 + 续行悬挂缩进（F52）
-        self.log._log_icon_img = _make_log_icon()  # 播报默认图标（圈+M）
+        _setup_log_widget(self.log)  # 图标位对齐 + 默认图标：固定像素图标位/制表位 + 续行悬挂缩进（F52）
+        # 图标推进宽预热（窗口映射后实测一次；未测到前插入路径用制表符/默认图标兜底，不会错列）
+        # ⚠ 必须经 self.root.after（MemWiseGUI 是 Tk 包装类，自身没有 after/after_idle —— 2026-09-11 启动即崩）
+        self.root.after(150, lambda: _log_advances(self.log, measure=True))
+        self.root.after(1200, lambda: _log_advances(self.log, measure=True))
         sc = ttk.Scrollbar(lf, command=self.log.yview); self.log.configure(yscrollcommand=sc.set)
         sc.pack(side="right", fill="y"); self.log.pack(fill="both", expand=True)
 

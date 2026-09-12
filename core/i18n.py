@@ -410,7 +410,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.5.043 启动· ": "MemWise v4.5.043 started · ",
+    "MemWise v4.5.059 启动· ": "MemWise v4.5.059 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -597,6 +597,8 @@ _EN = {
     "配置包内容不符": "Config package content mismatch",
     "缺少：": "missing: ",
     "多出：": "extra: ",
+    "含未知文件：": "unknown files: ",
+    " 过大，已拒绝导入": " is too large — import refused",
     "文件 ": "File ",
     " 无法解析（可能已损坏）": " cannot be parsed (possibly corrupted)",
     "无法导出：程序尚未生成任何状态文件": "Cannot export: no state files generated yet",
@@ -689,7 +691,8 @@ _EN = {
 
     # ── 2026-08-15 审查批次补键（显示层残留面清理）──
     "完成": "Done",
-    "调整清理模式为：": "Mode set to: ",
+    "后续周期的清理模式调整为：": "Cleanup mode for upcoming cycles: ",
+    " · 后续模式：": " · upcoming mode: ",
     "⚠ 托盘图标添加失败，重试...": "⚠ Tray icon add failed, retrying...",
     "管理员权限开机自启已启用": "Elevated auto-start enabled",
     "管理员权限自启设置失败（请以管理员身份运行一次本程序）": "Elevated auto-start failed (run as administrator once first)",
@@ -701,7 +704,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.5.043 PARES —— 智能内存看护": "MemWise v4.5.043 PARES — Intelligent Memory Custodian",
+    "MemWise v4.5.059 PARES —— 智能内存看护": "MemWise v4.5.059 PARES — Intelligent Memory Custodian",
 }
 
 

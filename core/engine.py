@@ -323,7 +323,18 @@ def _log_open():
     path = os.path.join(_LOG_DIR, "memwise.log")
     try:
         _migrate_old_logs(path)  # 旧 crash log 并入（若存在），旧 memwise.log 继续 append
-        _LOG_FD = open(path, "a", encoding="utf-8", buffering=1)
+        # 重试打开（2026-09-11 实测两次"开启失败 ⇒ 整场无文件日志"）：杀软在进程更替瞬间
+        # 会短暂占用文件（本仓库环境注意项里就有"瞬时 Access denied"），单次 open 失败就放弃
+        # 代价太大 ⇒ 退避重试 3 次
+        _LOG_FD = None
+        for _try in range(3):
+            try:
+                _LOG_FD = open(path, "a", encoding="utf-8", buffering=1)
+                break
+            except Exception:
+                if _try == 2:
+                    raise
+                time.sleep(0.25)
         import faulthandler
         if _CRASH_FD is None:  # 崩溃现场 fd 优先（_install_crash_sink 已接管时不重绑）
             try:
@@ -334,7 +345,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.5.043 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.5.059 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -346,8 +357,15 @@ def _log_open():
                          len(CFG.get("game_processes") or [])))
         except Exception:
             pass
-    except Exception:
+    except Exception as _e:
         _LOG_FD = None
+        # 开启失败必须留痕（2026-09-11 实测：某次启动统一日志未开成 ⇒ 整场无文件日志，
+        # 而"日志开关"本身就是写日志的闸门 ⇒ 失败后再无任何线索；当晚真机再次复现）。
+        # 走崩溃通道（不受开关控制），并带上异常原文，便于下一次一眼定位。
+        try:
+            _event_log("统一日志开启失败（本次运行不会写 memwise.log，请重启程序）：%r" % (_e,))
+        except Exception:
+            pass
 
 
 # ── 常驻崩溃现场（2026-08-30 审查）：独立于「记录运行日志到文件」开关 ──
@@ -556,7 +574,11 @@ class MemWiseEngine:
         from core.eris import SMOOTH_N as _SN
         from core.eris import new_calib as _new_calib
         self._eris_calib = _new_calib()  # ② 自校准状态（独立文件持久化，缺文件=冷启动）
-        self._eris_hist = [_dq(maxlen=_SN) for _ in range(5)]   # 每维滚动窗（平滑用）
+        # 平滑窗**按清理模式分桶**（2026-09-11，用户要求四模式互不污染）：各模式维度量级不同，
+        # 混用一个窗会把上一模式的原始值带进新模式的中位数；分桶后切回原模式还能接上原有窗口。
+        self._eris_hist_by_mode = {}     # {模式: [每维 deque]}
+        self._eris_hist_mode = None      # 上一轮 ERIS 所用的模式（切换即重置"上一轮"基线）
+        self._sys_rel_by_mode = {}       # {模式: deque} 惯常系统级释放量（quick 的释放彻底维基准）
         self._eris_prev_scores = None    # 上轮五维分（词条同向判定）
         self._eris_prev_eff = None       # 上轮效率（平稳/趋势判定）
         self._eris_trend = []            # 方向序列（含 <2 的轮次，±1/0；极性轮 99/-99 打断）
@@ -620,10 +642,11 @@ class MemWiseEngine:
         self._eff_factors.clear()
         self._chart_cycle_meta.clear()
         self._chart_bar_seq = 0
-        self._load_eris_state()  # 恢复 ERIS v7 状态
+        self._load_eris_state()  # 恢复 ERIS 状态
         self._last_sys_ops = 0
         self._cycle_trimmed = 0
         self._cycle_failed = 0
+        self._cycle_freed_mb = 0.0       # 本周期净释放（MB；quick 的系统级释放由此扣掉进程部分）
         self._last_harvest_ws = None
         self._last_harvest_freed = 0
         # 回弹状态机跨周期字段一并重置（2026-08-14 审查：仅重置 harvest 两字段时，
@@ -1153,10 +1176,12 @@ class MemWiseEngine:
                 self._chart_last_freed = cur_freed
                 chart_accum = max(0.0, cycle_freed)
                 # 每轮必定推送一个柱，零释放轮也占位，图表与日志严格一一对应
-                self._push_round(chart_accum, m["pct"], harvest_partial)
-                # 每周期无条件清零 PF 计数（harvest 超时/游戏降频周期也丢弃，防跨周期污染诊断窗口）
+                # ⚠ 时序（2026-09-11 修正）：本周期口径数据必须先备齐再推——否则 ERIS 用到的是
+                #   上一轮的 PF 与本轮释放量（旧实现 PF 在推送之后才更新 ⇒ [效率] 行慢一拍）
+                self._cycle_freed_mb = chart_accum
                 pf_delta_cycle = _drain_pf_delta(self.judger)
                 self._cycle_pf = float(pf_delta_cycle or 0)
+                self._push_round(chart_accum, m["pct"], harvest_partial)
                 # Layer3 周期增量基线（累计口径会让诊断误判"持续触发"，导致 gate 持续爬升）
                 l3_ran_cur = s.get('layer3_ran', 0)
                 l3_extra_cur = s.get('layer3_extra', 0)
@@ -1270,14 +1295,15 @@ class MemWiseEngine:
                 summary_line = (f"本轮释放 {fmt_label(cycle_freed)} · 系统杂项 {fmt_count(cycle_standby)} · "
                                 f"整理 {fmt_count(self._cycle_trimmed)} 进程 · "
                                 f"试探 {len(probe_results)} ({probe_ok}成功)")
+                # 模式切换标注（2026-09-11 用户定稿 + 当晚措辞修正）：只在与上一周期模式不同时，把
+                # 「 · 后续模式：xx→xx」追加到**当行**日常字段末尾——用"后续模式"明确表示**下一周期起**
+                # 生效（本轮实际执行仍是旧模式），避免被误读为"本轮已切换"；未切换则只输出日常字段
+                _cur_mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
+                if getattr(self, "_last_logged_mode", None) not in (None, _cur_mode):
+                    summary_line += " · 后续模式：%s→%s" % (self._last_logged_mode, _cur_mode)
+                self._last_logged_mode = _cur_mode
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
-                    # 模式切换标注（2026-09-11 用户定稿）：只在与上一周期模式不同的周期末追加「 · 模式 xx→xx」，
-                    # 表示下一个周期起由 xx 切换为 xx（该周期实际执行仍是旧模式）；其余周期只输出日常字段
-                    _cur_mode = getattr(self.cleaner, "_last_mode", CFG.get("clean_mode", "normal"))
-                    if getattr(self, "_last_logged_mode", None) not in (None, _cur_mode):
-                        _log_write("清理", " · 模式 %s→%s" % (self._last_logged_mode, _cur_mode))
-                    self._last_logged_mode = _cur_mode
                     # 明细行（2026-09-11 用户要求"日志要能定位问题"）：系统操作计数 + 释放前三 +
                     # 本轮判定拦截原因统计（为什么某些进程没被清理）
                     try:
@@ -1359,6 +1385,10 @@ class MemWiseEngine:
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
     def _push_round(self, chart_accum, mem_pct, harvest_partial):
         self._chart_bar_seq += 1
+        # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
+        _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
+        from core import eris as _E
+        _k = _E.k_value(self._eris_calib, _mode)   # 滚动 K（本模式总分 p90 估计，日志可见）
         with self._chart_lock:
             self._chart_data.append(chart_accum)
             self._chart_cycle_meta.append((self._chart_bar_seq, self._cycle_trimmed,
@@ -1373,7 +1403,7 @@ class MemWiseEngine:
             self._eff_factors.append(result.get("factors", ["冷启动"]))
             # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
             try:
-                    _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 校准 n=%s · 模式 %s" % (
+                    _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 有效[%s] · K %.0f · 校准 n=%s · 模式 %s%s" % (
                         result.get("total", 0.0),
                         " ".join(result.get("factors", [])[:2]),
                         " ".join("%.0f" % x for x in result.get("scores", [])),
@@ -1381,8 +1411,10 @@ class MemWiseEngine:
                         self._cycle_trimmed, self._cycle_failed,
                         (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
                         getattr(self, "_cycle_pf", 0),
-                        self._eris_calib.get("modes", {}).get(getattr(self.cleaner, "_last_mode", "normal"), {}).get("n", "?"),
-                        getattr(self.cleaner, "_last_mode", "normal")))
+                        ",".join(str(j) for j in (result.get("valid") or [])) or "无",
+                        _k,
+                        self._eris_calib.get("modes", {}).get(_mode, {}).get("n", "?"),
+                        _mode, " · 游戏" if getattr(self, "_last_eris_game_mode", False) else ""))
             except Exception:
                 pass
         except Exception:
@@ -1391,6 +1423,32 @@ class MemWiseEngine:
 
     # ── ERIS v6：IQR分位数归一化五维加权和（80±40×(raw−p50)/IQR，trimmed IQR + 维级窗口）──
     # ── ERIS v7：五维绝对标尺（四锚点分段线性 + N=3 平滑 + Σ÷K；设计见记忆 learning-engine-specs §B4）──
+    def _eris_hist_for(self, mode):
+        """取该模式的平滑窗（按需创建）：四模式各持一份，互不带偏。
+        调用方持 `_eris_lock`（`_compute_eris` 内）或处于单线程初始化期（`_load_eris_state`）——
+        本方法自身不加锁（`threading.Lock` 不可重入，重复加锁会死锁）。"""
+        from core.eris import new_hist as _new_hist
+        h = self._eris_hist_by_mode.get(mode)
+        if h is None:
+            h = _new_hist()
+            self._eris_hist_by_mode[mode] = h
+        return h
+
+    def _customary_sys(self, mode, cur_mb, update=True):
+        """该模式"惯常系统级释放量"的滚动中位（quick 的释放彻底维基准）。
+
+        只记录**有释放**的轮次（安静轮的 0 会把中位拖到 0，让"释放彻底"失真为恒定满分）；
+        样本不足 5 个时返回 None（该维记无数据，由有效维规则排除）。"""
+        d = self._sys_rel_by_mode.get(mode)
+        if d is None:
+            from collections import deque as _dq
+            d = _dq(maxlen=30)
+            self._sys_rel_by_mode[mode] = d
+        if update and cur_mb > 0.1:
+            d.append(float(cur_mb))
+        v = sorted(d)
+        return v[len(v) // 2] if len(v) >= 5 else None
+
     def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5,
                       probe_ok=0, probe_total=0, update_state=True):
         """返回 {"total": 效率%, "factors": [...]}（接口与 v6 一致，展示层无需改动）。
@@ -1430,17 +1488,47 @@ class MemWiseEngine:
             raw2 = None
         if trimmed_cnt <= 0 and failed_cnt <= 0:
             raw3 = None            # 本轮无任何进程清理 ⇒ 成功率无意义（旧实现 1:1 ⇒ 14 分，长期压低效率）
+        # ── quick 专项（2026-09-11 用户定稿方案①）：该模式**不做进程清理**，四项进程口径的原始值
+        #    全部无意义（实测：dim0 单独决定整机效率 60→108、96% 轮次判"相对平稳"= 几乎不动）。
+        #    改为**系统级**口径：释放彻底 = 本轮系统级释放 ÷ 该模式惯常系统级释放。
+        #    （"系统级副作用"= 释放 ÷ 缺页代价 经实测否决：快照 PF 字段 266 进程仅 1 个非零、
+        #      系统级 PF 又被无关活动淹没 ⇒ 测不出清理代价；详见记忆 §B6）──
+        if _mode == "quick":
+            _sys_mb = max(0.0, float(getattr(self, "_cycle_freed_mb", 0.0) or 0.0) - _proc_mb)
+            _cour = self._customary_sys("quick", _sys_mb, update=update_state)
+            raw2 = (_sys_mb / _cour) if (_cour and _sys_mb > 0.0) else None
+            raw1 = None            # 预测精准（进程清理的预测能力）在 quick 无作用面 ⇒ 不参与
         raws = [raw1, raw2, raw3, raw4, raw5]
         _nodata = [r is None for r in raws]
+        # 跟踪器只学"该模式参与合成的维"（其余维不喂，避免用不到的数据把分位带偏）；
+        # 游戏轮次照常算分但不喂（游戏态清理行为与常态不同，混入会拉偏分位）
+        _decl = E.MODE_VALID_DIMS.get(_mode, E.MODE_VALID_DIMS["normal"])
+        _skip_track = [(_nodata[j] or (j not in _decl)) for j in range(5)]
+        _game = bool(getattr(self.cleaner, "game_mode", False))
+        self._last_eris_game_mode = _game
         # ── 平滑 → 赋分 → 效率 → 词条/趋势 ──
         with self._eris_lock:
-            sm = [(None if _nodata[j] else E.smooth3_append(self._eris_hist[j], raws[j]))
+            # 模式切换 ⇒ 先重置"上一轮"基线（分数/效率/趋势序列都是按模式尺度比较的，
+            # 跨模式比较会冒出虚假的升降/持续改善）：切换后的**第一个周期**回归"分析中"，
+            # 下一轮起用新模式自己的数据比较。平滑窗与滚动分位都按模式分桶，不受切换影响。
+            if self._eris_hist_mode is not None and self._eris_hist_mode != _mode:
+                self._eris_prev_scores = None
+                self._eris_prev_eff = None
+                self._eris_trend = []
+            self._eris_hist_mode = _mode
+            _hist = self._eris_hist_for(_mode)
+            sm = [(None if _nodata[j] else E.smooth3_append(_hist[j], raws[j]))
                   for j in range(5)]
             scores, self._eris_calib = E.calibrate_and_score(sm, self._eris_calib,
-                                                              update=update_state, skip=_nodata,
-                                                              mode=_mode)
+                                                              update=update_state, skip=_skip_track,
+                                                              mode=_mode, game=_game)
             _valid = E.valid_dims(_mode, _nodata)
-            eff = E.efficiency(scores, mode=_mode, valid=_valid)
+            _T = E.total_of(scores, valid=_valid, mode=_mode)          # 有效维均分折算值（0~700）
+            _T = E.warmup_total(_T, E.bucket_n(self._eris_calib, _mode))   # 模式级预热收缩（防尖峰）
+            _k = E.k_value(self._eris_calib, _mode)                    # 滚动 K（本模式总分 p90 估计）
+            eff = (_T / _k * 100.0) if _k > 0 else 0.0
+            if update_state:
+                E.k_update(self._eris_calib, _mode, _T, update=True, game=_game)
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             trend_val = 0
             if prev_eff is None or len(data) <= 3:
@@ -1478,13 +1566,16 @@ class MemWiseEngine:
                     self._eris_trend = self._eris_trend[-10:]
                 self._eris_prev_scores = scores
                 self._eris_prev_eff = eff
-        return {"total": eff, "factors": factors, "scores": scores, "raws": sm}
+        return {"total": eff, "factors": factors, "scores": scores, "raws": sm, "valid": list(_valid)}
     def _save_eris_state(self):
         with self._eris_save_lock:
             try:
                 import json, os
-                payload = {"v": 7,
-                           "hist": [list(h) for h in getattr(self, "_eris_hist", [])],
+                from core.eris import ERIS_STATE_V as _SV
+                payload = {"v": _SV,
+                           # 平滑窗按清理模式分桶（v8）：模式间量级不同，混窗会互相带偏
+                           "hist_by_mode": {m: [list(h) for h in hs]
+                                            for m, hs in getattr(self, "_eris_hist_by_mode", {}).items()},
                            "prev_scores": getattr(self, "_eris_prev_scores", None),
                            "prev_eff": getattr(self, "_eris_prev_eff", None),
                            "trend": list(getattr(self, "_eris_trend", []))}
@@ -1507,39 +1598,60 @@ class MemWiseEngine:
                 pass
 
     def _load_eris_state(self):
-        """加载 ERIS v7 状态；v6 旧格式（分位数窗）自动忽略并重建（文件保留不删）。
-        会话隔离沿用 v6 规则：prev_scores/prev_eff/trend 每次 daemon 启动重置，仅滚动窗跨重启保留。"""
-        from collections import deque as _dq
-        from core.eris import SMOOTH_N as _SN
+        """加载 ERIS 状态（当前 schema 见 `core.eris.ERIS_STATE_V`）。
+        · v8：平滑窗按清理模式分桶（`hist_by_mode`）——逐桶读取，坏桶跳过
+        · v7：单桶扁平 `hist` 迁移进**当前配置模式**的桶（最多 3 个样本，取近值即可，不重要的取舍）
+        · v6 及更早（分位数窗）：忽略并重建（文件保留不删）
+        会话隔离：prev_scores/prev_eff/trend 每次 daemon 启动重置，仅平滑窗跨重启保留。"""
+        from core.eris import SMOOTH_N as _SN, ERIS_STATE_V as _SV
         try:
-            if getattr(self, "_eris_hist", None) and any(self._eris_hist):     # 热重启：窗内数据保留
+            if getattr(self, "_eris_hist_by_mode", None) and any(
+                    any(h) for h in self._eris_hist_by_mode.values()):        # 热重启：窗内数据保留
                 self._eris_prev_scores = None
                 self._eris_prev_eff = None
                 self._eris_trend = []
+                self._eris_hist_mode = None
                 return
         except Exception:
             pass
-        hist = [_dq(maxlen=_SN) for _ in range(5)]
+        self._eris_hist_by_mode = {}
+
+        def _pull(seq, hist):
+            for v in list(seq)[-_SN:]:
+                if isinstance(v, (int, float)):
+                    hist.append(float(v))
+
         try:
             import json, os
             path = os.path.join(os.path.dirname(self._state_file), "memwise_eris_ewma.json")
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     payload = json.load(f)
-                if isinstance(payload, dict) and payload.get("v") == 7:
+                if isinstance(payload, dict) and payload.get("v") == _SV:
+                    for m, hs in (payload.get("hist_by_mode") or {}).items():
+                        if not isinstance(m, str) or not isinstance(hs, list) or len(hs) != 5:
+                            continue
+                        hist = self._eris_hist_for(m)
+                        for j, one in enumerate(hs):
+                            if isinstance(one, list):
+                                _pull(one, hist[j])
+                elif isinstance(payload, dict) and payload.get("v") == 7:
+                    # v7 单桶 ⇒ 迁入当前模式（读引擎模块级 CFG；未被 init_runtime 注入时按 normal）
                     h = payload.get("hist")
                     if isinstance(h, list) and len(h) == 5:
+                        _m = (globals().get("CFG") or {}).get("clean_mode", "normal")
+                        if _m not in ("quick", "normal", "deep", "full"):
+                            _m = "normal"
+                        hist = self._eris_hist_for(_m)
                         for j, one in enumerate(h):
                             if isinstance(one, list):
-                                for v in one[-_SN:]:
-                                    if isinstance(v, (int, float)):
-                                        hist[j].append(float(v))
+                                _pull(one, hist[j])
         except Exception:
             pass
-        self._eris_hist = hist
         self._eris_prev_scores = None
         self._eris_prev_eff = None
         self._eris_trend = []
+        self._eris_hist_mode = None      # 首轮建立基线，不算"切换"（不触发基线重置）
         # ② 自校准状态（独立文件；缺失/损坏/版本不符 ⇒ 冷启动，恢复默认后即此状态）
         try:
             import json as _json, os as _os

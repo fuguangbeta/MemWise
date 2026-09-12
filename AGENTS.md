@@ -3,7 +3,7 @@
 本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
-Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.5.043（2026-09-11）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v3 调参）/ eris（ERIS v6 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**457 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
+Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.5.059（2026-09-11）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS v6 调参）/ eris（ERIS v7 效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**490 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
 
 ## 📚 知识库索引（工作前必读）
 项目记忆在项目记忆目录（路径见用户级指令，**14 篇内容文件 + MEMORY.md 索引**——2026-09-10 全量归纳后的结构，按需读取）：
@@ -56,7 +56,7 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 ## 发布流程（完整细节读 release-and-pr-workflow.md）
 1. 修改完成 → **457 项回归全绿** → 更新 CHANGELOG（用户视角规范，见 doc-style-guide.md）
 2. `git add -A && git commit && git push origin main`（最快）
-3. 版本号变更时同步 **15 处 / 8 文件**（memwise 2 / gui 4 / engine 1 / i18n 4【两个版本键各含键+值】/ backup APP_VERSION 1 / test docstring 1 / README 1 / AGENTS 1，2026-09-06 实测口径；CHANGELOG 属内容不计）+ 构建 exe（--clean）
+3. 版本号变更时同步 **16 处 / 8 文件**（memwise 2 / gui 4 / engine 1 / i18n 4【两个版本键各含键+值】/ backup APP_VERSION 1 / test docstring 1 / README 1 / AGENTS 1，2026-09-06 实测口径；CHANGELOG 属内容不计）+ 构建 exe（--clean）
 4. 改 `release_tag.py` 版本号 → 运行（建 tag+release，拿新 release id）
 5. 改 `release_upload.py` RELEASE_ID → 运行（上传 exe）
 6. `release_body.py` 自动同步 body → **验证全部旧版本 release 资产逐一核验完好**
