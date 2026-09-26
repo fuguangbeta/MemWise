@@ -629,7 +629,7 @@ MemWise/
 │   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_regression.py            # 回归测试（516 项断言）· Regression Suite
+│   └── test_regression.py            # 回归测试（517 项断言）· Regression Suite
 ```
 
 ---
