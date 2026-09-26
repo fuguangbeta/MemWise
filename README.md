@@ -1,4 +1,4 @@
-﻿# MemWise v4.5.059
+﻿# MemWise v4.6.020
 
 ## 关于本工具 · *About This Tool*
 
@@ -69,7 +69,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒基准，自适应不超出 20 秒），释放多则缩短、释放少则延长 |
 | gap fill 轻量压制 | 高频阶段系统级轻量操作（零磁盘影响）：normal 仅注册表缓存；deep/full 追加待机缓存与脏页写回持续回收（零缺页成本，缓存重建后立即清空，可用内存保持高位）；文件缓存与卷冲刷等重操作仅在周期收割执行——缓存有累积时间，单次释放量更大 |
 | gap 循环优化 | 每轮 gap 结束执行一次进程修剪与系统级轻量操作（normal 语义，不含深度聚合），次数随自适应 gap 与周期长度变化（60 秒周期约 3-6 次，周期越长次数越多） |
-| 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含系统级全清：deep 中高压执行、full 无条件）→ Layer3 深度聚合（normal 在接近紧急阈值前先做一轮，deep/full 强制；full 追加进程回弹二轮） |
+| 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含系统级全清：deep 中高压执行、full 无条件，内存宽裕且上轮回涨快时该轮自动转轻量）→ Layer3 深度聚合（normal 在接近紧急阈值前先做一轮，deep/full 强制；full 追加进程回弹二轮；内存充裕时回涨不足的进程不再被反复再清） |
 
 守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1~4）自动降频，成功恢复后自动衰减。内存占用达到紧急阈值（默认 80%）时，立即跳过等待执行一次极限模式（full）清理；另可配置可用内存绝对兜底（默认禁用），使用率未达阈值但剩余可用内存过低时同样触发。
 
@@ -113,7 +113,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | Modified Page 写回 | `modified` | 开 | `NtSetSystemInformation(80, info=3)` | 脏页写回磁盘后回收 |
 | 系统文件缓存 | `filecache` | 关 | `SetSystemFileCacheSize` | 清空文件系统缓存，会降低文件操作速度直到重建 |
 | 卷缓存刷新 | `volume` | 开 | `CreateFileW+FlushFileBuffers` | 卷级别缓存刷新 |
-| 注册表缓存 | `registry` | 开 | `NtSetSystemInformation(81)` | 清除注册表缓存页 |
+| 注册表缓存 | `registry` | 开 | `NtSetSystemInformation(155)` | 清除注册表缓存页 |
 
 守护模式下的高频阶段仅执行注册表缓存、待机缓存与脏页写回等轻量操作（零磁盘影响），文件缓存与卷冲刷等重操作仅在 optimize 全量收割阶段执行——缓存有累积时间，单次释放量更大。
 
@@ -127,7 +127,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | full | ✅† | ✅ | ✅* | 强制 | 不等+跳过活跃门槛+最大轮数 | 极限释放 |
 
 * 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时 quick/normal 不执行进程修剪。
-† 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
+† 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行——但**内存宽裕（使用率<45%）且上一轮释放被快速回涨时，该轮自动转为轻量处理**（每进程只清一趟、跳过深度整理与二轮），占用回升或回涨放缓立即恢复全力。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
 
 *System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). Zero deliberate sleep, sub-10ms total latency.*
 
@@ -138,7 +138,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | Modified page flush | `modified` | On | `NtSetSystemInformation(80, info=3)` | Flushes dirty pages to disk before reclaiming |
 | System file cache | `filecache` | Off | `SetSystemFileCacheSize` | Clears the file system cache; reduces file I/O performance until cache rebuilds |
 | Volume cache flush | `volume` | On | `CreateFileW+FlushFileBuffers` | Per-volume write buffer flush |
-| Registry cache | `registry` | On | `NtSetSystemInformation(81)` | Clears registry cache pages |
+| Registry cache | `registry` | On | `NtSetSystemInformation(155)` | Clears registry cache pages |
 
 *High-frequency suppression touches only lightweight operations (registry in normal; standby and dirty-page flush added in deep/full — zero disk impact); heavyweight operations such as volume and file-cache flush run only during full-harvest passes so the cache accumulates before each purge.*
 
@@ -152,7 +152,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 | full | ✅† | ✅ | ✅* | forced | no waiting + max rounds | Maximum release |
 
 *The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations); unchecking Process Idle Release skips process trimming in quick/normal.*
-† *The system-wide WS flush runs in deep at moderate-to-high usage (≥33%) and never disturbs at low usage; manual triggers are unrestricted; full executes it unconditionally. Deep halves the waiting windows; full skips all waiting and the CPU/I/O activity gates — ultimate mode sets no activity limit.*
+† *The system-wide WS flush runs in deep at moderate-to-high usage (≥33%) and never disturbs at low usage; manual triggers are unrestricted; full executes it unconditionally, except that when memory is comfortable (<45%) and the previous release was quickly refilled, that round runs light (single pass, no deep pass) and full strength returns as soon as usage rises or refill slows. Deep halves the waiting windows; full skips all waiting and the CPU/I/O activity gates — ultimate mode sets no activity limit.*
 
 ### 2.2 Layer2 — 进程级闲置页释放 · *Per-Process Idle Page Reclamation*
 
@@ -325,11 +325,11 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **持久化**：独立状态文件，写入采用原子化操作，防止中途崩溃导致配置损坏。
 
-**场景自适应**：守护周期内自动检测运行场景（游戏/浏览器/开发/常规），场景切换时按 7:3 混合新场景参数并持久化，各场景独立调参互不干扰。
+**模式即强度**：清理深度只由所选的清理模式决定，不再额外区分运行场景——同一模式在任何使用情形下（浏览器、办公、全屏）都用同一套参数，行为可预期、不随场景漂移。
 
 **游戏态冻结**：游戏模式运行期间调参自动冻结——游戏周期的统计由保护机制刻意塑形（系统级操作抑制、试探禁用、非游戏进程限定），不具备调参归因意义，不进入任何参数组的评估窗口；游戏退出后从干净窗口恢复日常态调参，进程画像学习不受影响。
 
-**参数分组（模式 × 场景）**：EFIS 参数按"清理模式 × 运行场景"分组隔离（4×4=16 组，按需创建）——每个清理模式拥有独立的调参演进，切换模式互不污染，切回后沿用该模式自己的参数；每模式只调参本模式有实际作用面的参数（极限与深度模式不调深层触发门与锚点余量，极限模式不调深清门槛，quick 模式不参与进程参数调参；响应类参数在轻量阶段真实生效，各进程清理模式均参与调参），深度与极限模式使用更激进的科学初始值（更低的压力目标、更短的失败冷却、更灵敏的观测与更快的反馈适应），首次使用即接近目标；策略树权重同样按模式隔离。升级后旧调参数据自动迁移到常规模式组，其余模式从各自初始值开始。
+**参数分组（按清理模式）**：EFIS 参数按清理模式分组隔离（4 组，按需创建）——每个清理模式拥有独立的调参演进，切换模式互不污染，切回后沿用该模式自己的参数；每模式只调参本模式有实际作用面的参数（极限与深度模式不调深层触发门与锚点余量，极限模式不调深清门槛，quick 模式不参与进程参数调参；响应类参数在轻量阶段真实生效，各进程清理模式均参与调参），深度与极限模式使用更激进的科学初始值（更低的压力目标、更短的失败冷却、更灵敏的观测与更快的反馈适应），首次使用即接近目标；策略树权重同样按模式隔离。升级时各模式保留升级当时生效的那组参数，行为与升级前一致。
 
 *EFIS is a 12-parameter closed-loop tuning engine spanning the entire system — every parameter auto-tuned.*
 
@@ -358,7 +358,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 *Game-mode freeze — tuning pauses automatically while Game Mode is active: game-period statistics are deliberately shaped by the protection mechanisms (system-level suppression, probes disabled, non-game processes only) and carry no tuning attribution, so they never enter any parameter group's evaluation window; daily tuning resumes from a clean window after the game exits, while per-process profile learning continues.*
 
-*Parameter grouping (mode × scene) — EFIS parameters are isolated per cleaning mode and scene (4×4 = 16 groups, created on demand). Each mode evolves its own tuning without cross-mode contamination, and switching back to a mode restores its own parameters. Each mode tunes only the parameters that actually take effect in it (ultimate/deep modes skip the deep-trigger gate and anchor margin, ultimate mode also skips the deep-clean threshold, quick mode does no process-level tuning; response-type parameters remain active in the gentle phase and stay tunable in every process-cleaning mode), and deep/ultimate start from scientifically aggressive initial values (lower usage targets, shorter failure cooldowns, more sensitive observation and faster feedback adaptation), reaching their targets from the first use. Policy tree weights are also isolated per mode. After upgrading, legacy tuning migrates to the normal-mode group; other modes start from their own initial values.*
+*Parameter grouping (per cleaning mode) — EFIS parameters are isolated per cleaning mode (4 groups, created on demand). Each mode evolves its own tuning without cross-mode contamination, and switching back to a mode restores its own parameters. Each mode tunes only the parameters that actually take effect in it (ultimate/deep modes skip the deep-trigger gate and anchor margin, ultimate mode also skips the deep-clean threshold, quick mode does no process-level tuning; response-type parameters remain active in the gentle phase and stay tunable in every process-cleaning mode), and deep/ultimate start from scientifically aggressive initial values (lower usage targets, shorter failure cooldowns, more sensitive observation and faster feedback adaptation), reaching their targets from the first use. Policy tree weights are also isolated per mode. On upgrade each mode keeps the parameter set active at that moment, so behavior is unchanged.*
 
 ---
 
@@ -400,21 +400,21 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 图表数据源为统一的释放量累加器——所有操作的释放量统一汇入，通过累计差值法计算每轮增量，不依赖惰性更新的系统 API。日志、统计栏、图表三者同源一致。X 轴显示最近的轮次数据（每根柱对应一个守护周期，周期可调，图表覆盖的时长随之变化）。
 
-效率评分取五个维度、各维 0~140 分：预测精准（卡尔曼预测误差的中位数）、释放彻底（本轮每进程实际释放量相对其惯常释放量的中位数）、清理畅通（整理成功与失败之比）、副作用（释放量与缺页代价之比）、试探高效（试探命中率）。**quick 模式只参与「释放彻底」一维，且改用系统级口径**（本轮系统级释放量相对本机惯常值的比例）——该模式不做进程清理，其余四维没有作用面（见下段）。各维原始值先取最近三轮的中位数平滑，再按**本机该维近几十轮的滚动分位**分段映射计分：**50 分 = 该维近期中位；20/80 分 = 中位 ∓ 半个近期跨度；110 分 = 中位 + 一个近期跨度**（跨度 = 近期十分位距，设有下限，防把正常抖动放大成大波动）。因此分数表达的是「相对本机近期水平的位置」，**长期绝对水平请看日志里的五维原始值**。效率值 = 五维均分折算值 ÷ K × 100%，K 同样是**滚动量**（该模式近期总分的 p90）——100% 恒等于「本模式近期高位水平」，超常/异常各约一成、与机器型号无关；某一维偏低时只要其他维更高，合计仍可过 100%；若本轮只有一维有数据，缺数据维按中性 50 计入（避免单一维度独自决定整机效率）。
+效率评分取五个维度、各维 0~140 分：**净优化量**（本轮从进程清理出的内存 ÷（清理量 + 回涨量），衡量释放留不留得住）、**优化代价**（进程清理释放量 ÷ 缺页代价，衡量划不划算）、**优化通畅**（整理成功 ÷ 尝试总数）、**试探命中**（试探合格 ÷ 试探总数）、**优化量**（本轮释放 ÷ 本机基线释放量）。**quick 模式只参与「净优化量」与「优化量」两维**——该模式不做进程清理，另三维没有作用面，按中性 50 计入以免单维独大（见下段）。各维原始值先取最近三轮的中位数平滑，再按**本机自标定后冻结的基线**换算：本机该维的 5%/25%/50%/75%/90% 分位分别对应 **20/35/50/65/80 分**，两端按斜率线性外推、上下限 0~140。因此 **50 分 = 本机该维常态中位**、**80 分 = 本机该维九成位**；效率值 = 有效维均分折算值 ÷ K × 100%，K 取自标定窗口自身的高分位——**100% 恒等于「本机典型高位」**，与机器型号、使用时段无关；某一维偏低时只要其他维更高，合计仍可过 100%。
 
-每种清理模式各有一套标尺与自校准数据（模式间同一维度的量级差异极大，如「清理畅通」在极限模式下可达常规模式的十几倍），校准数据按模式分别积累、互不污染。
+每种清理模式各有一套标尺与自校准数据（模式间同一维度的量级差异极大，如「优化通畅」在极限模式下可达常规模式的十几倍），校准数据按模式分别积累、互不污染。
 
-**滚动分位锚点（自适应本机）**：锚点不是出厂写死的标尺，而是**本机近期几十轮的实测分位**——每维独立跟踪中位与两侧分位（位置跟得快、跨度跟得慢），前几轮还有预热收缩，因此冷启动或换一台机器都不会出现极端读数；机器行为缓慢漂移时分数自动跟随，不会长期贴底或顶格（代价：效率值表达的是**相对近期水平**，持续改善在窗口追上后会被抹平，绝对水平看日志里的原始值）。锚点与 K 存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即回到出厂种子（种子取自实跑标定，第一轮就落在合理位置）。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与滚动刻度数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
+**自标定基线（冻结后不再漂移）**：每台机器、每种清理模式在用满一段（跳过预热期约 200 轮、再积累约 300 轮）后，用**自己的实测分位**建立基线并**冻结**——因此同一个表现**永远得到同一个分数**，读数不随使用时段或当天做什么而变；标定期间用出厂种子放宽映射，不会出现极端读数。基线存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即重新自标定。**长期偏离自检**：若近 200 轮的读数中位与冻结时的期望值相差超过 15 个百分点（说明基线不再描述这台机器），自动重标一次并在日志诊断行留痕。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与滚动刻度数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
 
-影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 2 个百分点显示"相对平稳"。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
+影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 1 个百分点显示"相对平稳"。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
 
 *A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing, keeping logs, the status bar, and the chart in lockstep. The X axis shows recent cycles (one bar per daemon cycle; the covered time span follows the adjustable cycle length).*
 
-*The efficiency score spans five dimensions, each scored 0–140: prediction accuracy (median Kalman error), release thoroughness (median release per trimmed process relative to that process's usual release), cleaning unobstructedness (trim success-to-failure ratio), side effects (released volume vs. page-fault cost), and probe effectiveness (probe hit rate). **Under quick mode only release thoroughness participates, using a system-level definition** (this cycle's system-level release relative to this machine's usual value), because quick mode performs no process trimming. Each raw value is first smoothed by a three-cycle median, then mapped piecewise against **this machine's rolling quantiles over the last few dozen rounds** — **50 = the recent median; 20/80 = median ∓ half a recent span; 110 = median + one recent span** (the span is the recent inter-decile range, with a floor so ordinary jitter cannot be amplified). Scores therefore express a **position relative to this machine's recent level**; for absolute levels, read the five raw values in the log. The final score = the averaged effective dimensions ÷ K × 100%, where K is also rolling (the p90 of this mode's recent totals) — 100% always means the recent high level of this mode, so exceptional and abnormal each fire about one round in ten regardless of machine. A weak dimension can be compensated by stronger ones; when only one dimension has data, the missing ones count as neutral 50 (a single dimension never decides the whole score alone).*
+*The efficiency score spans five dimensions, each scored 0–140: **net optimization** (process release ÷ (release + regrowth) — how much of what was freed stayed freed), **optimization cost** (process release ÷ page-fault cost — whether the round was worth it), **unobstructedness** (successful trims ÷ attempts), **probe hit rate** (qualified probes ÷ probes), and **optimization volume** (this cycle's release relative to this machine's baseline). **Under quick mode only net optimization and volume participate**, because quick mode trims no processes; the other three count as a neutral 50 so no single dimension dominates. Each raw value is first smoothed by a three-cycle median, then mapped against **this machine's own frozen baseline**, measured during self-calibration: the machine's 5th/25th/50th/75th/90th percentiles map to **20/35/50/65/80 points**, with linear tails clamped to 0–140. So **50 = this machine's normal median** and **80 = its 90th percentile**; the final score = the effective-dimension average ÷ K × 100%, where K is a high percentile of the calibration window itself — **100% always means this machine's typical high level**, independent of machine model or time of day. A weak dimension can be compensated by stronger ones; when only one dimension has data, the missing ones count as neutral 50 (a single dimension never decides the whole score alone).*
 
-*Each cleaning mode has its own scale and calibration data (the same dimension can differ by more than ten times between modes — for example cleaning unobstructedness under full mode), so calibration accumulates per mode without cross-contamination.*
+*Each cleaning mode has its own baseline and calibration data (the same dimension can differ by more than ten times between modes — for example unobstructedness under full mode), so calibration accumulates per mode without cross-contamination.*
 
-*Rolling-quantile anchors (self-adapting) — the anchors are not a scale fixed at the factory but **this machine's own measured quantiles over the last few dozen cycles**: each dimension tracks its median and both flanks independently (the centre follows quickly, the spread slowly), with early shrinkage toward neutral, so a cold start or a different machine never produces extreme readings. When machine behaviour drifts, scores follow and never sit pinned at the floor or ceiling (the trade-off: scores express a **position relative to the recent level**; for absolute levels, read the raw values in the log). Anchors and the high-level line live in `memwise_eris_calib.json`: excluded from config packages (machine-specific) and cleared by factory reset — deleting that file restores the factory seeds (seeds are taken from real runs, so the first cycle already lands in a sensible position). **The four cleaning modes are independent**: each keeps its own anchors, participating dimensions, smoothing windows and rolling scale data. Switching modes never pulls one mode's values into another, and never discards what another mode has accumulated (the first cycle after a switch only reports \"analysing\", and comparisons resume from the next cycle).*
+*Self-calibrated baseline (frozen, no drift) — after a mode has run enough cycles (skipping the ~200-cycle warm-up, then accumulating ~300 cycles), the program builds that mode's baseline from **this machine's own measured quantiles** and freezes it: the same behaviour **always** scores the same, unaffected by time of day or by what else you were doing. During calibration the factory seeds are used with a widened mapping, so no extreme readings appear. The baseline lives in `memwise_eris_calib.json`: excluded from config packages (machine-specific) and cleared by factory reset — deleting that file triggers a fresh self-calibration. **Drift check**: if the median of the last 200 cycles deviates from the value recorded at freeze time by more than 15 points (the baseline no longer describes this machine), the program re-calibrates once and records it in the diagnostic log line. **The four cleaning modes are independent**: each keeps its own baseline, participating dimensions and smoothing windows. Switching modes never pulls one mode's values into another, and never discards what another mode has accumulated (the first cycle after a switch only reports \"analysing\", and comparisons resume from the next cycle).*
 
 *Factor wording: when efficiency rises, the highest-scoring dimension among those that also rose this round reports its positive word; when it falls, the lowest-scoring dimension among those that also fell reports its negative word; a change under 2 points shows "relatively steady". Three consecutive same-direction rounds append a 🔥 sustained-improvement / ⚠ sustained-decline tag (within the 50–100% band only). The first 3 rounds show "analysing factors…"; ≥100% marks gold dots with 🚀 exceptional efficiency, ≤50% coral-red dots with ⚠ efficiency anomaly. Hover tooltips reveal true values and the dominant factors; below the chart: average efficiency and key statistics.*
 ---
@@ -433,9 +433,9 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 ## 10. 学习日志 · *Learning Log*
 
-点击"学习日志"按钮弹出独立窗口，按进程名排序显示所有已学习进程的画像数据：α/β（历史成功与失败累计，决定可信度）、样本数、可信度（θ）、收益比（MB/PF）、偏差（Z-score）、趋势（内存增长斜率）、泄漏标记、清理/试探成功/试探失败次数。支持滚动浏览。
+点击"学习日志"按钮弹出独立窗口，按进程名排序显示所有已学习进程的画像数据：α/β（历史成功与失败累计，决定可信度）、样本数、可信度（θ）、收益比（MB/PF）、偏差（Z-score）、趋势（内存增长斜率）、泄漏标记、清理/试探成功/试探失败次数。窗口顶部附有十二列的口径说明（怎么看这张表）。**点击任一列表头可按该列排序，再点一次反向**；各列宽度与窗口尺寸随内容自适应，支持滚动浏览。
 
-*A standalone window lists every learned process's full profile — α/β (cumulative successes/failures driving confidence), sample count, θ confidence, ROI (MB/PF), Z-score deviation, WS trend slope, leak flag, and clean/probe success and failure counts — sorted by process name with scroll navigation.*
+*A standalone window lists every learned process's full profile — α/β (cumulative successes/failures driving confidence), sample count, θ confidence, ROI (MB/PF), Z-score deviation, WS trend slope, leak flag, and clean/probe success and failure counts — sorted by process name. **Click any column header to sort by it (click again to reverse)**; column widths and the window size adapt to the content, with scroll navigation.*
 
 ---
 
@@ -601,7 +601,7 @@ MemWise/
 │   ├── memwise_state.json      # 学习数据文件（自动保存/加载）· Learned State
 │   ├── memwise_efis_state.json # EFIS 状态文件 · EFIS State
 │   ├── memwise_eris_ewma.json  # ERIS 状态（五维滚动窗与上轮分数）· ERIS State (rolling windows & last scores)
-│   ├── memwise_eris_calib.json # 效率刻度数据（各模式锚点与高位线；不进配置包、恢复默认清除）· ERIS Scale Data
+│   ├── memwise_eris_calib.json # 效率刻度数据（各模式冻结基线与 K 线；不进配置包、恢复默认清除）· ERIS Scale Data
 │   ├── import_export/          # 配置包（导出/自动备份/待导入）· Config Packages (Export / Backup / Import)
 │   ├── watchdog.json           # 看门狗标记文件（自动管理）· Watchdog Marker
 │   ├── memwise.log             # 统一运行日志（2MB×2 轮转）· Unified Runtime Log

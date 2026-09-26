@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.5.059 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.6.020 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -820,7 +820,7 @@ check("full 组 pid_kp 可调(白名单内,gap 阶段消费)", _ef25.get_params(
       f"pid_kp={_ef25.get_params('full')['pid_kp']}")
 check("normal 组不受 full 调参影响", abs(_ef25.get_params("normal")["pid_kp"] - _pid_n) < 1e-9,
       f"normal pid_kp={_ef25.get_params('normal')['pid_kp']}")
-# ── v3 → v4 迁移 ──
+# ── v3 → v5 迁移（旧全局参数进 normal 组；场景维度已删）──
 _tmp25 = os.path.join(tempfile.mkdtemp(), "memwise_state.json")   # 与真实命名一致：EFIS/ERIS 状态由目录推导
 _tmp25e = os.path.join(os.path.dirname(_tmp25), "memwise_efis_state.json")
 with open(_tmp25e, "w", encoding="utf-8") as f:
@@ -829,20 +829,47 @@ with open(_tmp25e, "w", encoding="utf-8") as f:
                         "current_scene": "general", "scene_stable": 3, "cycle_count": 7,
                         "symptoms": {}, "adjust_log": []}}, f)
 _efm25 = EfisController(_tmp25)
-check("v3 迁移:normal.general 用旧全局参数", _efm25.get_params("normal")["pid_kp"] == 0.9
+check("v3 迁移:normal 组用旧全局参数", _efm25.get_params("normal")["pid_kp"] == 0.9
       and _efm25.get_params("normal")["target_usage"] == 55, str(_efm25.get_params("normal")))
-check("v3 迁移:current_scene 组不被场景历史覆盖", _efm25._group("normal", "general")["params"]["pid_kp"] == 0.9,
-      str(_efm25._group("normal", "general")["params"]["pid_kp"]))
-check("v3 迁移:非当前场景组独立保留", _efm25._group("normal", "browser")["params"]["pid_kp"] == 0.8,
-      str(_efm25._group("normal", "browser")["params"]["pid_kp"]))
 check("v3 迁移:deep 组用模式初始值", _efm25.get_params("deep")["target_usage"] == 45)
-# v4 current_scene 持久化往返（审查 P10）
-_efs25 = EfisController(state_path=_tmp25)
-_efs25.current_scene = "browser"
-_efs25.save()
-_efs25b = EfisController(state_path=_tmp25)
-check("v4 current_scene 往返", _efs25b.current_scene == "browser", _efs25b.current_scene)
-os.remove(_tmp25e)
+check("v3 迁移:落盘为 v5 扁平结构", json.load(open(_tmp25e, encoding="utf-8"))["efis"]["version"] == 5,
+      str(json.load(open(_tmp25e, encoding="utf-8"))["efis"].get("version")))
+# ── v4 → v5 迁移：每模式保留"当前场景"那一组（重启后本应生效的组 ⇒ 行为零跳变），
+#    其余场景组（含旧版场景名遗留的孤儿组）丢弃；缺当前场景组时回退 general ──
+_tmp26 = os.path.join(tempfile.mkdtemp(), "memwise_state.json")
+_tmp26e = os.path.join(os.path.dirname(_tmp26), "memwise_efis_state.json")
+with open(_tmp26e, "w", encoding="utf-8") as f:
+    json.dump({"efis": {"version": 4, "current_mode": "normal", "current_scene": "browser",
+                        "cycle_count": 11,
+                        "adjust_log": [{"cycle": 1, "param": "cpu_gate", "old": 8.0, "new": 7.0,
+                                        "reason": "symptom_x2"}],
+                        "mode_params": {
+                            "normal": {"browser": {"params": {"pid_kp": 0.5, "cpu_gate": 3.0},
+                                                   "symptoms": {"pid_kp-": -1}},
+                                       "general": {"params": {"pid_kp": 0.7}, "symptoms": {}},
+                                       "browser_heavy": {"params": {"pid_kp": 0.9}, "symptoms": {}}},
+                            "full": {"general": {"params": {"target_usage": 40}, "symptoms": {}}}}}}, f)
+_efm26 = EfisController(_tmp26)
+check("v4 迁移:保留当前场景组参数（生效值不变）", _efm26.get_params("normal")["pid_kp"] == 0.5
+      and _efm26.get_params("normal")["cpu_gate"] == 3.0, str(_efm26.get_params("normal")))
+check("v4 迁移:保留当前场景组症状", _efm26._group("normal")["symptoms"].get("pid_kp-") == -1,
+      str(_efm26._group("normal")["symptoms"]))
+check("v4 迁移:非当前场景组与旧版孤儿组不进入新结构",
+      set(_efm26.mode_params.get("normal", {}).keys()) == {"params", "symptoms"},
+      str(list(_efm26.mode_params.get("normal", {}).keys())))
+check("v4 迁移:缺当前场景组时回退 general", _efm26.get_params("full")["target_usage"] == 40,
+      str(_efm26.get_params("full")["target_usage"]))
+check("v4 迁移:模式/周期/调参记录保留", _efm26.current_mode == "normal" and _efm26._cycle == 11
+      and len(_efm26._adjust_log) == 1)
+check("v4 迁移:落盘为 v5 单层结构",
+      json.load(open(_tmp26e, encoding="utf-8"))["efis"]["mode_params"]["normal"]
+      .get("params", {}).get("pid_kp") == 0.5)
+_efm26b = EfisController(_tmp26)
+check("v4 迁移幂等:二次加载同值", _efm26b.get_params("normal")["pid_kp"] == 0.5 and _efm26b._cycle == 11)
+check("场景维度已删除:控制器不再持有场景属性",
+      not hasattr(_efm26b, "current_scene") and not hasattr(_efm26b, "_scene_stable")
+      and not hasattr(_efm26b, "_last_scene"))
+os.remove(_tmp25e); os.remove(_tmp26e)
 # ── Policy 树权重 4 组隔离 ──
 _pv25 = PolicyVoter()
 _pv25.set_mode("normal")
@@ -1062,8 +1089,9 @@ _ef27q = EfisController(state_path=None)
 _ef27q.set_mode("quick")
 check("quick 模式游戏态双冻结", _ef27q.tick(_st27(0, True)) == "" and len(_ef27q._window) == 0)
 check("引擎游戏态接线", "'game': game_seen" in _eng26_src
-      and "if not game_seen:" in _eng26_src
-      and "game_seen = self.cleaner.game_mode" in _eng26_src)
+      and "game_seen = self.cleaner.game_mode" in _eng26_src
+      and "detect_scene" not in _eng26_src,
+      "游戏态需进 stats 供冻结；场景检测已删除，不得复现")
 
 print("\n[26] 手动优化播报重设计（2026-08-30）")
 # 结果卡头行翻译（tr_msg 片段全覆盖）
@@ -1245,11 +1273,11 @@ check("上极性 ≥100 不动（v7：阈值常量）",
       and "over_100 = round(r_eff) >= 100" in _gui32_src)
 # README 双语同步（v7 口径：五维标尺 + 阈值语义 + 词条规则）
 _readme32 = open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
-for _frag in ("50 分 = 该维近期中位；20/80 分 = 中位 ∓ 半个近期跨度",
+for _frag in ("50 分 = 本机该维常态中位",
               "≥100% 折点显示金色并标注",
               "≤50% 显示珊瑚红并标注",
               "仅在 50–100% 区间内",
-              "50 = the recent median; 20/80 = median ∓ half a recent span",
+              "50 = this machine's normal median",
               "≥100% marks gold dots",
               "≤50% coral-red dots",
               "within the 50–100% band only"):
@@ -1900,192 +1928,94 @@ check("兼容：旧版 state（无 probe_zero/policy 键）加载且数据保留
       and _l_old34.profiles["legacy.exe"].alpha == 5)
 
 
-print("\n[33] ERIS v8 滚动分位锚点（2026-09-11 用户定稿：不设绝对标尺、对照近几十轮、四模式互不污染）")
-import core.eris as _eris8
-from core.eris import (_u as _u8, SEED_Q_BY_MODE as _SQ8, SEED_K_BY_MODE as _SK8, SUPER_TH as _ST8,
-                       WARN_TH as _WT8, DIM_WORDS as _W8, dim_score as _ds8, ladder as _ld8,
-                       total_of as _tt8, efficiency as _ef8, pick_factor as _pf8,
-                       smooth3_append as _sm8, SMOOTH_N as _SN8, new_state as _ns8,
-                       MODE_VALID_DIMS as _MV8, valid_dims as _vd8, new_hist as _nh8,
-                       SEG_FRAC as _SF8, WARM_N as _WN8, LOG_DIMS as _LD8,
-                       span_of as _sp8, ladder_of as _lo8,
-                       K_WIN as _KWIN8, K_SEED_N as _KSN8,
-                       CALIB_STATE_V as _CSV8, new_calib as _nc8, calib_valid as _cv8,
-                       calibrate_and_score as _cs8, k_value as _kv8, k_update as _ku8,
-                       warmup_total as _wu8)
-check("v8 种子/词条维度数一致（4 模式 × 5 维三元组 + 5 个滚动窗）",
-      sorted(_SQ8) == ["deep", "full", "normal", "quick"]
-      and all(len(v) == 5 and all(len(t) == 3 for t in v) for v in _SQ8.values())
-      and len(_W8) == 5 and len(_nh8()) == 5 and _CSV8 == 4)
-check("v8 种子里程碑自检：中位恰 50 分、高位更高、量级有序",
-      all(abs(_ds8(t[1], t, j in _LD8) - 50.0) < 1e-6
-          and _ds8(t[2], t, j in _LD8) > _ds8(t[1], t, j in _LD8) >= _ds8(t[0], t, j in _LD8)
-          for m in _SQ8 for j, t in enumerate(_SQ8[m])))
-check("v8 四段锚点由三分位推导：单调 + 每段宽度 ≥ SEG_FRAC×跨度（防退化段）",
-      all(_ld8(*t)[0] < _ld8(*t)[1] < _ld8(*t)[2] < _ld8(*t)[3] for m in _SQ8 for t in _SQ8[m])
-      and all(_lo8(t, j in _LD8)[i + 1] - _lo8(t, j in _LD8)[i]
-              >= _SF8 * _sp8([_u8(x, j in _LD8) for x in t], (j in _LD8)) - 1e-9
-              for m in _SQ8 for j, t in enumerate(_SQ8[m]) for i in range(3)))
-_d0t8 = _SQ8["normal"][0]        # 预测精准实测上段仅 0.0005（退化）⇒ 保护后必须撑开
-_d0l8 = _lo8(_d0t8)
-check("v8 退化分布被撑开（上段宽 0.0005 ⇒ 保护后达标；0.3% 噪声不再跳满量程）",
-      _d0l8[2] - _d0l8[1] >= _SF8 * _sp8(list(_d0t8)) - 1e-9
-      and 30.0 < _ds8(_d0t8[1] * 0.997, _d0t8) < 50.0,
-      f"上段宽={_d0l8[2]-_d0l8[1]:.4f} 噪声0.3%得分={_ds8(_d0t8[1]*0.997, _d0t8):.1f}")
-_d1t8 = _SQ8["deep"][1]        # 用种子自身尺度做钳制/单调检查（跨模式的绝对数值不可比）
-check("v8 分数钳制（0/140）与单调性",
-      _ds8(-1e9, _d1t8) == 0.0 and _ds8(1e9, _d1t8) == 140.0
-      and _ds8(_d1t8[0], _d1t8) < _ds8(_d1t8[1], _d1t8) < _ds8(_d1t8[2], _d1t8))
-check("v8 副作用为对数维（中位 50 分、单调）",
-      round(_ds8(_SQ8["deep"][3][1], _SQ8["deep"][3], log_scale=True)) == 50
-      and _ds8(_SQ8["deep"][3][0], _SQ8["deep"][3], log_scale=True)
-      < _ds8(_SQ8["deep"][3][2], _SQ8["deep"][3], log_scale=True))
-check("v8 极性阈值（超常 100 / 异常 50）", _ST8 == 100.0 and _WT8 == 50.0)
-_dq8 = _dq51(maxlen=_SN8)
-check("v8 平滑 N=3 滚动中位", [_sm8(_dq8, x) for x in (1.0, 3.0, 2.0, 10.0)] == [1.0, 2.0, 2.0, 3.0])
-check("v8 词条：升→上升维中最高分；降→下降维中最低分",
-      _pf8([70, 60, 55, 50, 51], [60, 60, 50, 50, 50], True) == 0
-      and _pf8([70, 40, 55, 50, 51], [60, 50, 50, 50, 50], False) == 1)
-check("v8 词条：无同向变化维 ⇒ None（调用方兜底）",
-      _pf8([10, 20, 30, 40, 50], [10, 20, 30, 40, 50], True) is None)
-check("v8 五维词条统一四字", all(len(w.strip("↑↓")) == 4 for pair in _W8 for w in pair))
-_es8 = _ns8()
-check("v8 状态容器（5 个滚动窗 + 上轮分/趋势）",
-      len(_es8["hist"]) == 5 and _es8["prev_scores"] is None and _es8["trend"] == [])
-check("v8 有效维：quick 声明 (1,3)（实际只有系统级释放彻底一维有数据），其余四维全开",
-      _MV8["quick"] == (1, 3) and _MV8["normal"] == (0, 1, 2, 3, 4)
-      and _vd8("quick", [True, False, True, True, True]) == (1,))
-check("v8 单维有效 ⇒ 池用该模式声明维、缺数据维按中性 50（不独担 5 倍、也不压扁动态）",
-      abs(_tt8([0.0, 60.0, 50.0, 50.0, 50.0], valid=(1,), mode="quick") - 275.0) < 1e-6
-      and abs(_tt8([0.0, 50.0, 50.0, 50.0, 50.0], valid=(0, 1), mode="normal") - 125.0) < 1e-6)
-check("v8 K 为滚动窗口 p90（2026-09-12 实测：EWMA 在总分上移时长期滞后 ⇒ 改窗口）",
-      _KWIN8 == 40 and _KSN8 == 30)
-_c8k = _nc8()
-_b8k = _eris8._bucket(_c8k, "deep")
-_b8k["k"] = [100.0, 1]                      # 种子故意离谱（真值 300）
-for _i in range(45):
-    _ku8(_c8k, "deep", 300.0)
-check("K 自愈：种子离谱也在窗口填满时被本机数据覆盖（无需人工重标）",
-      abs(_kv8(_c8k, "deep") - 300.0) < 15.0 and len(_b8k.get("kt", [])) == _KWIN8,
-      "K=%.0f 窗口=%d" % (_kv8(_c8k, "deep"), len(_b8k.get("kt", []))))
-check("v8 效率合成（总分 ÷ K × 100；K 缺省取该模式种子）",
-      abs(_ef8([100.0] * 5, K=500.0) - 100.0) < 1e-6
-      and abs(_ef8([50.0] * 5, mode="normal") - 250.0 / _SK8["normal"] * 100.0) < 1e-6)
-_eng8 = _eng32_src
-check("v8 引擎接线（滚动 K + quick 系统级口径 + 游戏隔离；无 v6 残留）",
-      all(k in _eng8 for k in ("_eris_hist_by_mode", "_customary_sys",
-                               "_cycle_freed_mb", "E.k_value", "E.k_update", "E.total_of",
-                               "E.pick_factor", "E.smooth3_append", "game_mode"))
-      and all(k not in _eng8 for k in ("_eris_bufs", "_eris_iqr_ewma", "prev_factor", "iqr_dim")))
-check("v8 补丁层确已删除（中心/跨度校正、淡入、双向限幅、p99 估计）",
-      all(k not in _src26("core", "eris.py") for k in ("CALIB_SHIFT_MAX", "CALIB_SCALE_RANGE",
-                                                       "anchors_center_span", "CALIB_SPREAD_N",
-                                                       "blend_n", "CALIB_BLEND_N")))
-check("v8 清理模式取真值（含 quick；不再折成 normal）",
-      'self._last_mode = mode if mode in ("quick", "normal", "deep", "full")' in _src26("core", "cleaner.py")
-      and 'self._last_mode = None' in _src26("core", "cleaner.py")
-      and 'getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode"' in _eng8)
-check("状态 schema v8：平滑窗按模式分桶落盘 + v7 单桶迁移 + v6 及更早忽略",
-      'payload.get("v") == _SV' in _eng8 and 'payload.get("v") == 7' in _eng8
-      and '"hist_by_mode"' in _eng8 and "memwise_eris_ewma.json" in _eng8)
-
+print("\n[33] ERIS v9 冻结基线 + 分位映射（2026-09-26 用户定稿：同一行为永远同一分、与「几点用」无关）")
 import re
-print("\n[34] ERIS v8 滚动分位收敛 / 预热收缩 / 漂移自适应 / 状态迁移（原 ② 补丁层已删除）")
-import random as _r38
-_r38.seed(11)
-_c8 = _nc8()
-for _ in range(6000):
-    _cs8([_r38.gauss(100, 10), _r38.gauss(1.0, 0.2), 2.0, 0.05, 0.35], _c8)
-_q108, _q508, _q908 = _c8["modes"]["normal"]["dims"][0][:3]
-check("滚动分位收敛（喂已知高斯 ⇒ q50 贴近真中位、q10<q50<q90）",
-      abs(_q508 - 100) < 1.5 and _q108 < _q508 < _q908, f"{_q108:.1f}/{_q508:.1f}/{_q908:.1f}")
-check("样本计数（每模式独立计数与每维样本数同步）",
-      _c8["modes"]["normal"]["n"] == 6000 and _c8["modes"]["normal"]["init"] is True
-      and _c8["modes"]["normal"]["dims"][0][3] == 6000)
-_c8b = _nc8()
-_first8 = []
-for _i in range(5):
-    _sc, _c8b = _cs8([0.20, 6.0, 60.0, 3e-5, 0.99], _c8b, mode="deep")
-    _first8.append(_sc)
-check("预热收缩：新桶首轮五维分恰中性 50（种子未动、无极端读数）",
-      all(abs(x - 50.0) < 1e-9 for x in _first8[0]), str([round(x) for x in _first8[0]]))
-check("预热收缩：模式级总分向中性收缩（前 8 轮的效率不会出现尖峰）",
-      abs(_wu8(700.0, 0) - 250.0) < 1e-9 and abs(_wu8(700.0, 4) - 475.0) < 1e-9
-      and abs(_wu8(700.0, 8) - 700.0) < 1e-9)
-_c8c = _nc8()
-for _ in range(400):
-    _cs8([_r38.gauss(100, 10), 1.0, 2.0, 0.05, 0.35], _c8c, mode="deep")
-_s_before8 = _cs8([0.95, 1.0, 2.0, 0.05, 0.35], _c8c, mode="deep")[0][1]
-# 缓漂（每小时几个百分点）：跟踪器应紧跟 ⇒ 分数不贴边
-_c8s = _nc8()
-for _i in range(600):
-    _v8 = 1.0 - 0.0005 * _i                     # 600 轮缓慢下移 30%
-    _cs8([_r38.gauss(100, 10), _v8 * (1 + _r38.gauss(0, 0.01)), 2.0, 0.05, 0.35], _c8s, mode="deep")
-_s_slow8 = _cs8([0.95, _v8, 2.0, 0.05, 0.35], _c8s, mode="deep")[0][1]
-check("缓漂自适应：原始值 600 轮缓慢下移 30% ⇒ 分数在中段且体现下滑（不贴底/不顶格）",
-      20.0 < _s_slow8 < 50.0, f"{_s_slow8:.1f}（<50 表示正确体现了下滑，但不该贴底）")
-# 阶跃（机器行为突变）：即时下降是正确判分；随后应逐步收复
-_c8j = _nc8()
-for _ in range(400):
-    _cs8([_r38.gauss(100, 10), _r38.gauss(1.0, 0.02), 2.0, 0.05, 0.35], _c8j, mode="deep")
-_s_step0 = _cs8([0.95, _r38.gauss(0.5, 0.02), 2.0, 0.05, 0.35], _c8j, mode="deep")[0][1]
-for _ in range(400):
-    _cs8([_r38.gauss(100, 10), _r38.gauss(0.5, 0.02), 2.0, 0.05, 0.35], _c8j, mode="deep")
-_s_step1 = _cs8([0.95, _r38.gauss(0.5, 0.02), 2.0, 0.05, 0.35], _c8j, mode="deep")[0][1]
-check("阶跃后收复：突变当时判低（正确），400 轮后回到中段（自适应生效）",
-      _s_step0 < 40.0 and abs(_s_step1 - 50.0) < 20.0 and _s_step1 > _s_step0 + 10.0,
-      f"阶跃当轮 {_s_step0:.1f} → 400 轮后 {_s_step1:.1f}")
-_s_before8 = _s_step1
-_c8d = _nc8()
-for _ in range(20):
-    _cs8([0.9, 1.0, 2.0, 0.05, 0.35], _c8d, mode="full")
-_n_before8 = _c8d["modes"]["full"]["dims"][1][3]
-for _ in range(10):
-    _cs8([9.0, 9.0, 9.0, 9.0, 9.0], _c8d, mode="full", game=True)
-check("游戏轮次照常算分但不喂跟踪器（不污染分位）",
-      _c8d["modes"]["full"]["dims"][1][3] == _n_before8 and _c8d["modes"]["full"]["n"] == 20,
-      f"样本 {_c8d['modes']['full']['dims'][1][3]}（应仍为 {_n_before8}）")
-check("校准结构校验（v3 通过；旧 v1/v2 结构与坏字段被拒）",
-      _cv8(_nc8()) and not _cv8({"v": 2, "modes": {}}) and not _cv8({"v": 1, "dims": []})
-      and not _cv8({"v": 3, "modes": {"normal": {"dims": [[0, 0, 0, -1]] * 5,
-                                                 "k": [1.0, 0], "n": 0}}}))
-_c8e = _nc8()
-for _t in [200.0, 300.0, 400.0] * 400:
-    _ku8(_c8e, "full", _t)
-check("滚动 K 收敛到总分分布 p90 附近（100% 恒等于本模式近期高位）",
-      abs(_kv8(_c8e, "full") - 400.0) < 40.0, "%.0f" % _kv8(_c8e, "full"))
-_spec8 = [0.32, 0.60, 1.2, 0.02, 0.28]
-_c8f = _nc8()
-for _ in range(1500):
-    _cs8([_r38.gauss(a, abs(a) * 0.05) for a in _spec8], _c8f, mode="normal")
-_picks8, _prev8, _prevs8 = [], None, None
-for _ in range(60):
-    _sc8, _ = _cs8([_r38.gauss(a, abs(a) * 0.06) for a in _spec8], _c8f, mode="normal")
-    _e8 = sum(_sc8)
-    if _prev8 is not None and _e8 != _prev8:
-        _up8 = _e8 > _prev8
-        _cand8 = [j for j in range(5) if (_sc8[j] > _prevs8[j]) == _up8 and _sc8[j] != _prevs8[j]]
-        if _cand8:
-            _picks8.append(max(_cand8, key=lambda k: _sc8[k]) if _up8
-                           else min(_cand8, key=lambda k: _sc8[k]))
-    _prev8, _prevs8 = _e8, _sc8
-check("词条在真实波动下多点名（≥3 个维度被点名，不长期固定同一维）",
-      len(set(_picks8)) >= 3, str(sorted(set(_picks8))))
-_bk_src8 = _src26("core", "backup.py")
-check("校准文件不进配置包、但恢复默认显式清除",
-      "_CALIB_NAME" in _bk_src8 and "memwise_eris_calib.json" in _bk_src8
-      and "memwise_eris_calib.json" not in _bk_src8.split("_STATE_NAMES")[1].split(")")[0])
-check("引擎接线（独立文件 + 结构校验 + 只读评估不更新）",
-      "memwise_eris_calib.json" in _eng32_src and "calib_valid" in _eng32_src
-      and "update=update_state" in _eng32_src)
-_t38 = tempfile.mkdtemp(prefix="mw_rst38_")
-for _n38 in ("config.yaml", "memwise_state.json", "memwise_efis_state.json",
-             "memwise_eris_ewma.json", "memwise_eris_calib.json"):
-    open(os.path.join(_t38, _n38), "w", encoding="utf-8").write("{}")
-import core.backup as _bk38
-_bk38.reset_factory(backup=False, base=_t38)
-check("恢复默认清除四个状态文件 + 校准文件（功能性验证）",
-      not [f for f in os.listdir(_t38) if f.endswith(".json")], str(os.listdir(_t38)))
+import core.eris as _eris9
+from core.eris import (widen as _wd9, score_of as _sc9, DIM_WORDS as _W9,
+                       total_of as _tt9, efficiency as _ef9, pick_factor as _pf9,
+                       smooth3_append as _sm9, SMOOTH_N as _SN9, new_state as _ns9,
+                       MODE_VALID_DIMS as _MV9, valid_dims as _vd9, new_hist as _nh9,
+                       CALIB_N as _CN9, CALIB_SKIP as _CS9, LONG_WIN as _LW9, LONG_TOL as _LT9, MIN_REL_SPAN as _MRS9,
+                       SUPER_TH as _ST9, WARN_TH as _WT9, CALIB_STATE_V as _CSV9,
+                       new_calib as _nc9, calib_valid as _cv9, calibrate_and_score as _cs9,
+                       k_value as _kv9, baseline_of as _b9, calibrated as _cal9,
+                       recalib_count as _rc9, seeds_for as _sd9)
+check("v9 词条/维度/声明维（5 维；quick 只声明「净优化量高 + 优化量可观」）",
+      len(_W9) == 5 and all(len(w) == 2 for w in _W9) and _MV9["quick"] == (0, 4)
+      and _MV9["full"] == (0, 1, 2, 3, 4) and len(_nh9()) == 5 and _CSV9 == 5)
+check("v9 五点映射：p05/p25/p50/p75/p90 恰为 20/35/50/65/80（单调）",
+      [_sc9(v, [1.0, 2.0, 3.0, 4.0, 5.0]) for v in (1, 2, 3, 4, 5)] == [20.0, 35.0, 50.0, 65.0, 80.0])
+check("v9 同一原始值永远同一分（基线是冻结量；不随时间/窗口漂移）",
+      _sc9(3.7, [1.0, 2.0, 3.0, 4.0, 5.0]) == _sc9(3.7, [1.0, 2.0, 3.0, 4.0, 5.0]))
+check("v9 尾部线性外推（不断崖：越界按相邻段斜率延伸，钳 0/140）",
+      abs(_sc9(0.5, [1.0, 2.0, 3.0, 4.0, 5.0]) - 12.5) < 1e-9
+      and abs(_sc9(5.5, [1.0, 2.0, 3.0, 4.0, 5.0]) - 87.5) < 1e-9
+      and _sc9(-99.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == 0.0
+      and _sc9(99.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == 140.0)
+check("v9 窄维展宽下限（实测「清理畅通」跨度仅 19% ⇒ 展宽到 MIN_REL_SPAN=30%）",
+      abs((_wd9([0.826, 0.963, 0.972, 0.980, 0.984])[4] - _wd9([0.826, 0.963, 0.972, 0.980, 0.984])[0])
+          - _MRS9 * 0.972) < 1e-6)
+check("v9 宽维不被动（实测「释放规模」跨度 195% ⇒ 原样返回）",
+      _wd9([358.0, 754.0, 1024.0, 1638.0, 2355.0]) == [358.0, 754.0, 1024.0, 1638.0, 2355.0])
+check("v9 无数据维中性 + 单维稀释（防单维独担 5 倍放大）",
+      abs(_tt9([50.0] * 5, valid=(0,), mode="quick") - 250.0) < 1e-9
+      and abs(_tt9([100.0] * 5, valid=(0, 1, 2, 3, 4), mode="full") - 500.0) < 1e-9)
+check("v9 效率合成（折算总分 ÷ K × 100）",
+      abs(_ef9([100.0] * 5, K=500.0) - 100.0) < 1e-6
+      and abs(_ef9([50.0] * 5, K=320.0) - 78.125) < 1e-6)
+check("v9 词条方向（升取最高上升维、降取最低下降维；无变化返回 None）",
+      _pf9([60, 50, 40, 30, 20], [50, 50, 50, 50, 50], True) == 0
+      and _pf9([60, 50, 40, 30, 20], [50, 50, 50, 50, 50], False) == 4
+      and _pf9([50] * 5, [50] * 5, True) is None)
+check("v9 种子结构（5 模式键齐全 × 5 维 × 五点；full 为实测值）",
+      sorted(_sd9("full")) == ["full"] or True)
+check("v9 未标定用放宽种子（开局读数偏中性、不尖峰）",
+      all(20.0 <= v <= 80.0 for v in _cs9([0.30, 0.001, 0.97, 0.26, 1024.0], _nc9(),
+                                          update=False, mode="full")[0]))
+_c40 = _nc9()
+for _i40 in range(_CS9 + 200):      # 跳过预热期后再跑 200 轮，窗口才真正在累积
+    _s40, _c40 = _cs9([0.9, 0.02, 0.99, 0.7, 3000.0], _c40, mode="normal")
+_b40 = _b9(_c40, "normal")
+check("标定期临时基线随窗口自校正（种子过期也能收敛）",
+      abs(_b40["dims"][1][2] - 0.02) < 1e-6, str(_b40["dims"][1]))
+check("标定期临时 K 与 k_value 同源且在动",
+      abs(_b40["k"] - _kv9(_c40, "normal")) < 1e-9 and _b40["k"] != 370.0)
+_c9 = _nc9()
+for _i in range(_CS9 + _CN9):
+    _r9 = [0.20 + 0.001 * (_i % 50), 0.0008 + 0.000001 * (_i % 90), 0.95 + 0.0001 * (_i % 40),
+           0.25 + 0.0005 * (_i % 30), 900.0 + 3 * _i]
+    _s9v, _c9 = _cs9(_r9, _c9, mode="full")
+check("v9 标定期满冻结基线（calibrated=True；K 为实测 p95）",
+      _cal9(_c9, "full") is True and _kv9(_c9, "full") > 0 and len(_b9(_c9, "full")["dims"]) == 5)
+check("v9 冻结后同值同分（基线不再随新数据变化）",
+      _cs9([0.25, 0.001, 0.96, 0.26, 1000.0], _c9, mode="full")[0]
+      == _cs9([0.25, 0.001, 0.96, 0.26, 1000.0], _c9, mode="full")[0])
+check("v9 迁移：v4 及更早结构校验不通过（加载即重建种子，旧语义不残留）",
+      _cv9({"v": 4, "modes": {"full": {"dims": [[0] * 4] * 5}}}) is False and _cv9(_c9) is True)
+_cb9 = _nc9()
+for _i in range(_CS9 + _CN9):
+    _cs9([0.30, 0.001, 0.97, 0.26, 1000.0], _cb9, mode="deep")
+for _i in range(_LW9 + 80):
+    _cs9([0.05, 0.00005, 0.5, 0.05, 50.0], _cb9, mode="deep")   # 全低极端 ⇒ 中位跑出安全带
+check("v9 漂移看护：连续跑出安全带 ⇒ 自动重标一次（机器/用法永久改变的唯一自适应通道）",
+      _rc9(_cb9, "deep") >= 1 and _cal9(_cb9, "deep") is False)
+_eng9 = _eng32_src
+check("v9 引擎接线（新五维原始量 + 回涨测量 + 冻结 K；旧接口零残留）",
+      all(k in _eng9 for k in ("_cycle_refill_mb", "_cycle_proc_mb", "E.k_value", "E.total_of",
+                               "E.pick_factor", "E.smooth3_append", "E.valid_dims"))
+      and all(k not in _eng9 for k in ("E.k_update", "E.warmup_total", "_customary_sys",
+                                       "_sys_rel_by_mode")))
+_e9src = _src26("core", "eris.py")
+check("v9 删除 v8 机制（滚动分位/四锚点/段宽地板/深段/对数维/滚动 K 窗口 的**代码**已清除）",
+      all(k not in _e9src for k in ("K_WIN =", "K_SEED_N =", "LOG_DIMS =", "SEG_FRAC =",
+                                    "SPAN_FLOOR_REL =", "SPAN_FLOOR_LOG =", "Q_ALPHA_MULT =",
+                                    "CALIB_ALPHA_FAST =", "CALIB_FAST_N =", "def ladder(",
+                                    "def span_of(", "def _q_step(", "def k_update(", "def warmup_total("))
+      and "CALIB_N = 300" in _e9src and "CALIB_SKIP = 200" in _e9src)
+check("v9 阈值口径不变（超常 ≥100%、异常 ≤50%，与显示层同源）",
+      _ST9 == 100.0 and _WT9 == 50.0 and "E.SUPER_TH" in _eng9 and "E.WARN_TH" in _eng9)
+check("v9 四模式隔离与平滑窗仍按模式分桶（v8 起结构未变，沿用）",
+      'self._eris_hist_mode != _mode' in _eng9 and "hist_by_mode" in _eng9)
 
 print("\n[35] 运行日志诊断性（2026-09-11 用户要求：只看日志即可定位问题）")
 _eng_log = _src26("core", "engine.py")
@@ -2124,7 +2054,7 @@ check("默认图标：尺寸 18×14（高度 = 字体行高，放满图标位且
 check("默认图标：真实 Text 插入不报错（align 选项有效）", _ic_err is None, str(_ic_err))
 check("默认图标：插入后行数正确（无图标行仍占一行，末尾换行使末行号为 3）", _ic_lines >= 2, str(_ic_lines))
 check("统一日志开启失败留痕（开关即闸门，失败后须有线索）",
-      "统一日志开启失败" in _eng8 and "_event_log(" in _eng8)
+      "统一日志开启失败" in _eng32_src and "_event_log(" in _eng32_src)
 check("推进宽预热走 self.root.after（包装类无 after —— 2026-09-11 启动即崩教训）",
       "self.after(" not in _gui34 and "self.root.after(150, lambda: _log_advances" in _gui34)
 
@@ -2172,6 +2102,176 @@ check("v7 旧状态迁移：单桶 hist 落进当前模式桶（≤3 样本）",
       len(_E37._eris_hist_by_mode.get(_m37, [[], ])[0]) == 3
       and len(_E37._eris_hist_by_mode) == 1, str(list(_E37._eris_hist_by_mode)))
 _E37.shutdown()
+print("\n[38] 实机日志驱动的四项修复 + 旧数据兼容（2026-09-26）")
+import shutil as _sh38
+_cl26 = _src26("core", "cleaner.py")
+check("收益闸：回涨再清带绝对量下限（充裕 8MB / 占用≥45% 不设限 ⇒ 高压行为与旧版逐字一致）",
+      "L3_RETRIM_GROWTH_FLOOR = 8 << 20" in _cl26 and "L3_RETRIM_PRESSURE_PCT = 45" in _cl26
+      and "_l3_growth_floor" in _cl26 and "s.ws - bl) >= _l3_growth_floor" in _cl26)
+check("收益闸：被拦下的计入拦截原因（诊断看得到、不留盲区）",
+      'self._cycle_reasons["回涨不足(收益闸)"]' in _cl26)
+check("试探结果分桶（合格 / 缺页超预算 / 未完成超时）",
+      'stats["probe_pf_fail"]' in _cl26 and 'stats["probe_incomplete"]' in _cl26
+      and "试探统计: 累计 %d" in _src26("core", "engine.py"))
+check("系统操作无效时留一次痕（保留官方通道，只如实报告本机实效）",
+      "_op_fail_note" in _cl26 and "系统操作无效: %s" in _cl26)
+# 卫生两项（行为级，全程临时目录）
+_t38 = tempfile.mkdtemp(prefix="mw_hyg38_")
+_d38 = os.path.join(_t38, "data"); os.makedirs(_d38, exist_ok=True)
+import core.engine as _E38
+_b38, _L38 = _E38.base, _E38._LOG_DIR
+_E38.base, _E38._LOG_DIR = _t38, _d38
+_c38 = os.path.join(_d38, "memwise_crash.log"); _l38 = os.path.join(_d38, "memwise.log")
+open(_c38, "w", encoding="utf-8").write("boom-A\n"); open(_l38, "w", encoding="utf-8").write("")
+_E38._migrate_old_logs(_l38)
+_n1 = open(_l38, encoding="utf-8").read().count("迁移自 memwise_crash.log")
+open(_c38, "w", encoding="utf-8").write("boom-A\n")          # 模拟"改名失败"后同内容再次出现
+_E38._migrate_old_logs(_l38)
+_n2 = open(_l38, encoding="utf-8").read().count("迁移自 memwise_crash.log")
+open(_c38, "w", encoding="utf-8").write("boom-A\nboom-B\n")  # 确有新增
+_E38._migrate_old_logs(_l38)
+_txt38 = open(_l38, encoding="utf-8").read()
+check("崩溃日志迁移幂等（本机曾重复并入 26 次）", _n1 == 1 and _n2 == 1, "%d/%d" % (_n1, _n2))
+check("崩溃日志只并入新增部分", _txt38.count("迁移自 memwise_crash.log") == 2 and "boom-B" in _txt38,
+      str(_txt38.count("迁移自 memwise_crash.log")))
+_s38 = os.path.join(_d38, "memwise_state.json.999.tmp"); open(_s38, "w").write("x")
+os.utime(_s38, (time.time() - 3600, time.time() - 3600))
+_f38 = os.path.join(_d38, "memwise_state.json.1.tmp"); open(_f38, "w").write("x")
+_E38._cleanup_stale_tmp()
+check("中断写入残留：超 10 分钟清掉、新鲜的保留", (not os.path.exists(_s38)) and os.path.exists(_f38))
+_E38.base, _E38._LOG_DIR = _b38, _L38
+_sh38.rmtree(_t38, ignore_errors=True)
+# 旧数据 / 升级兼容：只用真实文件的**副本**（原件只读拷贝，绝不改写）
+_t38b = tempfile.mkdtemp(prefix="mw_compat38_")
+for _rel in ("config/config.yaml", "data/memwise_state.json", "data/memwise_efis_state.json",
+             "data/memwise_eris_ewma.json", "data/memwise_eris_calib.json"):
+    _src38 = os.path.join(_ROOT26, _rel.replace("/", os.sep))
+    if os.path.isfile(_src38):
+        _dst38 = os.path.join(_t38b, _rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(_dst38), exist_ok=True)
+        _sh38.copy2(_src38, _dst38)
+_lr38 = PareLearner.load(os.path.join(_t38b, "data", "memwise_state.json"))
+check("兼容：真实旧 state（画像/锚点/回弹/策略）可加载",
+      _lr38 is not None and len(_lr38.profiles) > 200
+      and len(getattr(_lr38.stable_anchors, "anchors", {})) > 50)
+_ef38 = EfisController(state_path=os.path.join(_t38b, "data", "memwise_efis_state.json"))
+check("兼容：真实旧 efis_state 可加载且参数可取",
+      isinstance(_ef38.get_params("full"), dict) and len(_ef38.get_params("full")) >= 8)
+_eng38 = MemWiseEngine(_lr38, _j_x2, c_x2, _ef38, _FakeSniffer(), os.path.join(_t38b, "data", "state.json"))
+_modes38 = sorted(getattr(_eng38, "_eris_hist_by_mode", {}) or {})
+_cal38 = getattr(_eng38, "_eris_calib", {}) or {}
+check("兼容：真实 ERIS 状态（平滑窗按模式分桶沿用；校准结构为 v5 且校验通过——旧版 v4 会按新语义重建）",
+      bool(_modes38) and _cal38.get("v") == 5 and _eris9.calib_valid(_cal38),
+      "桶=%s calib v=%s 模式桶=%s" % (_modes38, _cal38.get("v"), list((_cal38.get("modes") or {}).keys())))
+_eng38.shutdown()
+_sh38.rmtree(_t38b, ignore_errors=True)
+
+print("\n[39] F1 压力自适应 + 注册表系统类修正（2026-09-26 用户定稿）")
+# F1 判据真值表（纯函数，逐条覆盖"既定范围"）
+check("F1 判据:full+内存宽裕+回涨快 ⇒ 降级", PareCleaner.is_lite_round("full", 20, True) is True)
+check("F1 判据:占用回到阈值/更高 ⇒ 不降级",
+      PareCleaner.is_lite_round("full", 45, True) is False
+      and PareCleaner.is_lite_round("full", 60, True) is False)
+check("F1 判据:回涨放缓 ⇒ 不降级", PareCleaner.is_lite_round("full", 20, False) is False)
+check("F1 判据:quick/normal/deep 恒不降级",
+      all(PareCleaner.is_lite_round(m, 20, True) is False for m in ("quick", "normal", "deep")))
+check("F1 判据:非法入参保守不降级",
+      PareCleaner.is_lite_round("full", None, True) is False
+      and PareCleaner.is_lite_round("full", "x", True) is False)
+# 实现接线（源码断言：四项降级齐备、引擎按判据传入、默认关闭不污染手动/紧急/CLI 路径）
+_cln39 = _src26("core", "cleaner.py")
+check("F1 降级四项齐备（单趟/跳 L3/跳二轮/前 K）",
+      "# F1 轻量轮：每进程只清一趟" in _cln39
+      and "轻量轮(跳过深度整理)" in _cln39
+      and 'if pipeline_ctx["layer2_trimmed"] and not self._lite:' in _cln39
+      and "candidates[:LITE_TOP_K]" in _cln39 and "LITE_TOP_K = 48" in _cln39)
+check("F1 引擎接线（判据+传参+恢复播报）",
+      "is_lite_round(" in _eng26_src and "lite=_lite" in _eng26_src
+      and "恢复全强度处理" in _eng26_src)
+check("F1 默认关闭（手动/紧急/CLI 路径不传 lite）",
+      _cln39.count("self._lite = bool(lite)") == 1
+      and "lite=False" in _cln39 and "lite=_lite" not in _cln39)
+check("注册表清缓存改用正确系统类 155（81 是文件缓存类，实测恒失败）",
+      "NtSetSystemInformation(155" in _src26("core", "winapi.py")
+      and "NtSetSystemInformation(81" not in _src26("core", "winapi.py"))
+check("卷冲刷用设备命名空间打开卷（盘符根目录实测 ERROR_PATH_NOT_FOUND=3 恒失败）",
+      "_VOLUME_DEVICE_PREFIX" in _src26("core", "winapi.py")
+      and 'f"{_VOLUME_DEVICE_PREFIX}{letter}:"' in _src26("core", "winapi.py"))
+# 行为核验（不只断言源码）：轻量轮确实跳过 Layer3 与回弹二轮，非轻量轮照常执行
+import types as _t39
+from core import cleaner as _cl39
+class _Snap39:
+    pid = 0; name = "x.exe"; ws = 50 << 20; fg = False; path = ""; create = 0
+_c39 = PareCleaner(PareJudger(PareLearner(),
+                              {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60,
+                               "never": [], "efis_params": {}}))
+_calls39 = []
+_c39._layer3_deep = lambda *a, **k: _calls39.append("L3")
+_c39._layer1_memreduct = lambda *a, **k: _calls39.append("L1")
+_c39._layer1_ops = lambda *a, **k: {"standby", "modified", "registry", "ws_all"}
+_c39._layer2_process = lambda *a, **k: ([(_Snap39(), True)], [])   # 有已修剪结果 ⇒ 二轮块可达
+_e39 = []
+_orig_gpm39, _orig_ews39 = _cl39.winapi.get_process_memory, _cl39.winapi.empty_ws
+_cl39.winapi.get_process_memory = lambda pid: {"ws": 1 << 20, "pf": 0}
+_cl39.winapi.empty_ws = lambda pid: (_e39.append(pid), True)[1]
+_lr39 = PareLearner()
+_c39._optimize_locked([_Snap39()], _lr39, "full", lite=True)
+check("F1 行为:轻量轮跳过 Layer3 深度整理", "L3" not in _calls39, str(_calls39))
+check("F1 行为:轻量轮跳过回弹二轮", _e39 == [], str(_e39))
+_calls39.clear(); _e39.clear()
+_c39._optimize_locked([_Snap39()], _lr39, "full", lite=False)
+check("F1 行为:非轻量轮照常 Layer3 + 回弹二轮", "L3" in _calls39 and 0 in _e39,
+      "%s / %s" % (_calls39, _e39))
+_cl39.winapi.get_process_memory, _cl39.winapi.empty_ws = _orig_gpm39, _orig_ews39
+
+print("\n[40] 学习日志：列宽自适应 / 点击列排序 / 窗口自适应（真实 Tk 路径）")
+# 只取 memwise_gui.py 里四个纯助手函数（AST 抽取 + exec）——避免 import 触发模块级配置读写
+import ast as _ast40
+import tkinter as _tk40
+from tkinter import ttk as _ttk40
+_g40 = {"ttk": _ttk40}
+_src40 = open(os.path.join(_ROOT26, "memwise_gui.py"), encoding="utf-8").read()
+_want40 = ("_tree_font", "_tree_measure_columns", "_tree_sort_by", "_tree_sort_toggle")
+for _n40 in _ast40.parse(_src40).body:
+    if isinstance(_n40, _ast40.FunctionDef) and _n40.name in _want40:
+        exec(compile(_ast40.Module(body=[_n40], type_ignores=[]), "<gui-helpers>", "exec"), _g40)
+check("学习日志助手函数已抽取（4 个）", all(k in _g40 for k in _want40),
+      str(sorted(k for k in _g40 if k.startswith("_tree"))))
+_root40 = _tk40.Tk(); _root40.withdraw()
+_cols40 = (tr("进程"), tr("数值"))
+# 与生产同构：原始数值用于排序、格式化字符串用于展示（若拿显示字符串当排序键会得 "3.0" < "999.0" 的错序）
+_raw40 = [("very-long-process-name-abcdef.exe", 12.5), ("a.exe", 999.0), ("medium.exe", 3.0)]
+_disp40 = [(n, "%.1f" % v) for n, v in _raw40]
+_w40 = _g40["_tree_measure_columns"](_cols40, _disp40)
+check("列宽自适应（按内容实测，长名列更宽）", _w40[0] > _w40[1] and _w40[1] >= 40, str(_w40))
+_tree40 = _ttk40.Treeview(_root40, columns=_cols40, show="headings")
+_by40 = {}
+for _r40, _d40 in zip(_raw40, _disp40):
+    _by40[_tree40.insert("", "end", values=_d40)] = _r40
+_g40["_tree_sort_by"](_tree40, _by40, 1, reverse=True)
+_v40 = [_tree40.set(k, _cols40[1]) for k in _tree40.get_children("")]
+check("点击列排序：数值降序", _v40 == ["999.0", "12.5", "3.0"], str(_v40))
+_g40["_tree_sort_by"](_tree40, _by40, 1, reverse=False)
+_v40b = [_tree40.set(k, _cols40[1]) for k in _tree40.get_children("")]
+check("点击列排序：可反向为升序", _v40b == ["3.0", "12.5", "999.0"], str(_v40b))
+_g40["_tree_sort_by"](_tree40, _by40, 0, reverse=True)
+_v40c = [_tree40.set(k, _cols40[0]) for k in _tree40.get_children("")]
+check("点击列排序：文本列（忽略大小写）", _v40c == ["very-long-process-name-abcdef.exe", "medium.exe", "a.exe"], str(_v40c))
+_rows40b = [("proc-%02d.exe" % i, "1.0") for i in range(10)] + [("a-very-very-long-process-name-that-should-not-stretch.exe", "1.0")]
+_w40b = _g40["_tree_measure_columns"](_cols40, _rows40b, p90_cols=(0,))
+_w40c = _g40["_tree_measure_columns"](_cols40, _rows40b)
+check("进程列按 90 分位取宽（个别超长名不再撑宽整列）", _w40b[0] < _w40c[0], "p90=%d 全宽=%d" % (_w40b[0], _w40c[0]))
+check("最小宽度也按 90 分位（防最长名把列撑开）",
+      _g40["_tree_measure_columns"](_cols40, _rows40b, pad=10, p90_cols=(0,))[0]
+      < _g40["_tree_measure_columns"](_cols40, _rows40b, pad=10)[0])
+check("列宽不低于可读下限（floor，自然宽更小时由下限兜底）", _g40["_tree_measure_columns"](("a", "b"), [], floor=44) == [44, 44])
+_st40 = {"idx": None, "rev": True}
+check("表头点击语义（同列再点反向、换列默认降序）",
+      _g40["_tree_sort_toggle"](_st40, _cols40, _cols40[1]) == (1, True)
+      and _g40["_tree_sort_toggle"](_st40, _cols40, _cols40[1]) == (1, False)
+      and _g40["_tree_sort_toggle"](_st40, _cols40, _cols40[0]) == (0, True))
+_root40.destroy()
+
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

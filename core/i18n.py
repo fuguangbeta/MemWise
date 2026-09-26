@@ -245,6 +245,8 @@ _EN = {
     "↻ 内存回涨较快，仅上轮收割后即回涨": "↻ Memory refilling fast, already up ",
     " · 将持续收紧收割节奏直到放缓": " · will keep tightening until it slows",
     "↻ 内存回涨已放缓，试探性恢复正常收割节奏": "↻ Refill slowed; tentatively resuming normal pace",
+    "内存宽裕且回涨快，本轮进行轻量处理": "Memory comfortable and refilling fast — running a light round",
+    "恢复全强度处理": "Back to full-strength processing",
     "🕳️ ": "🕳️ ",
     " 疑似内存持续增长，建议关注": " suspected of steady memory growth — worth attention",
     "🎮 检测到游戏运行 · 启用 游戏模式": "🎮 Game detected · Game Mode enabled",
@@ -357,24 +359,17 @@ _EN = {
     "已复位": " reset",
     "探索: ": "Exploration: ",
     "从未试探，加速探索": "never probed — accelerating",
-    # ── ERIS 因子 / 图表 ──
-    "↑预测精准": "↑ Accurate forecast",
-    "↓预测偏差": "↓ Forecast drift",
-    "↑释放改善": "↑ Release improved",
-    "↓释放退步": "↓ Release worse",
-    "↑副作用低": "↑ Low side effects",
-    "↓副作用高": "↓ High side effects",
-    "↑参数稳定": "↑ Stable tuning",
-    "↓频繁调参": "↓ Tuning too often",
-    "↑覆盖广泛": "↑ Wide coverage",
-    "↓覆盖狭窄": "↓ Narrow coverage",
-    # ── ERIS v7 因子词条（四字统一，2026-09-11 用户定稿）──
-    "↑释放彻底": "↑ Thorough release",
-    "↓释放不全": "↓ Incomplete release",
-    "↑清理畅通": "↑ Cleaning unobstructed",
-    "↓清理受阻": "↓ Cleaning obstructed",
-    "↑试探高效": "↑ Probes effective",
-    "↓试探低效": "↓ Probes ineffective",
+    # ── ERIS 词条 / 图表（v9 五维：与 core/eris.py 的 DIM_WORDS 一一对应）──
+    "↑净优化量高": "↑ Net optimization high",
+    "↓净优化量低": "↓ Net optimization low",
+    "↑优化代价低": "↑ Optimization cost low",
+    "↓优化代价高": "↓ Optimization cost high",
+    "↑优化高通畅": "↑ Optimization unobstructed",
+    "↓优化受阻碍": "↓ Optimization obstructed",
+    "↑试探命中高": "↑ Probe hit rate high",
+    "↓试探命中低": "↓ Probe hit rate low",
+    "↑优化量可观": "↑ Optimization volume solid",
+    "↓优化量偏少": "↓ Optimization volume low",
     "🚀效率超常": "🚀 Exceptional efficiency",
     "⚠效率异常": "⚠ Abnormal efficiency",
     "🔥持续改善": "🔥 Improving steadily",
@@ -410,7 +405,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.5.059 启动· ": "MemWise v4.5.059 started · ",
+    "MemWise v4.6.020 启动· ": "MemWise v4.6.020 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -471,6 +466,25 @@ _EN = {
     "试探成功": "Probe OK",
     "试探失败": "Probe Fail",
     "还没有学习到任何数据，先运行一会儿优化再来看": "No learning data yet — run some optimization first",
+    "已学习: ": "Learned: ",
+    "用法: ": "Usage: ",
+    "⚠ full 模式在内存宽裕、上轮释放被快速回涨时自动轻量处理（每进程单趟、跳过深度整理），回升即恢复":
+        "⚠ In full mode, when memory is comfortable and the last release refills quickly, the round runs light "
+        "(single pass, no deep pass) and returns to full strength once usage rises",
+    "               （另：内存宽裕且回涨快时转为轻量轮处理，占用回升即恢复全强度）":
+        "               (Also: when memory is comfortable and refill is fast, it switches to a light round; "
+        "full strength returns once usage rises)",
+    "怎么看这张表：只列出反馈 ≥2 次的进程。\n"
+    "α/β＝清理成功/失败的累积证据，样本＝反馈次数，"
+    "可信度＝据此抽样的优先分（越大越倾向清它）。\n"
+    "收益比＝每单位缺页代价换回的释放量；偏差＝释放表现的异常程度，"
+    "趋势＝近期走向；泄漏＝疑似只涨不落；清理/试探成功/试探失败＝历史次数":
+        "How to read this table: only processes with ≥2 feedbacks are listed.\n"
+        "α/β = accumulated evidence of successful/failed cleans, Samples = number of feedbacks, "
+        "Confidence = sampled priority score (higher = more likely to be cleaned).\n"
+        "Yield = memory released per unit of page-fault cost; Deviation = how unusual the release was, "
+        "Trend = recent direction; Leak = suspected grow-only process; "
+        "Clean / Probe OK / Probe Fail = historical counts",
     "进程内存排行": "Process Memory Ranking",
     "进程号": "PID",
     "内存占用": "Memory",
@@ -704,7 +718,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.5.059 PARES —— 智能内存看护": "MemWise v4.5.059 PARES — Intelligent Memory Custodian",
+    "MemWise v4.6.020 PARES —— 智能内存看护": "MemWise v4.6.020 PARES — Intelligent Memory Custodian",
 }
 
 

@@ -23,6 +23,24 @@ def init_runtime():
         except Exception:
             pass
     _migrate_runtime_data()
+    _cleanup_stale_tmp()
+
+
+def _cleanup_stale_tmp():
+    """清掉数据目录里中断的原子写残留（*.tmp）——2026-09-26 实测发现
+    `data/memwise_state.json.<pid>.tmp` 0 字节残留（写盘中断）。只删**超过 10 分钟**的
+    *.tmp（活跃进程自己的临时文件不可能这么久），且只在本程序自己的数据目录内，逐个记诊断。"""
+    try:
+        import glob as _glob, time as _time
+        for f in _glob.glob(os.path.join(base, "data", "*.tmp")):
+            try:
+                if _time.time() - os.path.getmtime(f) > 600:
+                    os.remove(f)
+                    _diag_log("清理中断写入残留: %s" % os.path.basename(f))
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 if getattr(sys, "frozen", False):
     exe_dir = os.path.dirname(sys.executable)
@@ -239,7 +257,12 @@ def _log_ts():
 
 
 def _migrate_old_logs(path):
-    """首启迁移：旧 memwise_crash.log 并入统一日志（仅一次；旧 memwise.log 即日志本体，append 天然连续）"""
+    """首启迁移：旧 memwise_crash.log 并入统一日志（**幂等**；旧 memwise.log 即日志本体，append 天然连续）。
+
+    2026-09-26 实测修正：原实现依赖"改名成 .imported"防重复，但本机那条改名一直失败（文件被占用，
+    异常被吞），于是同一段崩溃文本被重复并入 26 次。现改为**以 .imported 的已有内容为进度标记**：
+    只并入新增部分，并在并入后把标记写全——即使改名持续失败也不会重复。
+    """
     try:
         p = os.path.join(_LOG_DIR, "memwise_crash.log")
         if not (os.path.exists(p) and os.path.getsize(p) > 0):
@@ -248,11 +271,25 @@ def _migrate_old_logs(path):
             data = f.read()
         if not data.strip():
             return
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"\n──── 迁移自 memwise_crash.log ────\n{data.rstrip()}\n")
-        # 完成标记：改名防下次启动重复并入（2026-08-14 审查：原无标记，每次启动重复 append）
+        m = p + ".imported"
+        done = ""
         try:
-            os.replace(p, p + ".imported")
+            if os.path.exists(m):
+                with open(m, "r", encoding="utf-8", errors="ignore") as f:
+                    done = f.read()
+        except Exception:
+            done = ""
+        # 只在确有新增内容时并入（崩溃日志被轮转/覆盖 ⇒ 长度回退视为全新内容）
+        delta = data if (not done or len(data) < len(done)) else data[len(done):]
+        if delta.strip():
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"\n──── 迁移自 memwise_crash.log ────\n{delta.rstrip()}\n")
+        # 进度标记：写全并改名（改名失败也不影响幂等——标记内容已写全）
+        try:
+            with open(m, "w", encoding="utf-8") as f:
+                f.write(data)
+            if os.path.exists(p):
+                os.replace(p, p + ".imported")
         except Exception:
             pass
     except Exception:
@@ -345,7 +382,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.5.059 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.6.020 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -578,13 +615,12 @@ class MemWiseEngine:
         # 混用一个窗会把上一模式的原始值带进新模式的中位数；分桶后切回原模式还能接上原有窗口。
         self._eris_hist_by_mode = {}     # {模式: [每维 deque]}
         self._eris_hist_mode = None      # 上一轮 ERIS 所用的模式（切换即重置"上一轮"基线）
-        self._sys_rel_by_mode = {}       # {模式: deque} 惯常系统级释放量（quick 的释放彻底维基准）
+        # （quick 的"惯常系统级释放量"基准已由 ERIS v9 自标定基线取代，旧 deque 字段随之移除）
         self._eris_prev_scores = None    # 上轮五维分（词条同向判定）
         self._eris_prev_eff = None       # 上轮效率（平稳/趋势判定）
         self._eris_trend = []            # 方向序列（含 <2 的轮次，±1/0；极性轮 99/-99 打断）
         self._cycle_pf = 0               # 本周期 PF 增量（副作用维）
         self._cycle_probe = (0, 0)       # 本周期 试探(成功, 总数)（试探维）
-        self._cycle_trim_detail = []     # 本周期每进程 (释放量, 惯常释放量)（释放彻底维）
         self._last_eris_game_mode = None
         self._load_eris_state()  # 在 daemon 首次调用 _compute_eris 前完成加载
 
@@ -647,6 +683,8 @@ class MemWiseEngine:
         self._cycle_trimmed = 0
         self._cycle_failed = 0
         self._cycle_freed_mb = 0.0       # 本周期净释放（MB；quick 的系统级释放由此扣掉进程部分）
+        self._cycle_refill_mb = 0.0      # 上一 gap 的进程工作集回涨峰值（v9「净优化量」维，ERIS 读取）
+        self._gap_refill_mb = 0.0        # 当前 gap 的回涨峰值累加（收割时快照到上一行）
         self._last_harvest_ws = None
         self._last_harvest_freed = 0
         # 回弹状态机跨周期字段一并重置（2026-08-14 审查：仅重置 harvest 两字段时，
@@ -922,6 +960,13 @@ class MemWiseEngine:
                         if snap_skip <= 0:
                             snaps = self._snap()
                             snap_skip = 6
+                            # 回涨测量（v9「净优化量」维）：gap 期间进程工作集相对上轮收割后的
+                            # 最大回升量。取 max 而非末值——gap 内 gap-fill 持续清理，末值会被低估
+                            if self._last_harvest_ws is not None:
+                                _ws_ref = sum(getattr(s, 'ws', 0) for s in snaps)
+                                _rf = max(0, _ws_ref - self._last_harvest_ws)
+                                if _rf > getattr(self, "_gap_refill_mb", 0.0):
+                                    self._gap_refill_mb = float(_rf)
                             # 回弹驱动（C 方案，2026-08-14）：full 模式回填率 >60% → gap 立即收紧，
                             # 提前进入收割（回弹越猛压得越密；net_freed≤32MB 的微小轮跳过判断）
                             if mode == "full" and self._last_harvest_freed > (32 << 20) \
@@ -1038,9 +1083,18 @@ class MemWiseEngine:
                 # harvest 独立 1 线程池执行：与 trim 池彻底隔离——
                 # 原提交到 _trim_executor 池内嵌套（harvest 占线程 + 内部 _bounded_submit 再向同池提交）：
                 # 1 核机器 max_workers=1 死锁致 harvest 永久超时；多核时排队时间计入 30s 超时误判 partial
+                # F1 压力自适应（2026-09-26 用户定稿）：内存宽裕 + 上轮回涨快 ⇒ full 模式轻量轮。
+                # 占用回升到阈值或回涨放缓立即恢复全强度；手动优化与紧急 full 不走此路径（各自全强度）。
+                _lite = self.cleaner.is_lite_round(mode, getattr(self.judger, "_last_mem_pct", 100),
+                                                   self._refill_hot)
+                if _lite != getattr(self, "_lite_cycle", False):
+                    self._cycle_log_groups.append([
+                        "内存宽裕且回涨快，本轮进行轻量处理"
+                        if _lite else "恢复全强度处理"])
+                    self._lite_cycle = _lite
                 harvest_future = self._harvest_executor.submit(
                     self.cleaner.optimize, snaps, self.learner, mode,
-                    operations=ops, aggressiveness=agg)
+                    operations=ops, aggressiveness=agg, lite=_lite)
                 result = None
                 try:
                     result = harvest_future.result(timeout=30)
@@ -1064,6 +1118,10 @@ class MemWiseEngine:
                 agg_max = max(agg_max, agg)  # 捕获全量模式强制的 agg 峰值
                 # 回弹驱动基线（C 方案）：记录 harvest 后总 WS 与释放量，供下一周期 gap 回填率判断
                 self._last_harvest_freed = max(result.get("net_freed", 0), 0)
+                # 快照上一 gap 的回涨峰值供本轮 ERIS 读取，再清零开始新 gap（v9；
+                # 2026-09-26 修正：原先直接清零，导致「净优化量」维恒读到 0、恒判满分）
+                self._cycle_refill_mb = self._gap_refill_mb
+                self._gap_refill_mb = 0.0
                 try:
                     _hs = self._snap()
                     self._last_harvest_ws = sum(getattr(s, 'ws', 0) for s in _hs)
@@ -1077,7 +1135,7 @@ class MemWiseEngine:
                 probe_all.extend(result.get("probe", []))
                 l2_results = l2_all
                 probe_results = probe_all
-                # ERIS v7 释放彻底维：本周期每进程 (实际释放, 该进程惯常释放量)
+                # 进程清理释放量（MB）：ERIS「优化代价」维的分子
                 try:
                     _det = []
                     for _t in (l2_results or []):
@@ -1087,9 +1145,8 @@ class MemWiseEngine:
                             if _g > 0:
                                 _det.append((float(_t[2]), _g))
                     self._cycle_proc_mb = sum(f for f, _g in _det) / (1 << 20)   # 进程清理释放量（MB）
-                    self._cycle_trim_detail = _det
                 except Exception:
-                    self._cycle_trim_detail = []
+                    pass
                 s = self.cleaner.summary()
                 # 计算本周期 delta
                 cur_trim = s['ws_trim']
@@ -1146,10 +1203,33 @@ class MemWiseEngine:
                         _key = ("target_usage", "pid_kp", "pid_kd", "learning_rate", "anchor_margin",
                                 "cpu_gate", "io_gate", "deepen_theta", "cooloff_base")
                         _ps = " ".join("%s=%s" % (k, _ep.get(k)) for k in _key if k in _ep)
+                        try:
+                            from core import eris as _E9
+                            _m9 = CFG.get("clean_mode", "normal")
+                            if _E9.calibrated(self._eris_calib, _m9):
+                                _eb = "已标定 K=%.0f" % _E9.k_value(self._eris_calib, _m9)
+                                if _E9.recalib_count(self._eris_calib, _m9):
+                                    _eb += " 重标%d" % _E9.recalib_count(self._eris_calib, _m9)
+                            else:
+                                _eb = "标定中 %d/%d" % (min(_E9.bucket_n(self._eris_calib, _m9),
+                                                           _E9.CALIB_N), _E9.CALIB_N)
+                        except Exception:
+                            _eb = "?"
                         _log_write("诊断", "学习状态: 画像 %d · 锚点 %d · 回退 %d · 稳态抑制计数 %d · "
-                                           "策略权重[%s] · 当前参数 %s · 模式 %s"
+                                           "策略权重[%s] · 当前参数 %s · 模式 %s · 效率基线 %s"
                                    % (_prof, _anch, _back, _sup, " ".join(_pw), _ps,
-                                      CFG.get("clean_mode", "normal")))
+                                      CFG.get("clean_mode", "normal"), _eb))
+                        # 试探结果构成（2026-09-26 实测缺口：日志侧成功率与画像侧口径不同，
+                        # 分不清"缺页超预算"与"未完成/超时"）⇒ 分桶累计，便于据此定策
+                        try:
+                            _st = getattr(self.cleaner, "stats", {}) or {}
+                            _pt = int(_st.get("probe", 0) or 0)
+                            _pf = int(_st.get("probe_pf_fail", 0) or 0)
+                            _pi = int(_st.get("probe_incomplete", 0) or 0)
+                            _log_write("诊断", "试探统计: 累计 %d · 合格 %d · 缺页超预算 %d · 未完成/超时 %d"
+                                       % (_pt, max(0, _pt - _pf - _pi), _pf, _pi))
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     self.judger.purge_expired()
@@ -1190,14 +1270,6 @@ class MemWiseEngine:
                 self._last_l3_ran = l3_ran_cur
                 self._last_l3_extra = l3_extra_cur
                 if not harvest_partial:
-                    # 场景检测（game/browser/development/general）先于调参诊断。
-                    # 游戏期冻结（2026-08-30）：alt-tab 全屏切换会在游戏期反复触发 7:3
-                    # 场景混合漂移参数组，游戏期跳过；退出后首次重检测自然恢复
-                    if not game_seen:
-                        try:
-                            self.efis.detect_scene(snaps, winapi.is_foreground_fullscreen(), m['pct'])
-                        except Exception as e:
-                            _log_write("异常", f"EFIS 场景检测异常: {e!r}")
                     stats = {
                         'mem_pct': m['pct'],
                         'mode': mode,
@@ -1206,7 +1278,6 @@ class MemWiseEngine:
                         'failed_cnt': self._cycle_failed,
                         'total_attempts': self._cycle_trimmed + self._cycle_failed,
                         'cycle_freed': cycle_freed,
-                        'fore_fullscreen': winapi.is_foreground_fullscreen(),
                         # ── EFIS 诊断输入全量补齐（11 字段，调参分支获得真实数据）──
                         'theta_mean': _prof_theta_mean(self.learner),
                         'theta_above_06': _prof_theta_above(self.learner),
@@ -1388,7 +1459,7 @@ class MemWiseEngine:
         # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
         from core import eris as _E
-        _k = _E.k_value(self._eris_calib, _mode)   # 滚动 K（本模式总分 p90 估计，日志可见）
+        _k = _E.k_value(self._eris_calib, _mode)   # 冻结基线 K（自标定期总分 p92，日志可见）
         with self._chart_lock:
             self._chart_data.append(chart_accum)
             self._chart_cycle_meta.append((self._chart_bar_seq, self._cycle_trimmed,
@@ -1434,70 +1505,31 @@ class MemWiseEngine:
             self._eris_hist_by_mode[mode] = h
         return h
 
-    def _customary_sys(self, mode, cur_mb, update=True):
-        """该模式"惯常系统级释放量"的滚动中位（quick 的释放彻底维基准）。
-
-        只记录**有释放**的轮次（安静轮的 0 会把中位拖到 0，让"释放彻底"失真为恒定满分）；
-        样本不足 5 个时返回 None（该维记无数据，由有效维规则排除）。"""
-        d = self._sys_rel_by_mode.get(mode)
-        if d is None:
-            from collections import deque as _dq
-            d = _dq(maxlen=30)
-            self._sys_rel_by_mode[mode] = d
-        if update and cur_mb > 0.1:
-            d.append(float(cur_mb))
-        v = sorted(d)
-        return v[len(v) // 2] if len(v) >= 5 else None
-
     def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5,
                       probe_ok=0, probe_total=0, update_state=True):
         """返回 {"total": 效率%, "factors": [...]}（接口与 v6 一致，展示层无需改动）。
         词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
-        |Δ效率| < 2 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；不设防振荡硬规则。"""
+        |Δ效率| < 1 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；不设防振荡硬规则。"""
         from core import eris as E
         # 实际生效模式（优先取本轮 optimize 的真实模式：紧急轮等会走 full，必须让分桶学真值）
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
         if not data:
             return {"total": 0.0, "factors": ["冷启动"]}
-        # ── ① 预测精准：1 − Kalman 预测的中位相对误差 ──
-        errs = []
-        for p in list(self.learner.profiles.values()):
-            try:
-                kf, _ = p.kalman.predict()
-                if kf > 0 and getattr(p, "gain_ewma", 0) > 0:
-                    errs.append(abs(kf - p.gain_ewma) / p.gain_ewma)
-            except Exception:
-                pass
-        raw1 = 1.0 - (sorted(errs)[len(errs) // 2] if errs else 0.5)
-        # ── ② 释放彻底：本轮每进程 实际释放 ÷ 该进程惯常释放量 的中位 ──
-        ratios = [f / g for f, g in (getattr(self, "_cycle_trim_detail", []) or []) if f and g]
-        raw2 = sorted(ratios)[len(ratios) // 2] if ratios else 0.0
-        # ── ③ 清理畅通：整理成功/失败比 ──
-        raw3 = (trimmed_cnt + 1.0) / max(failed_cnt + 1.0, 1.0)
-        # ── ④ 副作用：释放MB ÷ PF 增量（PF=0 记无副作用，映射后钳到上限）──
+        # ── 五维原始量（v9：全部有界比值、越大越好；无数据一律 None ⇒ 记中性 50）──
+        _proc_mb = float(getattr(self, "_cycle_proc_mb", 0.0) or 0.0)        # 本周期**进程清理**释放量
+        _refill_mb = float(getattr(self, "_cycle_refill_mb", 0.0) or 0.0)    # gap 期间进程工作集回涨峰值
+        # ① 净优化量 = 进程释放 ÷（进程释放 + 回涨）：留不住 ⇒ 这轮释放是白清
+        raw1 = (_proc_mb / (_proc_mb + _refill_mb)) if (_proc_mb > 0 and _refill_mb >= 0) else None
+        # ② 优化代价 = 进程释放 MB ÷ 缺页代价（每单位代价换回多少）
         _pf = float(getattr(self, "_cycle_pf", 0) or 0)
-        pf_ok = _pf > 0
-        # 「无数据」一律中性（2026-09-11 日志诊断修复）：旧实现用占位极值（PF=0→1e6、无试探→0.5）
-        # 会被映射到分数上限 140 ⇒ 制造"副作用低/试探高效"假象并把总分顶到 145%（日志实测）
-        _proc_mb = float(getattr(self, "_cycle_proc_mb", 0.0) or 0.0)   # 本周期**进程清理**释放量
-        raw4 = (_proc_mb / _pf) if (pf_ok and _proc_mb > 0) else None       # 只与进程清理配对
-        raw5 = (float(probe_ok) / float(probe_total)) if probe_total else None
-        if not errs:
-            raw1 = None
-        if not ratios:
-            raw2 = None
-        if trimmed_cnt <= 0 and failed_cnt <= 0:
-            raw3 = None            # 本轮无任何进程清理 ⇒ 成功率无意义（旧实现 1:1 ⇒ 14 分，长期压低效率）
-        # ── quick 专项（2026-09-11 用户定稿方案①）：该模式**不做进程清理**，四项进程口径的原始值
-        #    全部无意义（实测：dim0 单独决定整机效率 60→108、96% 轮次判"相对平稳"= 几乎不动）。
-        #    改为**系统级**口径：释放彻底 = 本轮系统级释放 ÷ 该模式惯常系统级释放。
-        #    （"系统级副作用"= 释放 ÷ 缺页代价 经实测否决：快照 PF 字段 266 进程仅 1 个非零、
-        #      系统级 PF 又被无关活动淹没 ⇒ 测不出清理代价；详见记忆 §B6）──
-        if _mode == "quick":
-            _sys_mb = max(0.0, float(getattr(self, "_cycle_freed_mb", 0.0) or 0.0) - _proc_mb)
-            _cour = self._customary_sys("quick", _sys_mb, update=update_state)
-            raw2 = (_sys_mb / _cour) if (_cour and _sys_mb > 0.0) else None
-            raw1 = None            # 预测精准（进程清理的预测能力）在 quick 无作用面 ⇒ 不参与
+        raw2 = (_proc_mb / _pf) if (_pf > 0 and _proc_mb > 0) else None
+        # ③ 优化通畅 = 成功 ÷（成功 + 失败）：无任何尝试 ⇒ 无数据
+        _att = int(trimmed_cnt) + int(failed_cnt)
+        raw3 = (float(trimmed_cnt) / _att) if _att > 0 else None
+        # ④ 试探命中 = 试探合格 ÷ 试探总数
+        raw4 = (float(probe_ok) / float(probe_total)) if probe_total else None
+        # ⑤ 优化量 = 本轮释放 MB（与日志「本轮释放」同口径；基线换算在 ERIS 内按冻结基线完成）
+        raw5 = float(getattr(self, "_cycle_freed_mb", 0.0) or 0.0) or None
         raws = [raw1, raw2, raw3, raw4, raw5]
         _nodata = [r is None for r in raws]
         # 跟踪器只学"该模式参与合成的维"（其余维不喂，避免用不到的数据把分位带偏）；
@@ -1510,7 +1542,7 @@ class MemWiseEngine:
         with self._eris_lock:
             # 模式切换 ⇒ 先重置"上一轮"基线（分数/效率/趋势序列都是按模式尺度比较的，
             # 跨模式比较会冒出虚假的升降/持续改善）：切换后的**第一个周期**回归"分析中"，
-            # 下一轮起用新模式自己的数据比较。平滑窗与滚动分位都按模式分桶，不受切换影响。
+            # 下一轮起用新模式自己的数据比较。平滑窗与冻结基线都按模式分桶，不受切换影响。
             if self._eris_hist_mode is not None and self._eris_hist_mode != _mode:
                 self._eris_prev_scores = None
                 self._eris_prev_eff = None
@@ -1524,11 +1556,8 @@ class MemWiseEngine:
                                                               mode=_mode, game=_game)
             _valid = E.valid_dims(_mode, _nodata)
             _T = E.total_of(scores, valid=_valid, mode=_mode)          # 有效维均分折算值（0~700）
-            _T = E.warmup_total(_T, E.bucket_n(self._eris_calib, _mode))   # 模式级预热收缩（防尖峰）
-            _k = E.k_value(self._eris_calib, _mode)                    # 滚动 K（本模式总分 p90 估计）
+            _k = E.k_value(self._eris_calib, _mode)                    # 冻结基线 K（自标定期总分 p95）
             eff = (_T / _k * 100.0) if _k > 0 else 0.0
-            if update_state:
-                E.k_update(self._eris_calib, _mode, _T, update=True, game=_game)
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             trend_val = 0
             if prev_eff is None or len(data) <= 3:
@@ -1548,7 +1577,7 @@ class MemWiseEngine:
             else:
                 delta = eff - prev_eff
                 trend_val = 1 if delta > 0 else (-1 if delta < 0 else 0)
-                if abs(delta) < 2.0:
+                if abs(delta) < 1.0:
                     factors = ["相对平稳"]
                 else:
                     up = delta > 0

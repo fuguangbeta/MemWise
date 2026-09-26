@@ -15,6 +15,20 @@ GAME_PROCESSES = set()
 # 深度模式系统级全清的使用率门控（2026-08-14 梯度修复）：中高压（≥33%）执行深度清扫，
 # 低压不打扰（full 无条件——极限模式随时全力，梯度差异）
 DEEP_WSALL_PCT_GATE = 33
+# Layer3「回涨再清」的收益闸（2026-09-26 实测定稿）：内存充裕时要求回涨量 ≥ 下限才算候选，
+# 占用达到阈值即不设下限（高压/紧急/深度需求下与旧版逐字一致）。
+# 依据：低压力机器实测两周——占用恒 20%、每轮清 246 进程、平均每进程只释放 4.4MB、
+# 回涨量是上轮释放的 131~393%（清完即长回），故小额反复清理只有开销没有收益。
+L3_RETRIM_GROWTH_FLOOR = 8 << 20   # 8 MB
+L3_RETRIM_PRESSURE_PCT = 45        # 内存占用 ≥45% 时不设下限（低于紧急阈值，与"高压豁免"同口径）
+# F1 压力自适应（2026-09-26 用户定稿实施）：full 模式在"内存宽裕（< L3_RETRIM_PRESSURE_PCT）
+# + 上轮释放被快速吃回（回涨 > 上轮释放 60%，用引擎现成的回涨状态机）"时降级为轻量轮：
+# 每进程只清一趟、跳过 Layer3 深度整理与回弹二轮、候选按收益分排序只取前 K 项。
+# 依据（本机实测）：释放量高度集中——367 个画像里前 10%（18 个进程）占 85.2%、
+# 前 25%（46 个）占 96.7%；故取前 K 项丢约 3% 字节而省下约 3/4 的逐进程开销（中位单次释放
+# 仅 3.31MB，而 full 正常每进程一轮清 4 趟）。占用回到阈值或回涨放缓即自动恢复全强度；
+# 手动优化 / 紧急 full / quick·normal·deep 一律不降级（各自梯度已表达积极程度）。
+LITE_TOP_K = 48            # 轻量轮候选上限（实测前 25%≈46 个进程占 96.7% 释放量）
 
 
 
@@ -54,6 +68,24 @@ class PareCleaner:
         msgs = self._info_msgs[:]
         self._info_msgs.clear()
         return msgs
+
+    def _op_fail_note(self, op):
+        """系统操作无效时留一次痕（2026-09-26 实测）：注册表清缓存调用在本机返回
+        STATUS 0xC0000004（信息长度不匹配，两种标准形式均失败），卷冲刷两周计数全 0 ⇒
+        勾选项看起来在执行、实际零效果。每个操作每次运行只记一次，走诊断通道，
+        让"设置里的开关是否真的有效"可查（不删通道：其他 Windows 版本可能支持）。"""
+        try:
+            done = getattr(self, "_op_fail_noted", None)
+            if done is None:
+                done = set()
+                self._op_fail_noted = done
+            if op in done:
+                return
+            done.add(op)
+            from core.engine import _diag_log
+            _diag_log("系统操作无效: %s（本机调用未成功，效用为 0；可核对设置中该开关）" % op)
+        except Exception:
+            pass
 
     def _stats_inc(self, key, amount=1):
         """线程安全统计累加。守护线程与手动轻量清理可能并发写 stats，
@@ -208,10 +240,16 @@ class PareCleaner:
                 self._stats_inc("standby")
             if not game_mode and "standby_low" in use and _capture(winapi.purge_low_priority_standby):
                 self._stats_inc("standby")
-            if not game_mode and "volume" in use and _capture(winapi.flush_volume_cache):
-                self._stats_inc("volume")
-            if "registry" in use and _capture(winapi.clear_registry_cache):
-                self._stats_inc("registry")
+            if not game_mode and "volume" in use:
+                if _capture(winapi.flush_volume_cache):
+                    self._stats_inc("volume")
+                else:
+                    self._op_fail_note("volume")
+            if "registry" in use:
+                if _capture(winapi.clear_registry_cache):
+                    self._stats_inc("registry")
+                else:
+                    self._op_fail_note("registry")
             # 清自身工作集（~0.2s，释放 MemWise 自身占用的几十 MB；高频路径可传 clean_self=False 关闭）
             if clean_self:
                 try: winapi.empty_ws(os.getpid())
@@ -290,7 +328,10 @@ class PareCleaner:
 
         deepen = self.judger.cfg.get("efis_params", {}).get("deepen_theta", 0.6)
         theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(snap, 'fg', False))
-        if getattr(self.judger, "_mode_guard", "normal") == "full":
+        if getattr(self, "_lite", False) and getattr(self.judger, "_mode_guard", "normal") == "full":
+            # F1 轻量轮：每进程只清一趟（正常 full 为 4 趟——同一进程一轮反复清是 churn 主源）
+            passes = 1; total_wait = 0.3
+        elif getattr(self.judger, "_mode_guard", "normal") == "full":
             # full 模式：全档多轮深清（极限=每进程清到极限；轮间 3% 截断兜底防白等）
             passes = max_p; total_wait = 1.0 * (max_p / 4.0)
         elif ws_before > 200 << 20 or theta > deepen:
@@ -391,7 +432,9 @@ class PareCleaner:
             return False, freed, pf_delta, "PF超标"
 
     def _efis_lr(self):
-        """从 judger.cfg 读取 EFIS 调好的 learning_rate（learner 侧暂未启用，待专项实验）"""
+        """从 judger.cfg 读取 EFIS 调好的 learning_rate，供 learner 的收益/成本 EWMA 使用
+        （本文件 4 处调用：record_probe_result ×2 / record_clean_result ×2；
+        2026-09-26 订正：旧注释写"learner 侧暂未启用"，与实际调用点不符）"""
         efis = self.judger.cfg.get("efis_params", {})
         return efis.get("learning_rate", None)
 
@@ -677,8 +720,14 @@ class PareCleaner:
                     ok, freed = False, 0
                     with self._lock:
                         self.stats["skipped"] += 1
+                        self.stats["probe_incomplete"] = self.stats.get("probe_incomplete", 0) + 1
                 else:
                     ok, freed, _pf = r
+                    if not ok:
+                        # 试探"失败"的构成要分得清（2026-09-26 实测：日志侧成功率 27% 而画像侧 90%，
+                        # 两者口径不同 ⇒ 分别计数，供诊断行区分"缺页超预算"与"未完成/超时"）
+                        with self._lock:
+                            self.stats["probe_pf_fail"] = self.stats.get("probe_pf_fail", 0) + 1
                 probe_results.append((s, ok, freed))
 
         # ── 预判式清理：对快速增长中的进程增加排序优先级 ──
@@ -726,6 +775,11 @@ class PareCleaner:
                 # 记录创建时间（2026-09-11 审查 F12）：重清前用它做身份复检，防 PID 复用误清
                 self._fast_track[s.pid] = getattr(s, "create", None)
         candidates.sort(key=lambda s: -self._composite_score_v2(s, learner) - getattr(s, '_growth_bonus', 0))
+        # F1 轻量轮：按收益分排序后只取前 K 项（实测前 25%≈46 个进程占 96.7% 释放量，
+        # 丢掉约 3% 字节而省下约 3/4 逐进程开销）；被截掉的项计入拦截原因，日志可见
+        if getattr(self, "_lite", False) and len(candidates) > LITE_TOP_K:
+            self._cycle_reasons["轻量轮候选上限"] = len(candidates) - LITE_TOP_K
+            candidates = candidates[:LITE_TOP_K]
         results = []
         if candidates:
             fn = functools.partial(self._trim_process, learner=learner)
@@ -763,6 +817,9 @@ class PareCleaner:
             return
         
         mem_before_layer3 = winapi.get_memory_status()
+        # 收益闸下限：内存充裕时用常量下限，占用达到阈值（高压/紧急/深度需求）时为 0 ⇒ 行为与旧版一致
+        _mem_pct = int(getattr(self.judger, "_last_mem_pct", 50) or 50)
+        _l3_growth_floor = 0 if _mem_pct >= L3_RETRIM_PRESSURE_PCT else L3_RETRIM_GROWTH_FLOOR
         self._stats_inc("layer3_ran")
         # 逐操作测量释放量（与 Layer1 同口径）：阶段 C 系统操作的释放量此前只进 layer3_extra，
         # 图表/统计栏的 freed_bytes 一直缺失这部分（每轮可能漏几百 MB）
@@ -859,9 +916,18 @@ class PareCleaner:
             # full 跳过——极限模式与 can_trim 同口径，量化拖累 4.9%）
             if getattr(self.judger, "_mode_guard", "normal") != "full" and self.judger._io_active(s.pid):
                 continue
+            # 收益闸（2026-09-26 实测数据）：回涨再清此前只看"WS ≥ 清后基线×2"，不看回涨的绝对量。
+            # 在低压力机器上（实测两周：占用恒 20%、每轮清 246 进程、平均只释放 4.4MB、
+            # 回涨 131~393%），毫厘之利的进程被"清完长回→再清"反复折腾，代价是持续的 CPU/IO/缺页。
+            # 故：内存充裕时要求回涨量达到下限才算候选；内存吃紧（≥ L3_RETRIM_PRESSURE_PCT）时
+            # 下限为 0，行为与旧版逐字一致。被拦下的计入拦截原因，日志可见。
             bl = self.judger._post_clean_ws.get(name_lower, 0)
             if bl > 0 and s.ws >= bl * 2.0:
-                d_candidates.append(s)
+                if (s.ws - bl) >= _l3_growth_floor:
+                    d_candidates.append(s)
+                else:
+                    self._cycle_reasons["回涨不足(收益闸)"] = \
+                        self._cycle_reasons.get("回涨不足(收益闸)", 0) + 1
             elif bl == 0:
                 theta = learner.thompson_score(name_lower, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
                 # θ 门槛模式化（与 Layer2 价值底线同构）：deep 0.12 / full 0.06 / 常规 0.5
@@ -878,9 +944,22 @@ class PareCleaner:
                                                per_task_timeout=8):
                 pass  # 结果无需收集（与旧 as_completed 语义一致：只执行不统计）
 
+    # ── F1 压力自适应 ──
+
+    @staticmethod
+    def is_lite_round(mode, mem_pct, refill_fast):
+        """F1 轻量轮判据（纯函数，供引擎调用与回归直测）：仅 full 模式 + 内存宽裕 + 上轮回涨快。
+        占用 ≥ L3_RETRIM_PRESSURE_PCT 或回涨放缓即返回 False（恢复全强度）；quick/normal/deep
+        恒 False（各自的低压梯度已表达积极程度）；非法入参按"不降级"处理（保守优先）。"""
+        try:
+            return (mode == "full" and float(mem_pct) < L3_RETRIM_PRESSURE_PCT
+                    and bool(refill_fast))
+        except (TypeError, ValueError):
+            return False
+
     # ── 统一入口 ──
 
-    def optimize(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None, allow_layer3=True):
+    def optimize(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None, allow_layer3=True, lite=False):
         """
         统一优化入口 —— 四模式行为矩阵与参数契约（2026-09-11 审查 F40 重写为与实现一致）
 
@@ -889,21 +968,26 @@ class PareCleaner:
             normal = 系统级（按勾选映射，无系统级全清）+ 进程清理 + 深度聚合（agg ≥ EFIS 门控）
             deep   = 同上 + 系统级全清 WS（使用率 ≥ DEEP_WSALL_PCT_GATE 时）+ 深度聚合恒触发
             full   = 同上 + 无条件全清 WS + agg 强制 ≥0.8 + 进程回弹二轮
+                     （内存宽裕 + 上轮回涨快时自动降级为轻量轮：单趟 + 跳过深度整理 + 候选前 K，
+                      见 LITE_TOP_K 与 is_lite_round；占用回升即恢复全强度）
 
         operations: 用户清理操作集合（clean_operations 白名单键）
             None = 内部全量调用（保留融合快路径，供内部/测试使用）
             []   = 用户全部取消勾选 ⇒ 不执行任何系统操作、不做进程清理（勾选即授权）
         aggressiveness: 预计算的 PID 攻性（daemon 传入避免 PID 双重更新）
         allow_layer3: 高频路径（gap-fill）传 False —— 深度操作只在 harvest 执行
+        lite: F1 轻量轮（由引擎按 模式/占用/回涨 判定后传入；手动与紧急路径恒 False）
         注: standby 开关同时覆盖低优先与全量两级待机页回收（与 _layer1_ops 映射同口径）
         """
         # 整轮互斥（RLock 可重入）：手动优化（_opt_worker 持锁期间设 _manual_run）与守护周期
         # 串行执行——守护的 optimize 等待手动完成，杜绝 _manual_run 被守护轮误读/双份 trim 叠加
         with self._exec_lock:
-            return self._optimize_locked(snaps, learner, mode, operations, score_fn, aggressiveness, allow_layer3)
+            return self._optimize_locked(snaps, learner, mode, operations, score_fn, aggressiveness, allow_layer3, lite)
 
-    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None, allow_layer3=True):
+    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, score_fn=None, aggressiveness=None, allow_layer3=True, lite=False):
         """optimize 加锁后的实际主体（保持原逻辑，仅被 optimize 壳调用）"""
+        # F1 轻量轮（每轮显式赋值，不做残留：手动/紧急/gap-fill 路径默认 False）
+        self._lite = bool(lite)
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
         self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
         # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式（**含 quick**）——
@@ -1003,11 +1087,15 @@ class PareCleaner:
             self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
                                    ops=l1_ops)
             pipeline_ctx["layer1_done"] = True
-            self._layer3_deep(snaps, learner, ops_filter)
+            if self._lite:
+                # F1 轻量轮：跳过 Layer3 深度整理（实测 churn 主源之一），原因计入日志
+                self._cycle_reasons["轻量轮(跳过深度整理)"] = 1
+            else:
+                self._layer3_deep(snaps, learner, ops_filter)
             # 回弹二轮：对已修剪进程追加 WS 清空（与 Layer3 阶段 D 同款硬守卫——
             # 游戏 PID 树/系统核心/黑名单/自身/前台(低压力) 一律跳过：防御纵深，
             # 不依赖 Layer2 过滤的时序正确性，防未来逻辑变化致保护界限被破解）
-            if pipeline_ctx["layer2_trimmed"]:
+            if pipeline_ctx["layer2_trimmed"] and not self._lite:
                 never = self.judger.cfg.get("never", []) or []
                 game_pids = getattr(self.judger, '_game_pid_set', set()) if self.game_mode else set()
                 _agg = agg  # 局部 agg（daemon 传参模式下 judger.aggressiveness 是上一轮旧值）

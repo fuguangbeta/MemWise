@@ -27,8 +27,10 @@ PARAMS = {
 WINDOW = 5
 EVAL_INTERVAL = 5
 
-# ── 模式×场景参数组（2026-08-16 用户定稿）：每个清理模式拥有独立参数组，
-#    与场景维度叠加 = 4 模式 × 4 场景 = 16 组（懒创建），模式切换互不污染 ──
+# ── 模式参数组（2026-09-26 用户定稿：删除场景维度）：每个清理模式一个参数组（懒创建），
+#    模式切换互不污染。原有"模式×场景 16 组"那一层只切参数、不切清理深度（深度由模式本身
+#    与用户设置决定），实测本机 16 组里 development 从未出现、还留有旧版场景名遗留的孤儿组，
+#    收益小于复杂度，故整体移除；状态升级时每个模式保留当时生效的场景组，行为零跳变 ──
 # deep/full 科学激进初始值（依据：四模式理论压缩实验——中压 45% 场景 deep 稳态
 # 29-30%、full 22%，target 须低于稳态才持续施压；full 物理下限≈22%，35 为范围下限；
 # 激进模式冷却更短、对新观测更敏感、反馈适应更快；其余无消费方逻辑/实验依据的
@@ -63,24 +65,20 @@ class EfisController:
 
     def __init__(self, state_path=None):
         self.state_path = state_path
-        # 模式×场景参数组（懒创建）：mode_params[mode][scene] = {"params": {...}, "symptoms": {...}}
-        # 每个清理模式独立演进，场景维度叠加（16 组），切换模式零污染（2026-08-16 用户定稿）
+        # 模式参数组（懒创建）：mode_params[mode] = {"params": {...}, "symptoms": {...}}
+        # 每个清理模式独立演进，切换模式零污染（2026-08-16 定稿；2026-09-26 删除场景维度）
         self.mode_params = {}
         self.current_mode = "normal"
         self._window = deque(maxlen=WINDOW)
         self._cycle = 0
         self._adjust_log = []
-        self.current_scene = "general"
-        self._last_scene = None
-        self._scene_stable = 0
         self.load()
 
-    def _group(self, mode=None, scene=None):
-        """取 (mode, scene) 参数组，懒创建（冷启动 = PARAMS 默认 + 模式激进初始值）。
-        mode=None 回退当前模式（非"normal"——否则场景混合/调参会落到 normal 组，2026-08-16 修复）"""
+    def _group(self, mode=None):
+        """取模式参数组，懒创建（冷启动 = PARAMS 默认 + 模式激进初始值）。
+        mode=None 回退当前模式（非"normal"——否则调参会落到 normal 组，2026-08-16 修复）"""
         mode = mode if mode in MODE_TUNE_WHITELIST else self.current_mode
-        scene = scene or self.current_scene
-        g = self.mode_params.setdefault(mode, {}).setdefault(scene, {})
+        g = self.mode_params.setdefault(mode, {})
         if "params" not in g:
             base = {k: v["default"] for k, v in PARAMS.items()}
             base.update(MODE_DEFAULTS.get(mode, {}))
@@ -88,9 +86,27 @@ class EfisController:
             g["symptoms"] = {}
         return g
 
+    @staticmethod
+    def _merge_group(target, src):
+        """把载入的组数据并入目标组：参数按 PARAMS 边界钳制、症状只留非零数值。
+        载入路径专用（v3/v4/v5 三条分支共用，避免三处重复钳制逻辑）；非法数值跳过该键
+        （旧实现直接抛错会被外层 except 捕获而重置全部参数组）"""
+        params = src.get("params", {})
+        if isinstance(params, dict):
+            for k, v in params.items():
+                if k not in PARAMS:
+                    continue
+                try:
+                    target["params"][k] = max(PARAMS[k]["min"], min(PARAMS[k]["max"], float(v)))
+                except (TypeError, ValueError):
+                    continue
+        sym = src.get("symptoms", {})
+        if isinstance(sym, dict):
+            target["symptoms"] = {k: v for k, v in sym.items() if isinstance(v, (int, float)) and v != 0}
+
     @property
     def params(self):
-        """当前生效参数（当前模式×当前场景组；property 兼容既有消费方）"""
+        """当前生效参数（当前模式组；property 兼容既有消费方）"""
         return self._group()["params"]
 
     @property
@@ -106,11 +122,9 @@ class EfisController:
             self.current_mode = mode
             self._window.clear()
             self._cycle = 0
-            self._last_scene = None
-            self._scene_stable = 0
 
     def get_params(self, mode=None):
-        """返回指定（或当前）模式当前场景的参数快照（浅拷贝，防外部修改污染组）"""
+        """返回指定（或当前）模式的参数快照（浅拷贝，防外部修改污染组）"""
         return dict(self._group(mode)["params"])
 
     def _efis_state_path(self):
@@ -132,67 +146,59 @@ class EfisController:
             efis = data.get("efis", {})
             version = efis.get("version", 3)
             if version >= 4:
-                mp = efis.get("mode_params", {})
-                for mode, scenes in mp.items():
-                    if mode not in MODE_TUNE_WHITELIST or not isinstance(scenes, dict):
-                        continue
-                    for scene, g in scenes.items():
+                if version >= 5:
+                    # v5：每模式一组（扁平）——mode_params[mode] = {"params":…, "symptoms":…}
+                    for mode, g in efis.get("mode_params", {}).items():
+                        if mode not in MODE_TUNE_WHITELIST or not isinstance(g, dict):
+                            continue
+                        if not isinstance(g.get("params"), dict):
+                            continue
+                        self._merge_group(self._group(mode), g)
+                else:
+                    # v4 → v5 迁移（2026-09-26 删除场景维度）：每个模式保留"当前场景"那一组
+                    # ——即重启后本应生效的那组，故迁移不改变当下实际行为；其余场景组丢弃
+                    # （含旧版场景名遗留的孤儿组）。找不到当前场景组时依次回退 general、
+                    # 任一有效组，保证已有调参成果的模式组不空手而归。
+                    scene = efis.get("current_scene", "general")
+                    for mode, scenes in efis.get("mode_params", {}).items():
+                        if mode not in MODE_TUNE_WHITELIST or not isinstance(scenes, dict):
+                            continue
+                        g = scenes.get(scene)
+                        if not isinstance(g, dict):
+                            g = scenes.get("general")
+                        if not isinstance(g, dict):
+                            g = next((x for x in scenes.values() if isinstance(x, dict)), None)
                         if not isinstance(g, dict) or not isinstance(g.get("params"), dict):
                             continue
-                        group = self._group(mode, scene)
-                        for k, v in g["params"].items():
-                            if k in PARAMS:
-                                lo, hi = PARAMS[k]["min"], PARAMS[k]["max"]
-                                group["params"][k] = max(lo, min(hi, v))
-                        sym = g.get("symptoms", {})
-                        if isinstance(sym, dict):
-                            group["symptoms"] = {k: v for k, v in sym.items() if isinstance(v, (int, float)) and v != 0}
+                        self._merge_group(self._group(mode), g)
                 self.current_mode = efis.get("current_mode", "normal")
                 if self.current_mode not in MODE_TUNE_WHITELIST:
                     self.current_mode = "normal"
-                self.current_scene = efis.get("current_scene", "general")  # v4 补存（P10）：重启直接加载场景组
                 self._cycle = efis.get("cycle_count", 0)
                 self._adjust_log = efis.get("adjust_log", [])[-50:]
             else:
-                # v3 迁移（2026-08-16）：旧全局 params → normal.general；旧场景参数 → normal 的
-                # 4 个场景组；其余模式组用模式初始值（现有 normal 调参成果零丢失）
-                old_params = efis.get("params", {})
-                old_scenes = efis.get("scene_params", {})
-                self.current_scene = efis.get("current_scene", "general")
-                self._scene_stable = efis.get("scene_stable", 0)
+                # v3 及更早迁移（2026-08-16）：旧全局 params → normal 组（含旧症状，调参成果零丢失）。
+                # 旧 scene_params 不再读取——场景维度已删，其内容本就是分组前的历史碎片。
                 self._cycle = efis.get("cycle_count", 0)
-                self._symptoms_legacy = {k: v for k, v in efis.get("symptoms", {}).items() if v != 0}
                 self._adjust_log = efis.get("adjust_log", [])[-50:]
-                # normal.general 用旧全局参数（合并旧症状）
-                ng = self._group("normal", self.current_scene)
-                for k, v in old_params.items():
-                    if k in PARAMS:
-                        lo, hi = PARAMS[k]["min"], PARAMS[k]["max"]
-                        ng["params"][k] = max(lo, min(hi, v))
-                ng["symptoms"].update(self._symptoms_legacy)
-                # normal 各场景用旧场景参数（跳过 current_scene——该组以旧全局 params 为准，
-                # 含场景混合后的当前生效值，2026-08-16 审查 P9：原实现被 scene_params 覆盖丢失成果）
-                for scene, sp in old_scenes.items():
-                    if scene == self.current_scene or not isinstance(sp, dict):
+                ng = self._group("normal")
+                self._merge_group(ng, {"params": efis.get("params", {}),
+                                       "symptoms": efis.get("symptoms", {})})
+            # 顶格症状清洗（沿用 v2.4 逻辑，逐模式组执行）
+            for _m, g in self.mode_params.items():
+                syms = g.get("symptoms", {})
+                for k in list(syms.keys()):
+                    base = k[:-1]
+                    if base not in PARAMS:
+                        syms.pop(k, None)
                         continue
-                    g = self._group("normal", scene)
-                    for k, v in sp.items():
-                        if k in PARAMS:
-                            lo, hi = PARAMS[k]["min"], PARAMS[k]["max"]
-                            g["params"][k] = max(lo, min(hi, v))
-            # 顶格症状清洗（沿用 v2.4 逻辑，逐组执行）
-            for mode in list(self.mode_params.keys()):
-                for scene, g in self.mode_params[mode].items():
-                    syms = g.get("symptoms", {})
-                    for k in list(syms.keys()):
-                        base = k[:-1]
-                        if base not in PARAMS:
-                            syms.pop(k, None)
-                            continue
-                        if k.endswith("+") and g["params"].get(base, 0) >= PARAMS[base]["max"] - 1e-9:
-                            syms.pop(k, None)
-                        elif k.endswith("-") and g["params"].get(base, 0) <= PARAMS[base]["min"] + 1e-9:
-                            syms.pop(k, None)
+                    if k.endswith("+") and g["params"].get(base, 0) >= PARAMS[base]["max"] - 1e-9:
+                        syms.pop(k, None)
+                    elif k.endswith("-") and g["params"].get(base, 0) <= PARAMS[base]["min"] + 1e-9:
+                        syms.pop(k, None)
+            # 旧结构迁移后立即按新结构落盘（幂等：v5 文件不会再触发）
+            if version < 5:
+                self.save()
         except Exception:
             self.mode_params = {}
             self.current_mode = "normal"
@@ -202,15 +208,12 @@ class EfisController:
             return
         efis_path = self._efis_state_path()
         mp = {}
-        for mode, scenes in self.mode_params.items():
-            mp[mode] = {}
-            for scene, g in scenes.items():
-                mp[mode][scene] = {"params": dict(g["params"]), "symptoms": dict(g.get("symptoms", {}))}
+        for mode, g in self.mode_params.items():
+            mp[mode] = {"params": dict(g["params"]), "symptoms": dict(g.get("symptoms", {}))}
         data = {"efis": {
-            "version": 4,
+            "version": 5,   # v5：删除场景维度后的扁平结构（每模式一组）；旧版读 v5 会回退模式默认值
             "mode_params": mp,
             "current_mode": self.current_mode,
-            "current_scene": self.current_scene,
             "cycle_count": self._cycle,
             "adjust_log": self._adjust_log[-50:],
             "last_save": time.time(),
@@ -227,34 +230,6 @@ class EfisController:
                     os.remove(tmp)
             except Exception:
                 pass
-
-    def detect_scene(self, snaps, fore_fullscreen, mem_pct):
-        names = [s.name.lower() for s in snaps]
-        if fore_fullscreen and mem_pct > 60:
-            scene = "game"
-        elif any(b in n for n in names for b in ["chrome", "msedge", "firefox", "brave", "opera"]):
-            scene = "browser"
-        elif any(d in n for n in names for d in ["devenv", "code", "clion", "idea", "pycharm", "eclipse"]):
-            scene = "development"
-        else:
-            scene = "general"
-        if scene != self.current_scene:
-            old_scene = self.current_scene
-            self.current_scene = scene
-            self._scene_stable = 0
-            # 场景混合只作用于当前模式的场景组（2026-08-16：模式×场景 16 组并存）。
-            # 混合基准 = 旧场景组当前值（current_scene 已更新，须显式取旧场景），
-            # 目标 = 新场景组历史值 7:3（与旧全局版语义一致）
-            old_group = self._group(scene=old_scene)["params"]
-            new_group = self._group(scene=scene)["params"]
-            blend = {}
-            for k in PARAMS:
-                blend[k] = (old_group.get(k, PARAMS[k]["default"]) * 0.7 +
-                            new_group.get(k, PARAMS[k]["default"]) * 0.3)
-            self._group(scene=scene)["params"] = blend
-            self.save()
-        else:
-            self._scene_stable = min(self._scene_stable + 1, 10)
 
     def tick(self, stats):
         # 模式同步（幂等：engine 周期末已 set_mode；直接调 tick 的路径（测试/CLI）也正确）

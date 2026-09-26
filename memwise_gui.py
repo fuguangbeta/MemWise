@@ -1,5 +1,5 @@
 """
-MemWise v4.5.059 GUI —— 图形界面
+MemWise v4.6.020 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -290,6 +290,59 @@ def _msg_lines(msgs):
 def _panel_needs_clear(cur_lines, group_lines):
     """组间刷新判定：累计 ≤7 接续显示；>7 清屏后整组输出"""
     return cur_lines + group_lines > PANEL_MAX_LINES
+
+
+def _tree_font():
+    """Treeview 实际使用的字体（取不到则退回 Tk 默认字体）——列宽实测用"""
+    import tkinter.font as _tkf
+    try:
+        spec = ttk.Style().lookup("Treeview", "font")
+        if spec:
+            return _tkf.Font(font=spec)
+    except Exception:
+        pass
+    try:
+        return _tkf.nametofont("TkDefaultFont")
+    except Exception:
+        return _tkf.Font()
+
+
+def _tree_measure_columns(cols, rows, pad=26, p90_cols=(), floor=0):
+    """按表头与内容**实测宽度**算每列所需宽度。
+
+    · `p90_cols` 里的列取内容宽度的 **90 分位**（而非最大值）——防个别超长进程名把列撑成"长条"
+    · `floor` 为每列下限（保数值可读）；`pad` 为列内边距
+    """
+    f = _tree_font()
+    out = []
+    for i, c in enumerate(cols):
+        w = f.measure(str(c))
+        if rows:
+            ws = sorted(f.measure(str(r[i])) for r in rows)
+            j = min(len(ws) - 1, int(round(0.90 * (len(ws) - 1))))
+            w = max(w, ws[j] if i in p90_cols else ws[-1])
+        out.append(max(int(w + pad), floor))
+    return out
+
+
+def _tree_sort_by(tree, rows_by_iid, idx, reverse=True):
+    """按第 idx 列重排（与进程排行同款 move 重排）。
+    rows_by_iid 存**原始数值**，不按显示字符串排序（避免 "10" < "9" 这类误差）"""
+    items = [(k, rows_by_iid[k][idx]) for k in tree.get_children("")]
+    items.sort(key=lambda x: x[1].lower() if isinstance(x[1], str) else x[1], reverse=reverse)
+    for pos, (k, _v) in enumerate(items):
+        tree.move(k, "", pos)
+
+
+def _tree_sort_toggle(state, cols, col):
+    """点击表头：同一列再点则反向，换列默认降序；返回 (列索引, 是否降序)。
+    按**列索引**而非显示名（语言切换后列名变化，按名判断会失效）"""
+    idx = cols.index(col) if col in cols else 0
+    if state.get("idx") == idx:
+        state["rev"] = not state.get("rev", True)
+    else:
+        state["idx"], state["rev"] = idx, True
+    return state["idx"], state["rev"]
 
 
 def _center_geometry(win, w, h, parent=None):
@@ -604,7 +657,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.5.059", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.6.020", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -628,7 +681,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.5.059")
+        self.root.title("MemWise v4.6.020")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -685,7 +738,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.5.059 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.6.020 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -744,7 +797,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.5.059")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.6.020")
                     if fw:
                         top = fw
                 except Exception:
@@ -1067,7 +1120,8 @@ class MemWiseGUI:
             "内置崩溃监测，程序因意外崩溃后会自动尝试恢复\n"
             "\n"
             "⚠ 缓存类清理需要管理员权限，否则无法生效\n"
-            "⚠ 在full模式下会清理刚切走或正在工作的程序以最大释放")
+            "⚠ 在full模式下会清理刚切走或正在工作的程序以最大释放\n"
+            "⚠ full 模式在内存宽裕且上轮释放被快速回涨时自动轻量处理（每进程单趟、跳过深度整理），占用回升即恢复")
         self.btn_stop = ttk.Button(bf, text=tr("▶ 停止"), command=self._stop_daemon, state="disabled")
         self.btn_stop.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_stop,
@@ -1149,6 +1203,7 @@ class MemWiseGUI:
             "\n"
             "  · full — 极限释放，尽最大可能腾出内存空间，包括刚切走或正在工作的程序内存\n"
             "               适合：内存告急，需要立刻腾出最多空间\n"
+            "               （另：内存宽裕且回涨快时转为轻量轮处理，占用回升即恢复全强度）\n"
             "\n"
             "⚠ 切换后清理模式将在下一轮生效，无需重启")
         # 自动持久化清理模式选择
@@ -2036,14 +2091,21 @@ class MemWiseGUI:
         for name, p in sorted(dict(self.learner.profiles).items()):
             if p.total_samples < 2:
                 continue
+            # 存**原始数值**（排序按数值而非显示字符串），显示时再格式化
             info_data.append((name, p.alpha, p.beta, p.total_samples,
-                              f"{p.thompson_theta:.2f}", f"{p.roi:.1f}",
-                              f"{p.z_score:.1f}", f"{p.slope:.0f}",
-                              tr("是") if p.leak_suspect else tr("否"),
+                              float(p.thompson_theta), float(p.roi),
+                              float(p.z_score), float(p.slope), bool(p.leak_suspect),
                               p.clean_count, p.probe_ok, p.probe_fail))
         if not info_data:
             messagebox.showinfo(tr("学习日志"), tr("还没有学习到任何数据，先运行一会儿优化再来看"), parent=self.root)
             return
+
+        def _fmt_row(r):
+            # α/β 两位小数（原始浮点会有十几位、列被撑宽且不可读）；趋势按 MB（原始为字节数）
+            return (r[0], "%.2f" % r[1], "%.2f" % r[2], r[3], "%.2f" % r[4], "%.1f" % r[5],
+                    "%.1f" % r[6], "%.1f" % (r[7] / (1 << 20)), tr("是") if r[8] else tr("否"),
+                    r[9], r[10], r[11])
+
         win = tk.Toplevel(self.root)
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -2051,26 +2113,46 @@ class MemWiseGUI:
         win.transient(self.root)
         win.focus_set()
         win.lift()
-        _center_geometry(win, 1000, 650)
-        cols = (tr("进程"), "α", "β", tr("样本"), tr("可信度"), tr("收益比(MB/PF)"), tr("偏差"), tr("趋势"), tr("泄漏"), tr("清理"), tr("试探成功"), tr("试探失败"))
+        cols = (tr("进程"), "α", "β", tr("样本"), tr("可信度"), tr("收益比(MB/PF)"), tr("偏差"),
+                tr("趋势"), tr("泄漏"), tr("清理"), tr("试探成功"), tr("试探失败"))
+        rows = [_fmt_row(r) for r in info_data]
+        # ① 列宽：进程列按内容宽度的 90 分位（防个别超长名把列撑成"长条"），其余列按实测最大值
+        widths = _tree_measure_columns(cols, rows, p90_cols=(0,), floor=44)
+        # ② 窗口宽按用户定稿 = 各列实测总宽的 0.6 倍；各列等比收敛，但**不低于不裁字的紧凑宽**
+        _tight = _tree_measure_columns(cols, rows, pad=10, p90_cols=(0,))
+        widths = [max(int(w * 0.6), t) for w, t in zip(widths, _tight)]
+        _win_w = max(560, sum(widths) + 42)
+        _cap = int(win.winfo_screenwidth() * 0.94)
+        if _win_w > _cap:
+            _win_w = _cap
+        _center_geometry(win, _win_w, 650)
+        # 口径说明（2026-09-26 用户反馈"看不懂"）：只加说明层，不改任何计算口径与列名；
+        # 按语义分行书写 ⇒ 任何窗口宽度下都不会在句子中间折行
+        ttk.Label(win, text=tr("怎么看这张表：只列出反馈 ≥2 次的进程。\n"
+                               "α/β＝清理成功/失败的累积证据，样本＝反馈次数，"
+                               "可信度＝据此抽样的优先分（越大越倾向清它）。\n"
+                               "收益比＝每单位缺页代价换回的释放量；偏差＝释放表现的异常程度，"
+                               "趋势＝近期走向；泄漏＝疑似只涨不落；清理/试探成功/试探失败＝历史次数"),
+                  wraplength=max(560, min(max(560, _win_w - 34), sum(widths))), justify="left",
+                  foreground="#555").pack(anchor="w", padx=12, pady=(10, 0))
         tree = ttk.Treeview(win, columns=cols, show="headings", height=20)
-        # 列配置按索引（不依赖显示名——语言切换后列名变化，按中文名判断会失效）
         for i, c in enumerate(cols):
-            tree.heading(c, text=c)
-            if i == 0:
-                tree.column(c, width=200, anchor="w")  # 进程列靠左
-            elif i in (1, 2, 3, 9, 10, 11):           # α/β/样本/清理/试探成功/试探失败
-                tree.column(c, width=65, anchor="center")
-            elif i in (4, 5, 6, 7):                    # 可信度/收益比/偏差/趋势
-                tree.column(c, width=75, anchor="center")
-            else:
-                tree.column(c, width=70, anchor="center")
+            tree.heading(c, text=c, command=lambda _c=c: _click_sort(_c))
+            tree.column(c, width=widths[i], anchor="w" if i == 0 else "center")
         vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True, padx=(12,0), pady=(12,4))
-        vsb.pack(side="right", fill="y", pady=(12,4))
-        for row in info_data:
-            tree.insert("", "end", values=row)
+        tree.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=(12, 4))
+        vsb.pack(side="right", fill="y", pady=(12, 4))
+        _row_by_iid = {}
+        for r, disp in zip(info_data, rows):
+            _row_by_iid[tree.insert("", "end", values=disp)] = r
+        # 点击列头排序（2026-09-26 用户要求：与进程排行同款）——状态按**列索引**（语言无关）
+        _sort_state = {"idx": None, "rev": True}
+
+        def _click_sort(col):
+            idx, rev = _tree_sort_toggle(_sort_state, cols, col)
+            _tree_sort_by(tree, _row_by_iid, idx, reverse=rev)
+
         win.deiconify()  # 全部控件就绪，居中后一次显示
 
 

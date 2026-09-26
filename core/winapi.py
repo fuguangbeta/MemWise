@@ -853,15 +853,24 @@ def deep_compress():
     return ok
 
 def clear_registry_cache():
-    """清空注册表缓存 — SystemRegistryReconciliationInformation = 81 (Win8.1+)"""
+    """清空注册表缓存 — SystemRegistryReconciliationInformation = 155。
+    2026-09-26 实测订正（本机 Win11 26100，管理员）：原实现写 class 81 —— 81 是**文件缓存**类
+    （SystemFileCacheInformationEx），实测返回 STATUS_INFO_LENGTH_MISMATCH(0xC0000004) 恒失败，
+    既让"注册表缓存清理"开关空转，又是"调错系统类"的隐患；正确类号 155 实测 (NULL, len 0)
+    即 STATUS_SUCCESS。类号 155 自 Win8.1 起提供（旧系统不支持时返回失败，由留痕通道记录）。"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        return NtSetSystemInformation(81, None, 0) == 0
+        return NtSetSystemInformation(155, None, 0) == 0
     except Exception:
         return False
 
+_VOLUME_DEVICE_PREFIX = "\\\\.\\"   # 设备命名空间：打开卷必须用它（用 "C:\\" 会 ERROR_PATH_NOT_FOUND=3）
+
 def flush_volume_cache():
     """冲刷所有卷的待写缓冲区（仅本地固定/可移动卷——网络盘/光驱冲刷对内存释放无意义且网络卷可能阻塞数秒）。
+    2026-09-26 实测订正：原实现用盘符根目录 "C:\\" 调 CreateFileW，实测 C:/D: 两卷均返回
+    ERROR_PATH_NOT_FOUND(3) ⇒ **该开关从未生效过**（此前"两周计数 0"被误读为"执行了但零收益"）。
+    正确形式为设备命名空间 "\\\\.\\C:"，实测句柄可开、FlushFileBuffers 成功（管理员）。
     返回真实执行结果：无任何卷成功打开时返回 False（2026-08-30 审查：原恒 True 使统计虚增）"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
@@ -873,7 +882,7 @@ def flush_volume_cache():
                 continue
             if GetDriveTypeW(vol) not in (2, 3):  # DRIVE_REMOVABLE / DRIVE_FIXED
                 continue
-            h = k32.CreateFileW(vol, 0x40000000, 3, None, 3, 0x80, None)
+            h = k32.CreateFileW(f"{_VOLUME_DEVICE_PREFIX}{letter}:", 0x40000000, 3, None, 3, 0x80, None)
             if h and h != INVALID_HANDLE_VALUE:
                 k32.FlushFileBuffers(h)
                 k32.CloseHandle(h)
