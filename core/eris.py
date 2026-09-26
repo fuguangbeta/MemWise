@@ -448,13 +448,18 @@ def efficiency(scores, K=None, mode=None, valid=None):
     return total_of(scores, valid=valid, mode=mode) / k * 100.0
 
 
-def pick_factor(scores, prev_scores, up):
+def pick_factor(scores, prev_scores, up, avoid=None):
     """词条维度选择：升 → 本轮上升维中最高分者；降 → 本轮下降维中最低分者。
+    `avoid=(维度索引, 上轮该维报的方向)`：排除"同一维且本轮方向与上轮相反"的维度，
+    避免同一维度正负两面在相邻两轮来回跳（2026-09-26 用户规定，此前只约定未落码）；
+    排除后若无候选 ⇒ 返回 None，由调用方兜底（宁可同维连报，也不改口径掩盖）。
     返回维度索引；无候选（含并列未变化）返回 None（由调用方兜底）。"""
     if not prev_scores or len(prev_scores) != len(scores):
         return None
     cand = [j for j in range(len(scores)) if (scores[j] > prev_scores[j]) == bool(up)
             and scores[j] != prev_scores[j]]
+    if avoid and bool(avoid[1]) != bool(up):
+        cand = [j for j in cand if j != avoid[0]]
     if not cand:
         return None
     return max(cand, key=lambda j: scores[j]) if up else min(cand, key=lambda j: scores[j])

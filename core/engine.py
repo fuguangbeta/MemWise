@@ -617,6 +617,7 @@ class MemWiseEngine:
         self._eris_hist_mode = None      # 上一轮 ERIS 所用的模式（切换即重置"上一轮"基线）
         # （quick 的"惯常系统级释放量"基准已由 ERIS v9 自标定基线取代，旧 deque 字段随之移除）
         self._eris_prev_scores = None    # 上轮五维分（词条同向判定）
+        self._eris_last_word = None   # 上轮词条 (维度, 方向)：相邻两轮同维正负不复读（2026-09-26 用户规定）
         self._eris_prev_eff = None       # 上轮效率（平稳/趋势判定）
         self._eris_trend = []            # 方向序列（含 <2 的轮次，±1/0；极性轮 99/-99 打断）
         self._cycle_pf = 0               # 本周期 PF 增量（副作用维）
@@ -1511,7 +1512,7 @@ class MemWiseEngine:
                       probe_ok=0, probe_total=0, update_state=True):
         """返回 {"total": 效率%, "factors": [...]}（接口与 v6 一致，展示层无需改动）。
         词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
-        |Δ效率| < 1 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；不设防振荡硬规则。"""
+        |Δ效率| < 1 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；同一维正负两面不作相邻两轮重复（词条层抑制，2026-09-26 用户规定）。"""
         from core import eris as E
         # 实际生效模式（优先取本轮 optimize 的真实模式：紧急轮等会走 full，必须让分桶学真值）
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
@@ -1547,6 +1548,7 @@ class MemWiseEngine:
             # 下一轮起用新模式自己的数据比较。平滑窗与冻结基线都按模式分桶，不受切换影响。
             if self._eris_hist_mode is not None and self._eris_hist_mode != _mode:
                 self._eris_prev_scores = None
+                self._eris_last_word = None   # 上轮词条 (维度, 方向)：相邻两轮同维正负不复读（2026-09-26 用户规定）
                 self._eris_prev_eff = None
                 self._eris_trend = []
             self._eris_hist_mode = _mode
@@ -1561,34 +1563,40 @@ class MemWiseEngine:
             _k = E.k_value(self._eris_calib, _mode)                    # 冻结基线 K（自标定期总分 p95）
             eff = (_T / _k * 100.0) if _k > 0 else 0.0
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
+            _avoid = getattr(self, "_eris_last_word", None)   # 相邻抑制：上轮 (维度, 方向)
             trend_val = 0
             if prev_eff is None or len(data) <= 3:
                 factors = ["影响因素分析中…"]
+                self._eris_last_word = None
             elif round(eff) >= E.SUPER_TH:   # 与显示值一致（用户看到 ≥100% 才判超常）
-                j = E.pick_factor(scores, prev_scores, True)
+                j = E.pick_factor(scores, prev_scores, True, avoid=_avoid)
                 if j is None:
                     j = max(range(5), key=lambda i: scores[i])
                 factors = [E.DIM_WORDS[j][0], "🚀效率超常"]
+                self._eris_last_word = (j, True)
                 trend_val = 99
             elif round(eff) <= E.WARN_TH:    # 与显示值一致（用户看到 ≤50% 才判异常）
-                j = E.pick_factor(scores, prev_scores, False)
+                j = E.pick_factor(scores, prev_scores, False, avoid=_avoid)
                 if j is None:
                     j = min(range(5), key=lambda i: scores[i])
                 factors = [E.DIM_WORDS[j][1], "⚠效率异常"]
+                self._eris_last_word = (j, False)
                 trend_val = -99
             else:
                 delta = eff - prev_eff
                 trend_val = 1 if delta > 0 else (-1 if delta < 0 else 0)
                 if abs(delta) < 1.0:
                     factors = ["相对平稳"]
+                    self._eris_last_word = None   # 本轮未报维度 ⇒ 抑制链断开
                 else:
                     up = delta > 0
-                    j = E.pick_factor(scores, prev_scores, up)
+                    j = E.pick_factor(scores, prev_scores, up, avoid=_avoid)
                     if j is None:
                         diffs = [scores[i] - (prev_scores[i] if prev_scores else 0.0) for i in range(5)]
                         j = max(range(5), key=lambda i: abs(diffs[i]))
                         up = diffs[j] >= 0
                     factors = [E.DIM_WORDS[j][0] if up else E.DIM_WORDS[j][1]]
+                    self._eris_last_word = (j, up)
                     if len(self._eris_trend) >= 2 and self._eris_trend[-1] == self._eris_trend[-2] == trend_val:
                         factors.append("🔥持续改善" if trend_val > 0 else "⚠持续下滑")
             if update_state:
@@ -1639,6 +1647,7 @@ class MemWiseEngine:
             if getattr(self, "_eris_hist_by_mode", None) and any(
                     any(h) for h in self._eris_hist_by_mode.values()):        # 热重启：窗内数据保留
                 self._eris_prev_scores = None
+                self._eris_last_word = None   # 上轮词条 (维度, 方向)：相邻两轮同维正负不复读（2026-09-26 用户规定）
                 self._eris_prev_eff = None
                 self._eris_trend = []
                 self._eris_hist_mode = None
@@ -1680,6 +1689,7 @@ class MemWiseEngine:
         except Exception:
             pass
         self._eris_prev_scores = None
+        self._eris_last_word = None   # 上轮词条 (维度, 方向)：相邻两轮同维正负不复读（2026-09-26 用户规定）
         self._eris_prev_eff = None
         self._eris_trend = []
         self._eris_hist_mode = None      # 首轮建立基线，不算"切换"（不触发基线重置）
