@@ -228,7 +228,7 @@ def remove_watchdog():
 
 
 from core import winapi
-from core.i18n import set_language  # 界面语言（tr 由各算法模块独立导入）
+from core.i18n import set_language, tr  # 界面语言（tr 多数由各算法模块独立导入，引擎自用同为 tr）
 from core.config import load as _load_cfg
 from core.config import get_state_path
 import core.config as _config
@@ -382,7 +382,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.6.022 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.6.023 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -1353,15 +1353,18 @@ class MemWiseEngine:
                 # 合并压力+深度清理日志（与上一周期峰值比较，仅变化时输出）
                 agg_peak = agg_max
                 mem_str = self.judger._mem_label(m['pct'])
-                a_cur = self.judger._agg_label(agg_peak)
+                a_cur_raw = self.judger._agg_label(agg_peak)
+                # 单字标签（高/中/低）必须在此精确翻译：显示层片段替换的门槛是 2 字，
+                # 单字只认精确匹配，否则英文界面下残留中文（2026-09-26 用户报告）
+                a_cur = tr(a_cur_raw)
                 last_peak = self._last_agg_peak
                 last_mem = self._last_pressure_mem
                 if last_peak is None:
                     change_str = a_cur  # 首轮直接显示
-                elif a_cur == self.judger._agg_label(last_peak):
-                    change_str = f"维持{a_cur}"
+                elif a_cur_raw == self.judger._agg_label(last_peak):
+                    change_str = tr(f"维持{a_cur_raw}")
                 else:
-                    change_str = f"{self.judger._agg_label(last_peak)}→{a_cur}"
+                    change_str = f"{tr(self.judger._agg_label(last_peak))}→{a_cur}"
                 deep_changed = deep_triggered != self._last_deep_triggered
                 if last_mem != mem_str or change_str != self._last_pressure_chg or deep_changed:
                     deep_str = " · 已触发深度清理" if deep_triggered else ""

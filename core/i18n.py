@@ -403,7 +403,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.6.022 启动· ": "MemWise v4.6.022 started · ",
+    "MemWise v4.6.023 启动· ": "MemWise v4.6.023 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -716,7 +716,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.6.022 PARES —— 智能内存看护": "MemWise v4.6.022 PARES — Intelligent Memory Custodian",
+    "MemWise v4.6.023 PARES —— 智能内存看护": "MemWise v4.6.023 PARES — Intelligent Memory Custodian",
 }
 
 

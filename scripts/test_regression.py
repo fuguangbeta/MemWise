@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.6.022 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.6.023 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2190,6 +2190,11 @@ check("F1 引擎接线（判据+传参；本轮是否轻量不再单独播报）
       and "恢复全强度处理" not in _eng26_src and "本轮进行轻量处理" not in _eng26_src)
 check("回涨状态机前移（先判回涨快慢，再定本轮强度）",
       _eng26_src.index("if self._refill_cycle:") < _eng26_src.index("is_lite_round("))
+check("i18n:单字强度标签必须精确翻译（片段替换门槛 2 字，否则英文下残留中文）",
+      '"高": "high"' in _src26("core", "i18n.py")
+      and '"维持高": "staying high"' in _src26("core", "i18n.py")
+      and "tr(a_cur_raw)" in _eng26_src
+      and 'tr(f"维持{a_cur_raw}")' in _eng26_src)
 check("F1 默认关闭（手动/紧急/CLI 路径不传 lite）",
       _cln39.count("self._lite = bool(lite)") == 1
       and "lite=False" in _cln39 and "lite=_lite" not in _cln39)
