@@ -382,7 +382,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.6.020 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.6.022 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -1083,15 +1083,24 @@ class MemWiseEngine:
                 # harvest 独立 1 线程池执行：与 trim 池彻底隔离——
                 # 原提交到 _trim_executor 池内嵌套（harvest 占线程 + 内部 _bounded_submit 再向同池提交）：
                 # 1 核机器 max_workers=1 死锁致 harvest 永久超时；多核时排队时间计入 30s 超时误判 partial
+                # 回涨状态机（2026-08-14 定稿，2026-09-26 前移）：进入回涨快提示一次 → 持续静默 →
+                # 回落提示恢复。判据（_refill_cycle/_refill_total）在本周期轮询阶段即已定稿，故这里
+                # 先于本轮强度决策求值——F1 与播报读同一次判定，且回涨量配的除数是上一轮释放量。
+                if self._refill_cycle:
+                    if not self._refill_hot:
+                        _rate = int(round(self._refill_total / max(self._last_harvest_freed, 1) * 100))
+                        self._cycle_log_groups.append(
+                            [f"↻ 内存回涨较快，仅上轮收割后即回涨{_rate}% · 将持续收紧收割节奏直到放缓"])
+                    self._refill_hot = True
+                else:
+                    if self._refill_hot:
+                        self._cycle_log_groups.append(["↻ 内存回涨已放缓，试探性恢复正常收割节奏"])
+                    self._refill_hot = False
                 # F1 压力自适应（2026-09-26 用户定稿）：内存宽裕 + 上轮回涨快 ⇒ full 模式轻量轮。
                 # 占用回升到阈值或回涨放缓立即恢复全强度；手动优化与紧急 full 不走此路径（各自全强度）。
+                # 本轮是否轻量不单独播报——回涨快慢由上面状态机统一播报，同一信号不两个时点各说一次
                 _lite = self.cleaner.is_lite_round(mode, getattr(self.judger, "_last_mem_pct", 100),
                                                    self._refill_hot)
-                if _lite != getattr(self, "_lite_cycle", False):
-                    self._cycle_log_groups.append([
-                        "内存宽裕且回涨快，本轮进行轻量处理"
-                        if _lite else "恢复全强度处理"])
-                    self._lite_cycle = _lite
                 harvest_future = self._harvest_executor.submit(
                     self.cleaner.optimize, snaps, self.learner, mode,
                     operations=ops, aggressiveness=agg, lite=_lite)
@@ -1393,17 +1402,7 @@ class MemWiseEngine:
                                       ((m or {}).get("avail", 0) or 0) / (1 << 30)))
                     except Exception:
                         pass
-                # 回涨状态机播报（2026-08-14 定稿）：进入回涨快提示一次 → 持续静默 → 回落提示恢复
-                if self._refill_cycle:
-                    if not self._refill_hot:
-                        _rate = int(round(self._refill_total / max(self._last_harvest_freed, 1) * 100))
-                        self._cycle_log_groups.append(
-                            [f"↻ 内存回涨较快，仅上轮收割后即回涨{_rate}% · 将持续收紧收割节奏直到放缓"])
-                    self._refill_hot = True
-                else:
-                    if self._refill_hot:
-                        self._cycle_log_groups.append(["↻ 内存回涨已放缓，试探性恢复正常收割节奏"])
-                    self._refill_hot = False
+                # 回涨状态机已前移到本轮强度决策之前（2026-09-26）——此处不再重复判定/播报
                 # 周期末分组输出（2026-08-30）：汇总/调参/压力/游戏/紧急等各自成组，
                 # 展示层逐组原子写入（组间 ≤7 接续 / >7 清屏；组内可超 7 完整呈现）。
                 # 曾见 summary 先入队、log_batch 后入队时被后者的清屏抹掉——分组化后同批

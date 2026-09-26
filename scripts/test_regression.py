@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.6.020 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.6.022 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2185,9 +2185,11 @@ check("F1 降级四项齐备（单趟/跳 L3/跳二轮/前 K）",
       and "轻量轮(跳过深度整理)" in _cln39
       and 'if pipeline_ctx["layer2_trimmed"] and not self._lite:' in _cln39
       and "candidates[:LITE_TOP_K]" in _cln39 and "LITE_TOP_K = 48" in _cln39)
-check("F1 引擎接线（判据+传参+恢复播报）",
+check("F1 引擎接线（判据+传参；本轮是否轻量不再单独播报）",
       "is_lite_round(" in _eng26_src and "lite=_lite" in _eng26_src
-      and "恢复全强度处理" in _eng26_src)
+      and "恢复全强度处理" not in _eng26_src and "本轮进行轻量处理" not in _eng26_src)
+check("回涨状态机前移（先判回涨快慢，再定本轮强度）",
+      _eng26_src.index("if self._refill_cycle:") < _eng26_src.index("is_lite_round("))
 check("F1 默认关闭（手动/紧急/CLI 路径不传 lite）",
       _cln39.count("self._lite = bool(lite)") == 1
       and "lite=False" in _cln39 and "lite=_lite" not in _cln39)

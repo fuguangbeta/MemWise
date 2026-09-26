@@ -245,8 +245,6 @@ _EN = {
     "↻ 内存回涨较快，仅上轮收割后即回涨": "↻ Memory refilling fast, already up ",
     " · 将持续收紧收割节奏直到放缓": " · will keep tightening until it slows",
     "↻ 内存回涨已放缓，试探性恢复正常收割节奏": "↻ Refill slowed; tentatively resuming normal pace",
-    "内存宽裕且回涨快，本轮进行轻量处理": "Memory comfortable and refilling fast — running a light round",
-    "恢复全强度处理": "Back to full-strength processing",
     "🕳️ ": "🕳️ ",
     " 疑似内存持续增长，建议关注": " suspected of steady memory growth — worth attention",
     "🎮 检测到游戏运行 · 启用 游戏模式": "🎮 Game detected · Game Mode enabled",
@@ -405,7 +403,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.6.020 启动· ": "MemWise v4.6.020 started · ",
+    "MemWise v4.6.022 启动· ": "MemWise v4.6.022 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -718,7 +716,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.6.020 PARES —— 智能内存看护": "MemWise v4.6.020 PARES — Intelligent Memory Custodian",
+    "MemWise v4.6.022 PARES —— 智能内存看护": "MemWise v4.6.022 PARES — Intelligent Memory Custodian",
 }
 
 
