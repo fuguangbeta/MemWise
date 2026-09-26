@@ -3,7 +3,7 @@
 本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
-Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.6.020（已构建，未发布）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS 参数自适应）/ eris（ERIS v9 冻结基线效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**504 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
+Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.6.020（2026-09-26 已发布）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS 参数自适应）/ eris（ERIS v9 冻结基线效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**515 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
 
 ## 📚 知识库索引（工作前必读）
 项目记忆在项目记忆目录（路径见用户级指令，**14 篇内容文件 + MEMORY.md 索引**——2026-09-10 全量归纳后的结构，按需读取）：
@@ -47,14 +47,14 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 - 完整环境清单（MCP 配置真身与三处一致性 / ⛔ tier 键教训 / ZCode 日志诊断）见 environment-and-tools.md
 
 ## 测试与构建
-- 回归：`python -B scripts\test_regression.py`（**504 项断言**，-B 避 pyc 缓存锁；本机已设 PYTHONPYCACHEPREFIX）
+- 回归：`python -B scripts\test_regression.py`（**515 项断言**，-B 避 pyc 缓存锁；本机已设 PYTHONPYCACHEPREFIX）
 - 语法检查：`compile()`；日常修改用回归验证，**非必要不构建 exe**（用户成本偏好）
 - 构建：`MSYS_NO_PATHCONV=1 taskkill /f /im MemWise.exe` + `python -B -m PyInstaller MemWise.spec --distpath dist --workpath build --noconfirm`（cmd /c 包装引号解析失败已多次复现，勿再用；版本/图标变更加 `--clean`）
 - **构建永不放进含管道的条件链**（管道尾命令退出码 0 会使 `&&` 不短路，坏源码照样打包）；回归全绿确认后才准构建
 - 构建后清理 dist 残留（watchdog.json 等运行时文件）与根目录 `nul` 残留（PyInstaller/Python 3.14 副作用），**禁删 memwise.log**
 
 ## 发布流程（完整细节读 release-and-pr-workflow.md）
-1. 修改完成 → **504 项回归全绿** → 更新 CHANGELOG（用户视角规范，见 doc-style-guide.md）
+1. 修改完成 → **515 项回归全绿** → 更新 CHANGELOG（用户视角规范，见 doc-style-guide.md）
 2. `git add -A && git commit && git push origin main`（最快）
 3. 版本号变更时同步 **16 处 / 8 文件**（memwise 2 / gui 4 / engine 1 / i18n 4【两个版本键各含键+值】/ backup APP_VERSION 1 / test docstring 1 / README 1 / AGENTS 1，2026-09-06 实测口径；CHANGELOG 属内容不计）+ 构建 exe（--clean）
 4. 改 `release_tag.py` 版本号 → 运行（建 tag+release，拿新 release id）
@@ -63,7 +63,7 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 7. 发布前 `git status` 检查 untracked（防隐私文件误提交）
 
 ## 更新日志规范（详见 doc-style-guide.md）
-标题 `## vX.X (年·月)` + `>` 概要；小节 `###` 先 `>` 叙述段（可稍详细）再条列；条目动词四式（修复了/新增了/优化了/移除了），**只说解决了什么问题，禁源码细节/函数名/API**；增量口径不保留旧版本（**写新版章节时必须同步删除旧版文字说明**——发布脚本取 `CHANGELOG[idx:]` 到文件末尾作 release body，留旧章节会连带发出去）；**已发布版本后不追加维护项——积累到 pending-release-notes 记忆，下次发布新版本时全面编写**；release body 与 CHANGELOG 逐字一致。
+标题 `## vX.X (年·月)` + `>` 概要；小节 `###` 先 `>` 叙述段（可稍详细）再条列；条目动词四式（修复了/新增了/优化了/移除了），**修复/优化/移出一律「动词了 + 现象或对象 + 的问题／的情况」、新增类单句「新增了 X」**；**只写解决了什么问题，机制、数值、步骤、根因一律不写（用户"不在乎怎么改的，不需要细节"）**；**非"一句话说完"的条目不得多于整批 20%、单句控制在 25 字内**；禁源码细节/函数名/API，禁实验性话术（实测/实验/数据/验证/测试）；**`### 升级注意事项` 只写升级适配**（覆盖安装/数据重建/旧数据迁移/需用户执行或注意），功能行为写进对应主题小节；增量口径不保留旧版本（**写新版章节时必须同步删除旧版文字说明**——发布脚本取 `CHANGELOG[idx:]` 到文件末尾作 release body，留旧章节会连带发出去）；**已发布版本后不追加维护项——积累到 pending-release-notes 记忆，下次发布新版本时全面编写**；release body 与 CHANGELOG 逐字一致。
 
 ## 全局适配（8 面，详见 doc-style-guide.md）
 一次功能改动后同步：实现 / 文案（tooltip 八规则：纯中文零英文三段式，功能按键名加「」）/ CLI / 配置 / 文档（README 双语）/ 测试 / 版本（15 处同步面）/ 记忆（写法见 memory-writing-rules.md）。
