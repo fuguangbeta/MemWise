@@ -3,10 +3,10 @@
 本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
-Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.6.036（本地构建，含维度一单位修复；已发布 = v4.6.035）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS 参数自适应）/ eris（ERIS v9 冻结基线效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**537 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
+Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v4.6.044（本地构建待发布；已发布 = v4.6.036）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS 参数自适应）/ eris（ERIS v9 冻结基线效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**561 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
 
 ## 📚 知识库索引（工作前必读）
-项目记忆在项目记忆目录（路径见用户级指令，**14 篇内容文件 + MEMORY.md 索引**——2026-09-10 全量归纳后的结构，按需读取）：
+项目记忆在项目记忆目录（路径见用户级指令，**13 篇内容文件 + MEMORY.md 索引**——2026-09-10 全量归纳后的结构，按需读取）：
 
 **新窗口阅读顺序**：workstate（现场）→ memory-writing-rules（怎么记）→ red-lines-and-work-ethics（怎么干）→ session-protocols + project-overview（项目是什么）→ 按任务取用下表其余文件。
 
@@ -23,9 +23,8 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 | project-overview.md | 项目百科+构建：架构/目录/三层清理/冷启动/spec 压缩/构建纪律/日志排查 | 理解项目、构建、排查 |
 | optimization-specs.md | 四模式梯度权威表 + API 通道实验 + 22% 物理极限 + 持续压缩 | 改清理机制、改模式 |
 | learning-engine-specs.md | EFIS 分组调参（4 组/白名单/冻结）+ ERIS 公式与输出规则 | 改调参、改 ERIS |
-| audit-archive.md | 审查与事故档案（历次审查结论/误报澄清/不修清单/未决残留） | 追溯"为什么这么写" |
+| audit-archive.md | 审查与事故档案（历次审查结论/误报澄清/不修清单/未决残留/roadmap 遗产 §二十一） | 追溯"为什么这么写" |
 | environment-and-tools.md | MCP（含 tier 键教训）/ Skills / ZCode 配置与日志诊断 | 环境相关、MCP 排查 |
-| roadmap.md | 未实施的候选优化方向（进程族聚合/应用规则引擎/保护建议 UI） | 规划新功能时 |
 
 用户级记忆与指令见用户环境配置（全局规则/偏好）。
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.6.036 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.6.044 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -537,11 +537,6 @@ try:
     check("top roi 有区分度", top3[0][1] > top3[-1][1])
     check("top tuple shape", len(top3[0]) == 4 if top3 else True)
     check("top filters <2 samples", all(p.total_samples >= 2 for _, _, _, p in top3))
-    # get_parent_process_name：64 位偏移兼容（修复前返回垃圾值/None）
-    import os as _os, core.winapi as _wa
-    _pp = _wa.get_parent_process_name(_os.getpid())
-    check("parent name str", isinstance(_pp, str) and len(_pp) > 0)
-    check("parent unknown pid", _wa.get_parent_process_name(99999999) is None)
 except Exception as ex:
     check("review regression", False, repr(ex))
 
@@ -1056,7 +1051,9 @@ check("退出表述键", "进程已退出·内存随之释放" in _cl26_src
 # ── 界面微修 ──
 check("托盘数字图标按档着色", "create_tray_percent_icon(pct, color=_color)" in _gui26_src)
 check("托盘百分比 100 如实显示", "min(100, int(percent))" in _wa26_src)
-check("全屏检测按窗口所在显示器", "MonitorFromWindow" in _wa26_src and "GetMonitorInfoW" in _wa26_src)
+check("全屏检测死代码已删（零消费方，2026-09-28 审查；防回退守卫）",
+      "is_foreground_fullscreen" not in _wa26_src and "IGNORE_FULLSCREEN_CLASSES" not in _wa26_src
+      and "MonitorFromWindow" not in _wa26_src)
 check("卷缓存真实成功计数", "return flushed" in _wa26_src)
 check("排行学习标记口径统一", 'p.total_samples >= 2 else ""' in _gui26_src)
 check("GUI 死导入已清", "from core.eris import" not in _gui26_src
@@ -2040,9 +2037,10 @@ check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff�
       all(k in _eng_log for k in ("生效设置: 模式 %s", "_CFG_SNAPSHOT", '"配置"')))
 check("日志：学习状态周期摘要（画像/锚点/回退/抑制/策略权重/当前参数）",
       all(k in _eng_log for k in ("学习状态: 画像 %d", "策略权重[%s]", "当前参数 %s")))
-check("日志：游戏启停入文件 + 模式仅切换时标注（日常行不含模式；措辞为「后续模式」）",
-      '"决策", msg' in _eng_log and " · 后续模式：%s→%s" in _eng_log
-      and "模式 {CFG.get('clean_mode'" not in _eng_log)
+check("日志：游戏启停入文件（[界面] 通道单写，无 [决策] 双写）+ 模式仅切换时标注（措辞「后续模式」）",
+      "for msg in self.cleaner.pop_game_msgs():" in _eng_log and " · 后续模式：%s→%s" in _eng_log
+      and "模式 {CFG.get('clean_mode'" not in _eng_log
+      and '_log_write("决策", msg)' not in _eng_log)
 check("日志：清理器逐轮统计判定拦截原因（can_trim 拒绝计数）",
       "_cycle_reasons[reason]" in _cl_log and "self._cycle_reasons = {}" in _cl_log)
 print("\n[36] 播报默认图标（真实 Tk 插入路径，防「启动即崩」）")
@@ -2357,7 +2355,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.6.0.36"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.6.0.44"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2416,6 +2414,165 @@ check("净优化量维净留存率（半留存 113 / 一成留存 44）",
       "半留=%s 一成=%s" % (_r_eq["scores"][0], _r_ne["scores"][0]))
 check("净留存率维接线（周期净下降按可用差折算 MB）",
       'self._cycle_net_drop_mb = max(0.0, float(m["avail"] - self._cycle_avail_start)) / (1 << 20)' in _eg41)
+
+print("\n[42] 2026-09-28 全项目审查修复回归（G1-G7）")
+from core.sniffer import Sniffer
+import core.winapi as _wa42
+_jd42 = _src26("core", "judger.py")
+
+# G1 quick+游戏：game_mode 透传（引擎 gap 循环对全模式检测游戏，quick 分支此前漏传
+# ⇒ 游戏运行中每个压制周期都对待机/脏页做磁盘操作——游戏保护唯一漏网分支）
+_lr42 = PareLearner()
+_c42 = _PC41(PareJudger(_lr42, dict(_J41)))
+_cap42 = {}
+_c42._layer1_memreduct = lambda **kw: _cap42.update(kw)
+_c42.game_mode = True
+_c42._optimize_locked([], _lr42, "quick", ["standby", "modified", "registry"])
+check("G1 quick 分支透传 game_mode", _cap42.get("game_mode") is True, str(_cap42))
+_c42b = _PC41(PareJudger(PareLearner(), dict(_J41)))
+_cap42b = {}
+_c42b._layer1_memreduct = lambda **kw: _cap42b.update(kw)
+_c42b._optimize_locked([], PareLearner(), "quick", ["standby", "modified", "registry"])
+check("G1b 非游戏 quick 行为不变（game_mode=False 透传）", _cap42b.get("game_mode") is False, str(_cap42b))
+# 真实 layer1 全链：游戏期磁盘类被跳过、registry 照常（与 normal 梯度同口径）
+_ops42 = ("empty_standby", "flush_modified_pages", "clear_registry_cache")
+_og42 = {n: getattr(_wa42, n) for n in _ops42}
+_om42 = _wa42.get_memory_status
+_calls42 = []
+try:
+    for n in _ops42:
+        setattr(_wa42, n, (lambda nm: lambda *a, **k: (_calls42.append(nm), True)[1])(n))
+    _wa42.get_memory_status = lambda: {"pct": 40, "total": 16 << 30, "avail": 9 << 30, "used": 7 << 30}
+    _c42c = _PC41(PareJudger(PareLearner(), dict(_J41)))
+    _c42c.game_mode = True
+    _c42c._optimize_locked([], PareLearner(), "quick", ["standby", "modified", "registry"])
+    check("G1c 游戏中 quick 只执行 registry（真实 layer1 全链）",
+          sorted(_calls42) == ["clear_registry_cache"], str(_calls42))
+finally:
+    for n, f in _og42.items():
+        setattr(_wa42, n, f)
+    _wa42.get_memory_status = _om42
+
+# G2 并发防御式化（straggler trim 线程与守护线程并发——取值/删除改 .get/.pop，清理语义逐字一致）
+check("G2 engine cooldown 快照迭代", "list(self.judger.cooldown.values())" in _eng26_src)
+check("G2b purge 防御式取值删除（KeyError 类别根除）",
+      "self.pf_before.get(k)" in _jd42 and "_post_clean_ws.pop(k, None)" in _jd42
+      and "del self._post_clean_ws[k]" not in _jd42 and "del self.pf_before[k]" not in _jd42
+      and "del self.cooldown[k]" not in _jd42
+      and "_low_activity.get(k)" in _jd42 and "_io_cache.get(k)" in _jd42)
+check("G2c update_anchors 快照迭代", "list(self._post_clean_time.items())" in _jd42)
+_j42 = PareJudger(PareLearner(), dict(_J41))
+_n42 = time.time()
+_j42.cooldown["old"] = _n42 - 1; _j42.cooldown["new"] = _n42 + 999
+_j42._post_clean_time["old"] = _n42 - 3700; _j42._post_clean_ws["old"] = 1
+_j42._post_clean_time["new"] = _n42 - 10; _j42._post_clean_ws["new"] = 1
+_j42.pf_before[1] = (1, _n42 - 100); _j42.pf_before[2] = (1, _n42 - 1)
+_j42._low_activity[3] = (2, _n42 - 2000, None); _j42._low_activity[4] = (2, _n42 - 10, None)
+_j42.purge_expired()
+check("G2d purge 清理语义逐字不变（过期删/未过期留）", _j42.cooldown == {"new": _n42 + 999}
+      and _j42._post_clean_ws == {"new": 1} and 1 not in _j42.pf_before and 2 in _j42.pf_before
+      and 3 not in _j42._low_activity and 4 in _j42._low_activity)
+
+# G3 游戏消息单写（[决策] 直写已删——周期末 [界面] 兜底循环承担文件侧，消除同条双行）
+check("G3 游戏消息不再 [决策] 直写（消除文件双写）",
+      '_log_write("决策", msg)' not in _eng26_src
+      and "for msg in self.cleaner.pop_game_msgs():" in _eng26_src)
+
+# G4 sniffer path 缓存身份校验（PID 复用不再继承旧路径；稳态缓存命中零额外查询）
+_sni42 = Sniffer()
+_og42b = {n: getattr(_wa42, n) for n in ("enum_processes", "get_all_processes_memory", "get_process_path",
+                                          "get_system_times", "get_foreground_pid", "get_process_memory",
+                                          "get_process_times")}
+try:
+    _wa42.enum_processes = lambda: [(999, "notepad.exe", 0)]
+    _wa42.get_all_processes_memory = lambda: {999: {"ws": 50 << 20, "priv": 40 << 20, "pf": 0,
+                                                    "kernel": 10, "user": 10, "create": 222}}
+    _wa42.get_system_times = lambda: {"idle": 0, "kernel": 0, "user": 0}
+    _wa42.get_foreground_pid = lambda: 0
+    _wa42.get_process_memory = lambda pid: None
+    _wa42.get_process_times = lambda pid: None
+    _pc42 = {"n": 0}
+    def _pp42(pid):
+        _pc42["n"] += 1
+        return r"C:\new\notepad.exe"
+    _wa42.get_process_path = _pp42
+    _sni42._path_cache[999] = (r"C:\old\chrome.exe", 111)   # 旧进程遗留缓存（create 不符）
+    _sni42._prev_times.clear()
+    _s42 = _sni42.snapshot()
+    check("G4 PID 复用即重查（不继承旧路径）",
+          _s42[0].path == r"C:\new\notepad.exe" and _pc42["n"] == 1,
+          "%s n=%d" % (_s42[0].path, _pc42["n"]))
+    _s42b = _sni42.snapshot()
+    check("G4b 同身份缓存命中（零额外 API）", _pc42["n"] == 1 and _s42b[0].path == r"C:\new\notepad.exe")
+finally:
+    for n, f in _og42b.items():
+        setattr(_wa42, n, f)
+
+# G5 ERIS 游戏轮按整周期 game_seen（可选参数；缺省回退瞬时值——既有调用/测试零影响）
+_d42t = tempfile.mkdtemp()
+_e42 = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join(_d42t, "state42.json"))
+_e42.cleaner._last_mode = "full"
+_e42._cycle_freed_mb = 500.0
+_e42._cycle_net_drop_mb = 250.0
+_n42a = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
+_r42a = _e42._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4,
+                           update_state=True, game_run=True)
+_n42b = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
+_r42b = _e42._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4,
+                           update_state=True, game_run=False)
+_n42c = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
+_r42c = _e42._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4, update_state=True)
+_n42d = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
+check("G5 game_run=True 照常算分但不喂标定（n 不增）",
+      isinstance(_r42a["total"], float) and _n42b == _n42a, "%s→%s" % (_n42a, _n42b))
+check("G5b game_run=False 正常累积；缺省回退瞬时值（既有调用零影响）",
+      _n42c == _n42b + 1 and _n42d == _n42c + 1, "%s→%s→%s→%s" % (_n42a, _n42b, _n42c, _n42d))
+_e42.shutdown()
+
+# G6 EFIS deepen 周期增量（终身均值 → 窗口口径，与 layer3_ran 同款接线）
+check("G6 deepen 周期增量接线", "deepen_cnt_delta" in _eng26_src
+      and "'deepen_cnt': deepen_cnt_delta" in _eng26_src
+      and "_prev_deepen_cnt" in _eng26_src and "_prev_deepen_extra" in _eng26_src)
+
+# G7 注释与实现一致（K 口径 p92；热加载 5 秒）
+check("G7 注释订正", "总分 p95" not in _eng26_src and "每秒检查一次" not in _eng26_src)
+
+print("\n[43] 2026-09-28 界面适配批次（死代码删除 + 导出按钮 + 终止弹窗风格）")
+_gui43 = _src26("memwise_gui.py")
+_wa43 = _src26("core", "winapi.py")
+# H1 死代码删除（证明记录六问：生产/测试/动态/外部四类消费方全查清；测试断言同批移除）
+check("H1 全屏检测族已删（含 RECT/GetWindowRect/MONITORINFO 连带）",
+      "is_foreground_fullscreen" not in _wa43 and "IGNORE_FULLSCREEN_CLASSES" not in _wa43
+      and "MonitorFromWindow" not in _wa43 and "def get_parent_process_name" not in _wa43
+      and "\nclass RECT(" not in _wa43 and "GetWindowRect = u32.GetWindowRect" not in _wa43)
+check("H1b 父进程名测试断言已同步移除（拼接规避自匹配）",
+      ("_wa.get_parent_" + "process_name(") not in open(__file__, encoding="utf-8").read())
+# H2 导出配置提示：新增「打开其所在位置」按钮（与确认一左一右并行）
+check("H2 dark_message 支持第二按钮（extra 参数）",
+      'def _dark_message(self, title, text, kind="info", extra=None):' in _gui43
+      and "btn_row" in _gui43)
+check("H2b 导出成功路径接线（explorer /select 选中该配置包）",
+      'extra=("打开其所在位置", _open_pkg_folder)' in _gui43 and "explorer /select," in _gui43)
+check("H2c 打开位置键入 i18n（英文界面零残留）", "打开其所在位置" in _EN_A)
+# H3 终止流程四弹窗统一程序暗色风格（原生 messagebox 已退出该流程；其余流程原生弹窗不在本批范围）
+check("H3 两按钮暗色确认弹窗", "def _confirm_dialog" in _gui43)
+check("H3b 终止流程全部程序风格",
+      'messagebox.showwarning(tr("禁止终止")' not in _gui43
+      and 'messagebox.askyesno(tr("终止进程")' not in _gui43
+      and 'messagebox.showinfo(tr("已完成")' not in _gui43
+      and 'messagebox.showerror(tr("失败")' not in _gui43
+      and '_confirm_dialog(tr("终止进程")' in _gui43
+      and '_dark_message(tr("禁止终止")' in _gui43)
+# H4 原生弹窗全量退出（2026-09-28 用户要求：剩余 4 处 messagebox + 原生输入框一并适配；按场景各适其位）
+check("H4 全 GUI 原生弹窗归零（messagebox/simpledialog 零残留 + 死导入已清）",
+      "messagebox." not in _gui43 and "simpledialog." not in _gui43
+      and "from tkinter import ttk, font as tkfont" in _gui43)
+check("H4b 输入弹窗与各场景接线",
+      "def _ask_string_dialog" in _gui43
+      and '_ask_string_dialog(tr("添加排除")' in _gui43
+      and '_dark_message(tr("已存在")' in _gui43
+      and '_confirm_dialog(tr("删除游戏进程")' in _gui43
+      and '_dark_message(tr("学习日志")' in _gui43)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

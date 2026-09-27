@@ -301,7 +301,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.6.036 启动· ": "MemWise v4.6.036 started · ",
+    "MemWise v4.6.044 启动· ": "MemWise v4.6.044 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -473,6 +473,7 @@ _EN = {
     "选择配置包": "Select Config Package",
     "导入文件夹中的配置包：": "Config packages in the import folder:",
     "配置包已导出: ": "Config package exported: ",
+    "打开其所在位置": "Open its folder",
     "可在程序数据目录的 import_export 文件夹找到，也可导入恢复": "Find it in the import_export folder under the program's data directory, or import it to restore",
     "即将重启程序以生效新配置…": "Restarting to apply the new configuration…",
     "配置已导入，重启程序后生效": "Config imported — restart to apply",
@@ -735,7 +736,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.6.036 PARES —— 智能内存看护": "MemWise v4.6.036 PARES — Intelligent Memory Custodian",
+    "MemWise v4.6.044 PARES —— 智能内存看护": "MemWise v4.6.044 PARES — Intelligent Memory Custodian",
 }
 
 

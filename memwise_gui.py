@@ -1,11 +1,11 @@
 """
-MemWise v4.6.036 GUI —— 图形界面
+MemWise v4.6.044 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
 import os, sys, time, tkinter as tk, queue
 from collections import deque
-from tkinter import ttk, simpledialog, messagebox, font as tkfont
+from tkinter import ttk, font as tkfont
 import ctypes
 import ctypes.wintypes as w
 
@@ -657,7 +657,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.6.036", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.6.044", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -681,7 +681,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.6.036")
+        self.root.title("MemWise v4.6.044")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -738,7 +738,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.6.036 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.6.044 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -797,7 +797,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.6.036")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.6.044")
                     if fw:
                         top = fw
                 except Exception:
@@ -1841,8 +1841,9 @@ class MemWiseGUI:
         cy = max(0, min(py + (ph - h) // 2, sh - h))
         win.geometry(f"{w}x{h}+{cx}+{cy}")
 
-    def _dark_message(self, title, text, kind="info"):
-        """暗色信息弹窗（单按钮"确定"）——程序风格统一（替代系统原生 messagebox）。
+    def _dark_message(self, title, text, kind="info", extra=None):
+        """暗色信息弹窗（单按钮"确定"；extra=(标签, 回调) 时在其左侧并行第二按钮，
+        如导出提示的「打开其所在位置」）——程序风格统一（替代系统原生 messagebox）。
         kind: info / warning / error，影响图标与标题色。"""
         icon = {"info": "ℹ", "warning": "⚠", "error": "❌"}.get(kind, "ℹ")
         tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(kind, "#e0e0e0")
@@ -1863,7 +1864,11 @@ class MemWiseGUI:
                   background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
         ttk.Label(dlg, text=text, justify="left", wraplength=440,
                   background="#1c1c1c", foreground="#aaa").pack(padx=18, pady=(2, 4))
-        ttk.Button(dlg, text=tr("确认"), command=dlg.destroy).pack(pady=(6, 14))
+        btn_row = ttk.Frame(dlg, style="DarkMsg.TFrame")
+        btn_row.pack(pady=(6, 14))
+        if extra:
+            ttk.Button(btn_row, text=tr(extra[0]), command=extra[1]).pack(side="left", padx=6)
+        ttk.Button(btn_row, text=tr("确认"), command=dlg.destroy).pack(side="left", padx=6)
         self._center_fit(dlg, min_w=430)
         dlg.deiconify()
         dlg.wait_window()
@@ -1898,6 +1903,83 @@ class MemWiseGUI:
         ttk.Button(btn, text=tr("确认但不备份"), command=lambda: _pick(False)).pack(side="left", padx=6)
         self._center_fit(dlg, min_w=500)
         dlg.deiconify()
+        dlg.wait_window()
+        return result["value"]
+
+    def _confirm_dialog(self, title, message, icon="warning"):
+        """两按钮暗色确认弹窗（确认/取消）——程序风格统一（替代系统原生 askyesno）。
+        返回 True（确认）/ False（取消）。与 _confirm_reset_dialog 同视觉语言。"""
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.focus_set()
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Style().configure("DarkMsg.TFrame", background="#1c1c1c")
+        ttk.Style().configure("Dark.TFrame", background="#1c1c1c")
+        _ic = {"info": "ℹ", "warning": "⚠", "error": "❌"}.get(icon, "⚠")
+        _tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(icon, "#ffb84d")
+        top = ttk.Frame(dlg, style="DarkMsg.TFrame")
+        top.pack(fill="x", padx=18, pady=(16, 2))
+        ttk.Label(top, text=_ic, font=("Segoe UI Emoji", 18),
+                  background="#1c1c1c", foreground=_tfg).pack(side="left", padx=(0, 12))
+        ttk.Label(top, text=title, font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
+        ttk.Label(dlg, text=message, justify="left", wraplength=440,
+                  background="#1c1c1c", foreground="#aaa").pack(padx=18, pady=(2, 4))
+        result = {"value": False}
+        btn = ttk.Frame(dlg, style="Dark.TFrame"); btn.pack(pady=14)
+        def _pick(v):
+            result["value"] = v; dlg.destroy()
+        ttk.Button(btn, text=tr("取消"), command=lambda: _pick(False)).pack(side="left", padx=6)
+        ttk.Button(btn, text=tr("确认"), command=lambda: _pick(True)).pack(side="left", padx=6)
+        self._center_fit(dlg, min_w=430)
+        dlg.deiconify()
+        dlg.wait_window()
+        return result["value"]
+
+    def _ask_string_dialog(self, title, prompt):
+        """暗色单行输入弹窗（确认/取消，回车确认、Esc 取消）——程序风格统一
+        （替代系统原生 askstring）。返回输入串（取消返回 None；空串原样返回，由调用方判空）"""
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.focus_set()
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Style().configure("DarkMsg.TFrame", background="#1c1c1c")
+        ttk.Style().configure("Dark.TFrame", background="#1c1c1c")
+        box = ttk.Frame(dlg, style="DarkMsg.TFrame")
+        box.pack(fill="x", padx=18, pady=(16, 2))
+        ttk.Label(box, text="⚠", font=("Segoe UI Emoji", 18),
+                  background="#1c1c1c", foreground="#ffb84d").pack(side="left", padx=(0, 12))
+        ttk.Label(box, text=title, font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
+        ttk.Label(dlg, text=prompt, justify="left", wraplength=380,
+                  background="#1c1c1c", foreground="#aaa").pack(padx=18, pady=(2, 4))
+        ent = tk.Entry(dlg, width=30, bg="#2a2a2a", fg="#e0e0e0", insertbackground="#e0e0e0",
+                       relief="flat", highlightthickness=1, highlightbackground="#444",
+                       highlightcolor="#419EF3", font=("Microsoft YaHei", 10))
+        ent.pack(padx=18, pady=(6, 2), ipady=4)
+        result = {"value": None}
+        def _ok(_e=None):
+            result["value"] = ent.get(); dlg.destroy()
+        def _cancel(_e=None):
+            dlg.destroy()
+        ent.bind("<Return>", _ok)
+        ent.bind("<Escape>", _cancel)
+        btn = ttk.Frame(dlg, style="Dark.TFrame"); btn.pack(pady=(6, 14))
+        ttk.Button(btn, text=tr("取消"), command=_cancel).pack(side="left", padx=6)
+        ttk.Button(btn, text=tr("确认"), command=_ok).pack(side="left", padx=6)
+        self._center_fit(dlg, min_w=380)
+        dlg.deiconify()
+        ent.focus_set()
         dlg.wait_window()
         return result["value"]
 
@@ -1941,7 +2023,13 @@ class MemWiseGUI:
         if missing:
             msg += "\n" + tr("缺少：") + "、".join(missing)
         msg += "\n" + tr("可在程序数据目录的 import_export 文件夹找到，也可导入恢复")
-        self._dark_message(tr("导出配置"), msg, kind="info")
+
+        def _open_pkg_folder():
+            import subprocess
+            # /select：资源管理器打开所在文件夹并选中该配置包（引号兼容路径空格）
+            subprocess.Popen(f'explorer /select,"{p}"')
+        self._dark_message(tr("导出配置"), msg, kind="info",
+                           extra=("打开其所在位置", _open_pkg_folder))
 
     def _on_import_config(self):
         if self.engine.daemon_running:
@@ -2024,11 +2112,11 @@ class MemWiseGUI:
 
         def add_excl():
             # 弹窗标题/提示必须随界面语言（2026-08-15 审查：原未包 tr，英文界面残留中文，键已存在）
-            name = simpledialog.askstring(tr("添加排除"), tr("输入程序名（不带后缀自动补全）:"), parent=win)
+            name = self._ask_string_dialog(tr("添加排除"), tr("输入程序名（不带后缀自动补全）:"))
             if name:
                 nm = _normalize_proc_name(name)
                 if nm in never:
-                    messagebox.showwarning(tr("已存在"), tr_msg(f"「{nm}」已在排除列表中"), parent=win)
+                    self._dark_message(tr("已存在"), tr_msg(f"「{nm}」已在排除列表中"), kind="warning")
                     return
                 lb.insert("end", nm)
                 never.append(nm)
@@ -2067,7 +2155,7 @@ class MemWiseGUI:
                               float(p.z_score), float(p.slope), bool(p.leak_suspect),
                               p.clean_count, p.probe_ok, p.probe_fail))
         if not info_data:
-            messagebox.showinfo(tr("学习日志"), tr("还没有学习到任何数据，先运行一会儿优化再来看"), parent=self.root)
+            self._dark_message(tr("学习日志"), tr("还没有学习到任何数据，先运行一会儿优化再来看"))
             return
 
         def _fmt_row(r):
@@ -2177,7 +2265,7 @@ class MemWiseGUI:
                 else:
                     new_names.append(n)
             if dup:
-                messagebox.showwarning(tr("已存在"), tr_msg(f"以下进程已在名单中：\n{', '.join(dup)}"), parent=win)
+                self._dark_message(tr("已存在"), tr_msg(f"以下进程已在名单中：\n{', '.join(dup)}"), kind="warning")
             if not new_names:
                 entry.delete(0, "end")
                 return
@@ -2200,8 +2288,8 @@ class MemWiseGUI:
             if not sel:
                 return
             name = lb.get(sel[0])
-            if not messagebox.askyesno(tr("删除游戏进程"),
-                    tr_msg(f"确定移除「{name}」吗？"), parent=win):
+            if not self._confirm_dialog(tr("删除游戏进程"),
+                    tr_msg(f"确定移除「{name}」吗？")):
                 return
             lb.delete(sel[0])
             cur = CFG.get("game_processes", []) or []
@@ -2293,17 +2381,17 @@ class MemWiseGUI:
             import os
             # 保护系统进程、自身与核心保护名单（svchost/explorer/dwm 等同样禁止终止，防误杀系统进程）
             if pid <= 4 or pid == os.getpid() or _is_system_core(name):
-                messagebox.showwarning(tr("禁止终止"), tr("不能终止系统进程或自身"), parent=win)
+                self._dark_message(tr("禁止终止"), tr("不能终止系统进程或自身"), kind="warning")
                 return
-            ok = messagebox.askyesno(tr("终止进程"),
-                tr_msg(f"确定要终止「{name}」(PID={pid}) 吗？\n\n该操作会强制结束进程，未保存的数据可能丢失。"),
-                icon="warning", parent=win)
+            # 终止流程四弹窗统一程序暗色风格（2026-09-28 用户要求；替代系统原生 messagebox）
+            ok = self._confirm_dialog(tr("终止进程"),
+                tr_msg(f"确定要终止「{name}」(PID={pid}) 吗？\n\n该操作会强制结束进程，未保存的数据可能丢失。"))
             if ok:
                 if winapi.terminate_process(pid):
-                    messagebox.showinfo(tr("已完成"), tr_msg(f"进程「{name}」已终止"), parent=win)
+                    self._dark_message(tr("已完成"), tr_msg(f"进程「{name}」已终止"))
                     _refresh()
                 else:
-                    messagebox.showerror(tr("失败"), tr_msg(f"无法终止进程「{name}」\n可能权限不足或进程已退出"), parent=win)
+                    self._dark_message(tr("失败"), tr_msg(f"无法终止进程「{name}」\n可能权限不足或进程已退出"), kind="error")
 
         tree.bind("<Double-1>", _on_item_click)  # 单击仅选中，双击才询问终止（防误触）
 

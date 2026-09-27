@@ -1,4 +1,4 @@
-﻿# MemWise v4.6.036
+﻿# MemWise v4.6.044
 
 ## 关于本工具 · *About This Tool*
 
@@ -44,7 +44,7 @@ MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
-Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single about 12.0 MB executable.
+Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 12.0 MB.
 
 MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization within each daemon cycle (60 s by default, adjustable from 10 to 3600 s). A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.
 
@@ -84,7 +84,7 @@ Operates in daemon cycles (60 s by default, adjustable from 10 to 3600 s) as log
 | Adaptive gap | The interval adjusts automatically (8–20 s base; the adaptation stays within 20 s) based on the previous round's average release volume per process — shorter when releases are large, longer when they are small |
 | Gap-fill light suppression | Lightweight system operations run at high frequency (zero disk impact): registry only in normal; deep/full additionally sustain standby and dirty-page reclamation (zero page-fault cost — caches are emptied as soon as they rebuild, keeping available memory high); heavyweight operations such as file-cache and volume flush run only in periodic harvests — the cache accumulates before each purge, yielding larger per-pass releases |
 | Gap-cycle optimization | One process-trimming pass with lightweight system operations runs at the end of each gap (normal semantics, no deep aggregation); the count follows the adaptive gap (roughly 3–6 times per 60-second cycle; longer cycles mean more of them) |
-| Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the system-wide working-set flush — deep at moderate-to-high usage, full always), then Layer 3 deep aggregation (full adds a rebound second pass) |
+| Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the system-wide working-set flush — deep at moderate-to-high usage, full always, though a round runs light when memory is comfortable and the previous release was quickly refilled), then Layer 3 deep aggregation (normal runs one round as usage nears the emergency threshold, deep/full always; full adds a rebound second pass; processes whose refill falls below the floor are no longer re-trimmed repeatedly when memory is comfortable) |
 
 The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. Timed-out processes are throttled by an escalating cooldown (×1–4) that decays after successful recovery. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting; an optional absolute fallback (default disabled) fires on the same logic when available memory is critically low even if the usage ratio has not reached the threshold.
 
@@ -126,7 +126,7 @@ A CLI is available via `memwise.py`, supporting status, optimize, daemon, profil
 | deep | ✅† | ✅ | ✅* | 始终 | 等待减半+稳态锁跳过+快速确认 | 重度使用后深度清扫 |
 | full | ✅† | ✅ | ✅* | 强制 | 不等+跳过活跃门槛+最大轮数 | 极限释放 |
 
-* 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时 quick/normal 不执行进程修剪。
+* 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时任何模式都不执行进程修剪。
 † 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行——但**内存宽裕（使用率<45%）且上一轮释放被快速回涨时，该轮自动转为轻量处理**（每进程只清一趟、跳过深度整理与二轮），占用回升或回涨放缓立即恢复全力。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
 
 System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). No deliberate sleeps (the file-cache clamp includes a dwell-poll of up to 0.8 s). Deselecting every operation means no system operation and no process trimming at all (the toggles are the authorization); quick mode runs only the standby purge, the dirty-page flush, and the registry-cache clear, and the other toggles do not apply there.
@@ -151,7 +151,7 @@ The four cleaning modes scale from light to aggressive (actual op count follows 
 | deep | ✅† | ✅ | ✅* | always | halved waiting + fast confirm | Deep cleaning after heavy use |
 | full | ✅† | ✅ | ✅* | forced | no waiting + max rounds | Maximum release |
 
-The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations); unchecking Process Idle Release skips process trimming in quick/normal.
+The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations); unchecking Process Idle Release skips process trimming in every mode.
 † *The system-wide WS flush runs in deep at moderate-to-high usage (≥33%) and never disturbs at low usage; manual triggers are unrestricted; full executes it unconditionally, except that when memory is comfortable (<45%) and the previous release was quickly refilled, that round runs light (single pass, no deep pass) and full strength returns as soon as usage rises or refill slows. Deep halves the waiting windows; full skips all waiting and the CPU/I/O activity gates — ultimate mode sets no activity limit.*
 
 ### 2.2 Layer2 — 进程级闲置页释放 · *Per-Process Idle Page Reclamation*
@@ -197,7 +197,7 @@ Executed during the final optimize pass in deep mode and throughout full mode:
 - *Deep standby prepass (dirty page flush + standby purge)*
 - *Full standby reclamation in three tiers (low-priority → full → dirty-page flush)*
 - *File, volume, and registry cache as configured*
-- *High-rebound process selection from Layer 2 bypasses for additional trim (idle confirmation and I/O-activity checks skipped in full; deep/full value floors apply)*
+- *High-rebound processes that Layer 2 did not trim are selected for an additional pass (idle confirmation and I/O-activity checks skipped in full; deep/full value floors apply)*
 - *Net delta tracking for EFIS to evaluate Layer 3 effectiveness*
 
 ### 2.4 持续优化架构 · *Continuous Optimization Architecture*
@@ -404,7 +404,7 @@ Game-mode engagement and exit take effect immediately with the game's start and 
 
 **自标定基线（冻结后不再漂移）**：每台机器、每种清理模式在用满一段（跳过预热期约 200 轮、再积累约 300 轮）后，用**自己的分位**建立基线并**冻结**——因此同一个表现**永远得到同一个分数**，读数不随使用时段或当天做什么而变；标定期间先以出厂基准起步、随本机实测逐步收敛（不会出现极端读数），冻结后即稳定在本机水平。基线存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即重新自标定。**长期偏离自检**：若近 200 轮的读数中位与冻结时的期望值相差超过 15 个百分点（说明基线不再描述这台机器），自动重标一次并在日志诊断行留痕。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与冻结基线数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
 
-影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 1 个百分点显示"相对平稳"。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
+影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 1 个百分点显示"相对平稳"；同一维度的正反两面不会在相邻两轮接连出现，避免同一信息正着说反着说来回复读。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
 
 A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing, keeping logs, the status bar, and the chart in lockstep. The X axis shows recent cycles (one bar per daemon cycle; the covered time span follows the adjustable cycle length).
 
@@ -412,9 +412,9 @@ The efficiency score spans five dimensions, each scored 0–140: **net optimizat
 
 Each cleaning mode has its own baseline and calibration data (the same dimension's scale differs markedly between modes — optimization cost and optimization volume are not on the same level across the four modes), so calibration accumulates per mode without cross-contamination.
 
-Self-calibrated baseline (frozen, no drift) — after a mode has run enough cycles (skipping the about 200-cycle warm-up, then accumulating about 300 cycles), the program builds that mode's baseline from **this machine's own measured quantiles** and freezes it: the same behaviour **always** scores the same, unaffected by time of day or by what else you were doing. During calibration readings start from the factory baseline and converge to this machine's own measurements; no extreme readings appear, and the scale settles once frozen. The baseline lives in `memwise_eris_calib.json`: excluded from config packages (machine-specific) and cleared by factory reset — deleting that file triggers a fresh self-calibration. **Drift check**: if the median of the last 200 cycles deviates from the value recorded at freeze time by more than 15 points (the baseline no longer describes this machine), the program re-calibrates once and records it in the diagnostic log line. **The four cleaning modes are independent**: each keeps its own baseline, participating dimensions and smoothing windows. Switching modes never pulls one mode's values into another, and never discards what another mode has accumulated (the first cycle after a switch only reports \"analysing\", and comparisons resume from the next cycle).
+Self-calibrated baseline (frozen, no drift) — after a mode has run enough cycles (skipping the about 200-cycle warm-up, then accumulating about 300 cycles), the program builds that mode's baseline from **this machine's own measured quantiles** and freezes it: the same behaviour **always** scores the same, unaffected by time of day or by what else you were doing. During calibration readings start from the factory baseline and converge to this machine's own measurements; no extreme readings appear, and the scale settles once frozen. The baseline lives in `memwise_eris_calib.json`: excluded from config packages (machine-specific) and cleared by factory reset — deleting that file triggers a fresh self-calibration. **Drift check**: if the median of the last 200 cycles deviates from the value recorded at freeze time by more than 15 points (the baseline no longer describes this machine), the program re-calibrates once and records it in the diagnostic log line. **The four cleaning modes are independent**: each keeps its own baseline, participating dimensions and smoothing windows. Switching modes never pulls one mode's values into another, and never discards what another mode has accumulated (the first cycle after a switch only reports "analysing", and comparisons resume from the next cycle).
 
-Factor wording: when efficiency rises, the highest-scoring dimension among those that also rose this round reports its positive word; when it falls, the lowest-scoring dimension among those that also fell reports its negative word; a change under 1 point shows "relatively steady". Three consecutive same-direction rounds append a 🔥 sustained-improvement / ⚠ sustained-decline tag (within the 50–100% band only). The first 3 rounds show "analysing factors…"; ≥100% marks gold dots with 🚀 exceptional efficiency, ≤50% coral-red dots with ⚠ efficiency anomaly. Hover tooltips reveal true values and the dominant factors; below the chart: average efficiency and key statistics.
+Factor wording: when efficiency rises, the highest-scoring dimension among those that also rose this round reports its positive word; when it falls, the lowest-scoring dimension among those that also fell reports its negative word; a change under 1 point shows "relatively steady"; the two sides of the same dimension never appear on adjacent rounds, so the same fact is not restated in reverse right after being reported. Three consecutive same-direction rounds append a 🔥 sustained-improvement / ⚠ sustained-decline tag (within the 50–100% band only). The first 3 rounds show "analysing factors…"; ≥100% marks gold dots with 🚀 exceptional efficiency, ≤50% coral-red dots with ⚠ efficiency anomaly. Hover tooltips reveal true values and the dominant factors; below the chart: average efficiency and key statistics.
 
 ---
 
@@ -460,7 +460,7 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **重置**：恢复默认——将全部配置、学习数据与调参结果恢复为默认状态，确认时可选先备份当前状态为配置包（存放于数据目录 import_export 文件夹，可再次导入），确认后自动重启程序生效；守护运行中无法执行。
 
-**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
+**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户，导出完成后可在提示中一键打开所在文件夹）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
 
 All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, suppression interval, daemon cycle, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.
 
@@ -473,7 +473,7 @@ All changes are saved immediately. During daemon operation, the exclusion list, 
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
 - *Global hotkeys — manual optimize (default ctrl+shift+m) and game-mode toggle (default ctrl+shift+g), independently configurable with format validation (at least one modifier + a letter or F1-F24), conflict detection, and busy-key fallback, taking effect instantly*
 - *Reset — factory reset restores all settings, learned data, and tuning results to defaults; optionally backs up the current state as a config package first (stored in the import_export folder of the data directory, re-importable), then restarts automatically to apply; unavailable while the daemon is running*
-- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running). The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
+- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing; the success notice offers a one-click Open its folder) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running). The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
 
 ---
 
@@ -599,7 +599,7 @@ MemWise/
 ├── data/                       # 运行时数据（自动迁移归拢）· Runtime Data
 │   ├── memwise_state.json      # 学习数据文件（自动保存/加载）· Learned State
 │   ├── memwise_efis_state.json # EFIS 状态文件 · EFIS State
-│   ├── memwise_eris_ewma.json  # ERIS 状态（五维滚动窗与上轮分数）· ERIS State (rolling windows & last scores)
+│   ├── memwise_eris_ewma.json  # ERIS 平滑窗（按清理模式分桶）· ERIS Smoothing Windows (per mode)
 │   ├── memwise_eris_calib.json # 效率刻度数据（各模式冻结基线与 K 线；不进配置包、恢复默认清除）· ERIS Scale Data
 │   ├── import_export/          # 配置包（导出/自动备份/待导入）· Config Packages (Export / Backup / Import)
 │   ├── watchdog.json           # 看门狗标记文件（自动管理）· Watchdog Marker
@@ -629,7 +629,7 @@ MemWise/
 │   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_regression.py            # 回归测试（537 项断言）· Regression Suite
+│   └── test_regression.py            # 回归测试（561 项断言）· Regression Suite
 ```
 
 ---

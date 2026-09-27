@@ -500,36 +500,45 @@ class PareJudger:
         return ok, freed, pf_delta
 
     def purge_expired(self):
+        """清理过期决策状态。取值/删除一律防御式（.get/.pop(k, None)）——straggler trim
+        线程（_bounded_submit 超时任务自然跑完）会并发 写入/删除 这些字典（check_feedback
+        的 pf_before.pop、mark_trimmed 的基线写/删、update_activity/_io_active 的写），
+        裸取值在理论交错下会 KeyError 击落守护线程（2026-09-28 审查；与 2026-08-30 F2
+        字典快照防护同哲学：根除类别）。清理语义与防御式改写前逐字一致。"""
         now = time.time()
         for k in list(self.cooldown.keys()):
-            if self.cooldown[k] < now:
-                del self.cooldown[k]
+            if self.cooldown.get(k, 0) < now:
+                self.cooldown.pop(k, None)
         # 清理过期 WS 基线（>1小时）
         for k in list(self._post_clean_time.keys()):
-            if now - self._post_clean_time[k] > 3600:
-                del self._post_clean_ws[k]
-                del self._post_clean_time[k]
+            if now - self._post_clean_time.get(k, 0) > 3600:
+                self._post_clean_ws.pop(k, None)
+                self._post_clean_time.pop(k, None)
         # 清理过期 PF 缓存
         for k in list(self.pf_before.keys()):
-            if now - self.pf_before[k][1] > 60:
-                del self.pf_before[k]
+            _e = self.pf_before.get(k)
+            if _e and now - _e[1] > 60:
+                self.pf_before.pop(k, None)
         # 清理过期 PF 速率基线（与 pf_before 同窗口，2026-09-11 审查 F47）
         for k in list(self._pf_hist.keys()):
-            if now - self._pf_hist[k][1] > 600:
-                del self._pf_hist[k]
+            _e = self._pf_hist.get(k)
+            if _e and now - _e[1] > 600:
+                self._pf_hist.pop(k, None)
                 self._pf_rate.pop(k, None)
         # 清理过期试探时间戳（>30分钟无活动的进程）
         for k in list(self._probe_last_time.keys()):
-            if now - self._probe_last_time[k] > 1800:
-                del self._probe_last_time[k]
+            if now - self._probe_last_time.get(k, 0) > 1800:
+                self._probe_last_time.pop(k, None)
         # 清理过期低活动计数（>30分钟未更新）
         for k in list(self._low_activity.keys()):
-            if now - self._low_activity[k][1] > 1800:
-                del self._low_activity[k]
+            _e = self._low_activity.get(k)
+            if _e and now - _e[1] > 1800:
+                self._low_activity.pop(k, None)
         # 清理过期 IO 缓存（>60s 未采样）
         for k in list(self._io_cache.keys()):
-            if now - self._io_cache[k][1] > 60:
-                del self._io_cache[k]
+            _e = self._io_cache.get(k)
+            if _e and now - _e[1] > 60:
+                self._io_cache.pop(k, None)
         # 锚点过期（7 天无更新）
         try:
             self.learner.stable_anchors.purge_expired(now)
@@ -583,7 +592,9 @@ class PareJudger:
         """喂锚点自然 WS 样本：排除清理后回填期（120s——回填不是自然稳态，防锚点被压低）；
         顺带驱动回弹观察（B 方案：比对快照 WS 结算回填率）"""
         now = now or time.time()
-        exclude = {n for n, t in self._post_clean_time.items() if now - t < 120}
+        # list() 快照迭代（2026-09-28 审查）：mark_trimmed（trim 线程）可能并发写本字典，
+        # 直接迭代 .items() 会 RuntimeError 击落调用线程（与 purge/pop_info 同款防护）
+        exclude = {n for n, t in list(self._post_clean_time.items()) if now - t < 120}
         self.learner.stable_anchors.feed(snaps, now, exclude)
         self.learner.rebound.observe(snaps, now)
 

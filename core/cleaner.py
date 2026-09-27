@@ -1035,7 +1035,10 @@ class PareCleaner:
             use = {"standby", "modified", "registry"} & (
                 ops_filter if ops_filter is not None else {"standby", "modified", "registry"})
             if use:
-                self._layer1_memreduct(full=False, ops=use)
+                # game_mode 透传（2026-09-28 审查）：quick 分支此前漏传，游戏运行中每个压制
+                # 周期都会对待机/脏页做磁盘操作——游戏保护唯一漏网分支（normal/deep/full
+                # 分支与引擎直调路径均已透传，此处补齐同一契约；非游戏 game_mode=False 逐字等价）
+                self._layer1_memreduct(full=False, ops=use, game_mode=self.game_mode)
             return _mk_result([], [])
         
         elif mode == "normal":

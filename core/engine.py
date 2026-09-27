@@ -380,7 +380,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.6.036 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.6.044 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -630,6 +630,8 @@ class MemWiseEngine:
         self._last_sys_ops = 0
         self._last_l3_ran = 0
         self._last_l3_extra = 0
+        self._prev_deepen_cnt = 0    # deepen 计数上一周期值（周期增量基准，2026-09-28 审查）
+        self._prev_deepen_extra = 0
         self._cfg_mtime = 0
         self._last_agg_peak = None
         self._last_pressure_mem = ''
@@ -679,6 +681,8 @@ class MemWiseEngine:
         self._chart_bar_seq = 0
         self._load_eris_state()  # 恢复 ERIS 状态
         self._last_sys_ops = 0
+        self._prev_deepen_cnt = 0
+        self._prev_deepen_extra = 0
         self._cycle_trimmed = 0
         self._cycle_failed = 0
         self._cycle_freed_mb = 0.0       # 本周期净释放（MB；quick 的系统级释放由此扣掉进程部分）
@@ -1165,7 +1169,7 @@ class MemWiseEngine:
                 self._prev_trim_count = cur_trim
                 self._prev_fail_count = cur_fail
                 now = time.time()
-                # 配置热加载：每秒检查一次 config.yaml 是否变更
+                # 配置热加载：每 5 秒检查一次 config.yaml 是否变更
                 if now - last_cfg_check > 5:
                     last_cfg_check = now
                     try:
@@ -1266,7 +1270,7 @@ class MemWiseEngine:
                 self._cycle_freed_mb = chart_accum
                 pf_delta_cycle = _drain_pf_delta(self.judger)
                 self._cycle_pf = float(pf_delta_cycle or 0)
-                self._push_round(chart_accum, m["pct"], harvest_partial)
+                self._push_round(chart_accum, m["pct"], harvest_partial, game_seen)
                 # Layer3 周期增量基线（累计口径会让诊断误判"持续触发"，导致 gate 持续爬升）
                 l3_ran_cur = s.get('layer3_ran', 0)
                 l3_extra_cur = s.get('layer3_extra', 0)
@@ -1274,6 +1278,14 @@ class MemWiseEngine:
                 l3_extra_delta = max(0, l3_extra_cur - self._last_l3_extra)
                 self._last_l3_ran = l3_ran_cur
                 self._last_l3_extra = l3_extra_cur
+                # deepen 周期增量（2026-09-28 审查）：cleaner.stats 的 deepen 计数永不重置，
+                # 原样传入会让 EFIS 的 waste 判定退化为终身均值——与 layer3 同口径按周期增量
+                _dp_cnt_cur = s.get('deepen_cnt', 0)
+                _dp_extra_cur = s.get('deepen_extra', 0)
+                deepen_cnt_delta = max(0, _dp_cnt_cur - self._prev_deepen_cnt)
+                deepen_extra_delta = max(0, _dp_extra_cur - self._prev_deepen_extra)
+                self._prev_deepen_cnt = _dp_cnt_cur
+                self._prev_deepen_extra = _dp_extra_cur
                 if not harvest_partial:
                     stats = {
                         'mem_pct': m['pct'],
@@ -1289,11 +1301,13 @@ class MemWiseEngine:
                         'agg': agg,
                         'pf_delta': pf_delta_cycle,
                         'cycle_duration': max(1.0, time.time() - cycle_start),
-                        'deepen_cnt': s.get('deepen_cnt', 0),
-                        'deepen_extra': s.get('deepen_extra', 0),
+                        'deepen_cnt': deepen_cnt_delta,
+                        'deepen_extra': deepen_extra_delta,
                         'layer3_ran': l3_ran_delta,
                         'layer3_extra': l3_extra_delta,
-                        'cooldown_cnt': sum(1 for t in self.judger.cooldown.values() if t > time.time()),
+                        # list() 快照迭代（2026-09-28 审查）：straggler trim 线程（_bounded_submit
+                        # 超时任务自然跑完）可能并发 mark_failed 增键，裸迭代会 RuntimeError 击落守护线程
+                        'cooldown_cnt': sum(1 for t in list(self.judger.cooldown.values()) if t > time.time()),
                         'repeat_fail': len(failed),
                         'suppress_cnt': self.judger.suppress_cnt,  # 锚点抑制拦截数（EFIS 自平衡诊断；每轮由 update_activity 重置）
                     }
@@ -1335,10 +1349,8 @@ class MemWiseEngine:
                 # ── 收集并显示算法日志消息 ──
                 # 游戏检测消息改走批量通道，防被 _log_batch 清屏擦除
                 for msg in self.cleaner.pop_game_msgs():
-                    try:
-                        _log_write("决策", msg)
-                    except Exception:
-                        pass
+                    # 文件侧由周期末 [界面] 兜底循环单写（2026-09-28 审查：此处再写 [决策]
+                    # 会同条双行——同一条游戏启停消息在 memwise.log 出现两次）
                     self._cycle_log_groups.append([msg])
                 for msg in self.learner.pop_info():
                     self._cycle_log_groups.append([msg])
@@ -1452,7 +1464,7 @@ class MemWiseEngine:
             self.events.put(('dae_stopped', None))
 
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
-    def _push_round(self, chart_accum, mem_pct, harvest_partial):
+    def _push_round(self, chart_accum, mem_pct, harvest_partial, game_seen=None):
         self._chart_bar_seq += 1
         # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
@@ -1467,7 +1479,8 @@ class MemWiseEngine:
             _pk, _pt = getattr(self, "_cycle_probe", (0, 0))
             result = self._compute_eris(list(self._chart_data), self._cycle_trimmed,
                                         self._cycle_failed, mem_pct, self._failed_weight,
-                                        probe_ok=_pk, probe_total=_pt, update_state=True)
+                                        probe_ok=_pk, probe_total=_pt, update_state=True,
+                                        game_run=game_seen)
             self._eff_data.append(result["total"])
             self._eff_factors.append(result.get("factors", ["冷启动"]))
             # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
@@ -1504,7 +1517,7 @@ class MemWiseEngine:
         return h
 
     def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5,
-                      probe_ok=0, probe_total=0, update_state=True):
+                      probe_ok=0, probe_total=0, update_state=True, game_run=None):
         """返回 {"total": 效率%, "factors": [...]}（接口与 v6 一致，展示层无需改动）。
         词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
         |Δ效率| < 1 → 相对平稳（趋势仍按真实方向记录，不再打断连续链）；同一维正负两面不作相邻两轮重复（词条层抑制，2026-09-26 用户规定）。"""
@@ -1537,7 +1550,10 @@ class MemWiseEngine:
         # 游戏轮次照常算分但不喂（游戏态清理行为与常态不同，混入会拉偏分位）
         _decl = E.MODE_VALID_DIMS.get(_mode, E.MODE_VALID_DIMS["normal"])
         _skip_track = [(_nodata[j] or (j not in _decl)) for j in range(5)]
-        _game = bool(getattr(self.cleaner, "game_mode", False))
+        # 游戏轮判定按"整周期 game_seen"（2026-09-28 审查）：周期内游戏任意时刻开启即整轮
+        # 不喂标定（与 EFIS 的 game_seen 口径一致）——原用 push 时刻的瞬时 game_mode，
+        # 游戏"周期内开过又退出"的轮次会漏判进标定窗口；game_run=None（直接调用/测试）回退瞬时值
+        _game = bool(getattr(self.cleaner, "game_mode", False)) if game_run is None else bool(game_run)
         self._last_eris_game_mode = _game
         # ── 平滑 → 赋分 → 效率 → 词条/趋势 ──
         with self._eris_lock:
@@ -1558,7 +1574,7 @@ class MemWiseEngine:
                                                               mode=_mode, game=_game)
             _valid = E.valid_dims(_mode, _nodata)
             _T = E.total_of(scores, valid=_valid, mode=_mode)          # 有效维均分折算值（0~700）
-            _k = E.k_value(self._eris_calib, _mode)                    # 冻结基线 K（自标定期总分 p95）
+            _k = E.k_value(self._eris_calib, _mode)                    # 冻结基线 K（自标定期总分 p92）
             eff = (_T / _k * 100.0) if _k > 0 else 0.0
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             _avoid = getattr(self, "_eris_last_word", None)   # 相邻抑制：上轮 (维度, 方向)

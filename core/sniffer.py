@@ -81,10 +81,17 @@ class Sniffer:
             if now: self._prev_times[pid] = now
             path = None
             if self._collect_path:
-                if pid in self._path_cache: path = self._path_cache[pid]
+                # 缓存值 = (path, create)：命中须创建时间一致——PID 复用会让新进程继承
+                # 旧进程路径（自身排除/黑名单/锚点键按 path 失真，2026-09-28 审查；
+                # 与 _prev_times 的 create 防护同构，2026-09-11 F42）。create 缺失（API 失败）
+                # 时 None==None 命中，与旧行为一致；create 事后可取则自动重查一次自愈
+                _create_now = now.get("create") if now else None
+                _ent = self._path_cache.get(pid)
+                if _ent is not None and _ent[1] == _create_now:
+                    path = _ent[0]
                 else:
                     path = winapi.get_process_path(pid)
-                    self._path_cache[pid] = path
+                    self._path_cache[pid] = (path, _create_now)
             result.append(ProcessSnapshot(pid=pid, name=name, ws=mem["ws"], pf=mem["pf"], priv=mem.get("priv",0),
                                           cpu=cpu, fg=(pid==fg_pid), path=path, parent=parent,
                                           create=now.get("create") if now else None,

@@ -42,9 +42,6 @@ class IO_COUNTERS(ctypes.Structure):
         ("WriteTransferCount", ctypes.c_ulonglong),
         ("OtherTransferCount", ctypes.c_ulonglong)]
 
-class RECT(ctypes.Structure):
-    _fields_ = [("left", w.LONG), ("top", w.LONG), ("right", w.LONG), ("bottom", w.LONG)]
-
 class LUID(ctypes.Structure):
     _fields_ = [("LowPart", w.DWORD), ("HighPart", w.LONG)]
 
@@ -85,7 +82,6 @@ GetSystemTimes = k32.GetSystemTimes; GetSystemTimes.argtypes=[ctypes.POINTER(FIL
 GlobalMemoryStatusEx = k32.GlobalMemoryStatusEx; GlobalMemoryStatusEx.argtypes=[ctypes.POINTER(MEMORYSTATUSEX)]; GlobalMemoryStatusEx.restype=w.BOOL
 GetProcessMemoryInfo = psapi.GetProcessMemoryInfo; GetProcessMemoryInfo.argtypes=[w.HANDLE,ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),w.DWORD]; GetProcessMemoryInfo.restype=w.BOOL
 GetForegroundWindow = u32.GetForegroundWindow; GetForegroundWindow.argtypes=[]; GetForegroundWindow.restype=w.HANDLE
-GetWindowRect = u32.GetWindowRect; GetWindowRect.argtypes=[w.HANDLE, ctypes.c_void_p]; GetWindowRect.restype=w.BOOL
 GetSystemMetrics = u32.GetSystemMetrics; GetSystemMetrics.argtypes=[w.INT]; GetSystemMetrics.restype=w.INT
 GetWindowThreadProcessId = u32.GetWindowThreadProcessId; GetWindowThreadProcessId.argtypes=[w.HANDLE,ctypes.POINTER(w.DWORD)]; GetWindowThreadProcessId.restype=w.DWORD
 IsWindowVisible = u32.IsWindowVisible; IsWindowVisible.argtypes=[w.HANDLE]; IsWindowVisible.restype=w.BOOL
@@ -193,47 +189,6 @@ def enum_visible_window_pids():
     except Exception:
         pass
     return pids
-
-# 非游戏全屏窗口，防止假阳性触发游戏模式
-IGNORE_FULLSCREEN_CLASSES = {
-    "Chrome_WidgetWin_1",
-    "MozillaWindowClass",
-    "PPTFrameClass",
-    "Progman",
-    "WorkerW",
-}
-
-class MONITORINFO(ctypes.Structure):
-    _fields_ = [("cbSize", w.DWORD), ("rcMonitor", RECT), ("rcWork", RECT),
-                ("dwFlags", w.DWORD)]
-
-
-def is_foreground_fullscreen():
-    """检测前台窗口是否为全屏模式（辅助场景识别）。
-    按窗口所在显示器判定（MonitorFromWindow + rcMonitor）——多显示器/负坐标
-    副屏同样正确（2026-08-30 审查：原单主屏假设使副屏全屏检测失效）"""
-    hwnd = GetForegroundWindow()
-    if not hwnd:
-        return False
-    # 窗口类名过滤
-    buf = ctypes.create_unicode_buffer(256)
-    if ctypes.windll.user32.GetClassNameW(hwnd, buf, 256):
-        if buf.value in IGNORE_FULLSCREEN_CLASSES:
-            return False
-    rect = RECT()
-    if not GetWindowRect(hwnd, ctypes.byref(rect)):
-        return False
-    hmon = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
-    mi = MONITORINFO()
-    mi.cbSize = ctypes.sizeof(MONITORINFO)
-    if hmon and ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
-        m = mi.rcMonitor
-        return (rect.left <= m.left and rect.top <= m.top
-                and rect.right >= m.right and rect.bottom >= m.bottom)
-    # 枚举失败兜底：主屏口径
-    screen_w = GetSystemMetrics(0)   # SM_CXSCREEN
-    screen_h = GetSystemMetrics(1)   # SM_CYSCREEN
-    return rect.left <= 0 and rect.top <= 0 and rect.right >= screen_w and rect.bottom >= screen_h
 
 def get_process_times(pid):
     """进程时间（FILETIME 100ns 单位；与 get_all_processes_memory 同源）。
@@ -581,30 +536,6 @@ try:
     k32.QueryFullProcessImageNameW.restype = w.BOOL
 except AttributeError:
     pass
-
-# ── 进程树（父进程查询）──
-
-def get_parent_process_name(pid):
-    """返回给定 PID 的父进程名，或 None（复用 PROCESSENTRY32W 结构类，32/64 位全兼容）"""
-    try:
-        snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-        if not snapshot or snapshot == INVALID_HANDLE_VALUE:
-            return None
-        try:
-            pe = PROCESSENTRY32W()
-            pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            if not Process32FirstW(snapshot, ctypes.byref(pe)):
-                return None
-            while True:
-                if pe.th32ProcessID == pid:
-                    return str(pe.szExeFile)
-                if not Process32NextW(snapshot, ctypes.byref(pe)):
-                    break
-            return None
-        finally:
-            CloseHandle(snapshot)
-    except Exception:
-        return None
 
 # ── 事件驱动：内存通知 + 等待 ──
 
