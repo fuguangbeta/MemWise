@@ -5,7 +5,7 @@ MemWise 无 UI 引擎 —— 守护循环 / ERIS / 轮次数据 / 事件队列 /
 ERIS 计算时机从"图表渲染时"改为"轮次数据产生时"（消除渲染时序耦合，见 _push_round）。
 """
 
-import os, sys, time, threading, math, queue, concurrent.futures, datetime, atexit, ctypes, subprocess
+import os, sys, time, threading, queue, concurrent.futures, datetime, atexit, ctypes, subprocess
 from collections import deque
 
 # ── 数据/资源路径（与原 GUI 同规则：exe 旁；dist 目录特判上移）──
@@ -49,10 +49,8 @@ if getattr(sys, "frozen", False):
         base = os.path.dirname(exe_dir)
     else:
         base = exe_dir
-    res_dir = sys._MEIPASS                       # 资源文件（只读，打包内嵌）
 else:
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    res_dir = base
 if base not in sys.path:
     sys.path.insert(0, base)
 
@@ -382,7 +380,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.6.023 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.6.035 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -903,9 +901,6 @@ class MemWiseEngine:
                 if not m: time.sleep(interval); continue
                 snaps = self._snap()
 
-                # dict() 快照迭代（2026-09-06 审查 F2）：手动优化线程可并发增键，
-                # 直接迭代会 RuntimeError 击落守护线程（周期开头，无局部兜底）
-                total_samples = sum(p.total_samples for p in dict(self.learner.profiles).values())
                 learned = len(self.learner.profiles)
 
                 self._cycle_log_groups = []  # 本周期末分组输出缓存（每项一个逻辑组，2026-08-30）
@@ -1014,7 +1009,7 @@ class MemWiseEngine:
                             self.cleaner._layer1_memreduct(full=False, ops=ops_gap, clean_self=False)
                             if mode != "quick":
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；
-                                # set 无序轮转自然覆盖全池）——full 池扩大后防循环拖慢
+                                # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢
                                 for ft_pid in list(self.cleaner._fast_track)[:5]:
                                     if ft_pid in self.cleaner.judger._game_pid_set:
                                         self.cleaner._fast_track.pop(ft_pid, None)
@@ -1022,6 +1017,13 @@ class MemWiseEngine:
                                     # 带回记录时的创建时间做身份复检（PID 复用防护，2026-09-11 审查 F12）
                                     if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid)):
                                         self.cleaner._fast_track.pop(ft_pid, None)
+                                    else:
+                                        # 成功者移到队尾：下轮轮转后续成员，全池覆盖（2026-09-26 审查
+                                        # F3：dict 插入序稳定，恒成功的高回填进程原会永久占住前 5 位，
+                                        # 池尾成员整轮不被覆盖）；取局部引用防与手动优化每轮重建的重绑竞态
+                                        _ft_map = self.cleaner._fast_track
+                                        if ft_pid in _ft_map:
+                                            _ft_map[ft_pid] = _ft_map.pop(ft_pid)
                         snap_skip -= 1
                         m2 = winapi.get_memory_status()
                         if m2:

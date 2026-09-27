@@ -16,6 +16,8 @@ BACKOFF_THRESHOLD = 0.7    # 回弹率触发后退
 RELEASE_THRESHOLD = 0.5    # 回弹率回落解除后退
 MIN_COUNT = 3              # 最少采样次数（防单次偶发）
 EWMA_LAMBDA = 0.3
+RECORD_TTL = 86400 * 30    # 学习记录保留期：30 天无结算且不在后退期即清理（2026-09-26 审查 F12；
+                           # 原先 ewma/count 永不清，是全项目唯一无界增长状态）
 
 
 def _key(path):
@@ -34,6 +36,7 @@ class ReboundLearner:
         self.count = {}          # key -> 采样次数
         self.backoff_until = {}  # key -> 后退截止时间戳
         self._pending = {}       # key -> (released, ws_after, until)
+        self.last_record = {}    # key -> 最近结算时间（旧状态文件无此键 ⇒ 缺项 = 永不清理）
 
     def begin(self, path, released, ws_after, now):
         """trim 成功后开始回弹追踪（释放量>0 且路径可解析）"""
@@ -68,6 +71,7 @@ class ReboundLearner:
         ratio = regained / max(released, 1)
         self.ewma[key] = EWMA_LAMBDA * ratio + (1 - EWMA_LAMBDA) * self.ewma.get(key, 0.3)
         self.count[key] = self.count.get(key, 0) + 1
+        self.last_record[key] = now
         if self.ewma[key] >= BACKOFF_THRESHOLD and self.count[key] >= MIN_COUNT:
             self.backoff_until[key] = now + BACKOFF_SECONDS
         elif self.ewma[key] < RELEASE_THRESHOLD:
@@ -83,12 +87,23 @@ class ReboundLearner:
         for k in list(self._pending.keys()):
             if now > self._pending[k][2] + 60:
                 del self._pending[k]
+        # 学习记录封口（2026-09-26 审查 F12）：30 天无结算且不在后退期的键整体清除；
+        # 旧状态文件无时间戳 ⇒ last_record 缺项 = 永不清理（None 哨兵，向后兼容零迁移——
+        # 不能用 0 当缺省：0 = 1970 年，比保留期更旧，会误清全部旧数据）
+        for k in list(self.ewma.keys()):
+            _lr = self.last_record.get(k)
+            if _lr is not None and now - _lr > RECORD_TTL and self.backoff_until.get(k, 0) <= now:
+                self.ewma.pop(k, None)
+                self.count.pop(k, None)
+                self.backoff_until.pop(k, None)
+                self.last_record.pop(k, None)
 
     def to_dict(self):
         return {
             "ewma": self.ewma,
             "count": self.count,
             "backoff_until": self.backoff_until,
+            "last_record": self.last_record,
         }
 
     @classmethod
@@ -103,6 +118,8 @@ class ReboundLearner:
                        if isinstance(v, (int, float))}
             r.backoff_until = {str(k): max(0.0, float(v)) for k, v in d.get("backoff_until", {}).items()
                                if isinstance(v, (int, float))}
+            r.last_record = {str(k): max(0.0, float(v)) for k, v in d.get("last_record", {}).items()
+                             if isinstance(v, (int, float))}
             # 旧格式可能含 "suggested" 键（suggest 通道已于 2026-09-06 移除）——
             # 多余键静默忽略，旧状态文件读取零影响
         except Exception:

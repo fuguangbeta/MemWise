@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.6.023 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.6.035 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -579,7 +579,7 @@ set_language("en")
 for reason in ("刚切走", "CPU活跃", "IO活跃", "稳态抑制", "回弹后退", "价值不足", "系统核心进程"):
     check(f"理由覆盖:{reason}", _EN.get(reason) is not None)
 # tooltip 拼接场景（相邻字面量合并后的完整串——精确匹配必失败，走片段全替换）
-_tooltip = ("按当前选择的清理模式立即执行一次内存优化\n" "游戏模式下游戏进程受完全保护，其余进程将由进程决策优化")
+_tooltip = ("「按当前选择的清理模式立即执行一次内存优化」\n" "游戏模式下游戏进程受完全保护，其余进程将由进程决策优化")
 _tr_r = tr(_tooltip)
 check("tooltip拼接翻译", "optimization" in _tr_r and "protected" in _tr_r and "process decisions" in _tr_r, _tr_r[:60])
 # "维持" 与 agg 标签（高/中/低）分离——粘连防护
@@ -769,16 +769,16 @@ _eng_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 check("engine 共享快照 _snap", "def _snap" in _eng_src and "_last_snaps" in _eng_src)
 # ── i18n 审查补键行为（T15 作保留/完成/即时优化/热键/自启日志）──
 set_language("en")
-check("T15 作保留键", any("作保留" in k for k in _EN_A))
+check("T15 新版键同步", any("「选择界面语言」" in k for k in _EN_A))
 check("完成键", tr("完成") == "Done")
 check("即时优化翻译", tr_msg("⚡ 即时优化（full）已启动") == "⚡ Instant optimize (full) started",
       tr_msg("⚡ 即时优化（full）已启动"))
 check("热键 tooltip 首行键", "手动优化全局快捷键" in _EN_A and "游戏模式开关全局快捷键" in _EN_A)
 check("管理员自启日志键", "管理员权限开机自启已启用" in _EN_A and "管理员权限开机自启已关闭" in _EN_A)
-check("T6 八分区键", "  窗口与托盘 — 关闭按钮行为、托盘左键行为" in _EN_A
-      and "  清理 — 6 种操作独立开关与清理深度" in _EN_A
-      and "  守护 — 紧急阈值、守护清理间隔" in _EN_A
-      and "  日志 — 文件日志开关" in _EN_A
+check("T6 八分区键", "  · 窗口与托盘 — 关闭按钮行为、托盘左键行为" in _EN_A
+      and "  · 清理 — 6 种操作独立开关与清理深度" in _EN_A
+      and "  · 守护 — 紧急阈值、守护清理间隔" in _EN_A
+      and "  · 日志 — 文件日志开关" in _EN_A
       and "窗口与托盘" in _EN_A and "守护" in _EN_A
       and "触发与日志" not in _EN_A)
 check("托盘初始 tip 键", "MemWise — 智能内存看护" in _EN_A)
@@ -1197,7 +1197,6 @@ check("F2 prior 快照迭代", "dict(profiles).items()" in _prior26_src)
 check("F2 meta 探索覆盖快照迭代", _meta26_src.count("dict(self.learner.profiles)") == 2)
 check("F2 policy 树5 快照迭代", "list(learner.profiles.values())" in _policy26_src)
 check("F2 learner save 快照迭代", _lm26_src.count("dict(self.profiles)") == 3)
-check("F2 engine 周期统计快照迭代", "dict(self.learner.profiles).values()" in _eng26_src)
 check("F2 engine kalman_r 遍历快照迭代", "list(self.learner.profiles.values())" in _eng26_src)
 # ── F3 守护互斥 + tmp 进程隔离 ──
 check("F3 守护互斥 mutex 接线", "MemWise_Daemon" in _eng26_src and "DAEMON_MUTEX_NAME" in _mw26_src)
@@ -1240,9 +1239,8 @@ check("F12 stable MIN_SAMPLES 不误伤", "MIN_SAMPLES = 5" in _src26("core", "s
 check("F4 最小化联动任务重建", _gui26_src.count("target, task_args = _admin_task_args()") == 2)
 check("F4 改名键生效", "开机自启动后最小化到托盘" in _i18n26_src and '"启动后最小化到托盘"' not in _i18n26_src)
 check("F4 引用文本联动", "配合「开机自启动后最小化到托盘」使用效果更佳" in _gui26_src)
-check("F5 T10 定稿文案", "打开期间自动刷新，可看到内存变化" in _i18n26_src
-      and "关闭窗口后重新打开可获取最新数据" not in _i18n26_src
-      and "打开期间自动刷新，可看到内存变化" in _gui26_src)
+check("F5 T10 定稿文案", "「所有进程当前的排行」" in _gui26_src and "打开期间自动刷新" in _gui26_src
+      and "「所有进程当前的排行」" in _EN_A)
 # ── 英文适配全量扫描补键（事件日志/终止确认尾段/tr_msg 对称）──
 # （对运行时 _EN 字典断言：键中 \n 经解释为真实换行，与源码字面转义形态无关）
 for _k in ("⚠ 图表异常: ", "GUI 优化: ", "MB 释放, ", "优化完成: ",
@@ -1253,8 +1251,9 @@ check("report_event 双语包裹", "tr_msg(f\"GUI 优化: " in _gui26_src
       and _mw26_src.count("winapi.report_event(\"MemWise\", tr_msg(") == 3)
 # tr_msg 去尾 \n 变体（与 tr 对称）：无尾换行目标串命中带尾 \n 键
 set_language("en")
-_t25en = tr_msg("清空系统文件读取缓存\n会降低文件操作速度直到缓存重建\n在指定的收割阶段执行\n\n⚠ 谨慎使用——文件缓存重建期间磁盘性能下降")
-check("tr_msg 尾\\n 变体对称", "谨慎" not in _t25en and "Use with care" in _t25en, _t25en[-60:])
+_t25en = tr_msg("「清空系统文件读取缓存」\n1. 在指定的收割阶段执行\n⚠ 会降低文件操作速度直到缓存重建\n⚠ 文件缓存重建期间磁盘性能下降")
+check("tr_msg 尾\\n 变体对称", "谨慎" not in _t25en and "rebuilds" in _t25en
+      and "Clear the system file read cache" in _t25en, _t25en[-60:])
 set_language("zh_CN")
 
 print("\n[30] 图表标度与效率阈值适配（2026-09-06 用户定稿）")
@@ -1388,8 +1387,8 @@ check("CLI export/import/reset 接线", "cmd_export" in _mw26_src and "cmd_impor
 check("backup 模块核心面", "PACKAGE_VERSION = 1" in _src26("core", "backup.py")
       and "restart_application" in _src26("core", "backup.py")
       and "watchdog" in _src26("core", "backup.py"))
-check("T6 分区联动两行", "  重置 — 恢复默认设置与数据" in _gui26_src
-      and "  配置传输 — 导出与导入配置包" in _gui26_src)
+check("T6 分区联动两行", "  · 重置 — 恢复默认设置与数据" in _gui26_src
+      and "  · 配置传输 — 导出与导入配置包" in _gui26_src)
 
 # ═══════════════════════════════════════════
 print("\n[32] 2026-09-11 全量审查修复回归（F1/F2/F3/F6/F7/F8/F9/F10/F11/F12/F24/F26/F27/F28/F29/F30/F32/F38/F39/F42/F43/F45/F47/F48 + 兼容性）")
@@ -1964,7 +1963,7 @@ check("v9 尾部线性外推（不断崖：越界按相邻段斜率延伸，钳 
       and abs(_sc9(5.5, [1.0, 2.0, 3.0, 4.0, 5.0]) - 87.5) < 1e-9
       and _sc9(-99.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == 0.0
       and _sc9(99.0, [1.0, 2.0, 3.0, 4.0, 5.0]) == 140.0)
-check("v9 窄维展宽下限（实测「清理畅通」跨度仅 19% ⇒ 展宽到 MIN_REL_SPAN=30%）",
+check("v9 窄维展宽下限（实测「清理畅通」跨度仅 19% ⇒ 展宽到 MIN_REL_SPAN=80%）",
       abs((_wd9([0.826, 0.963, 0.972, 0.980, 0.984])[4] - _wd9([0.826, 0.963, 0.972, 0.980, 0.984])[0])
           - _MRS9 * 0.972) < 1e-6)
 check("v9 宽维不被动（实测「释放规模」跨度 195% ⇒ 原样返回）",
@@ -2290,6 +2289,102 @@ check("表头点击语义（同列再点反向、换列默认降序）",
       and _g40["_tree_sort_toggle"](_st40, _cols40, _cols40[1]) == (1, False)
       and _g40["_tree_sort_toggle"](_st40, _cols40, _cols40[0]) == (0, True))
 _root40.destroy()
+
+print("\n[41] 2026-09-26 全量审查修复回归（F1-F16，16 项）")
+import core.winapi as _wa41
+from core.cleaner import PareCleaner as _PC41
+from core.rebound import ReboundLearner as _RL41
+_cl41 = _src26("core", "cleaner.py")
+_jd41 = _src26("core", "judger.py")
+_eg41 = _src26("core", "engine.py")
+_er41 = _src26("core", "eris.py")
+_mw41 = _src26("memwise.py")
+_J41 = {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}}
+
+# F1 无 PF 基线：freed 按两次工作集实测差计（旧行为把清理前总量当释放量返回）
+_j41 = PareJudger(PareLearner(), dict(_J41))
+_ok41, _fr41, _pf41 = _j41.check_feedback(7001, 5000, 200 << 20, 50 << 20, 2)
+check("F1 无PF基线 freed=实测差", _ok41 is True and _fr41 == 150 << 20 and _pf41 == 0,
+      "%s %.0fMB" % (_ok41, _fr41 / (1 << 20)))
+
+# F2 试探基线取实时读数（快照 150MB 陈旧；实时 before=100MB / after=60MB ⇒ 真实释放 40MB）
+_lr41b = PareLearner(); _c41b = _PC41(PareJudger(_lr41b, dict(_J41)))
+_lr41b.get("probe41.exe")
+_g41 = [{"ws": 100 << 20, "pf": 5}, {"ws": 60 << 20, "pf": 100}]
+_og41 = (_wa41.get_process_memory, _wa41.empty_ws)
+_wa41.get_process_memory = lambda pid: _g41.pop(0)
+_wa41.empty_ws = lambda pid: True
+class _S41:
+    pass
+_s41 = _S41(); _s41.pid = 4241; _s41.name = "probe41.exe"; _s41.ws = 150 << 20
+try:
+    _fr41b = _c41b._probe_process(_s41, _lr41b)[1]
+finally:
+    _wa41.get_process_memory, _wa41.empty_ws = _og41
+check("F2 试探基线取实时读数", _fr41b == 40 << 20, "%.0fMB" % (_fr41b / (1 << 20)))
+
+# F3 fast_track 成功移队尾（dict 插入序轮转覆盖全池；旧注释「set 无序轮转」已订正）
+check("F3 fast_track 成功移队尾轮转",
+      "_ft_map[ft_pid] = _ft_map.pop(ft_pid)" in _eg41 and "set 无序轮转" not in _eg41)
+
+# F4 退化基线（相邻分位相等）：微越界不再触底/顶格；健康基线不变由 [33] 既有断言守护
+_b41a = [1.0, 1.0, 2.0, 3.0, 4.0]
+_b41b = [1.0, 2.0, 3.0, 4.0, 4.0]
+check("F4 退化基线 p05==p25 不触底", abs(_sc9(0.9, _b41a) - 19.5) < 1e-9
+      and abs(_sc9(0.99, _b41a) - 19.95) < 1e-9, str(_sc9(0.9, _b41a)))
+check("F4 退化基线 p75==p90 不顶格", abs(_sc9(5.0, _b41b) - 85.0) < 1e-9
+      and abs(_sc9(4.9, _b41b) - 84.5) < 1e-9, str(_sc9(5.0, _b41b)))
+
+# F5 quick + operations=None = 契约全量三项（与其他模式 None=内部全量一致）
+_lr41c = PareLearner(); _c41c = _PC41(PareJudger(_lr41c, dict(_J41)))
+_calls41 = []
+_ops41 = ("empty_standby", "flush_modified_pages", "clear_registry_cache")
+_og41b = {n: getattr(_wa41, n) for n in _ops41}
+_om41 = _wa41.get_memory_used_bytes
+for _n in _ops41:
+    setattr(_wa41, _n, (lambda nm: lambda *a, **k: (_calls41.append(nm), True)[1])(_n))
+_wa41.get_memory_used_bytes = lambda: 7 << 30
+try:
+    _c41c.optimize([], _lr41c, "quick", operations=None)
+finally:
+    for _n, _f in _og41b.items():
+        setattr(_wa41, _n, _f)
+    _wa41.get_memory_used_bytes = _om41
+check("F5 quick+None=全量三项",
+      sorted(_calls41) == ["clear_registry_cache", "empty_standby", "flush_modified_pages"], str(_calls41))
+
+# F6/F7/F9/F10/F11/F13/F14/F15/F16 静态接线与口径
+check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
+check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
+_mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
+check("F9 manifest 版本随版", 'version="4.6.0.35"' in _mf41)
+check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
+      and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
+check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
+check("F13 res_dir 死变量已清", "res_dir" not in _eg41)
+check("F14 math 死导入已清", "threading, queue," in _eg41 and "threading, math," not in _eg41)
+check("F15 恒假 pid in never 已清", "pid in never" not in _jd41 and "pid in never" not in _cl41)
+check("F16 CLI 热加载同步日志闸门", "_eng._log_open if _log_new else _eng._log_close" in _mw41
+      and "_eng.CFG.update(CFG)" in _mw41)
+
+# F12 回弹学习记录封口：30 天无结算且不在后退期即清理；旧状态文件（无时间戳）永不清理
+_rb41 = _RL41()
+_old41 = time.time() - 40 * 86400
+for _i41 in range(3):
+    _rb41.record(r"d:\app\old41.exe", 100 << 20, 10 << 20, _old41 + _i41)
+_rb41.record(r"d:\app\new41.exe", 100 << 20, 10 << 20, time.time())
+_rb41.purge_expired(time.time())
+check("F12 回弹30天无记录清理、新记录保留", r"d:\app\old41.exe" not in _rb41.ewma
+      and r"d:\app\new41.exe" in _rb41.ewma and r"d:\app\new41.exe" in _rb41.last_record)
+_rb41old = _RL41.from_dict({"ewma": {r"d:\app\legacy.exe": 0.5},
+                            "count": {r"d:\app\legacy.exe": 2}, "backoff_until": {}})
+_rb41old.purge_expired(time.time())
+check("F12 旧状态文件（无时间戳）永不清理", r"d:\app\legacy.exe" in _rb41old.ewma)
+_rb41rt = _RL41()
+_rb41rt.record(r"d:\app\rt41.exe", 100 << 20, 10 << 20, time.time())
+_rb41back = _RL41.from_dict(_rb41rt.to_dict())
+check("F12 last_record 持久化往返", abs(_rb41back.last_record.get(r"d:\app\rt41.exe", 0)
+      - _rb41rt.last_record.get(r"d:\app\rt41.exe", 0)) < 1e-6)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

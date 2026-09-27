@@ -1,4 +1,4 @@
-﻿# MemWise v4.6.023
+﻿# MemWise v4.6.035
 
 ## 关于本工具 · *About This Tool*
 
@@ -38,13 +38,13 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 11.4 MB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 12.0 MB），零外部依赖。
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持每个守护周期内（默认 60 秒，可在设置中调整 10-3600 秒）零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
-Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single about 11.4 MB executable.
+Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single about 12.0 MB executable.
 
 MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization within each daemon cycle (60 s by default, adjustable from 10 to 3600 s). A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.
 
@@ -104,7 +104,7 @@ A CLI is available via `memwise.py`, supporting status, optimize, daemon, profil
 
 ### 2.1 Layer1 — 系统级内核清理 · *System-Level Kernel Reclamation*
 
-系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），零 sleep，<10ms。全部取消勾选时不执行任何系统操作，也不做进程清理（勾选即授权，界面文案同此口径）；quick 模式仅执行待机缓存、脏页写回、注册表缓存三项，其余开关在该模式不适用。
+系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），无固定等待（文件缓存钳制含最多 0.8 秒的驻留轮询）。全部取消勾选时不执行任何系统操作，也不做进程清理（勾选即授权，界面文案同此口径）；quick 模式仅执行待机缓存、脏页写回、注册表缓存三项，其余开关在该模式不适用。
 
 | 操作 | 配置键 | 默认 | Win32 API | 说明 |
 |------|--------|:----:|-----------|------|
@@ -129,7 +129,7 @@ A CLI is available via `memwise.py`, supporting status, optimize, daemon, profil
 * 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时 quick/normal 不执行进程修剪。
 † 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行——但**内存宽裕（使用率<45%）且上一轮释放被快速回涨时，该轮自动转为轻量处理**（每进程只清一趟、跳过深度整理与二轮），占用回升或回涨放缓立即恢复全力。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
 
-System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). Zero deliberate sleep, sub-10ms total latency. Deselecting every operation means no system operation and no process trimming at all (the toggles are the authorization); quick mode runs only the standby purge, the dirty-page flush, and the registry-cache clear, and the other toggles do not apply there.
+System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). No deliberate sleeps (the file-cache clamp includes a dwell-poll of up to 0.8 s). Deselecting every operation means no system operation and no process trimming at all (the toggles are the authorization); quick mode runs only the standby purge, the dirty-page flush, and the registry-cache clear, and the other toggles do not apply there.
 
 | Operation | Key | Default | Win32 API | Description |
 |------|--------|:----:|-----------|------|
@@ -402,7 +402,7 @@ Game-mode engagement and exit take effect immediately with the game's start and 
 
 每种清理模式各有一套标尺与自校准数据（同一维度在各模式间的口径与量级差异很大，例如「优化代价」与「优化量」在四种模式里并不在同一水平），校准数据按模式分别积累、互不污染。
 
-**自标定基线（冻结后不再漂移）**：每台机器、每种清理模式在用满一段（跳过预热期约 200 轮、再积累约 300 轮）后，用**自己的分位**建立基线并**冻结**——因此同一个表现**永远得到同一个分数**，读数不随使用时段或当天做什么而变；标定期间先以出厂基准起步、随本机实测逐步收敛（不会出现极端读数），冻结后即稳定在本机水平。基线存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即重新自标定。**长期偏离自检**：若近 200 轮的读数中位与冻结时的期望值相差超过 15 个百分点（说明基线不再描述这台机器），自动重标一次并在日志诊断行留痕。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与滚动刻度数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
+**自标定基线（冻结后不再漂移）**：每台机器、每种清理模式在用满一段（跳过预热期约 200 轮、再积累约 300 轮）后，用**自己的分位**建立基线并**冻结**——因此同一个表现**永远得到同一个分数**，读数不随使用时段或当天做什么而变；标定期间先以出厂基准起步、随本机实测逐步收敛（不会出现极端读数），冻结后即稳定在本机水平。基线存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即重新自标定。**长期偏离自检**：若近 200 轮的读数中位与冻结时的期望值相差超过 15 个百分点（说明基线不再描述这台机器），自动重标一次并在日志诊断行留痕。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与冻结基线数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
 
 影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 1 个百分点显示"相对平稳"。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
 
@@ -629,7 +629,7 @@ MemWise/
 │   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_regression.py            # 回归测试（520 项断言）· Regression Suite
+│   └── test_regression.py            # 回归测试（537 项断言）· Regression Suite
 ```
 
 ---

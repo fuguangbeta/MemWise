@@ -14,8 +14,8 @@ v9 设计（2026-09-26 用户定稿，整体替换 v8 的"滚动分位 + 四锚�
       2 ↑优化高通畅  成功 ÷（成功 + 失败）           被阻塞得少吗
       3 ↑试探命中高  试探合格 ÷ 试探总数             探索有效吗
       4 ↑优化量可观  本轮释放 ÷ 基线释放量           清得多吗
-  · **K = 自标定期总分 p95**（固定值 ⇒ 100% ≡ 本机典型高位，超常/异常率与日期无关）。
-    实测（本机两周 1670 轮 full 回放）：平均 75、超常 8.4%、异常 4.8%、平均环比 |Δ| 11.4 分。
+  · **K = 自标定期总分 p92**（固定值 ⇒ 100% ≡ 本机典型高位，超常/异常率与日期无关）。
+    实测（本机两周 1670 轮 full 回放）：平均 74.0、超常 6.2%、异常 7.2%、平均环比 |Δ| 6.2 分。
   · 长期偏离自检（**自指检验，不用固定带**）：冻结时记录窗口内总分中位对应的读数（期望中位），
     之后把近 LONG_WIN 轮的中位与之比较，偏差 > LONG_TOL 个百分点即重标一次并留痕——
     既能在冻结后一个窗口内发现"标定窗口不典型"（读数常年偏低/偏高），也能兜住机器永久性改变。
@@ -165,9 +165,15 @@ def score_of(x, base):
     if b[4] <= b[0]:
         return 50.0
     if x <= b[0]:
-        return max(SCORE_FLOOR, SCORE_ANCHORS[0] - (b[0] - x) / max(b[1] - b[0], 1e-12) * 15.0)
+        _d = b[1] - b[0]
+        if _d <= 0:
+            _d = b[4] - b[0]   # 退化基线（相邻分位相等）：按整体跨度取斜率，防微越界即触底/顶格
+        return max(SCORE_FLOOR, SCORE_ANCHORS[0] - (b[0] - x) / max(_d, 1e-12) * 15.0)
     if x >= b[4]:
-        return min(SCORE_CAP, SCORE_ANCHORS[4] + (x - b[4]) / max(b[4] - b[3], 1e-12) * 15.0)
+        _d = b[4] - b[3]
+        if _d <= 0:
+            _d = b[4] - b[0]
+        return min(SCORE_CAP, SCORE_ANCHORS[4] + (x - b[4]) / max(_d, 1e-12) * 15.0)
     for k in range(4):
         if x <= b[k + 1]:
             span = b[k + 1] - b[k]
@@ -225,7 +231,7 @@ def _live_k(bucket, mode, dims):
 
 
 def _freeze(win, mode=None):
-    """标定窗口（[[五维 raws]…]）→ 冻结基线：每维五点（含窄维展宽）+ K（总分 p95）"""
+    """标定窗口（[[五维 raws]…]）→ 冻结基线：每维五点（含窄维展宽）+ K（总分 p92）"""
     dims = []
     for j in range(len(DIM_WORDS)):
         vals = sorted(v for row in win for v in [row[j]] if v is not None)
@@ -337,7 +343,7 @@ def calibrate_and_score(raws, calib, update=True, skip=None, mode=None, game=Fal
     """赋分主入口：返回 (五维分数, 校准状态)。
 
     · 已标定 ⇒ 直接用冻结基线映射；未标定 ⇒ 用放宽的种子映射，并在 update 时累积标定窗口
-    · 标定窗口满 CALIB_N ⇒ 冻结基线（每维五点，含窄维展宽）+ K（总分 p95）写入并持久化
+    · 标定窗口满 CALIB_N ⇒ 冻结基线（每维五点，含窄维展宽）+ K（总分 p92）写入并持久化
     · `game=True` 照常算分但不累积；`skip[j]=True`（该维本轮无数据）记中性 50 且不累积
     · 偏离自检：近 LONG_WIN 轮总分中位与冻结时期望中位偏差 > LONG_TOL ⇒ 清空基线重标一次
       （recalib+1，诊断行可见）
@@ -441,7 +447,7 @@ def total_of(scores, valid=None, mode=None):
 
 
 def efficiency(scores, K=None, mode=None, valid=None):
-    """效率百分比 = 折算总分 ÷ K × 100（K = 该模式自标定期总分 p95）"""
+    """效率百分比 = 折算总分 ÷ K × 100（K = 该模式自标定期总分 p92）"""
     k = float(K if K else k_seed(mode))
     if k <= 0:
         return 0.0

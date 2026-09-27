@@ -238,7 +238,7 @@ class PareJudger:
             return False, "系统核心进程"
 
         never = self.cfg.get("never", [])
-        if name in never or snap.pid in never:
+        if name in never:
             return False, "用户黑名单"
 
         is_fg = getattr(snap, "fg", False)
@@ -389,7 +389,7 @@ class PareJudger:
             return False
         # 用户黑名单：不参与试探性清理
         never = self.cfg.get("never", [])
-        if name in never or snap.pid in never:
+        if name in never:
             return False
         # WS 下限（2026-09-11 审查 F48 恢复）：与 _trim_process 的"WS太小"门槛同为 1 MB。
         # 低于此值的进程即便清到极限也只释放几百 KB，却要为每次试探付出 0.2 s 等待 + PF 抖动；
@@ -483,7 +483,10 @@ class PareJudger:
         建立。扣除自身速率后，判据重新只衡量"清理本身带来的额外代价"，原基线全部保留。"""
         entry = self.pf_before.pop(pid, None)
         if entry is None:
-            return True, ws_before, 0
+            # 无 PF 基线（清理前内存读取失败）：freed 按两次工作集实测差计，不得把
+            # 清理前总量 ws_before 当释放量返回——否则该路径统计与学习信号按全量虚增
+            # （2026-09-26 审查 F1 端到端实证：实放 70MB 曾记 200MB）
+            return True, max(0, ws_before - ws_after), 0
         pf_before, t_before = entry
         dt = max(1.0, time.time() - t_before)
         pf_delta = max(0, pf_after - pf_before)

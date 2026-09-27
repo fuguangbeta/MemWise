@@ -1,5 +1,5 @@
 """
-MemWise v4.6.023 GUI —— 图形界面
+MemWise v4.6.035 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -657,7 +657,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.6.023", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.6.035", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -681,7 +681,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.6.023")
+        self.root.title("MemWise v4.6.035")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -738,7 +738,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.6.023 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.6.035 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -797,7 +797,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.6.023")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.6.035")
                     if fw:
                         top = fw
                 except Exception:
@@ -1083,13 +1083,13 @@ class MemWiseGUI:
         self.mem_bar_rect = self.mem_canvas.create_rectangle(0, 0, 0, 22, fill="#4caf50", width=0)
         self.mem_bar_text = self.mem_canvas.create_text(8, 11, anchor="w", text="--%", font=("Segoe UI", 9, "bold"), fill="#fff")
         self._add_tip(self.mem_canvas,
-            "内存条颜色指示当前内存使用率：\n"
+            "「内存条当前使用率」\n"
+            "1. 代表色：\n"
             "  · 绿色 — 低于60%\n"
             "  · 黄色 — 60~74%\n"
             "  · 橙色 — 75~89%\n"
             "  · 红色 — 高于90%\n"
-            "长期处于紧张色说明物理内存不足\n"
-            "建议关闭部分程序或考虑增加内存")
+            "⚠ 长期处于紧张色说明物理内存不足")
         info = ttk.Frame(f); info.pack(fill="x")
         self.lbl_total = ttk.Label(info, text=tr("总: ") + "-- GB"); self.lbl_total.pack(side="left", padx=(0,12))
         self.lbl_used = ttk.Label(info, text=tr("已用: ") + "-- GB"); self.lbl_used.pack(side="left", padx=(0,12))
@@ -1101,81 +1101,66 @@ class MemWiseGUI:
         self.btn_opt = ttk.Button(bf, text=tr("⚡ 优化"), command=self._on_optimize)
         self.btn_opt.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_opt,
-            "按当前选择的清理模式立即执行一次内存优化\n"
-            "游戏模式下游戏进程受完全保护，其余进程将由进程决策优化\n"
-            "\n"
-            "同时启动守护模式也会按当前的清理模式执行一次即时优化\n"
-            "（若还同时处于游戏模式，会无视手动优化操作，避免影响流畅）")
+            "「按当前选择的清理模式立即执行一次内存优化」\n"
+            "1. 游戏模式下游戏进程受完全保护，其余进程将由进程决策优化\n"
+            "2. 同时启动守护模式也会按当前的清理模式执行一次即时优化\n"
+            f"⚠ 热键默认{self._hk_display('hotkey')}（可在设置 → 全局热键中更改）\n"
+            "⚠ 若还同时处于游戏模式，会无视手动优化操作，避免影响流畅")
         self.btn_dae = ttk.Button(bf, text=tr("⛨ 守护"), command=self._on_daemon)
         self.btn_dae.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_dae,
-            "开启内存循环优化：每个守护周期结束输出一轮结果（周期默认 60 秒，可在设置中调整）\n"
-            "\n"
-            "采用阶段性多次轻量压制与周期末全量收割：\n"
-            "  · 轻量阶段 — 高频温和，以系统级清理为主\n"
-            "  · 收割阶段 — 按选择的清理模式进行进程内存的释放\n"
-            "\n"
-            "开启后会自动规划清理策略，根据系统状态持续优化调整\n"
-            "守护模式下有游戏自动检测，也可以手动开启游戏模式\n"
-            "内置崩溃监测，程序因意外崩溃后会自动尝试恢复\n"
-            "\n"
+            "「开启内存循环优化」\n"
+            "1. 采用阶段性多次轻量压制与周期末全量收割\n"
+            "2. 开启后会自动规划清理策略，根据系统状态持续优化调整\n"
+            "3. 守护模式下有游戏自动检测，也可以手动开启游戏模式\n"
+            "4. 内置崩溃监测，程序因意外崩溃后会自动尝试恢复\n"
+            "5. 每个守护周期输出一轮优化结果（周期可在设置中调整）\n"
             "⚠ 缓存类清理需要管理员权限，否则无法生效\n"
-            "⚠ 在full模式下会清理刚切走或正在工作的程序以最大释放\n"
-            "⚠ full 模式在内存宽裕且上轮释放被快速回涨时自动轻量处理（每进程单趟、跳过深度整理），占用回升即恢复")
+            "⚠ 在full模式下会清理刚切走或正在工作的程序以最大释放")
         self.btn_stop = ttk.Button(bf, text=tr("▶ 停止"), command=self._stop_daemon, state="disabled")
         self.btn_stop.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_stop,
-            "停止守护模式（若未开启点击无效）\n"
-            "停止后已学习的数据会自动保存，持久提供参考，不会丢失")
+            "「停止守护模式」\n"
+            "1. 停止后已学习的数据会自动保存，不会丢失")
         self.btn_excl = ttk.Button(bf, text=tr("⚙ 排除"), command=self._edit_exclusion_list)
         self.btn_excl.pack(side="left", padx=(0,6))
         self._add_tip(self.btn_excl,
-            "在这里管理不被任何形式清理的进程\n"
-            "可输入进程名如 chrome.exe，不带.exe后缀会自动补全\n"
-            "也可点击进程名后选择删除，回归可被优化的行列\n"
-            "（若不清楚目标程序的程序名，可在进程排行列表中查找）\n"
-            "\n"
-            "添加后该进程将被完全跳过：\n"
-            "  · 不释放其闲置内存\n"
-            "  · 不设低内存优先级\n"
-            "  · 不参与试探性清理\n"
-            "适合添加：浏览器、开发工具、播放器\n"
-            "\n"
+            "「管理不被任何形式清理的进程」\n"
+            "1. 可输入进程名如 chrome.exe，不带.exe后缀会自动补全\n"
+            "2. 可点击进程名后选择删除，回归可被优化的行列\n"
+            "3. 添加后该进程将被完全跳过\n"
+            "⚠ 若不清楚目标程序的程序名，可在进程排行列表中查找\n"
             "⚠ 排除太多程序会明显降低释放效果\n"
             "⚠ 系统核心进程始终受自动保护，无论是否在排除列表中")
         self.btn_set = ttk.Button(bf, text=tr("☰ 设置"), command=self._open_settings)
         self.btn_set.pack(side="left")
         self._add_tip(self.btn_set,
-            "打开设置面板进行配置调整\n"
-            "\n"
-            "可配置的内容：\n"
-            "  语言 — 中英文界面即时切换\n"
-            "  启动 — 以管理员权限开机自启动、启动时自动守护、开机自启动后最小化到托盘\n"
-            "  窗口与托盘 — 关闭按钮行为、托盘左键行为\n"
-            "  清理 — 6 种操作独立开关与清理深度\n"
-            "  游戏模式 — 管理游戏进程名单\n"
-            "  守护 — 紧急阈值、守护清理间隔\n"
-            "  日志 — 文件日志开关\n"
-            "  重置 — 恢复默认设置与数据\n"
-            "  配置传输 — 导出与导入配置包\n"
-            "  全局热键 — 优化/游戏模式快捷键设置")
+            "「打开设置面板进行配置调整」\n"
+            "1. 可配置的内容：\n"
+            "  · 语言 — 中英文界面即时切换\n"
+            "  · 启动 — 以管理员权限开机自启动、启动时自动守护、开机自启动后最小化到托盘\n"
+            "  · 窗口与托盘 — 关闭按钮行为、托盘左键行为\n"
+            "  · 清理 — 6 种操作独立开关与清理深度\n"
+            "  · 游戏模式 — 管理游戏进程名单\n"
+            "  · 守护 — 紧急阈值、守护清理间隔\n"
+            "  · 日志 — 文件日志开关\n"
+            "  · 全局热键 — 优化/游戏模式快捷键设置\n"
+            "  · 重置 — 恢复默认设置与数据\n"
+            "  · 配置传输 — 导出与导入配置包")
         self.btn_log = ttk.Button(bf, text=tr("📜 学习日志"), command=self._show_learn_log)
         self.btn_log.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_log,
-            "查看每个进程的详细学习数据\n"
-            "这些数据用于判断哪些进程值得优先清理\n"
-            "\n"
-            "各列含义：\n"
+            "「每个进程的详细学习数据」\n"
+            "1. 各列含义：\n"
             "  · 样本 — 已观察到的数据量，越多判断越可靠\n"
-            "  · α / β — 历史成功与失败的累计次数，决定可信度评分\n"
+            "  · α / β — 历史成败的累计次数，决定可信度评分\n"
             "  · 可信度 — 越高越值得清理，综合了历史表现和预期收益\n"
             "  · 收益比 — 预期释放量(MB) vs 性能代价(PF)，性价比参考\n"
             "  · 偏差 — 内存用量的异常波动程度，越大越反常\n"
             "  · 趋势 — 内存增长斜率，正数表示内存在持续增长\n"
             "  · 泄漏 — 是否疑似内存泄漏（持续增长且清完很快回涨）\n"
             "  · 清理 — 累计被清理次数\n"
-            "  · 试探成功 — 试探性清理的成功次数\n"
-            "  · 试探失败 — 试探性清理的失败次数")
+            "  · 试探成功 / 失败 — 试探性清理的成败次数")
 
         # 状态文字单独放一行，避免按钮被挤出
         self.lbl_st = ttk.Label(bf, text=tr("就绪 · ") + self._hk_display())
@@ -1190,21 +1175,17 @@ class MemWiseGUI:
         self.mode_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
         self.mode_combo.pack(side="left", padx=(4,0))
         self._add_tip(self.mode_combo,
-            "选择清理力度，优化按钮和守护模式共用此设置：\n"
-            "\n"
+            "「清理模式选择」\n"
+            "1. 四模式摘要：\n"
             "  · quick — 仅系统级清理，几秒完成，几乎无感知\n"
             "                   适合：随手一点，不想有任何感知\n"
-            "\n"
             "  · normal — 进程级 + 系统级清理，对日常使用影响较小\n"
             "                      适合：日常使用，兼顾效果与流畅\n"
-            "\n"
             "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n"
             "                  适合：内存偏紧，接受短暂变慢\n"
-            "\n"
             "  · full — 极限释放，尽最大可能腾出内存空间，包括刚切走或正在工作的程序内存\n"
             "               适合：内存告急，需要立刻腾出最多空间\n"
-            "               （另：内存宽裕且回涨快时转为轻量轮处理，占用回升即恢复全强度）\n"
-            "\n"
+            "⚠ 优化按钮和守护模式共用此设置\n"
             "⚠ 切换后清理模式将在下一轮生效，无需重启")
         # 自动持久化清理模式选择
         def _on_mode_change(*args):
@@ -1220,27 +1201,21 @@ class MemWiseGUI:
         self.btn_game = ttk.Button(mf, text=tr("🎮 游戏模式"), command=self._on_toggle_game)
         self.btn_game.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_game,
-            "手动开启或关闭游戏模式\n"
-            "\n"
-            "开启后：\n"
-            "  · 游戏进程受完全保护，不被触碰\n"
-            "  · 非游戏进程被持续清理，为游戏腾出内存\n"
-            "  · 跳过全系统缓存清理，避免拖慢磁盘\n"
-            "  · 为游戏腾出更多可用内存\n"
-            "\n"
-            f"热键：{self._hk_display('game_hotkey')}（可在设置 → 全局热键中更改）\n"
+            "「游戏模式开关」\n"
+            "1. 游戏进程受完全保护，不被触碰\n"
+            "2. 非游戏进程被持续清理，为游戏腾出内存\n"
+            "3. 跳过全系统缓存清理，避免拖慢磁盘\n"
+            f"4. 热键默认{self._hk_display('game_hotkey')}（可在设置 → 全局热键中更改）\n"
             "⚠ 程序默认不识别任何游戏——需先在设置 → 游戏模式中添加进程名\n"
             "⚠ 按程序名自动识别运行中的实例，同名程序的所有实例都会被保护\n"
-            "⚠ 常用辅助程序（语音、游戏平台）若受影响，可加入排除列表")
+            "⚠ 若不清楚目标程序的程序名，可在进程排行列表中查找")
         self.btn_rank = ttk.Button(mf, text=tr("📊 进程排行"), command=self._show_process_rank)
         self.btn_rank.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_rank,
-            "查看当前所有进程包括内存占用在内的排行\n"
-            "\n"
-            "按内存占用从大到小排列，打开时即时采集\n"
-            "打开期间自动刷新，可看到内存变化\n"
-            "\n"
-            "点击列标题可切换排序方式")
+            "「所有进程当前的排行」\n"
+            "1. 按指定标度按一定顺序排列\n"
+            "2. 打开期间自动刷新\n"
+            "3. 点击列标题可切换排序方式")
         ttk.Label(mf, text="  ").pack(side="left")
 
         # 统计
@@ -1248,36 +1223,37 @@ class MemWiseGUI:
         sf.pack(fill="x", padx=12, pady=4)
         self.lbl_sb = ttk.Label(sf, text=tr("系统杂项: ") + "0"); self.lbl_sb.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_sb,
-            "系统级清理操作的总次数\n"
-            "\n"
-            "包括待机缓存清空、脏页写回、文件缓存清除、卷缓存刷新、注册表缓存等\n"
-            "\n"
+            "「系统级清理操作的总次数」\n"
+            "1. 包括：\n"
+            "  · 待机缓存清空\n"
+            "  · 脏页写回\n"
+            "  · 文件缓存清除\n"
+            "  · 卷缓存刷新\n"
+            "  · 注册表缓存等\n"
             "⚠ 需要管理员权限才生效\n"
             "⚠ 清理后打开大文件可能短暂变慢")
         self.lbl_tr = ttk.Label(sf, text=tr("进程: ") + "0"); self.lbl_tr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_tr,
-            "进程闲置内存清理的总次数\n"
-            "\n"
-            "每成功清理一个进程计 1 次（含多轮深度清理）\n"
-            "对确认值得清理的进程，程序会让系统优先回收其闲置页面\n"
-            "\n"
+            "「进程闲置内存清理的总次数」\n"
+            "1. 对确认值得清理的进程，程序会让系统优先回收其闲置页面\n"
             "⚠ 数字大不一定释放得多——多次清理小进程也会累加\n"
             "⚠ 参考释放量与图表趋势更有意义")
         self.lbl_fr = ttk.Label(sf, text=tr("释放: ") + "0 MB"); self.lbl_fr.pack(side="left", padx=(0,14))
         self._add_tip(self.lbl_fr,
-            "所有轮次累计的内存释放总量\n"
-            "\n"
-            "包括进程闲置内存回收、系统缓存清理等所有操作释放的总和\n"
-            "释放后可用内存会立即上涨，但系统很快会重新分配给活跃程序\n"
-            "这是正常的内存管理行为，守护运行时若需准确参考可查看下方图表区域")
+            "「本次启动后程序累计的内存释放总量」\n"
+            "1. 包括：\n"
+            "  · 进程闲置内存回收\n"
+            "  · 系统缓存清理等\n"
+            "⚠ 释放后可用内存会立即上涨，是为系统重新分配给活跃程序")
         self.lbl_lr = ttk.Label(sf, text=tr("已学习: ") + "0"); self.lbl_lr.pack(side="right")
         self._add_tip(self.lbl_lr,
-            "已学习的进程数量\n"
-            "\n"
-            "程序持续观察每个进程的内存使用习惯\n"
-            "包括变化趋势、波动幅度、填充速度等\n"
-            "学习越久，后续的优化决策依据越充分\n"
-            "超过 7 天无活动的进程会被自动清除")
+            "「已学习的进程数量」\n"
+            "1. 程序持续观察每个进程的内存情况，包括：\n"
+            "  · 变化趋势\n"
+            "  · 波动幅度\n"
+            "  · 填充速度等\n"
+            "⚠ 学习越久，后续的优化决策依据越充分\n"
+            "⚠ 超过 7 天无活动的进程会被自动清除")
 
         # 日志 — 上半文本 + 下半实时柱图
         lf = ttk.LabelFrame(self.root, text=tr("日志"), padding=4)
@@ -1369,12 +1345,11 @@ class MemWiseGUI:
             "zh_CN" if lang_var.get() == LANGUAGES["zh_CN"] else "en"))
         # tooltip 绑整行（悬浮"界面语言:"标签或下拉框都触发——单个实例挂行内全部控件）
         self._add_tip_row(lang_row,
-            "选择界面语言，切换后立即生效（守护与统计数据不受影响）\n"
-            "\n"
+            "「选择界面语言」\n"
+            "1. 可选择：\n"
             "  · 简体中文 — 默认\n"
-            "  · English — 全界面切换为英文\n"
-            "\n"
-            "⚠ 程序界面内语言可完全切换，但运行日志文件(memwise.log/memwise.log.1)作保留")
+            "  · English — 全英文\n"
+            "⚠ 切换后立即生效")
         ttk.Label(langf, text=tr("（切换后立即生效）"), foreground="#888").pack(anchor="w", pady=(4,0))
 
         sf = ttk.LabelFrame(inner_frame, text=tr("启动"), padding=8)
@@ -1420,12 +1395,10 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text=tr("以管理员权限开机自启动"), variable=asa_var,
                         command=on_autostart_admin).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "以管理员权限开机自启动\n"
-            "\n"
-            "通过 Windows 计划任务实现\n"
-            "系统缓存类清理需要管理员权限\n"
-            "以最高权限启动后受限的功能可完整执行\n"
-            "\n"
+            "「管理员权限开机自启动」\n"
+            "1. 通过 Windows 计划任务实现\n"
+            "2. 以最高权限启动后受限的功能可完整执行\n"
+            "⚠ 系统缓存类清理需要管理员权限\n"
             "⚠ 需先以管理员身份运行过一次本程序才能启用")
 
         asd_var = tk.BooleanVar(value=CFG.get("auto_start_daemon", False))
@@ -1435,11 +1408,9 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text=tr("启动时自动开启守护"), variable=asd_var,
                         command=on_auto_daemon).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "程序启动后立即自动进入守护模式\n"
-            "\n"
-            "无需手动点击守护按钮，程序一打开就在后台运行\n"
-            "每个守护周期输出一轮优化结果（周期可调），同时持续自动调整优化策略\n"
-            "配合「开机自启动后最小化到托盘」使用效果更佳")
+            "「程序启动后立即自动进入守护模式」\n"
+            "1. 无需手动点击守护按钮，程序自启动后即在后台运行\n"
+            "2. 配合「开机自启动后最小化到托盘」使用效果更佳")
 
         asm_var = tk.BooleanVar(value=CFG.get("auto_start_minimize", False))
         def on_minimize():
@@ -1460,13 +1431,11 @@ class MemWiseGUI:
         ttk.Checkbutton(sf, text=tr("开机自启动后最小化到托盘"), variable=asm_var,
                         command=on_minimize).pack(anchor="w", pady=(2,0))
         self._add_tip(sf.winfo_children()[-1],
-            "开机自启动后自动最小化到系统托盘\n"
-            "\n"
-            "勾选后开机自启动时窗口不显示，仅在托盘区域显示图标\n"
-            "手动启动程序不受影响，窗口正常显示\n"
-            "双击托盘图标恢复窗口，右键弹出菜单\n"
-            "\n"
-            "需搭配「以管理员权限开机自启动」使用，实现开机静默运行")
+            "「开机自启动后自动最小化到系统托盘」\n"
+            "1. 勾选后开机自启动时仅在托盘区域显示图标\n"
+            "2. 双击托盘图标恢复窗口，右键弹出菜单\n"
+            "⚠ 手动启动程序不受影响，窗口正常显示\n"
+            "⚠ 需搭配「以管理员权限开机自启动」使用")
 
         # ─── 窗口与托盘（2026-08-16 归类整理：关闭行为与托盘左键行为同属窗口/托盘
         # 交互域——点窗口 X、点托盘图标；原分居"关闭行为"与"触发与日志"两栏）───
@@ -1474,15 +1443,15 @@ class MemWiseGUI:
         cbf.pack(fill="x", padx=12, pady=(10,4))
         ca_lbl = ttk.Label(cbf, text=tr("关闭按钮行为："))
         ca_lbl.pack(anchor="w")
-        self._add_tip(ca_lbl, "点击窗口关闭按钮时的行为：\n  · 最小化到托盘 — 隐藏到托盘继续守护\n  · 直接退出程序 — 退出并自动保存状态\n  · 每次询问 — 弹窗选择（默认）")
+        self._add_tip(ca_lbl, "「点击窗口关闭按钮时的行为」\n1. 选择行为：\n  · 最小化到托盘 — 隐藏到托盘继续守护\n  · 直接退出程序 — 退出并自动保存状态\n  · 每次询问 — 弹窗选择（默认）")
         self._close_var = tk.StringVar(value=CFG.get("close_action","ask"))
         def set_ca(v):
             global CFG
             CFG["close_action"]=v
             _save_cfg()
-        tips_ca = {"minimize":"点击关闭按钮后程序隐藏到系统托盘\n守护模式继续运行，双击托盘图标可恢复窗口",
-                   "exit":"点击关闭按钮后程序完全退出，守护模式停止\n所有状态自动保存",
-                   "ask":"点击关闭按钮后弹窗询问\n可选择最小化或退出（默认行为）"}
+        tips_ca = {"minimize":"「最小化到托盘」\n1. 点击关闭按钮后程序隐藏到系统托盘\n2. 守护模式继续运行，双击托盘图标可恢复窗口",
+                   "exit":"「直接退出程序」\n1. 点击关闭按钮后程序完全退出\n2. 所有状态自动保存",
+                   "ask":"「每次询问」\n1. 点击关闭按钮后弹窗询问\n2. 可选择最小化或退出"}
         for v, lbl in [("minimize", tr("\u6700\u5c0f\u5316\u5230\u6258\u76d8")), ("exit", tr("\u76f4\u63a5\u9000\u51fa\u7a0b\u5e8f")), ("ask", tr("\u6bcf\u6b21\u8be2\u95ee"))]:
             rb = ttk.Radiobutton(cbf, text=lbl, variable=self._close_var, value=v, command=lambda x=v: set_ca(x))
             rb.pack(anchor="w")
@@ -1499,7 +1468,7 @@ class MemWiseGUI:
         ta_idx = next((i for i,(_,v) in enumerate(map_vals) if v == ta_cur), 0)
         ta_combo.current(ta_idx)
         ta_combo.pack(fill="x", pady=(0,6))
-        self._add_tip(ta_combo, "托盘左键单击行为：\n  · 显示窗口 — 恢复主界面（默认）\n  · 一键清理 — 立即执行优化\n  · 无操作 — 忽略点击\n\n⚠ 仅在窗口隐藏时生效，任务栏存在图标（窗口显示）时锁定")
+        self._add_tip(ta_combo, "「托盘左键单击行为」\n1. 选择行为：\n  · 显示窗口 — 恢复主界面（默认）\n  · 一键清理 — 立即执行优化\n  · 无操作 — 忽略点击\n⚠ 仅在窗口隐藏时生效，任务栏存在图标时锁定")
         def set_tray_act(e):
             global CFG
             idx = ta_combo.current()
@@ -1534,50 +1503,44 @@ class MemWiseGUI:
         cb_ews = ttk.Checkbutton(ops_frame, text=tr("释放进程闲置内存"), variable=ws_var,
                                   command=lambda: toggle_op("ws", ws_var))
         cb_ews.pack(anchor="w")
-        self._add_tip(cb_ews, "释放各个进程当前未使用的闲置内存\n"
-                      "内存压力较大时也会清理前台进程\n"
-                      "\n"
+        self._add_tip(cb_ews, "「释放各个进程当前未使用的闲置内存」\n"
+                      "⚠ 内存压力较大时也会清理前台进程\n"
                       "⚠ 切回被清理的后台程序时可能多几百毫秒加载\n"
                       "⚠ 系统会自动按需调回，程序可正常继续使用")
         cb_sb = ttk.Checkbutton(ops_frame, text=tr("待机缓存清理"), variable=sb_var,
                                 command=lambda: toggle_op("standby", sb_var))
         cb_sb.pack(anchor="w")
-        self._add_tip(cb_sb, "清空系统已缓存但暂未使用的内存页\n"
-                      "是优化操作释放量的主要来源之一\n"
-                      "\n"
+        self._add_tip(cb_sb, "「清空系统已缓存但暂未使用的内存页」\n"
+                      "1. 是优化操作释放量的主要来源之一\n"
                       "⚠ 需要管理员权限，否则无法正常生效\n"
                       "⚠ 清理后首次打开大文件可能短暂变慢")
         cb_mp = ttk.Checkbutton(ops_frame, text=tr("脏页写回"), variable=mp_var,
                                 command=lambda: toggle_op("modified", mp_var))
         cb_mp.pack(anchor="w")
-        self._add_tip(cb_mp, "将已修改但未保存的缓存页写回磁盘后释放\n"
-                      "写回后页面变为干净页，系统可回收重用\n"
-                      "每次系统级清理均执行，不受压力阈值限制\n"
-                      "\n"
-                      "⚠ 少量磁盘写入，对固态硬盘几乎无影响")
+        self._add_tip(cb_mp, "「将已修改但未保存的缓存页写回磁盘后释放」\n"
+                      "1. 写回后页面变为干净页，系统可回收重用\n"
+                      "2. 每次系统级清理均执行，不受压力阈值限制\n"
+                      "⚠ 少量磁盘写入，但对固态硬盘几乎无影响")
         cb_fc = ttk.Checkbutton(ops_frame, text=tr("系统文件缓存"), variable=fc_var,
                                 command=lambda: toggle_op("filecache", fc_var))
         cb_fc.pack(anchor="w")
-        self._add_tip(cb_fc, "清空系统文件读取缓存\n"
-                      "会降低文件操作速度直到缓存重建\n"
-                      "在指定的收割阶段执行\n"
-                      "\n"
-                      "⚠ 谨慎使用——文件缓存重建期间磁盘性能下降")
+        self._add_tip(cb_fc, "「清空系统文件读取缓存」\n"
+                      "1. 在指定的收割阶段执行\n"
+                      "⚠ 会降低文件操作速度直到缓存重建\n"
+                      "⚠ 文件缓存重建期间磁盘性能下降")
         cb_vc = ttk.Checkbutton(ops_frame, text=tr("卷缓存刷新"), variable=vl_var,
                                 command=lambda: toggle_op("volume", vl_var))
         cb_vc.pack(anchor="w")
-        self._add_tip(cb_vc, "刷新各磁盘分区的写入缓存，释放占用的内存\n"
-                      "写入缓存是系统暂存磁盘写入的区域\n"
-                      "刷新后相应内存可被系统回收重用\n"
-                      "\n"
+        self._add_tip(cb_vc, "「刷新各磁盘分区的写入缓存」\n"
+                      "1. 刷新后相应内存可被系统回收重用\n"
                       "⚠ 需要管理员权限，否则无法正常生效\n"
                       "⚠ 每次刷新所有分区会短暂耗时但不丢失数据")
         cb_rg = ttk.Checkbutton(ops_frame, text=tr("注册表缓存清理"), variable=rg_var,
                                 command=lambda: toggle_op("registry", rg_var))
         cb_rg.pack(anchor="w")
-        self._add_tip(cb_rg, "清空系统注册表的读写缓存\n"
-                      "无磁盘读写操作，不中断正在运行的程序\n"
-                      "守护模式下始终执行，取消勾选后完全跳过")
+        self._add_tip(cb_rg, "「清空系统注册表的读写缓存」\n"
+                      "1. 勾选后在守护模式下始终执行\n"
+                      "⚠ 无磁盘读写操作，不中断正在运行的程序")
         # quick 模式下三个开关不适用（2026-09-11 审查 F6 的界面半边）：置灰 + 说明，
         # 避免用户"勾选了却没有执行"（quick 只执行待机缓存/脏页写回/注册表缓存三项）
         if CFG.get("clean_mode", "normal") == "quick":
@@ -1596,7 +1559,7 @@ class MemWiseGUI:
             _save_cfg()
         ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(ps_lbl, "每个进程反复清理的轮数（2~6，默认 4）\n越高释放越彻底，但耗时越长\n欲降低本程序性能占用建议 2~3\n对于更彻底的优化需求可设 5~6\n程序会在进程已无更多可释放内存时自动提前结束，不会为未执行的轮次额外等待")
+        self._add_tip(ps_lbl, "「每个进程反复清理的轮数」\n1. 可设置为 2~6 轮，默认 4 轮\n2. 越高持续释放能力越高，但耗时更长\n⚠ 欲降低本程序性能占用建议 2~3\n⚠ 对于更彻底的优化需求可设 5~6\n⚠ 程序会在进程已无更多可释放内存时自动提前结束")
         ps_sl = ttk.Scale(cf, from_=2, to=6, variable=passes_val, orient="horizontal",
                          command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
         ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
@@ -1611,16 +1574,13 @@ class MemWiseGUI:
         manage_btn = ttk.Button(gmf_btns, text=tr("管理游戏进程"), command=self._manage_game_procs)
         manage_btn.pack(side="left", padx=(0,6))
         self._add_tip(manage_btn,
-            "管理游戏模式监测的游戏进程名\n"
-            "\n"
-            "可配置的内容：\n"
+            "「管理游戏模式监测的游戏进程名」\n"
+            "1. 可配置的内容：\n"
             "  · 查看 — 列出全部已配置游戏进程名\n"
             "  · 添加 — 单独输入或逗号分隔批量输入，如 xxx,xxxx\n"
             "  · 删除 — 选中后删除，写错/误加/不想要随时移除\n"
-            "\n"
-            "不带.exe后缀自动补全，守护模式检测到后自动开启游戏保护\n"
-            "\n"
-            "⚠ 同名程序的所有实例都会被识别")
+            "2. 不带.exe后缀自动补全，守护模式检测到后自动开启游戏保护\n"
+            "⚠ 同名程序的所有实例都会被识别，不同名则需要手动添加")
 
         # ─── 守护（2026-08-16 归类整理：原"触发与日志"拆分，守护运行参数独立成栏）───
         gf = ttk.LabelFrame(inner_frame, text=tr("守护"), padding=8)
@@ -1631,7 +1591,7 @@ class MemWiseGUI:
             _save_cfg()
         em_val = tk.IntVar(value=CFG.get("emergency_threshold", 80))
         em_lbl = ttk.Label(gf, text=tr("紧急触发阈值: ") + f"{em_val.get()}%", foreground="#555")
-        self._add_tip(em_lbl, "内存使用率达到此百分比时，跳过等待立即执行全量优化\n范围 50-99%，默认 80%\n降低可更及时响应，提高阈值可减少清理频率")
+        self._add_tip(em_lbl, "「紧急清理阈值设定」\n1. 内存使用率达到此百分比时，跳过等待立即执行全量优化\n2. 范围 50-99%，默认 80%\n3. 降低可更及时响应，提高阈值可减少清理频率")
         em_lbl.pack(anchor="w")
         em_sl = ttk.Scale(gf, from_=50, to=99, variable=em_val, orient="horizontal",
                          command=lambda v: em_lbl.config(text=tr("紧急触发阈值: ") + f"{int(float(v))}%"))
@@ -1644,13 +1604,12 @@ class MemWiseGUI:
             _save_cfg()
         gp_lbl = ttk.Label(gf, text=tr("周期内轻量压制间隔: ") + f"{gap_val.get()} " + tr("秒"), foreground="#555")
         gp_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(gp_lbl, "守护模式每轮周期内的轻量阶段频率（8~20 秒，默认 12）\n"
-                         "用于控制周期内清理操作的密集程度\n"
-                         "间隔越短，同周期内清理次数越多，释放效果越彻底\n"
-                         "但对性能的消耗也越高\n"
-                         "欲降低本程序性能占用建议 15~20\n"
-                         "对于更彻底的优化需求可设 8~10\n"
-                         "（完整收割周期见下方「守护周期」）")
+        self._add_tip(gp_lbl, "「守护模式每轮周期内的轻量阶段频率」\n"
+                         "1. 可设置为 8~20 秒，默认 12 秒\n"
+                         "2. 用于控制周期内清理操作的密集程度\n"
+                         "3. 间隔越短清理次数越多，但性能要求更大\n"
+                         "⚠ 欲降低本程序性能占用建议 15~20\n"
+                         "⚠ 对于更彻底的优化需求可设 8~10")
         gp_sl = ttk.Scale(gf, from_=8, to=20, variable=gap_val, orient="horizontal",
                          command=lambda v: gp_lbl.config(text=tr("周期内轻量压制间隔: ") + f"{int(float(v))} " + tr("秒")))
         gp_sl.bind("<ButtonRelease-1>", lambda e: set_gap(gap_val.get()))
@@ -1677,9 +1636,10 @@ class MemWiseGUI:
         iv_sp.bind("<FocusOut>", set_iv)   # 手动输入：失焦或回车生效（与热键输入同款，防高频写盘）
         iv_sp.bind("<Return>", set_iv)
         self._add_tip_row(iv_row,
-            "完整收割周期：每个周期内先做多次轻量压制，周期末按当前模式执行一次完整收割\n"
-            "范围 10-3600 秒，默认 60\n"
-            "周期越短响应越及时，越长越省资源")
+            "「完整收割周期」\n"
+            "1. 在设定时间内做多次轻量压制以及一次最终完整收割\n"
+            "2. 可设置为 10-3600 秒，默认 60 秒\n"
+            "3. 周期越短响应越及时，越长越省资源")
 
         # ─── 日志（2026-08-16 归类整理：独立成栏）───
         lgf = ttk.LabelFrame(inner_frame, text=tr("日志"), padding=8)
@@ -1697,9 +1657,16 @@ class MemWiseGUI:
         lg_cb = ttk.Checkbutton(lgf, text=tr("记录运行日志到文件"),
                                 variable=lg_var, command=set_log)
         lg_cb.pack(anchor="w")
-        self._add_tip(lg_cb, "开启后，运行期间的全部信息写入日志文件（memwise.log/memwise.log.1）：\n"
-                      "每轮清理摘要、界面日志消息、启动/退出、异常、调参、游戏模式切换等\n"
-                      "日志自动轮转保留最近两份，无需手动清理")
+        self._add_tip(lg_cb, "「记录完整运行详情」\n"
+                      "1. 将运行期间的全部信息写入日志文件（memwise.log/memwise.log.1）\n"
+                      "2. 包括：\n"
+                      "  · 每轮清理摘要\n"
+                      "  · 界面日志消息\n"
+                      "  · 启动/退出\n"
+                      "  · 异常\n"
+                      "  · 调参\n"
+                      "  · 游戏模式切换等\n"
+                      "⚠ 日志自动轮转保留最近两份，无需手动清理")
 
         # ─── 全局热键（独立栏，汇总所有热键） ───
         hkf = ttk.LabelFrame(inner_frame, text=tr("全局热键"), padding=8)
@@ -1734,9 +1701,9 @@ class MemWiseGUI:
                 self._apply_hotkeys(changed={hk["key"]} if spec != old else set())
             e.bind("<FocusOut>", commit)
             e.bind("<Return>", commit)
-            tip = (f"{hk['name']}全局快捷键\n\n"
-                   f"按此组合：{'立即执行一次优化' if hk['action'] == 'hotkey' else '切换游戏模式（含确认弹窗）'}\n"
-                   f"格式：修饰键+按键，如 {hk['default']}\n\n"
+            tip = (f"「{hk['name']}全局快捷键」\n"
+                   f"{'1. 按此组合：立即执行一次优化' if hk['action'] == 'hotkey' else '1. 按此组合：切换游戏模式（含确认弹窗）'}\n"
+                   f"2. 格式：修饰键+按键，如 {hk['default']}\n"
                    "⚠ 至少包含一个修饰键（ctrl/alt/shift）\n"
                    "⚠ 不能与其他热键相同\n"
                    "⚠ 输入后点击其他位置或按回车生效，被占用时会提示")
@@ -1749,9 +1716,10 @@ class MemWiseGUI:
         reset_btn = ttk.Button(rf, text=tr("恢复默认"), command=self._on_factory_reset)
         reset_btn.pack(anchor="w")
         self._add_tip(reset_btn,
-            "将程序所有配置、学习数据与调参结果等恢复为默认状态\n"
-            "确认后将重启程序以生效默认配置\n"
-            "当前配置会自动备份到程序数据目录，可供再次导入\n"
+            "「重置程序所有配置」\n"
+            "1. 将程序所有配置、学习数据与调参结果等恢复为默认状态\n"
+            "2. 确认后将重启程序以生效默认配置\n"
+            "3. 当前配置会自动备份到程序数据目录，可供再次导入\n"
             "⚠ 此操作会清除所有使用数据，恢复前会再次确认防止误触\n"
             "⚠ 请确保守护模式未运行，否则无法重置")
 
@@ -1762,14 +1730,16 @@ class MemWiseGUI:
         export_btn = ttk.Button(xfer_btns, text=tr("导出配置"), command=self._on_export_config)
         export_btn.pack(side="left", padx=(0,6))
         self._add_tip(export_btn,
-            "将当前全部配置、学习数据与调参结果打包导出到数据目录\n"
-            "导出文件可用于本机恢复，也可分享给其他用户导入")
+            "「将当前配置导出」\n"
+            "1. 将当前全部配置、学习数据与调参结果打包导出到数据目录\n"
+            "2. 导出文件可用于本机恢复，也可分享给其他用户导入")
         import_btn = ttk.Button(xfer_btns, text=tr("导入配置"), command=self._on_import_config)
         import_btn.pack(side="left")
         self._add_tip(import_btn,
-            "从配置包导入全部配置、学习数据与调参结果\n"
-            "支持本程序导出与自动备份生成的配置包\n"
-            "导入前可先备份当前状态，导入后将重启程序生效\n"
+            "「导入配置包数据」\n"
+            "1. 从配置包导入全部配置、学习数据与调参结果\n"
+            "2. 支持本程序导出与自动备份生成的配置包\n"
+            "3. 导入前可先备份当前状态，导入后将重启程序生效\n"
             "⚠ 请首先将配置文件包存入导入文件夹内\n"
             "⚠ 导入会覆盖当前全部数据，若想保留当前配置请备份\n"
             "⚠ 请确认文件来源可信，警惕被植入病毒等破坏性程序")

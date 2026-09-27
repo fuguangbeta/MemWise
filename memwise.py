@@ -1,5 +1,5 @@
 """
-MemWise v4.6.023 PARES —— 智能内存看护
+MemWise v4.6.035 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -206,6 +206,13 @@ def cmd_daemon(args):
                     if mtime != getattr(cmd_daemon, "_cfg_mtime", 0):
                         cmd_daemon._cfg_mtime = mtime
                         CFG.update(_load_cfg())
+                        # 统一日志闸门同步（2026-09-26 审查 F16）：_log_write 读的是 engine.CFG，
+                        # 只更新本地 CFG 时运行中改日志开关在 CLI 路径不生效；同步后按新旧值开关 fd
+                        import core.engine as _eng
+                        _log_new = bool(CFG.get("log_to_file"))
+                        if _log_new != bool(_eng.CFG.get("log_to_file")):
+                            (_eng._log_open if _log_new else _eng._log_close)()
+                        _eng.CFG.update(CFG)
                         if not _cli_mode_override:
                             mode = CFG.get("clean_mode", "normal")
                         interval = CFG.get("interval", 60)
@@ -387,7 +394,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v4.6.023 PARES —— 智能内存看护"))
+        print(tr("MemWise v4.6.035 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

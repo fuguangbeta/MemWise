@@ -190,7 +190,7 @@ class PareCleaner:
         return use
 
     def _layer1_memreduct(self, full=True, total_procs=0, game_mode=False, ops=None, clean_self=True):
-        """系统级内核清理 — 无 sleep，<10ms
+        """系统级内核清理 — 无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）
         
         full=True  : 全量（含系统级 WS 全清）
         full=False : 轻量（跳过 WS 全清）
@@ -265,9 +265,10 @@ class PareCleaner:
     def _probe_process(self, snap, learner):
         """微型试探 — 对不确定进程做轻量测试 (单次清理, ~0.2s 等待)"""
         pid, name = snap.pid, snap.name
-        ws_before = snap.ws
-        # 读取实时 PF 作为基线（不用快照的旧值；读取失败时无基线 → 无法判定副作用，视为有效观测）
+        # 实时读取作为基线（快照值在决策到执行的秒级间隙可能已自然收缩，旧值会虚增
+        # 释放统计与学习信号，2026-09-26 审查 F2；读取失败回退快照值）——与 _trim_process 同口径
         mem_before = winapi.get_process_memory(pid)
+        ws_before = mem_before["ws"] if mem_before else snap.ws
         pf_before = mem_before["pf"] if mem_before else None
         if not winapi.empty_ws(pid):
             return False, 0, 0
@@ -305,6 +306,17 @@ class PareCleaner:
         #    2026-08-30 审查：原无条件拦截使 full 的 IO 豁免在最后一步失效、与
         #    "清理正在工作的程序"承诺矛盾）──
         try:
+            # 名单复核（与 quick_retrim 同款防御纵深，2026-09-26 审查 F10）：决策到执行
+            # 间隔数秒，用快照既有路径零成本复核，防期间名单变更后队列中的候选仍被执行
+            _rt_path = getattr(snap, "path", None)
+            if _rt_path:
+                if _is_self_path(_rt_path):
+                    return False, 0, 0, "程序自身"
+                _rt_name = _rt_path.rsplit("\\", 1)[-1].lower()
+                if _is_system_core(_rt_name):
+                    return False, 0, 0, "系统核心进程"
+                if _rt_name in self.judger.cfg.get("never", []):
+                    return False, 0, 0, "用户黑名单"
             if self.judger.aggressiveness < 0.35 and winapi.get_foreground_pid() == pid:
                 return False, 0, 0, "执行前转前台"
             if self.game_mode and pid in self.judger._game_pid_set:
@@ -899,7 +911,7 @@ class PareCleaner:
             # 与 Layer2 同款硬守卫：系统核心/用户排除列表在深度聚合同样生效
             if _is_system_core(name_lower):
                 continue
-            if name_lower in never or s.pid in never:
+            if name_lower in never:
                 continue
             # 前台进程低压力不碰（与 can_trim 同规则——Layer2 有前台保护，深度聚合不得缺失）
             if getattr(s, 'fg', False) and getattr(self.judger, 'aggressiveness', 0.0) < 0.35:
@@ -1018,8 +1030,10 @@ class PareCleaner:
             return r
 
         if mode == "quick":
-            # 仅系统级轻量清理，不碰进程，零卡顿（用户勾选 ∩ 3 步轻量集，未勾选则跳过）
-            use = {"standby", "modified", "registry"} & (ops_filter or set())
+            # 仅系统级轻量清理，不碰进程，零卡顿（用户勾选 ∩ 3 步轻量集；None=内部全量
+            # 契约与其他模式一致，2026-09-26 审查 F5——旧写法 ops_filter or set() 把 None 折成空）
+            use = {"standby", "modified", "registry"} & (
+                ops_filter if ops_filter is not None else {"standby", "modified", "registry"})
             if use:
                 self._layer1_memreduct(full=False, ops=use)
             return _mk_result([], [])
@@ -1103,7 +1117,7 @@ class PareCleaner:
                     if s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
                         continue
                     name_l = s.name.lower()
-                    if _is_system_core(name_l) or name_l in never or s.pid in never:
+                    if _is_system_core(name_l) or name_l in never:
                         continue
                     if getattr(s, 'fg', False) and _agg < 0.35:
                         continue  # 前台进程低压力不碰（与 can_trim 同规则）

@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "4.6.023"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "4.6.035"  # 版本同步面之一（manifest 记录用）
 PACKAGE_FILE_MAX = 64 * 1024 * 1024   # 单个状态文件上限（2026-09-11 加固：拒绝异常/恶意大包）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
