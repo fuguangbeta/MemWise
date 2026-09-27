@@ -380,7 +380,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.6.035 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.6.036 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -682,8 +682,8 @@ class MemWiseEngine:
         self._cycle_trimmed = 0
         self._cycle_failed = 0
         self._cycle_freed_mb = 0.0       # 本周期净释放（MB；quick 的系统级释放由此扣掉进程部分）
-        self._cycle_refill_mb = 0.0      # 上一 gap 的进程工作集回涨峰值（v9「净优化量」维，ERIS 读取）
-        self._gap_refill_mb = 0.0        # 当前 gap 的回涨峰值累加（收割时快照到上一行）
+        self._cycle_avail_start = 0.0    # 本周期起点可用内存（净留存率维的分子基准）
+        self._cycle_net_drop_mb = 0.0    # 本周期净下降（收割后定稿，v9「净优化量」维读取）
         self._last_harvest_ws = None
         self._last_harvest_freed = 0
         # 回弹状态机跨周期字段一并重置（2026-08-14 审查：仅重置 harvest 两字段时，
@@ -899,6 +899,7 @@ class MemWiseEngine:
                 # 60s 周期从工作阶段继续计算（等待已计入 cycle_start）
                 m = winapi.get_memory_status()
                 if not m: time.sleep(interval); continue
+                self._cycle_avail_start = m["avail"]   # 周期起点可用内存（净留存率维分子基准）
                 snaps = self._snap()
 
                 learned = len(self.learner.profiles)
@@ -956,13 +957,6 @@ class MemWiseEngine:
                         if snap_skip <= 0:
                             snaps = self._snap()
                             snap_skip = 6
-                            # 回涨测量（v9「净优化量」维）：gap 期间进程工作集相对上轮收割后的
-                            # 最大回升量。取 max 而非末值——gap 内 gap-fill 持续清理，末值会被低估
-                            if self._last_harvest_ws is not None:
-                                _ws_ref = sum(getattr(s, 'ws', 0) for s in snaps)
-                                _rf = max(0, _ws_ref - self._last_harvest_ws)
-                                if _rf > getattr(self, "_gap_refill_mb", 0.0):
-                                    self._gap_refill_mb = float(_rf)
                             # 回弹驱动（C 方案，2026-08-14）：full 模式回填率 >60% → gap 立即收紧，
                             # 提前进入收割（回弹越猛压得越密；net_freed≤32MB 的微小轮跳过判断）
                             if mode == "full" and self._last_harvest_freed > (32 << 20) \
@@ -1130,10 +1124,6 @@ class MemWiseEngine:
                 agg_max = max(agg_max, agg)  # 捕获全量模式强制的 agg 峰值
                 # 回弹驱动基线（C 方案）：记录 harvest 后总 WS 与释放量，供下一周期 gap 回填率判断
                 self._last_harvest_freed = max(result.get("net_freed", 0), 0)
-                # 快照上一 gap 的回涨峰值供本轮 ERIS 读取，再清零开始新 gap（v9；
-                # 2026-09-26 修正：原先直接清零，导致「净优化量」维恒读到 0、恒判满分）
-                self._cycle_refill_mb = self._gap_refill_mb
-                self._gap_refill_mb = 0.0
                 try:
                     _hs = self._snap()
                     self._last_harvest_ws = sum(getattr(s, 'ws', 0) for s in _hs)
@@ -1143,6 +1133,9 @@ class MemWiseEngine:
                 m_fresh = winapi.get_memory_status()
                 if m_fresh:
                     m = m_fresh
+                # 净留存率维分子（v9 dim0 重定义 2026-09-27）：本轮净下降 = 周期末可用 − 周期初可用
+                # （总释放由 _cycle_freed_mb 承载；两侧同为全局口径，比值 = 释放量里净留存的比例）
+                self._cycle_net_drop_mb = max(0.0, float(m["avail"] - self._cycle_avail_start)) / (1 << 20)
                 l2_all.extend(result.get("layer2", []))
                 probe_all.extend(result.get("probe", []))
                 l2_results = l2_all
@@ -1521,10 +1514,13 @@ class MemWiseEngine:
         if not data:
             return {"total": 0.0, "factors": ["冷启动"]}
         # ── 五维原始量（v9：全部有界比值、越大越好；无数据一律 None ⇒ 记中性 50）──
-        _proc_mb = float(getattr(self, "_cycle_proc_mb", 0.0) or 0.0)        # 本周期**进程清理**释放量
-        _refill_mb = float(getattr(self, "_cycle_refill_mb", 0.0) or 0.0)    # gap 期间进程工作集回涨峰值
-        # ① 净优化量 = 进程释放 ÷（进程释放 + 回涨）：留不住 ⇒ 这轮释放是白清
-        raw1 = (_proc_mb / (_proc_mb + _refill_mb)) if (_proc_mb > 0 and _refill_mb >= 0) else None
+        _proc_mb = float(getattr(self, "_cycle_proc_mb", 0.0) or 0.0)        # 本周期**进程清理**释放量（优化代价维分子）
+        _net_mb = float(getattr(self, "_cycle_net_drop_mb", 0.0) or 0.0)     # 本周期净下降（周期末可用 − 周期初可用）
+        _freed_mb = float(getattr(self, "_cycle_freed_mb", 0.0) or 0.0)      # 本周期总释放（全部通道）
+        # ① 净优化量 = 净下降 ÷ 总释放：释放量里净留存下来的比例（2026-09-27 重定义：
+        #    旧口径"进程释放÷(进程释放+全机回涨)"分子分母世界不同 ⇒ 恒贴 0，实机日志实证）
+        #    净下降 ≤ 0（外部需求吞没释放，不可归因）⇒ 记无数据，该轮由其余四维归一承担
+        raw1 = (_net_mb / _freed_mb) if (_freed_mb > 0 and _net_mb > 0) else None
         # ② 优化代价 = 进程释放 MB ÷ 缺页代价（每单位代价换回多少）
         _pf = float(getattr(self, "_cycle_pf", 0) or 0)
         raw2 = (_proc_mb / _pf) if (_pf > 0 and _proc_mb > 0) else None

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.6.035 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.6.036 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1981,7 +1981,7 @@ check("v9 词条方向（升取最高上升维、降取最低下降维；无变�
 check("v9 种子结构（5 模式键齐全 × 5 维 × 五点；full 为实测值）",
       sorted(_sd9("full")) == ["full"] or True)
 check("v9 未标定用放宽种子（开局读数偏中性、不尖峰）",
-      all(20.0 <= v <= 80.0 for v in _cs9([0.30, 0.001, 0.97, 0.26, 1024.0], _nc9(),
+      all(20.0 <= v <= 80.0 for v in _cs9([0.10, 0.001, 0.97, 0.26, 1024.0], _nc9(),
                                           update=False, mode="full")[0]))
 _c40 = _nc9()
 for _i40 in range(_CS9 + 200):      # 跳过预热期后再跑 200 轮，窗口才真正在累积
@@ -2011,11 +2011,11 @@ for _i in range(_LW9 + 80):
 check("v9 漂移看护：连续跑出安全带 ⇒ 自动重标一次（机器/用法永久改变的唯一自适应通道）",
       _rc9(_cb9, "deep") >= 1 and _cal9(_cb9, "deep") is False)
 _eng9 = _eng32_src
-check("v9 引擎接线（新五维原始量 + 回涨测量 + 冻结 K；旧接口零残留）",
-      all(k in _eng9 for k in ("_cycle_refill_mb", "_cycle_proc_mb", "E.k_value", "E.total_of",
+check("v9 引擎接线（新五维原始量 + 净留存率 + 冻结 K；旧接口零残留）",
+      all(k in _eng9 for k in ("_cycle_net_drop_mb", "_cycle_proc_mb", "E.k_value", "E.total_of",
                                "E.pick_factor", "E.smooth3_append", "E.valid_dims"))
       and all(k not in _eng9 for k in ("E.k_update", "E.warmup_total", "_customary_sys",
-                                       "_sys_rel_by_mode")))
+                                       "_sys_rel_by_mode", "_cycle_refill_mb", "_gap_refill_mb")))
 _e9src = _src26("core", "eris.py")
 check("v9 删除 v8 机制（滚动分位/四锚点/段宽地板/深段/对数维/滚动 K 窗口 的**代码**已清除）",
       all(k not in _e9src for k in ("K_WIN =", "K_SEED_N =", "LOG_DIMS =", "SEG_FRAC =",
@@ -2357,7 +2357,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.6.0.35"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.6.0.36"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2385,6 +2385,37 @@ _rb41rt.record(r"d:\app\rt41.exe", 100 << 20, 10 << 20, time.time())
 _rb41back = _RL41.from_dict(_rb41rt.to_dict())
 check("F12 last_record 持久化往返", abs(_rb41back.last_record.get(r"d:\app\rt41.exe", 0)
       - _rb41rt.last_record.get(r"d:\app\rt41.exe", 0)) < 1e-6)
+
+# 净优化量维（dim0）净留存率口径：净下降 ÷ 总释放（2026-09-27 重定义；旧口径与全机回涨相除恒贴 0）
+_d41u = tempfile.mkdtemp()
+_eng41u = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join(_d41u, "state41u.json"))
+_eng41u.cleaner._last_mode = "full"
+_eng41u._cycle_freed_mb = 500.0
+_eng41u._cycle_net_drop_mb = 250.0
+_r_eq = _eng41u._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, 2, 4, update_state=False)
+_eng41u.shutdown()
+_eng41v = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join(_d41u, "state41v.json"))
+_eng41v.cleaner._last_mode = "full"
+_eng41v._cycle_freed_mb = 500.0
+_eng41v._cycle_net_drop_mb = 50.0
+_r_ne = _eng41v._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, 2, 4, update_state=False)
+_eng41v.shutdown()
+_eng41w = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join(_d41u, "state41w.json"))
+_eng41w.cleaner._last_mode = "full"
+_eng41w._cycle_freed_mb = 500.0
+_eng41w._cycle_net_drop_mb = 0.0
+_eng41w._cycle_proc_mb = 300.0
+_eng41w._cycle_pf = 1000.0
+_r_ze = _eng41w._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, 2, 4, update_state=False)
+_eng41w.shutdown()
+check("净下降 ≤ 0 记无数据（维度一退出、四维归一）",
+      _r_ze["scores"][0] == 50.0 and _r_ze["valid"] == [1, 2, 3, 4],
+      "分0=%s 有效=%s" % (_r_ze["scores"][0], _r_ze["valid"]))
+check("净优化量维净留存率（半留存 113 / 一成留存 44）",
+      abs(_r_eq["scores"][0] - 113.0) < 1e-6 and abs(_r_ne["scores"][0] - 44.0) < 1e-6,
+      "半留=%s 一成=%s" % (_r_eq["scores"][0], _r_ne["scores"][0]))
+check("净留存率维接线（周期净下降按可用差折算 MB）",
+      'self._cycle_net_drop_mb = max(0.0, float(m["avail"] - self._cycle_avail_start)) / (1 << 20)' in _eg41)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
