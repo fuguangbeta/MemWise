@@ -385,7 +385,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.7.007 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.7.009 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -1251,8 +1251,13 @@ class MemWiseEngine:
                                 if _E9.recalib_count(self._eris_calib, _m9):
                                     _eb += " 重标%d" % _E9.recalib_count(self._eris_calib, _m9)
                             else:
-                                _eb = "标定中 %d/%d" % (min(_E9.bucket_n(self._eris_calib, _m9),
-                                                           _E9.CALIB_N), _E9.CALIB_N)
+                                # 两段显示：bucket_n 含 200 轮预热（预热期同样递增）——
+                                # 旧实现直接对 300 取 min，第 300~500 轮恒显「300/300」
+                                _n9 = _E9.bucket_n(self._eris_calib, _m9)
+                                _warm9 = min(_n9, _E9.CALIB_SKIP)
+                                _cal9 = min(max(0, _n9 - _E9.CALIB_SKIP), _E9.CALIB_N)
+                                _eb = "预热 %d/%d · 标定 %d/%d" % (_warm9, _E9.CALIB_SKIP,
+                                                                   _cal9, _E9.CALIB_N)
                         except Exception:
                             _eb = "?"
                         _log_write("诊断", "学习状态: 画像 %d · 锚点 %d · 回退 %d · 稳态抑制计数 %d · "
@@ -1415,7 +1420,8 @@ class MemWiseEngine:
                     self._last_agg_peak = agg_peak
                     self._last_deep_triggered = deep_triggered
                 # 周期汇总：文件侧由 [清理] 直写（毫秒时间戳+独立类别）；GUI 仅显示不重复落盘
-                summary_line = (f"本轮释放 {fmt_label(cycle_freed)} · 系统杂项 {fmt_count(cycle_standby)} · "
+                summary_line = (f"本轮优化 {fmt_label(cycle_freed)} · 净释放 {fmt_label(getattr(self, '_cycle_net_drop_mb', 0.0))} · "
+                                f"系统杂项 {fmt_count(cycle_standby)} · "
                                 f"整理 {fmt_count(self._cycle_trimmed)} 进程 · "
                                 f"试探 {len(probe_results)} ({probe_ok}成功)")
                 # 模式切换标注（2026-09-11 用户定稿 + 当晚措辞修正）：只在与上一周期模式不同时，把

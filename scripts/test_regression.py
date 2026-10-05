@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.7.007 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.7.009 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2355,7 +2355,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.7.0.7"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.7.0.9"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2722,6 +2722,24 @@ _calib_nf = {"v": 5, "modes": {"full": {"n": 999, "win": [],
                       "k": float("inf"), "med": float("inf")},
              "tot": [], "recalib": 0}}}
 check("NF 毒校准（dims/k/med 含 Infinity）加载即重建", _eris9.calib_valid(_calib_nf) is False)
+
+# ── CAL 标定进度两段显示 + 汇总行净释放（2026-10-04 用户定稿）──
+_c47 = _eris9.new_calib()
+for _ in range(5):
+    _cs9([0.5, 0.001, 0.96, 0.26, 1000.0], _c47, mode="full")
+check("CAL bucket_n 含预热期累计（两段换算的计数基础）", _eris9.bucket_n(_c47, "full") == 5)
+_eg47 = _src26("core", "engine.py")
+check("CAL 两段格式接线（预热 200 + 标定 300；旧单段格式移除）",
+      "预热 %d/%d · 标定 %d/%d" in _eg47 and "标定中 %d/%d" not in _eg47)
+check("CAL 汇总行净释放接线（如实口径，getattr 防御）",
+      "本轮优化 {" in _eg47 and "净释放 {fmt_label(getattr(self, '_cycle_net_drop_mb', 0.0))}" in _eg47)
+set_language("en")
+_s47en = tr_msg("本轮优化 2.9GB · 净释放 1.2GB · 系统杂项 81")
+set_language("zh_CN")
+check("CAL 汇总行英文翻译（新键前缀递归）",
+      _s47en.startswith("This round optimized 2.9GB") and "Net released 1.2GB" in _s47en,
+      _s47en)
+check("CAL i18n 新键存在", "本轮优化 " in _EN_A and "净释放 " in _EN_A)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

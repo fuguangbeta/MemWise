@@ -166,6 +166,8 @@ _EN = {
     "）· 清理强度：": ") · intensity: ",
     " · 已触发深度清理": " · deep cleanup triggered",
     "本轮释放 ": "This round freed ",
+    "本轮优化 ": "This round optimized ",
+    "净释放 ": "Net released ",
     " · 系统杂项 ": " · system ops ",
     " · 整理 ": " · trimmed ",
     " 进程 · ": " processes · ",
@@ -301,7 +303,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.7.007 启动· ": "MemWise v4.7.007 started · ",
+    "MemWise v4.7.009 启动· ": "MemWise v4.7.009 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -737,7 +739,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.7.007 PARES —— 智能内存看护": "MemWise v4.7.007 PARES — Intelligent Memory Custodian",
+    "MemWise v4.7.009 PARES —— 智能内存看护": "MemWise v4.7.009 PARES — Intelligent Memory Custodian",
 }
 
 
