@@ -8,6 +8,7 @@ trim 后 120s 观察回填：回弹率（回填量/释放量）EWMA≥70% 且 �
 注：suggest 建议通道（P2-G 预留）已于 2026-09-06 审查 F12 经用户批准移除（零调用方；
 未来实现"回弹→保护建议"方向时按当时需求重新设计）。
 """
+import math
 import time
 
 OBSERVE_WINDOW = 120       # 回弹观察期（秒）
@@ -112,14 +113,16 @@ class ReboundLearner:
         if not isinstance(d, dict):
             return r
         try:
+            # isfinite 守卫（与 learner/kalman 同约定）：backoff_until=inf ⇒ 永久后退期
+            # 且 last_record=inf 使 TTL 清理条件恒假 ⇒ 该路径仅剩 5% 探索可清
             r.ewma = {str(k): float(v) for k, v in d.get("ewma", {}).items()
-                      if isinstance(v, (int, float))}
+                      if isinstance(v, (int, float)) and math.isfinite(v)}
             r.count = {str(k): max(0, int(v)) for k, v in d.get("count", {}).items()
-                       if isinstance(v, (int, float))}
+                       if isinstance(v, (int, float)) and math.isfinite(v)}
             r.backoff_until = {str(k): max(0.0, float(v)) for k, v in d.get("backoff_until", {}).items()
-                               if isinstance(v, (int, float))}
+                               if isinstance(v, (int, float)) and math.isfinite(v)}
             r.last_record = {str(k): max(0.0, float(v)) for k, v in d.get("last_record", {}).items()
-                             if isinstance(v, (int, float))}
+                             if isinstance(v, (int, float)) and math.isfinite(v)}
             # 旧格式可能含 "suggested" 键（suggest 通道已于 2026-09-06 移除）——
             # 多余键静默忽略，旧状态文件读取零影响
         except Exception:

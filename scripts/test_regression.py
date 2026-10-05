@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.6.044 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.7.007 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1993,7 +1993,7 @@ for _i in range(_CS9 + _CN9):
     _r9 = [0.20 + 0.001 * (_i % 50), 0.0008 + 0.000001 * (_i % 90), 0.95 + 0.0001 * (_i % 40),
            0.25 + 0.0005 * (_i % 30), 900.0 + 3 * _i]
     _s9v, _c9 = _cs9(_r9, _c9, mode="full")
-check("v9 标定期满冻结基线（calibrated=True；K 为实测 p95）",
+check("v9 标定期满冻结基线（calibrated=True；K 为实测 p92）",
       _cal9(_c9, "full") is True and _kv9(_c9, "full") > 0 and len(_b9(_c9, "full")["dims"]) == 5)
 check("v9 冻结后同值同分（基线不再随新数据变化）",
       _cs9([0.25, 0.001, 0.96, 0.26, 1000.0], _c9, mode="full")[0]
@@ -2355,7 +2355,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.6.0.44"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.7.0.7"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2573,6 +2573,155 @@ check("H4b 输入弹窗与各场景接线",
       and '_dark_message(tr("已存在")' in _gui43
       and '_confirm_dialog(tr("删除游戏进程")' in _gui43
       and '_dark_message(tr("学习日志")' in _gui43)
+
+print("\n[44] 2026-10-04 审查修复回归（F1 响应参数同步 / F2 状态栏单图标 / F3 导入结果 / F4 日志 fd / F5 死变量）")
+import ast as _ast44
+_jd44 = _src26("core", "judger.py")
+_eg44 = _src26("core", "engine.py")
+_gui44 = _src26("memwise_gui.py")
+_mw44 = _src26("memwise.py")
+_J44 = {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}}
+# ── F1 sync_pid_from_cfg：行为（同步/缺键/非法值/部分键/旧式构造）+ 接线（9 处 + 紧急排除）──
+_j44 = PareJudger(PareLearner(), dict(_J44))
+_j44.cfg["efis_params"] = {"pid_kp": 0.9, "target_usage": 45}
+check("F1 同步前 pid 仍为构造值（失同步背景成立）", _j44.pid.kp == 0.6 and _j44.pid.target == 60)
+_j44.sync_pid_from_cfg()
+check("F1 同步后 pid.kp/target 到达 cfg 值", _j44.pid.kp == 0.9 and _j44.pid.target == 45)
+_j44.cfg["efis_params"] = {}
+_j44.sync_pid_from_cfg()
+check("F1 空字典缺键保持现值", _j44.pid.kp == 0.9 and _j44.pid.target == 45)
+_j44.cfg["efis_params"] = {"pid_kd": "abc", "target_usage": None}
+_j44.sync_pid_from_cfg()
+check("F1 非法值跳过不崩溃", _j44.pid.kd == 0.1 and _j44.pid.target == 45)
+_j44.cfg["efis_params"] = {"pid_kd": 0.2}
+_j44.sync_pid_from_cfg()
+check("F1 部分键只动对应参数", _j44.pid.kd == 0.2 and _j44.pid.kp == 0.9)
+_j44b = PareJudger(PareLearner(), {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": []})
+_j44b.sync_pid_from_cfg()
+check("F1 旧式构造无 efis_params 零影响", _j44b.pid.kp == 0.6 and _j44b.pid.target == 60)
+check("F1 行为：同步后 70% 占用的 agg 显著高于旧增益形态", _j44.update_pressure(70) > 0.3,
+      "%.3f" % _j44.aggressiveness)
+check("F1 接线：judger 定义 + 引擎 5 处 + GUI 1 处 + CLI 3 处",
+      "def sync_pid_from_cfg" in _jd44
+      and _eg44.count("sync_pid_from_cfg()") == 5
+      and _gui44.count("sync_pid_from_cfg()") == 1
+      and _mw44.count("sync_pid_from_cfg()") == 3)
+check("F1 紧急临时换参不触碰 PID（换/还原各 2 处均无同步）",
+      _eg44.count('self.judger.cfg["efis_params"] = self.efis.get_params("full")') == 2
+      and _eg44.count('self.judger.cfg["efis_params"] = _saved_efis') == 2)
+# ── F2 状态栏单图标（真实 Tk Label 渲染，两种语言）──
+_root44 = _tk51.Tk(); _root44.withdraw()
+_stub44 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
+class _L44:
+    def __init__(self): self.text = ""
+    def __setitem__(self, k, v): self.text = v
+_stub44.lbl_sb = _L44(); _stub44.lbl_tr = _L44(); _stub44.lbl_fr = _L44(); _stub44.lbl_st = _L44()
+_stub44._upd_learned = lambda: None
+_s44 = {"standby": 1, "modified": 2, "filecache": 3, "registry": 4, "volume": 5, "ws_trim": 6, "freed_mb": 7.0}
+_m44 = {"pct": 70}
+set_language("zh_CN")
+_stub44._upd_dae_ui(_s44, _m44)
+check("F2 中文态单图标（四档图标 + 原文，无 🟢 残留）",
+      _stub44.lbl_st.text == "🟡 守护中 70%", repr(_stub44.lbl_st.text))
+set_language("en")
+_stub44._upd_dae_ui(_s44, _m44)
+check("F2 英文态单图标", _stub44.lbl_st.text == "🟡 Guarding 70%", repr(_stub44.lbl_st.text))
+set_language("zh_CN")
+_root44.destroy()
+# ── F3 导入结果检查（失败有提示且不重启；backup 层零改动）──
+check("F3 GUI 接住 import_state 结果且失败不重启",
+      "backup.import_state(pkg, backup=choice)" in _gui44
+      and _gui44.count("if not _ok:") == 1
+      and _gui44.rindex("self._restart_with_new_config()") > _gui44.index("backup.import_state(pkg"))
+check("F3 新键入 i18n（英文界面零残留）", "导入失败：" in _EN_A)
+# ── F4 热加载日志 fd 同步（与 CLI F16 同语义）──
+check("F4 引擎热加载按新旧值开关日志 fd",
+      '_log_old = bool(CFG.get("log_to_file"))' in _eg44
+      and "(_log_open if _log_new else _log_close)()" in _eg44)
+# ── F5 _do_draw_chart 无死局部变量（AST 全量复核）──
+_fn44 = next(n for n in _ast44.walk(_ast44.parse(_gui44))
+             if isinstance(n, _ast44.FunctionDef) and n.name == "_do_draw_chart")
+_st44, _ld44 = set(), set()
+for _n44b in _ast44.walk(_fn44):
+    if isinstance(_n44b, _ast44.Name):
+        (_st44.add(_n44b.id) if isinstance(_n44b.ctx, _ast44.Store) else _ld44.add(_n44b.id))
+check("F5 _do_draw_chart 无死局部变量（failed_weight/eff_list/eff 已清）",
+      not (_st44 - _ld44), str(sorted(_st44 - _ld44)))
+
+# ── F-A backup 导入 tmp 归入全项目原子写约定（PID 隔离）+ 清理契约扩展（真实函数行为闭环）──
+check("F-A backup import tmp 带进程号（并发导入隔离；旧固定命名零残留）",
+      '{os.getpid()}.tmp' in _src26("core", "backup.py")
+      and 'import-tmp' not in _src26("core", "backup.py"))
+import shutil as _sh44
+_bkA = tempfile.mkdtemp(prefix="mw_bkA_")
+_cfgA = os.path.join(_bkA, "config"); os.makedirs(_cfgA, exist_ok=True)
+_dA = os.path.join(_bkA, "data"); os.makedirs(_dA, exist_ok=True)
+_rA1 = os.path.join(_dA, "memwise_state.json.111.tmp"); open(_rA1, "w").write("x")
+_rA2 = os.path.join(_cfgA, "config.yaml.222.tmp"); open(_rA2, "w").write("x")
+_rA3 = os.path.join(_dA, "memwise_state.json.import-tmp"); open(_rA3, "w").write("x")
+_rA4 = os.path.join(_cfgA, "config.yaml.import-tmp"); open(_rA4, "w").write("x")
+for _p in (_rA1, _rA2, _rA3, _rA4):
+    os.utime(_p, (time.time() - 3600,) * 2)          # 全部置为 >10 分钟旧
+_fA = os.path.join(_dA, "memwise_state.json.999.tmp"); open(_fA, "w").write("x")   # 新鲜：不得误删
+_bA44 = _e34.base
+_e34.base = _bkA
+try:
+    _e34._cleanup_stale_tmp()
+finally:
+    _e34.base = _bA44
+check("F-A 清理契约覆盖 data/config 两目录与新旧两种命名（新鲜写入保留）",
+      not any(os.path.exists(p) for p in (_rA1, _rA2, _rA3, _rA4)) and os.path.exists(_fA),
+      str([p for p in (_rA1, _rA2, _rA3, _rA4, _fA) if os.path.exists(p)]))
+_sh44.rmtree(_bkA, ignore_errors=True)
+
+# ── ENV 环境可观测性框架（跨机器静默降级留痕：画像行 / SPI 失配 / 事件驱动）──
+check("ENV get_os_build 真实 build 号（RtlGetVersion）", _w34.get_os_build() >= 10240,
+      str(_w34.get_os_build()))
+_mp44c, _eco44c = _w34.probe_k32_channels()
+check("ENV K32 试探返回双通道布尔（本机双可用）", _mp44c is True and _eco44c is True,
+      "%r %r" % (_mp44c, _eco44c))
+_nt44calls = []
+_nt44orig = _w34.NtSetInformationProcess
+_w34.NtSetInformationProcess = lambda *a, **k: _nt44calls.append(1)
+try:
+    _w34.probe_k32_channels()
+finally:
+    _w34.NtSetInformationProcess = _nt44orig
+check("ENV K32 试探直通不经双通道封装（不消耗 Nt 一次性通道）", _nt44calls == [],
+      str(_nt44calls))
+_wa44src = _src26("core", "winapi.py")
+check("ENV 三层留痕接线（画像行/SPI 失配/事件驱动；机器级桶=crash 通道）",
+      "probe_k32_channels()" in _eg44 and "环境: Windows build" in _eg44
+      and "布局自校验失败" in _wa44src and "_event_log" in _wa44src
+      and "内存资源通知对象不可用" in _eg44)
+
+# ── NF 非有限数值加载守卫（状态文件毒化的四条路径全堵；先例=policy 权重 isfinite）──
+_pnf = os.path.join(tempfile.mkdtemp(), "nf_state.json")
+json.dump({"version": 4, "profiles": {
+    "a.exe": {"name": "a.exe", "alpha": float("inf"), "beta": float("nan"),
+              "ws": [100.0, 100.0], "ok_cnt": float("inf")},
+    "b.exe": {"name": "b.exe", "alpha": 2, "beta": 1, "ws": [100.0, 100.0]}},
+    "stable_anchors": {}, "rebound": {}}, open(_pnf, "w"))
+lr_nf = PareLearner.load(_pnf)
+check("NF 毒画像不再整条丢弃且 alpha/beta 回默认钳界（挂死入口封堵）",
+      "a.exe" in lr_nf.profiles and lr_nf.profiles["a.exe"].alpha == 1
+      and lr_nf.profiles["a.exe"].beta == 1 and lr_nf.profiles["a.exe"].ok_cnt == 0,
+      str({k: (v.alpha, v.beta) for k, v in lr_nf.profiles.items()}))
+_nf_theta = lr_nf.thompson_score("a.exe")
+check("NF 毒画像 θ 有限且在界内（betavariate 不再可达 inf）",
+      _nf_theta == _nf_theta and 0.0 <= _nf_theta <= 1.0, repr(_nf_theta))
+_kpnf = KalmanProfile.from_dict({"x_freed": float("inf"), "p_freed": 100.0})
+check("NF Kalman x_freed 拒绝 inf（锚点不再恒抑制）", _kpnf.x_freed == 0.0)
+_rbnf = _RL41.from_dict({"ewma": {r"d:\x.exe": float("inf")},
+                         "count": {}, "backoff_until": {r"d:\x.exe": float("inf")},
+                         "last_record": {r"d:\x.exe": float("inf")}})
+check("NF 回弹毒键拒绝（不产生永久后退期）",
+      r"d:\x.exe" not in _rbnf.ewma and not _rbnf.in_backoff(r"d:\x.exe", time.time()))
+_calib_nf = {"v": 5, "modes": {"full": {"n": 999, "win": [],
+             "base": {"dims": [[0.0, float("inf"), 2.0, 3.0, 4.0]] * 5,
+                      "k": float("inf"), "med": float("inf")},
+             "tot": [], "recalib": 0}}}
+check("NF 毒校准（dims/k/med 含 Infinity）加载即重建", _eris9.calib_valid(_calib_nf) is False)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

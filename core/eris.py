@@ -27,6 +27,7 @@ v9 设计（2026-09-26 用户定稿，整体替换 v8 的"滚动分位 + 四锚�
   · 效率值**只用于展示**，不参与清理与调参决策 ⇒ 无"分数→行为→分数"自激回路。
 """
 from collections import deque
+import math
 
 SMOOTH_N = 3          # 每维原始值的滚动中位窗口（压测量噪声）
 SCORE_FLOOR = 0.0     # 维度分下限
@@ -297,7 +298,8 @@ def calib_valid(calib):
             for row in win:
                 if not isinstance(row, list) or len(row) != len(DIM_WORDS):
                     return False
-                if not all(v is None or (isinstance(v, (int, float)) and v == v) for v in row):
+                if not all(v is None or (isinstance(v, (int, float)) and v == v
+                                          and math.isfinite(v)) for v in row):
                     return False
             tot = one.get("tot", [])
             if not isinstance(tot, list) or len(tot) > LONG_WIN:
@@ -311,12 +313,12 @@ def calib_valid(calib):
                 for d in b["dims"]:
                     if not isinstance(d, list) or len(d) != 5:
                         return False
-                    if not all(isinstance(v, (int, float)) and v == v for v in d):
+                    if not all(isinstance(v, (int, float)) and v == v and math.isfinite(v) for v in d):
                         return False
                 k = b.get("k")
-                if not isinstance(k, (int, float)) or not (k > 0):
+                if not isinstance(k, (int, float)) or not (k > 0) or not math.isfinite(k):
                     return False
-                if not isinstance(b.get("med", 0.0), (int, float)):
+                if not isinstance(b.get("med", 0.0), (int, float)) or not math.isfinite(b.get("med", 0.0)):
                     return False
             if not isinstance(one.get("recalib", 0), int) or one.get("recalib", 0) < 0:
                 return False

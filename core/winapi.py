@@ -294,6 +294,38 @@ def set_eco_qos(pid, enable=True):
     finally:
         CloseHandle(h)
 
+
+def probe_k32_channels():
+    """K32 官方双通道可用性试探（环境画像用）——自身进程、即探即还原、零残留。
+    ⚠ 必须直调 SetProcessInformation，不经 set_memory_priority/set_eco_qos 封装：
+    封装在 K32 失败时会走 Nt 直通兜底，而 Nt 类 42 每进程仅可设置一次（一次性通道
+    不能被试探消耗）。K32 失效的机器上两通道运行期走 Nt 兜底（MemoryPriority 一次性、
+    EcoQoS 不可撤），回收行为语义不同 ⇒ 该结果是跨机器归因的字段。
+    仅在日志开启时被 engine._log_open 调用（关日志用户零开销）。"""
+    import os
+
+    def _probe(cls_id, info, restore):
+        h = OpenProcess(PROCESS_SET_INFORMATION, False, os.getpid())
+        if not h:
+            return False
+        try:
+            if not SetProcessInformation(h, cls_id, ctypes.byref(info), ctypes.sizeof(info)):
+                return False
+            SetProcessInformation(h, cls_id, ctypes.byref(restore), ctypes.sizeof(restore))
+            return True
+        finally:
+            CloseHandle(h)
+
+    try:
+        mp = _probe(0, PROCESS_MEMORY_PRIORITY_INFORMATION(4),
+                    PROCESS_MEMORY_PRIORITY_INFORMATION(5))
+        eco = _probe(4, PROCESS_POWER_THROTTLING_STATE(1, 1, 1),
+                     PROCESS_POWER_THROTTLING_STATE(1, 1, 0))
+        return mp, eco
+    except Exception:
+        return False, False
+
+
 def _try_enable_privilege(name):
     """尝试启用指定权限，成功返回 True"""
     h_token = w.HANDLE()
@@ -434,6 +466,14 @@ def _resolve_spi_layout(buf, ret_len):
                 break
             off += ne
     _spi_layout = False  # 全部候选不匹配：缓存失败态，调用方据此走回退路径且不再重复重试
+    # 机器级永久降级 ⇒ crash 通道一次性留痕（不受日志开关门控；下次开启日志自动并入统一
+    # 日志）——跨机器报障时这是"快照变慢/学习变笨"类问题的唯一线索（winapi 层无日志体系）
+    try:
+        from core.engine import _event_log
+        _event_log("系统环境: 批量快照布局自校验失败（Windows build %d），已回退逐进程采集模式（快照开销上升，防护能力维持）"
+                   % get_os_build())
+    except Exception:
+        pass
     return None
 
 def get_all_processes_memory():
@@ -488,6 +528,30 @@ def get_all_processes_memory():
         if items < MAX_ITEMS:
             return result
     return {}
+
+class _OSVERSIONINFOW(ctypes.Structure):
+    _fields_ = [("dwOSVersionInfoSize", w.DWORD), ("dwMajorVersion", w.DWORD),
+                ("dwMinorVersion", w.DWORD), ("dwBuildNumber", w.DWORD),
+                ("dwPlatformId", w.DWORD), ("szCSDVersion", w.WCHAR * 128)]
+
+RtlGetVersion = ntdll.RtlGetVersion
+RtlGetVersion.argtypes = [ctypes.POINTER(_OSVERSIONINFOW)]
+RtlGetVersion.restype = w.LONG
+
+
+def get_os_build():
+    """真实 Windows build 号（RtlGetVersion 直读 ntdll，不受 manifest 兼容声明影响）——
+    环境画像第一字段：build 决定 SPI 布局候选与系统类号的相关性，跨机器报障归因用。
+    失败返回 0（画像行显示 0 即探测通道异常本身也是线索）。"""
+    try:
+        osv = _OSVERSIONINFOW()
+        osv.dwOSVersionInfoSize = ctypes.sizeof(_OSVERSIONINFOW)
+        if RtlGetVersion(ctypes.byref(osv)) == 0:
+            return int(osv.dwBuildNumber)
+    except Exception:
+        pass
+    return 0
+
 
 def is_elevated():
     try:

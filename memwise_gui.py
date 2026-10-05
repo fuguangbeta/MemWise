@@ -1,5 +1,5 @@
 """
-MemWise v4.6.044 GUI —— 图形界面
+MemWise v4.7.007 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -657,7 +657,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.6.044", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.7.007", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -681,7 +681,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.6.044")
+        self.root.title("MemWise v4.7.007")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -713,6 +713,7 @@ class MemWiseGUI:
         self.efis.set_mode(CFG.get("clean_mode", "normal"))
         # 启动即用 EFIS 持久化参数对齐运行时消费方（config.yaml 可能滞后于 efis_state.json）
         self.judger.cfg["efis_params"] = self.efis.get_params()
+        self.judger.sync_pid_from_cfg()  # 启动即按 EFIS 权威参数对齐 PID（config.yaml 快照可能滞后）
         # CFG 同步同一来源：否则守护热加载（mtime 变化）会把 config.yaml 旧值覆盖回 judger.cfg
         CFG["efis_params"] = self.efis.get_params()
         # kalman_r 同步：新画像的 Kalman 观测噪声与 EFIS 调参结果一致（原只在调参轮生效，重启后回默认）；
@@ -738,7 +739,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.6.044 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.7.007 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -797,7 +798,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.6.044")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.007")
                     if fw:
                         top = fw
                 except Exception:
@@ -2091,7 +2092,15 @@ class MemWiseGUI:
                "选择\"确认并备份\"会先保存当前状态（可供再次导入）。"), extra_info=info)
         if choice is None:
             return
-        backup.import_state(pkg, backup=choice)
+        try:
+            _ok, _err = backup.import_state(pkg, backup=choice)
+        except Exception as _e:
+            # 校验与导入之间包可能被替换/杀软瞬时锁文件——失败必须有提示且不重启
+            self._dark_message(tr("导入配置"), tr_msg(f"导入失败：{_e}"), kind="error")
+            return
+        if not _ok:
+            self._dark_message(tr("导入配置"), _err, kind="error")
+            return
         self._restart_with_new_config()
 
     def _edit_exclusion_list(self):
@@ -2717,10 +2726,6 @@ class MemWiseGUI:
             max_val = 1  # 全零释放轮：按 0 高占位柱渲染，避免除零
         avg_val = sum(visible) / len(visible) if visible else 0
         peak_val = max_val
-        failed_weight = getattr(self.engine, "_failed_weight", 0.5)
-        # 当前显示使用最新 eff/factors（供悬浮提示与底部指标）
-        eff_list = list(eff_data_view)
-        eff = eff_list[-1] if eff_list else 50
         # Y 轴标注 & 网格
         for i, lbl_v in [(0, 0), (1, max_val//2), (2, max_val)]:
             if i == 0:
@@ -3009,7 +3014,11 @@ class MemWiseGUI:
         pct = m["pct"]
         # 四档与内存条/托盘口径一致（60/75/90，2026-08-15 审查：原三档 70/90 与托盘不一致）
         icon = "🟢" if pct < 60 else ("🟡" if pct < 75 else ("🟠" if pct < 90 else "🔴"))
-        self.lbl_st["text"] = f"{icon} {tr(txt)} {pct}%"
+        # 引擎载荷恒带图标前缀（历史格式）：剥掉后再前置四档图标，避免同屏双图标
+        _body = tr(txt)
+        if _body and _log_is_icon(_body[0]):
+            _body = _body[1:].lstrip()
+        self.lbl_st["text"] = f"{icon} {_body} {pct}%"
 
     def _stop_daemon(self):
         if not self.engine.daemon_running: return

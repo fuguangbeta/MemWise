@@ -301,7 +301,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.6.044 启动· ": "MemWise v4.6.044 started · ",
+    "MemWise v4.7.007 启动· ": "MemWise v4.7.007 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -492,6 +492,7 @@ _EN = {
     " 无法解析（可能已损坏）": " cannot be parsed (possibly corrupted)",
     "无法导出：程序尚未生成任何状态文件": "Cannot export: no state files generated yet",
     "配置包不存在": "Config package not found",
+    "导入失败：": "Import failed: ",
     "  export                    导出配置包到数据目录": "  export                    Export config package to the data directory",
     "  import <文件名>            从导入文件夹导入配置包": "  import <name>              Import a config package from the import folder",
     # ── 2026-09-26 tooltip 全量改版（37 条按用户定稿逐字落盘；「标题」+编号+⚠ 三段式）──
@@ -736,7 +737,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.6.044 PARES —— 智能内存看护": "MemWise v4.6.044 PARES — Intelligent Memory Custodian",
+    "MemWise v4.7.007 PARES —— 智能内存看护": "MemWise v4.7.007 PARES — Intelligent Memory Custodian",
 }
 
 

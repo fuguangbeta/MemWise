@@ -1,5 +1,5 @@
 """
-MemWise v4.6.044 PARES —— 智能内存看护
+MemWise v4.7.007 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 全程不杀进程、不写文件、不改代码。
 """
@@ -117,6 +117,7 @@ def cmd_optimize(args):
             _e = EfisController(STATE_PATH)
             _e.set_mode(mode)
             judger.cfg["efis_params"] = _e.get_params()
+            judger.sync_pid_from_cfg()
         except Exception:
             pass
     sniffer = Sniffer()
@@ -185,6 +186,7 @@ def cmd_daemon(args):
     if _efis is not None and _cli_mode_override:
         _efis.set_mode(mode)
         judger.cfg["efis_params"] = _efis.get_params()
+        judger.sync_pid_from_cfg()
     tick = 0
     try:
         while True:
@@ -225,6 +227,7 @@ def cmd_daemon(args):
                         if _efis is not None:
                             _efis.set_mode(mode)
                             judger.cfg["efis_params"] = _efis.get_params()
+                            judger.sync_pid_from_cfg()
                 except Exception:
                     pass
             if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH); import gc; gc.collect()
@@ -394,7 +397,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v4.6.044 PARES —— 智能内存看护"))
+        print(tr("MemWise v4.7.007 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

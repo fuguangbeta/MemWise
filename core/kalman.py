@@ -2,6 +2,7 @@
 Kalman Profile — 连续值最优估计器
 替代 Beta 二值分布，直接建模预期释放量和PF代价
 """
+import math
 import time
 
 class KalmanProfile:
@@ -70,9 +71,12 @@ class KalmanProfile:
     def from_dict(cls, d):
         def _num(v, default):
             try:
-                return float(v)
+                f = float(v)
             except (TypeError, ValueError):
                 return default
+            # 有限性守卫（与 learner._num 同约定）：inf 会穿透上界钳制前的 max/min
+            # 顺序（x_freed=inf ⇒ 锚点 ws<=inf 恒抑制、ROI=inf ⇒ 决策偏移）
+            return f if math.isfinite(f) else default
         k = cls()
         k.x_freed = max(0.0, _num(d.get("x_freed", 0.0), 0.0))
         k.x_cost = max(0.0, _num(d.get("x_cost", 0.0), 0.0))

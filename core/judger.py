@@ -151,6 +151,23 @@ class PareJudger:
         except (TypeError, ValueError):
             return default
 
+    def sync_pid_from_cfg(self):
+        """把 efis_params 的响应类参数（pid_kp/pid_kd/target_usage）同步进 PidController。
+
+        PID 增益此前只在构造期读取 efis_params，运行期给 judger.cfg["efis_params"]
+        赋值（模式切换/EFIS 调参/配置热加载/手动优化取参）都不会触达 pid 对象 ⇒
+        切模式后 PID 仍按旧模式增益输出 agg（实测差 0.33）、运行期调参延迟到重启。
+        所有"参数组永久变更"的赋值点必须在赋值后调用本方法；紧急 full 的临时换参
+        不调用（窗口内 optimize 强制 agg≥0.8，full 组增益无可消费效果）。
+        缺键保持现值（旧配置/测试构造安全）；非法值跳过不抛错。"""
+        ef = self.cfg.get("efis_params") or {}
+        try:
+            self.pid.kp = float(ef.get("pid_kp", self.pid.kp))
+            self.pid.kd = float(ef.get("pid_kd", self.pid.kd))
+            self.pid.target = float(ef.get("target_usage", self.pid.target))
+        except (TypeError, ValueError):
+            pass
+
     def _emergency_pct(self):
         """用户设定的紧急触发阈值（默认 80，非法值回退）"""
         try:

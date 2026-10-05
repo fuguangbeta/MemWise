@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "4.6.044"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "4.7.007"  # 版本同步面之一（manifest 记录用）
 PACKAGE_FILE_MAX = 64 * 1024 * 1024   # 单个状态文件上限（2026-09-11 加固：拒绝异常/恶意大包）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
@@ -201,7 +201,9 @@ def import_state(pkg_path, backup=True, base=None):
             if not target:
                 continue  # manifest 声明了当前程序不认识的文件名（format_version 已挡，防御）
             data = zf.read(name)
-            tmp = f"{target}.import-tmp"
+            # PID 后缀＝全项目原子写约定：跨进程并发导入各写各的 tmp（固定名会被
+            # 双进程交错写坏），残留由启动清理契约统一覆盖（含旧版命名的升级残留）
+            tmp = f"{target}.{os.getpid()}.tmp"
             with open(tmp, "wb") as f:
                 f.write(data)
             os.replace(tmp, target)

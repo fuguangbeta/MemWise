@@ -370,12 +370,17 @@ class Profile:
     def from_dict(cls, d):
         def _num(v, default=0.0):
             try:
-                return float(v)
+                f = float(v)
             except (TypeError, ValueError):
                 return default
+            # 有限性守卫（与 policy 权重加载的 isfinite 同约定）：Infinity/NaN 来自状态
+            # 文件介质损坏或手改——alpha=inf 会让 betavariate 无限循环挂死调用线程
+            # （看门狗不触发、无自愈），int(inf) 的 OverflowError 会整条丢画像
+            return f if math.isfinite(f) else default
         p = cls(str(d.get("name", "unknown")))
-        p.alpha = max(_num(d.get("alpha", 1), 1), 0.5)
-        p.beta = max(_num(d.get("beta", 1), 1), 0.5)
+        # 上界对齐 record_clean 运行期软上限（100/50）：任何来源的毒值都到不了采样器
+        p.alpha = max(0.5, min(100.0, _num(d.get("alpha", 1), 1)))
+        p.beta = max(0.5, min(50.0, _num(d.get("beta", 1), 1)))
         p._theta_cache = None
         p._theta_dirty = True
         ws_raw = d.get("ws", [])

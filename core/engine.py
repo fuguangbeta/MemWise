@@ -27,12 +27,17 @@ def init_runtime():
 
 
 def _cleanup_stale_tmp():
-    """清掉数据目录里中断的原子写残留（*.tmp）——2026-09-26 实测发现
-    `data/memwise_state.json.<pid>.tmp` 0 字节残留（写盘中断）。只删**超过 10 分钟**的
-    *.tmp（活跃进程自己的临时文件不可能这么久），且只在本程序自己的数据目录内，逐个记诊断。"""
+    """清掉数据/配置目录里中断的原子写残留（*.tmp 与旧版命名的 *.import-tmp）——
+    2026-09-26 实测发现 `data/memwise_state.json.<pid>.tmp` 0 字节残留（写盘中断）。
+    只删**超过 10 分钟**的残留（活跃进程自己的临时文件不可能这么久），逐个记诊断。"""
     try:
         import glob as _glob, time as _time
-        for f in _glob.glob(os.path.join(base, "data", "*.tmp")):
+        # data/ 是状态文件原子写的落点；config/ 是导入配置包 tmp 的落点；
+        # *.import-tmp 是旧版命名在升级用户机器上的残留——三者同属一份清理契约
+        for f in (_glob.glob(os.path.join(base, "data", "*.tmp"))
+                  + _glob.glob(os.path.join(base, "data", "*.import-tmp"))
+                  + _glob.glob(os.path.join(base, "config", "*.tmp"))
+                  + _glob.glob(os.path.join(base, "config", "*.import-tmp"))):
             try:
                 if _time.time() - os.path.getmtime(f) > 600:
                     os.remove(f)
@@ -380,7 +385,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.6.044 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.7.007 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -390,6 +395,16 @@ def _log_open():
                          CFG.get("clean_passes", 4), _ops, bool(CFG.get("log_to_file")),
                          CFG.get("language", "zh_CN"), len(CFG.get("never") or []),
                          len(CFG.get("game_processes") or [])))
+        except Exception:
+            pass
+        # 环境画像（跨机器归因第一手证据）：仅在日志开启路径执行 ⇒ 关日志用户零开销；
+        # K32 通道态决定运行期回收行为语义（可用=可反复设置/恢复；失效=Nt 一次性直通）
+        try:
+            _mp_ok, _eco_ok = winapi.probe_k32_channels()
+            _log_write("启动", "环境: Windows build %d · K32 内存优先级通道 %s · K32 节能标记通道 %s"
+                       % (winapi.get_os_build(),
+                          "可用" if _mp_ok else "回退Nt直通",
+                          "可用" if _eco_ok else "回退Nt直通"))
         except Exception:
             pass
     except Exception as _e:
@@ -761,6 +776,7 @@ class MemWiseEngine:
             # 按调用时模式取参（2026-08-16 模式参数组）：手动优化用该模式自己的参数，
             # 不受守护周期末同步的"当前模式"影响；策略树权重同步同一模式（审查 P6）
             self.judger.cfg["efis_params"] = self.efis.get_params(mode)
+            self.judger.sync_pid_from_cfg()  # 手动优化按本次模式参数驱动 PID
             self.learner.policy.set_mode(mode)
             try:
                 snaps = []
@@ -820,6 +836,7 @@ class MemWiseEngine:
         with self.cleaner._exec_lock:
             self.cleaner._manual_run = True
             self.judger.cfg["efis_params"] = self.efis.get_params(mode)  # 按调用时模式取参
+            self.judger.sync_pid_from_cfg()  # 手动优化按本次模式参数驱动 PID
             self.learner.policy.set_mode(mode)  # 树权重同模式（审查 P6）
             try:
                 snaps = self._snap()
@@ -863,6 +880,12 @@ class MemWiseEngine:
             h_low = winapi.create_memory_resource_notification(
                 winapi.MEMORY_RESOURCE_NOTIFICATION_TYPE_LOW)
             use_event_driver = h_low is not None
+            if not use_event_driver:
+                # 机器级永久特征（通知对象不可用 ⇒ 守护改轮询等待）⇒ crash 通道一次性留痕
+                try:
+                    _event_log("系统环境: 内存资源通知对象不可用，守护改用轮询等待（功能不受影响，等待粒度退化为 1 秒）")
+                except Exception:
+                    pass
 
             interval = CFG.get("interval", 60)  # 与 DEFAULT_CFG 一致（原 30 系历史默认值残留）
             last_cfg_check = 0
@@ -932,6 +955,7 @@ class MemWiseEngine:
                 # 消费源即时同步（审查 P4）：模式切换后首个周期即用新模式参数，
                 # 不等周期末调参（原实现首周期沿用上一模式参数）
                 self.judger.cfg["efis_params"] = self.efis.get_params()
+                self.judger.sync_pid_from_cfg()  # 响应类参数随模式组切换即时进 PID
                 agg = self.judger.update_pressure(m['pct'])
                 ops = CFG.get("clean_operations")
                 # 连续优化循环：deadline + 多次 optimize + gap fill + blitz
@@ -1177,7 +1201,13 @@ class MemWiseEngine:
                         if mtime != self._cfg_mtime:
                             self._cfg_mtime = mtime
                             fresh = _config.load()  # 单次读取复用（原连续两次读盘，2026-08-30）
+                            _log_old = bool(CFG.get("log_to_file"))
                             CFG.update(fresh)
+                            # 日志开关 fd 同步（与 CLI F16 同语义）：_log_write 受开关与句柄
+                            # 双闸，手改 config.yaml 的开关在守护运行中也要即时开/关文件
+                            _log_new = bool(CFG.get("log_to_file"))
+                            if _log_new != _log_old:
+                                (_log_open if _log_new else _log_close)()
                             # 同步 judger 运行配置（排除列表/游戏名单/清理深度/EFIS 参数守护期间即时生效）
                             self.judger.cfg["never"] = CFG.get("never", [])
                             self.judger.cfg["game_processes"] = CFG.get("game_processes", [])
@@ -1187,6 +1217,7 @@ class MemWiseEngine:
                             # EFIS 参数以状态文件为权威（审查 P3）：config.yaml 的 efis_params 是
                             # 上次调参的模式快照,热加载回灌会覆盖当前模式组——改为直接从 EFIS 取
                             self.judger.cfg["efis_params"] = self.efis.get_params()
+                            self.judger.sync_pid_from_cfg()
                     except Exception as e:
                         import sys; print(f"[MemWise] 配置加载异常: {e}", file=_ERR)
                 if now - last_save > 30:
@@ -1322,6 +1353,7 @@ class MemWiseEngine:
                         # judger.cfg 才是 cleaner/judger 读取 efis_params 的来源
                         CFG['efis_params'] = params
                         self.judger.cfg['efis_params'] = params
+                        self.judger.sync_pid_from_cfg()  # 调参成果即时进 PID（此前延迟到重启）
                         self.judger.cfg['clean_passes'] = CFG.get('clean_passes', 4)
                         _save_cfg()  # EFIS 调参落盘：重启后消费方与引擎参数一致
                         _log_write("调参", efis_msg)  # 调参决策入统一日志
