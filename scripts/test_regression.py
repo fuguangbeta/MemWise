@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.7.010 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.7.013 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2355,7 +2355,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.7.0.10"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.7.0.13"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2740,6 +2740,19 @@ check("CAL 汇总行英文翻译（新键前缀递归）",
       _s47en.startswith("This round optimized 2.9GB") and "Net released 1.2GB" in _s47en,
       _s47en)
 check("CAL i18n 新键存在", "本轮优化 " in _EN_A and "净释放 " in _EN_A)
+
+# ── [46] WS-HC 收尾三小件（排行列/规则自刷新/失效提示）──
+_gui45b = _src26("memwise_gui.py")
+check("W8 排行新增工作集与上限列（提交与物理分列，cap 按规则口径显示）",
+      'cols = (tr("进程"), tr("进程号"), tr("内存占用"), tr("工作集"), tr("CPU占用"), tr("上限 (MB)"), tr("学习"))' in _gui45b
+      and 'cap_cell = str(caps[norm]["mb"]) if norm in caps else ""' in _gui45b
+      and "ws_col = f\"{s.ws / (1 << 20):.0f} MB\"" in _gui45b)
+check("W8 规则窗口 5 秒自刷新接线", "win.after(5000, _auto)" in _gui45b
+      and "def _auto():" in _gui45b)
+check("W8 删除规则目标未运行的失效提示（历史存中文原文，F51 合规）",
+      '"目标程序未在运行，重启后上限自动失效" in _gui45b' .replace('"','',1).replace('"','',1)
+      or 'self._log("目标程序未在运行，重启后上限自动失效")' in _gui45b)
+check("W8 i18n 键（工作集列/失效提示）", "工作集" in _EN_A and "目标程序未在运行，重启后上限自动失效" in _EN_A)
 
 # ── [45] WS 工作集硬上限（wshc-dev；设计 v2.0-v2.5）──
 import core.winapi as _w45

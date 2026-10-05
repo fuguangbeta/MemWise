@@ -303,7 +303,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.7.010 启动· ": "MemWise v4.7.010 started · ",
+    "MemWise v4.7.013 启动· ": "MemWise v4.7.013 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -739,7 +739,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.7.010 PARES —— 智能内存看护": "MemWise v4.7.010 PARES — Intelligent Memory Custodian",
+    "MemWise v4.7.013 PARES —— 智能内存看护": "MemWise v4.7.013 PARES — Intelligent Memory Custodian",
     # ── 工作集硬上限（高级选项，设计 v2.4 文案规格）──
     "已设硬上限": "Hard-capped",
     "设置工作集硬上限…": "Set working-set hard cap…",
@@ -772,6 +772,8 @@ _EN = {
     "上限不高于进程最低工作集配额": "Cap not above the process minimum working-set quota",
     "系统拒绝（错误码 ": "System refused (error ",
     "已设置工作集硬上限（": "Working-set hard cap set (",
+    "工作集": "Working set",
+    "目标程序未在运行，重启后上限自动失效": "Target not running — the cap lapses when it restarts",
     "MB）：": " MB): ",
     "工作集硬上限设置失败（": "Working-set hard cap failed (",
     "）：": "): ",

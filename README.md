@@ -1,4 +1,4 @@
-﻿# MemWise v4.7.010
+﻿# MemWise v4.7.013
 
 ## 关于本工具 · *About This Tool*
 
@@ -420,11 +420,11 @@ Factor wording: when efficiency rises, the highest-scoring dimension among those
 
 ## 9. 进程排行 · *Process Ranking*
 
-点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存、CPU 占用、以及学习画像数据，打开时即时采集，打开期间自动刷新（守护运行中直接复用守护采集的快照，不产生额外开销）。右键任意进程还可使用**工作集硬上限**（高级选项）：把该程序的物理内存占用持续钉在设定值之下，上限一经设置持续有效、随时可解除（上限作用于物理占用，提交内存不变；规则可在"管理规则…"窗口中查看与删除）。
+点击"进程排行"按钮弹出独立窗口，显示所有活跃进程的快照。排序列包括进程名、进程号、私有内存（提交）、工作集（物理占用）、CPU 占用、硬上限与学习画像数据，打开时即时采集，打开期间自动刷新（守护运行中直接复用守护采集的快照，不产生额外开销）。右键任意进程还可使用**工作集硬上限**（高级选项）：把该程序的物理内存占用持续钉在设定值之下，上限一经设置持续有效、随时可解除（上限作用于物理占用，提交内存不变；规则可在"管理规则…"窗口中查看与删除）。
 
 内存数据的采集优先使用内核批量查询接口，无需对每个进程执行 `OpenProcess`，可绕过安全软件的进程保护机制。
 
-A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory, CPU usage, and learned profile data, captured on open and auto-refreshed while open (reusing the daemon's snapshots during Guard, so no extra sampling cost). Right-clicking any process also offers a **working-set hard cap** (advanced option): pin that app's physical memory usage below a value you set — the cap stays in effect until cleared (it applies to physical usage, not commit; rules can be reviewed and removed in the "Manage rules…" window).
+A standalone window displays a live snapshot of all active processes, with columns for name, PID, private memory (commit), working set (physical), CPU usage, hard cap, and learned profile data, captured on open and auto-refreshed while open (reusing the daemon's snapshots during Guard, so no extra sampling cost). Right-clicking any process also offers a **working-set hard cap** (advanced option): pin that app's physical memory usage below a value you set — the cap stays in effect until cleared (it applies to physical usage, not commit; rules can be reviewed and removed in the "Manage rules…" window).
 
 Memory data is collected via a kernel bulk-query API that requires no per-process OpenProcess, bypassing security-software process protection.
 

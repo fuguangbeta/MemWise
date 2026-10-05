@@ -1,5 +1,5 @@
 """
-MemWise v4.7.010 GUI —— 图形界面
+MemWise v4.7.013 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -657,7 +657,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.7.010", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.7.013", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -681,7 +681,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.7.010")
+        self.root.title("MemWise v4.7.013")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -739,7 +739,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.7.010 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.7.013 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -798,7 +798,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.010")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.013")
                     if fw:
                         top = fw
                 except Exception:
@@ -2327,7 +2327,7 @@ class MemWiseGUI:
         win.lift()
         _center_geometry(win, 900, 650)
 
-        cols = (tr("进程"), tr("进程号"), tr("内存占用"), tr("CPU占用"), tr("学习"))
+        cols = (tr("进程"), tr("进程号"), tr("内存占用"), tr("工作集"), tr("CPU占用"), tr("上限 (MB)"), tr("学习"))
         tree = ttk.Treeview(win, columns=cols, show="headings", height=25)
         # 列配置按索引（不依赖显示名——语言切换后列名变化，按中文名判断会全部失效）
         for i, c in enumerate(cols):
@@ -2335,7 +2335,7 @@ class MemWiseGUI:
             if i == 0:
                 tree.column(c, width=250, anchor="w")      # 进程名列：靠左
             else:
-                tree.column(c, width=[70, 120, 70, 60][i - 1], anchor="center")  # 其余列居中
+                tree.column(c, width=[70, 120, 90, 70, 70, 60][i - 1], anchor="center")  # 其余列居中
 
         vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
@@ -2344,7 +2344,7 @@ class MemWiseGUI:
 
         # 排序状态变量（默认按内存降序；列索引——2026-08-14 审查：语言切换后列名变化，
         # 按显示名 set 会 TclError（英文界面每 3s 一次），索引语言无关）
-        _sort_col_idx = 2  # 0=进程 1=进程号 2=内存占用 3=CPU占用 4=学习
+        _sort_col_idx = 2  # 0=进程 1=进程号 2=内存占用(提交) 3=工作集 4=CPU占用 5=上限 6=学习
         _sort_rev = True
 
         def _sort_key_c(v):
@@ -2465,14 +2465,21 @@ class MemWiseGUI:
             for item in tree.get_children():
                 tree.delete(item)
             try:
+                caps = CFG.get("ws_caps") or {}
+                applied = getattr(self.engine, "_ws_cap_applied", {}) or {}
                 for s in snaps:
-                    ws_mb = s.priv / (1 << 20)
+                    commit_mb = s.priv / (1 << 20)
+                    ws_col = f"{s.ws / (1 << 20):.0f} MB"
                     p = self.learner.get_profile(s.name)
                     # 已学习标记与学习日志同口径（≥2 样本，2026-08-30 审查：原 3 两处不一致）
                     learned = "✓" if p and p.total_samples >= 2 else ""
+                    # 硬上限列：规则存在即显示（判定门按规则口径）；空 = 未钉
+                    spath = getattr(s, "path", None)
+                    norm = spath.lower().replace("/", "\\") if spath else ""
+                    cap_cell = str(caps[norm]["mb"]) if norm in caps else ""
                     tree.insert("", "end", values=(
-                        s.name, s.pid, f"{ws_mb:.0f} MB",
-                        f"{s.cpu:.1f}%", learned))
+                        s.name, s.pid, f"{commit_mb:.0f} MB", ws_col,
+                        f"{s.cpu:.1f}%", cap_cell, learned))
                 # 应用用户选择的排序（列索引，语言无关）
                 if _sort_col_idx is not None:
                     items = [(tree.set(k, cols[_sort_col_idx]), k) for k in tree.get_children("")]
@@ -2609,6 +2616,10 @@ class MemWiseGUI:
         _save_cfg()
         self.engine.ws_cap_rule_removed(norm)
         self._log(f"⛨ 已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
+        # 目标未在运行时 disable 无从下手——如实提示残留边界（设计 §七）
+        if not any(getattr(s, "path", None) and s.path.lower().replace("/", "\\") == norm
+                   for s in self.sniffer.snapshot()):
+            self._log("目标程序未在运行，重启后上限自动失效")
 
     def _manage_ws_caps(self):
         """规则管理窗口：列出/删除（添加入口=进程排行右键，设计 v2.4）。"""
@@ -2645,6 +2656,7 @@ class MemWiseGUI:
             if not sel:
                 return
             path = tree.item(sel[0], "values")[0]
+            norm = path.lower().replace("/", "\\")
             if not self._confirm_dialog(tr("删除规则"), tr_msg(f"确定删除「{path}」的规则吗？")):
                 return
             caps = CFG.get("ws_caps") or {}
@@ -2652,12 +2664,23 @@ class MemWiseGUI:
             _save_cfg()
             self.engine.ws_cap_rule_removed(path)
             self._log(f"⛨ 已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
+            # 目标未在运行时 disable 无从下手（无簿记 pid）——如实提示残留边界（设计 §七）
+            if not any(getattr(s, "path", None) and s.path.lower().replace("/", "\\") == norm
+                       for s in self.sniffer.snapshot()):
+                self._log("目标程序未在运行，重启后上限自动失效")
             _refresh()
         btn = ttk.Frame(win, style="Dark.TFrame"); btn.pack(pady=(2, 4))
         ttk.Button(btn, text=tr("删除规则"), command=_del).pack(side="left", padx=4)
         ttk.Label(win, text=tr("在进程排行中右键可添加规则；上限作用于物理占用，提交内存不变"),
                   background="#1c1c1c", foreground="#888", wraplength=460).pack(pady=(0, 10))
+
+        def _auto():
+            """规则状态 5 秒自刷新（守护施加后 等待→生效 自动流转）"""
+            if win.winfo_exists():
+                _refresh()
+                win.after(5000, _auto)
         _refresh()
+        win.after(5000, _auto)
         self._center_fit(win, min_w=520)
         win.deiconify()
 
