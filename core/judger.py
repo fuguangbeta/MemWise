@@ -6,6 +6,7 @@ import os, sys, random, threading
 from .learner import _is_system_core, _is_self_process
 from . import winapi
 from .stable import EXPLORE_RATE
+from .rebound import _key as _norm_ws_path  # 路径规范化（与 stable/锚点同规则）
 from .i18n import tr
 
 # frozen windowed 下 sys.stderr 为 None，统一兜底（防异常路径 print 自身崩溃）
@@ -141,6 +142,13 @@ class PareJudger:
         # 会被 PF 判据恒判失败（实测连续 6 次 6/6 判 PF超标、β 2→7、清后基线永不建立）
         self._pf_hist = {}
         self._pf_rate = {}
+        # ── 工作集硬上限生效中的规范化路径（frozenset 快照，判定门无锁 O(1) 读；
+        #    由引擎周期起点与 GUI 规则变更后经 set_capped_paths 重建——设计 v2.1）──
+        self._capped_paths = frozenset()
+
+    def set_capped_paths(self, paths):
+        """重建硬上限判定快照（frozenset；调用方持 engine._ws_cap_lock）。"""
+        self._capped_paths = frozenset(p for p in (paths or ()) if p)
 
     def _gate(self, key, default):
         """读取 EFIS 可调门限（2026-09-11 审查 F22 接线；缺失/非法时回退默认值——
@@ -257,6 +265,10 @@ class PareJudger:
         never = self.cfg.get("never", [])
         if name in never:
             return False, "用户黑名单"
+        # ── 第八道门：工作集硬上限生效中的进程不清理——cap 本身即对该进程的持续处理，
+        #    再叠加 EmptyWorkingSet 会让被钉页面逐页硬缺页回填（自造抖动，v2.2 B2）──
+        if self._capped_paths and _norm_ws_path(getattr(snap, "path", None)) in self._capped_paths:
+            return False, "已设硬上限"
 
         is_fg = getattr(snap, "fg", False)
 
@@ -407,6 +419,9 @@ class PareJudger:
         # 用户黑名单：不参与试探性清理
         never = self.cfg.get("never", [])
         if name in never:
+            return False
+        # 硬上限生效中：不试探（与 can_trim 第八道门同口径，设计 v2.2）
+        if self._capped_paths and _norm_ws_path(getattr(snap, "path", None)) in self._capped_paths:
             return False
         # WS 下限（2026-09-11 审查 F48 恢复）：与 _trim_process 的"WS太小"门槛同为 1 MB。
         # 低于此值的进程即便清到极限也只释放几百 KB，却要为每次试探付出 0.2 s 等待 + PF 抖动；

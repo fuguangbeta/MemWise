@@ -235,6 +235,8 @@ from core.i18n import set_language, tr  # 界面语言（tr 多数由各算法�
 from core.config import load as _load_cfg
 from core.config import get_state_path
 import core.config as _config
+from core.learner import _is_system_core, _is_self_path
+from core.judger import PareJudger as _JudgerCls  # 仅用于静态守卫方法（_is_system_path）
 
 # ── 统一运行日志：单一时间线、线程安全、2MB×2 轮转 ──
 # 记录运行期间全部有价值信息（生命周期/清理/决策/调参/配置/异常/系统/诊断）
@@ -385,7 +387,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.7.009 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.7.010 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -661,6 +663,11 @@ class MemWiseEngine:
         self._refill_hot = False   # 跨周期：是否处于回涨快状态（状态翻转去重，2026-08-14）
         self._refill_cycle = False # 本周期是否触发过回涨快（周期末判定）
         self._refill_total = 0     # 最新回涨量（进入回涨快时展示）
+        # ── 工作集硬上限（高级选项，设计 v2.1-v2.5）：簿记与锁 ──
+        self._ws_cap_lock = threading.Lock()
+        self._ws_cap_applied = {}   # {规范化路径: {pid: orig_max}}（解除凭它；跨重启丢失即回退规则存储值）
+        self._ws_cap_fail = {}      # {规范化路径: 连续失败次数（≥3 降频至每 10 周期）}
+        self._ws_cap_announced = set()  # 已播报过的路径（每规则仅首条）
 
     # ── 守护生命周期 ──
     @property
@@ -932,6 +939,8 @@ class MemWiseEngine:
                 learned = len(self.learner.profiles)
 
                 self._cycle_log_groups = []  # 本周期末分组输出缓存（每项一个逻辑组，2026-08-30）
+                # 工作集硬上限施加（幂等 syscall；五守卫+降频见方法体；播报入周期批）
+                self._apply_ws_caps(snaps)
                 efis_msg = None  # 本周期 EFIS 调参消息（并入周期批输出）
                 # 启动观察消息即时输出（用户定稿：及时反馈，不打包延迟）
                 if not startup_logged:
@@ -1500,6 +1509,83 @@ class MemWiseEngine:
                     pass
                 self._daemon_mutex = None
             self.events.put(('dae_stopped', None))
+
+    # ── 工作集硬上限（高级选项，设计 v2.1-v2.5）──
+
+    def _apply_ws_caps(self, snaps):
+        """对 Active 规则的活 PID 施加/维持工作集硬上限（幂等 syscall）。
+
+        五守卫：本程序自身 / 系统核心 / 游戏 PID 树 / 系统目录 / 规则数（config 层）。
+        连续失败 ≥3 次的规则降频至每 10 周期重试一次（v2.3 重试风暴防护）。
+        全程持 _ws_cap_lock：与 GUI 增删串行（v2.1 R1/R2）；判定层读无锁 frozenset。
+        cap 一经设置即持续到解除或目标退出（配额属目标进程），无需每轮重设——
+        簿记只记未施加的新 PID。"""
+        rules = CFG.get("ws_caps") or {}
+        if not isinstance(rules, dict):
+            rules = {}
+        by_path = {}
+        for s in snaps:
+            p = getattr(s, "path", None)
+            if p:
+                by_path.setdefault(p.lower().replace("/", "\\"), []).append(s.pid)
+        self._ws_cap_tick = getattr(self, "_ws_cap_tick", 0) + 1
+        game_pids = getattr(self.judger, "_game_pid_set", set()) or set()
+        with self._ws_cap_lock:
+            self.judger.set_capped_paths(rules.keys())
+            for path, rule in rules.items():
+                pids = by_path.get(path) or []
+                if not pids:
+                    continue
+                if _is_self_path(path) or _JudgerCls._is_system_path(path):
+                    continue  # 自身/系统目录（B1 守卫；手改配置也拦在这里）
+                fail = self._ws_cap_fail.get(path, 0)
+                if fail >= 3 and self._ws_cap_tick % 10 != 0:
+                    continue  # 重试风暴降频（v2.3）
+                applied = self._ws_cap_applied.setdefault(path, {})
+                for pid in pids:
+                    if pid in applied or pid in game_pids:
+                        continue  # 已施加 / 游戏 PID 树守卫
+                    ok, reason, orig_max = winapi.set_ws_cap(pid, int(rule.get("mb", 0)) << 20)
+                    if ok:
+                        applied[pid] = orig_max
+                        self._ws_cap_fail.pop(path, None)
+                        if path not in self._ws_cap_announced:
+                            self._ws_cap_announced.add(path)
+                            _bname = path.rsplit("\\", 1)[-1]
+                            self._cycle_log_groups.append(
+                                [f"⛨ 已设置工作集硬上限（{rule.get('mb')}MB）：{_bname}"])
+                    else:
+                        self._ws_cap_fail[path] = fail + 1
+                        if fail + 1 == 3 and path not in self._ws_cap_announced:
+                            self._ws_cap_announced.add(path)
+                            _bname = path.rsplit("\\", 1)[-1]
+                            self._cycle_log_groups.append(
+                                [f"⛨ 工作集硬上限设置失败（{reason}）：{_bname}"])
+
+    def ws_cap_rule_added(self, path, orig_max, pid=None):
+        """GUI 设置成功后的接线：判定快照与簿记刷新（锁内；配置由调用方先写好）。"""
+        with self._ws_cap_lock:
+            self.judger.set_capped_paths((CFG.get("ws_caps") or {}).keys())
+            if pid is not None and orig_max:
+                self._ws_cap_applied.setdefault(path, {})[pid] = orig_max
+
+    def ws_cap_rule_removed(self, path):
+        """GUI 删除规则：先对簿记内活 PID 解除（disable+还原 per-pid orig_max），
+        再清簿记/失败计数/锚点/回弹（B5：cap 期间学到的假稳态不可留），最后刷新判定快照。"""
+        with self._ws_cap_lock:
+            applied = self._ws_cap_applied.pop(path, {})
+            for pid, orig in applied.items():
+                try:
+                    winapi.clear_ws_cap(pid, orig)
+                except Exception:
+                    pass
+            self._ws_cap_fail.pop(path, None)
+            self._ws_cap_announced.discard(path)
+            self.judger.set_capped_paths((CFG.get("ws_caps") or {}).keys())
+            self.learner.stable_anchors.anchors.pop(path, None)
+            for _d in (self.learner.rebound.ewma, self.learner.rebound.count,
+                       self.learner.rebound.backoff_until, self.learner.rebound.last_record):
+                _d.pop(path, None)
 
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
     def _push_round(self, chart_accum, mem_pct, harvest_partial, game_seen=None):

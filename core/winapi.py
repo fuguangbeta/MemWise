@@ -1414,3 +1414,80 @@ def remove_auto_start_admin(name):
         return r.returncode == 0
     except Exception:
         return False
+
+
+# ============================================================
+# 工作集硬上限（WS-Hard-Cap 高级选项：仅用户对指定程序显式启用）
+# 设计：audit/workstate 第 15 条（v2.0-v2.5）+ P0 实验协议 E1-E8 实证——
+# 收敛精确（cap=WS 稳态）、可反复设置/恢复（单通道 K32，无 Nt 兜底需要）、
+# 还原无副作用（进程默认 max 配额极小且为软限制）。
+# ============================================================
+
+QUOTA_LIMITS_HARDWS_MAX_ENABLE = 0x4    # QUOTA_LIMITS_HARDWS_MAX_ENABLE（MSDN）
+QUOTA_LIMITS_HARDWS_MAX_DISABLE = 0x8   # QUOTA_LIMITS_HARDWS_MAX_DISABLE
+WS_CAP_MIN_BYTES = 256 << 20            # 安全下限：低于此值目标程序缺页抖动不可接受（防自残）
+
+GetProcessWorkingSetSize = k32.GetProcessWorkingSetSize
+GetProcessWorkingSetSize.argtypes = [w.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+GetProcessWorkingSetSize.restype = w.BOOL
+SetProcessWorkingSetSizeEx = k32.SetProcessWorkingSetSizeEx
+SetProcessWorkingSetSizeEx.argtypes = [w.HANDLE, ctypes.c_size_t, ctypes.c_size_t, w.DWORD]
+SetProcessWorkingSetSizeEx.restype = w.BOOL
+
+
+def get_process_ws_quota(pid):
+    """进程当前工作集配额 (min, max) 字节——UI 实况与 orig_max 采集用；失败 None"""
+    h = OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        mn, mx = ctypes.c_size_t(), ctypes.c_size_t()
+        if GetProcessWorkingSetSize(h, ctypes.byref(mn), ctypes.byref(mx)):
+            return mn.value, mx.value
+        return None
+    finally:
+        CloseHandle(h)
+
+
+def set_ws_cap(pid, max_bytes):
+    """对进程设置工作集硬上限（物理占用被强制钉在 max 之下）→ (ok, reason, orig_max)。
+
+    硬上限 = QUOTA_LIMITS_HARDWS_MAX_ENABLE：进程触碰被换出页即硬缺页，管理器把
+    该进程驻留页强制收敛到 max 之下（P0 实证：cap 即 WS 稳态、精确可逆）。
+    orig_max = 启用时的原 max 配额——调用方必须持久化（硬标志只写不可读，
+    解除时凭它还原）。此为 K32 官方单通道，无 MemoryPriority 的一次性问题，
+    不需要 Nt 兜底。下限钳制 WS_CAP_MIN_BYTES 防自残（API/UI 双层之一）。"""
+    h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, False, pid)
+    if not h:
+        return False, "权限不足或进程已退出", 0
+    try:
+        mn, mx = ctypes.c_size_t(), ctypes.c_size_t()
+        if not GetProcessWorkingSetSize(h, ctypes.byref(mn), ctypes.byref(mx)):
+            return False, "查询工作集配额失败", 0
+        cap = int(max_bytes)
+        if cap < WS_CAP_MIN_BYTES:
+            return False, "上限低于安全下限（256MB）", 0
+        if cap <= mn.value:
+            return False, "上限不高于进程最低工作集配额", 0
+        if SetProcessWorkingSetSizeEx(h, mn.value, cap, QUOTA_LIMITS_HARDWS_MAX_ENABLE):
+            return True, "", mx.value
+        return False, "系统拒绝（错误码 %d）" % (ctypes.get_last_error() & 0xFFFFFFFF), 0
+    finally:
+        CloseHandle(h)
+
+
+def clear_ws_cap(pid, orig_max):
+    """解除工作集硬上限并还原原 max 配额（软限制）→ (ok, reason)。
+    orig_max 为启用时记录的原配额（设计 v2.4 B4：跨重启稳定的规则存储 + per-pid 簿记优先）。"""
+    h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, False, pid)
+    if not h:
+        return False, "权限不足或进程已退出"
+    try:
+        mn, mx = ctypes.c_size_t(), ctypes.c_size_t()
+        if not GetProcessWorkingSetSize(h, ctypes.byref(mn), ctypes.byref(mx)):
+            return False, "查询工作集配额失败"
+        if SetProcessWorkingSetSizeEx(h, mn.value, int(orig_max), QUOTA_LIMITS_HARDWS_MAX_DISABLE):
+            return True, ""
+        return False, "系统拒绝（错误码 %d）" % (ctypes.get_last_error() & 0xFFFFFFFF)
+    finally:
+        CloseHandle(h)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.7.009 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.7.010 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2355,7 +2355,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.7.0.9"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.7.0.10"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2740,6 +2740,139 @@ check("CAL 汇总行英文翻译（新键前缀递归）",
       _s47en.startswith("This round optimized 2.9GB") and "Net released 1.2GB" in _s47en,
       _s47en)
 check("CAL i18n 新键存在", "本轮优化 " in _EN_A and "净释放 " in _EN_A)
+
+# ── [45] WS 工作集硬上限（wshc-dev；设计 v2.0-v2.5）──
+import core.winapi as _w45
+_jd45f = _src26("core", "judger.py"); _cl45f = _src26("core", "cleaner.py")
+_cf45f = _src26("core", "config.py"); _eg45f = _src26("core", "engine.py")
+_J45 = {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}}
+# W1 winapi：参数传递（mock 句柄与 syscall 记录器；真 syscall 由 P0 实验覆盖）
+_rec45 = []
+_og45 = (_w45.OpenProcess, _w45.GetProcessWorkingSetSize, _w45.SetProcessWorkingSetSizeEx, _w45.CloseHandle)
+_w45.OpenProcess = lambda a, b, c: 1234
+_w45.GetProcessWorkingSetSize = lambda h, mn, mx: (setattr(mn._obj, "value", 200 << 10),
+                                                   setattr(mx._obj, "value", 512 << 20), True)[2]
+_w45.SetProcessWorkingSetSizeEx = lambda h, mn, mx, fl: _rec45.append((mn, mx, fl)) or True
+_w45.CloseHandle = lambda x: True
+try:
+    _ok45, _rsn45, _om45 = _w45.set_ws_cap(4242, 300 << 20)
+    _bad45 = []
+    _w45.SetProcessWorkingSetSizeEx = lambda h, mn, mx, fl: _bad45.append(1) or True
+    _low45 = _w45.set_ws_cap(4242, 64 << 20)
+    _rec45c = []
+    _w45.SetProcessWorkingSetSizeEx = lambda h, mn, mx, fl: _rec45c.append((mx, fl)) or True
+    _w45.GetProcessWorkingSetSize = lambda h, mn, mx: (setattr(mn._obj, "value", 200 << 10),
+                                                       setattr(mx._obj, "value", 300 << 20), True)[2]
+    _ok45c, _rsn45c = _w45.clear_ws_cap(4242, 512 << 20)[:2]
+finally:
+    (_w45.OpenProcess, _w45.GetProcessWorkingSetSize, _w45.SetProcessWorkingSetSizeEx,
+     _w45.CloseHandle) = _og45
+check("W1 set_ws_cap 参数传递（保留 min + cap + MAX_EN 旗标）",
+      _ok45 is True and _rec45 and _rec45[0] == (200 << 10, 300 << 20, 0x4), str(_rec45))
+check("W1 orig_max 返回查询到的原 max", _om45 == 512 << 20)
+check("W1 低于 256MB 安全下限直接拒绝（syscall 零触碰）", _low45[0] is False and _bad45 == [])
+check("W1 clear_ws_cap 传递 orig_max + MAX_DIS 旗标",
+      _ok45c is True and _rec45c and _rec45c[0] == (512 << 20, 0x8), str(_rec45c))
+# W2 config 校验（临时 yaml，不碰真实配置）
+_t45 = os.path.join(tempfile.mkdtemp(), "ws_caps.yaml")
+open(_t45, "w", encoding="utf-8").write(
+    'ws_caps:\n'
+    '  "d:\\\\app\\\\good.exe": {mb: 512, orig_max: 138412032}\n'
+    '  "d:\\\\app\\\\tiny.exe": {mb: 64, orig_max: 1}\n'
+    '  "bad": "not-a-rule"\n'
+    '  "d:\\\\app\\\\g2.exe": {mb: 300, orig_max: 2}\n'
+    '  "d:\\\\app\\\\g3.exe": {mb: 300, orig_max: 3}\n'
+    '  "d:\\\\app\\\\g4.exe": {mb: 300, orig_max: 4}\n'
+    '  "d:\\\\app\\\\g5.exe": {mb: 300, orig_max: 5}\n'
+    '  "d:\\\\app\\\\g6.exe": {mb: 300, orig_max: 6}\n'
+    '  "d:\\\\app\\\\g7.exe": {mb: 300, orig_max: 7}\n'
+    '  "d:\\\\app\\\\g8.exe": {mb: 300, orig_max: 8}\n'
+    '  "d:\\\\app\\\\g9.exe": {mb: 300, orig_max: 9}\n'
+    '  "d:\\\\app\\\\g10.exe": {mb: 300, orig_max: 10}\n'
+    '  "d:\\\\app\\\\g11.exe": {mb: 300, orig_max: 11}\n'
+    '  "d:\\\\app\\\\g12.exe": {mb: 300, orig_max: 12}\n'
+    '  "d:\\\\app\\\\g13.exe": {mb: 300, orig_max: 13}\n'
+    '  "d:\\\\app\\\\g14.exe": {mb: 300, orig_max: 14}\n'
+    '  "d:\\\\app\\\\g15.exe": {mb: 300, orig_max: 15}\n'
+    '  "d:\\\\app\\\\g16.exe": {mb: 300, orig_max: 16}\n')
+_ocp45 = _cfg26.CONFIG_PATH
+_cfg26.CONFIG_PATH = _t45
+_d45c = _cfg26.load()
+_cfg26.CONFIG_PATH = _ocp45
+os.remove(_t45)
+check("W2 ws_caps 校验：规范化/下限剔除/上限 16 条",
+      list(_d45c.get("ws_caps", {}).keys())[:1] == ["d:\\app\\good.exe"]
+      and "d:\\app\\tiny.exe" not in _d45c["ws_caps"] and len(_d45c["ws_caps"]) == 16,
+      str(list(_d45c.get("ws_caps", {}).keys())))
+# W3 第八道门：can_trim/can_probe 双拒绝（judger frozenset 快照）
+_lr45 = PareLearner(); _j45g = PareJudger(_lr45, dict(_J45))
+_j45g.set_capped_paths(["d:\\app\\capped.exe"])
+_s45 = Snap(); _s45.name = "capped.exe"; _s45.ws = 300 << 20; _s45.path = r"d:\app\capped.exe"
+_s45.pid = 4600; _s45.pf = 0; _s45.priv = 0; _s45.fg = False
+_ok45t, _r45t = _j45g.can_trim(_s45)
+check("W3 can_trim 第八道门拒绝（已设硬上限）", not _ok45t and "已设硬上限" in _r45t, _r45t)
+check("W3 can_probe 同口径拒绝", _j45g.can_probe(_s45) is False)
+_s45b = Snap(); _s45b.name = "free45.exe"; _s45b.ws = 300 << 20; _s45b.path = r"d:\app\free45.exe"
+_s45b.pid = 4601; _s45b.pf = 0; _s45b.priv = 0; _s45b.fg = False
+_j45g._low_activity[4601] = (2, time.time(), None)
+_ok45b, _r45b = _j45g.can_trim(_s45b)
+check("W3 未钉路径不触发第八道门（对照）", "已设硬上限" not in _r45b, _r45b)
+# W4 绕行通道补齐：L3/回弹二轮跳过（静态接线 ×2）
+check("W4 cleaner 两处绕行通道补齐第八道门",
+      _cl45f.count('_norm_ws_path(getattr(s, "path", None)) in getattr(self.judger, "_capped_paths", frozenset())') == 2
+      and "已设硬上限" not in _cl45f)
+# W5 引擎接线：施加/簿记/守卫（mock syscall；FakeSniffer 桩）
+_E45 = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(),
+                     os.path.join(tempfile.mkdtemp(), "state45.json"))
+_eg45m = sys.modules["core.engine"]  # 模块全局 CFG 的宿主
+class _S45:
+    pass
+def _mk45(pid, path):
+    s = _S45(); s.pid = pid; s.path = path; s.name = path.rsplit("\\", 1)[-1]
+    s.ws = 300 << 20; s.pf = 0; s.priv = 0; s.fg = False; s.cpu = 0.0
+    s.parent = 0; s.create = 1; s.has_visible = False
+    return s
+_og45b = (_w45.OpenProcess, _w45.GetProcessWorkingSetSize, _w45.SetProcessWorkingSetSizeEx, _w45.CloseHandle)
+_w45.OpenProcess = lambda a, b, c: 1234
+_w45.GetProcessWorkingSetSize = lambda h, mn, mx: (setattr(mn._obj, "value", 200 << 10),
+                                                   setattr(mx._obj, "value", 512 << 20), True)[2]
+_w45.SetProcessWorkingSetSizeEx = lambda h, mn, mx, fl: True
+_w45.CloseHandle = lambda x: True
+try:
+    _eg45m.CFG["ws_caps"] = {r"d:\app\t45.exe": {"mb": 300, "orig_max": 512 << 20},
+                           sys.executable.lower().replace("/", "\\"): {"mb": 300, "orig_max": 512 << 20}}
+    _E45._cycle_log_groups = []
+    _snaps45 = [_mk45(4701, r"D:\App\T45.exe"), _mk45(os.getpid(), sys.executable)]
+    _E45._apply_ws_caps(_snaps45)
+    _applied45 = dict(_E45._ws_cap_applied)
+    _eg45m.CFG["ws_caps"] = {}
+    _E45._apply_ws_caps(_snaps45)
+finally:
+    (_w45.OpenProcess, _w45.GetProcessWorkingSetSize, _w45.SetProcessWorkingSetSizeEx,
+     _w45.CloseHandle) = _og45b
+    _eg45m.CFG["ws_caps"] = {}
+check("W5 引擎施加：命中路径进簿记+判定快照；自身路径被守卫拦截",
+      list(_applied45.keys()) == [r"d:\app\t45.exe"] and 4701 in _applied45[r"d:\app\t45.exe"]
+      and _E45.judger._capped_paths == frozenset(), str(_applied45))
+check("W5 判定快照随规则清空复原", _E45.judger._capped_paths == frozenset())
+_E45.shutdown()
+# W6 i18n
+check("W6 i18n 键完备（判定理由/菜单/警告/播报片段）",
+      all(k in _EN_A for k in ("已设硬上限", "设置工作集硬上限…", "解除工作集硬上限",
+                                "管理规则…", "工作集: ", "提交内存: ", "上限: ", "未设置",
+                                "上限（MB）：", "我了解这会使该程序在访问被换出的内存时变卡",
+                                "生效中", "等待目标进程", "路径不存在", "工作集硬上限规则",
+                                "已设置工作集硬上限（", "已解除 ", "系统拒绝（错误码 ")))
+set_language("en")
+_s47en = tr_msg("⛨ 已设置工作集硬上限（512MB）：chrome.exe")
+set_language("zh_CN")
+check("W6 广播行英文片段重组", _s47en == "⛨ Working-set hard cap set (512 MB): chrome.exe",
+      _s47en)
+check("W6 广播片段键存在", "已设置工作集硬上限（" in _EN_A and "MB）：" in _EN_A)
+# W7 静态：config 键/引擎接线/判定门源码
+check("W7 静态接线（DEFAULT_CFG/白名单等效/第八道门源码）",
+      '"ws_caps": {}' in _cf45f and "_capped_paths" in _jd45f
+      and "已设硬上限" in _jd45f and "_apply_ws_caps(snaps)" in _eg45f)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

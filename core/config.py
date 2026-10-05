@@ -43,6 +43,7 @@ DEFAULT_CFG = {
     "close_action": "ask", "tray_left_action": "show",
     "emergency_abs_pct": 0,  # 紧急触发兜底：可用内存百分比阈值（0=禁用；使用率阈值调高时的保险）
     "language": "zh_CN",  # 界面语言（zh_CN=简体中文 / en=English）
+    "ws_caps": {},  # 工作集硬上限规则（高级选项）：{规范化路径: {"mb":int, "orig_max":int}}
 }
 
 # 清理操作合法键（GUI 六开关全量映射）；历史遗留键（compress/combine 等旧版操作名）
@@ -76,8 +77,9 @@ def get_state_path():
 def load():
     """加载 config.yaml，缺失字段用 DEFAULT_CFG 兜底。
     exe 旁无配置时回退打包内模板（_MEIPASS），保证独立部署首次运行即有完整配置"""
-    # 深拷贝列表默认值：防消费方 append 污染 DEFAULT_CFG（曾见 clean_operations 被 toggle_op 追加）
-    d = {k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULT_CFG.items()}
+    # 深拷贝列表/字典默认值：防消费方 append/赋值污染 DEFAULT_CFG（曾见 clean_operations 被 toggle_op 追加）
+    d = {k: (list(v) if isinstance(v, list) else (dict(v) if isinstance(v, dict) else v))
+         for k, v in DEFAULT_CFG.items()}
     path = CONFIG_PATH
     if not os.path.isfile(path) and _TEMPLATE_PATH:
         path = _TEMPLATE_PATH
@@ -110,6 +112,21 @@ def load():
         # never 黑名单规范化（2026-09-06 审查 F9）：手改配置的无后缀条目（如 chrome）也能
         # 精准匹配快照进程名；幂等——GUI 写回的已规范化条目零变化，空/None 条目剔除
         d["never"] = [n for n in (_norm_proc_name(x) for x in d["never"] if x and str(x).strip()) if n]
+        # 工作集硬上限规则（高级选项）：键=规范化完整路径；mb 钳 256-65536；条目上限 16
+        # （先全量校验再截断——有效条目优先于位置）；非法/越界/畸形条目整体剔除
+        _wc = d.get("ws_caps")
+        if not isinstance(_wc, dict):
+            _wc = {}
+        _clean = {}
+        for _k, _v in _wc.items():
+            try:
+                _mb = int(float(_v.get("mb", 0)))
+                _om = int(float(_v.get("orig_max", 0)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if isinstance(_k, str) and _k and 256 <= _mb <= 65536 and _om > 0:
+                _clean[_k.strip().lower().replace("/", "\\")] = {"mb": _mb, "orig_max": _om}
+        d["ws_caps"] = dict(list(_clean.items())[:16])
         # efis_params 类型校验（2026-08-15 审查）：畸形配置（列表/字符串）会致
         # Judger 构造 .get 崩溃（启动即崩）；内层数值键清洗——手改字符串会在
         # PidController 运行时 TypeError（守护异常），坏键删除回退默认

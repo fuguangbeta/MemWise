@@ -1,5 +1,5 @@
 """
-MemWise v4.7.009 GUI —— 图形界面
+MemWise v4.7.010 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -21,7 +21,7 @@ from core.engine import (
 
 from core import winapi
 from core.learner import PareLearner as Learner
-from core.learner import _is_system_core  # 系统核心保护名单（进程排行终止保护等）
+from core.learner import _is_system_core, _is_self_path  # 系统核心保护名单（进程排行终止保护等）/自身可执行路径（WS 硬上限守卫）
 from core.judger import PareJudger as Judger
 from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
@@ -657,7 +657,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.7.009", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.7.010", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -681,7 +681,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.7.009")
+        self.root.title("MemWise v4.7.010")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -739,7 +739,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.7.009 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.7.010 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -798,7 +798,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.009")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.010")
                     if fw:
                         top = fw
                 except Exception:
@@ -2485,8 +2485,181 @@ class MemWiseGUI:
             self.root.after(10, _restore_hover)
 
         _refresh()
+        # ── 右键菜单：工作集硬上限（高级选项，设计 v2.4）──
+        _rctx = {"pid": None, "path": None}
+        _rmenu = tk.Menu(win, tearoff=0)
+
+        def _rank_menu(event):
+            row = tree.identify_row(event.y)
+            if not row:
+                return
+            tree.selection_set(row)
+            vals = tree.item(row, "values")
+            try:
+                _rctx["pid"] = int(vals[1])
+            except (ValueError, TypeError):
+                return
+            _rctx["path"] = winapi.get_process_path(_rctx["pid"])
+            has = bool(_rctx["path"]) and _rctx["path"].lower().replace("/", "\\") in (CFG.get("ws_caps") or {})
+            _rmenu.entryconfig(0, state="normal" if not has else "disabled")
+            _rmenu.entryconfig(1, state="normal" if has else "disabled")
+            try:
+                _rmenu.tk_popup(event.x_root, event.y_root)
+            finally:
+                _rmenu.grab_release()
+
+        _rmenu.add_command(label=tr("设置工作集硬上限…"),
+                           command=lambda: self._ws_cap_set_dialog(_rctx["pid"], _rctx["path"]))
+        _rmenu.add_command(label=tr("解除工作集硬上限"),
+                           command=lambda: self._ws_cap_clear_dialog(_rctx["path"]))
+        _rmenu.add_separator()
+        _rmenu.add_command(label=tr("管理规则…"), command=self._manage_ws_caps)
+        tree.bind("<Button-3>", _rank_menu)
         win.deiconify()  # 全部控件就绪，居中后一次显示
 
+    # ---- 工作集硬上限（高级选项，设计 v2.0-v2.5）----
+
+    def _ws_cap_set_dialog(self, pid, path):
+        """设置工作集硬上限：实况三行 + 输入 + 强制确认勾选（v2.4）。
+        pid 实时复验（v2.1 R6：快照 PID 可能已被复用）。"""
+        if not pid or not path:
+            return
+        path_now = winapi.get_process_path(pid)
+        if not path_now or path_now.lower().replace("/", "\\") != path.lower().replace("/", "\\"):
+            self._dark_message(tr("工作集硬上限"),
+                               tr_msg(f"进程已退出或身份已变化（{path}）"), kind="warning")
+            return
+        base = path_now.rsplit("\\", 1)[-1]
+        norm = path_now.lower().replace("/", "\\")
+        if _is_self_path(path_now) or _is_system_core(base):
+            self._dark_message(tr("工作集硬上限"), tr("不能对本程序或系统核心进程设置"), kind="warning")
+            return
+        if self.judger._is_system_path(path_now):
+            self._dark_message(tr("工作集硬上限"), tr("系统目录下的进程不可设置"), kind="warning")
+            return
+        if base in (_normalize_proc_name(g) for g in (CFG.get("game_processes") or [])):
+            self._dark_message(tr("工作集硬上限"), tr("不能对游戏名单中的程序设置"), kind="warning")
+            return
+        mem = winapi.get_process_memory(pid)
+        ws_mb = (mem["ws"] >> 20) if mem else 0
+        commit_mb = (mem["priv"] >> 20) if mem else 0
+        caps = CFG.get("ws_caps") or {}
+        rule = caps.get(norm)
+        quota = winapi.get_process_ws_quota(pid)
+
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(tr("工作集硬上限"))
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        cap_now = tr("未设置") if rule is None else f"{rule['mb']} MB"
+        ttk.Label(dlg, text=tr("工作集硬上限"), font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(pady=(16, 2))
+        ttk.Label(dlg, text=tr("工作集: ") + f"{ws_mb} MB · " + tr("提交内存: ") + f"{commit_mb} MB · "
+                  + tr("上限: ") + cap_now, background="#1c1c1c", foreground="#aaa").pack()
+        row = ttk.Frame(dlg, style="Dark.TFrame"); row.pack(pady=(10, 2))
+        ttk.Label(row, text=tr("上限（MB）："), background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
+        _default = max(256, ((ws_mb + 127) // 128) * 128)
+        ent = ttk.Spinbox(row, from_=256, to=8192, increment=128, width=8)
+        ent.set(_default); ent.pack(side="left", padx=(4, 0))
+        ttk.Style().configure("DarkW.TCheckbutton", background="#1c1c1c", foreground="#ffb84d")
+        ack_var = tk.BooleanVar(value=False)
+
+        def _confirm():
+            try:
+                mb = max(256, min(8192, int(float(ent.get()))))
+            except (TypeError, ValueError):
+                return
+            ok, reason, orig_max = winapi.set_ws_cap(pid, mb << 20)
+            if not ok:
+                self._dark_message(tr("工作集硬上限"), tr_msg(reason), kind="error")
+                return
+            CFG.setdefault("ws_caps", {})[norm] = {"mb": mb, "orig_max": int(orig_max)}
+            _save_cfg()
+            self.engine.ws_cap_rule_added(norm, int(orig_max), pid)
+            self._log(f"⛨ 已设置工作集硬上限（{mb}MB）：{base}")
+            dlg.destroy()
+        btn = ttk.Frame(dlg, style="Dark.TFrame"); btn.pack(pady=(8, 14))
+        btn_ok = ttk.Button(btn, text=tr("确认"), command=_confirm, state="disabled")
+        btn_ok.pack(side="left", padx=6)
+        ttk.Button(btn, text=tr("取消"), command=dlg.destroy).pack(side="left", padx=6)
+
+        def _ack():
+            btn_ok.state(["!disabled"] if ack_var.get() else ["disabled"])
+        ttk.Checkbutton(dlg, style="DarkW.TCheckbutton", variable=ack_var, command=_ack,
+                        text=tr("我了解这会使该程序在访问被换出的内存时变卡")).pack(pady=(6, 2))
+        dlg.deiconify()
+        self._center_fit(dlg, min_w=430)
+        dlg.wait_window()
+
+    def _ws_cap_clear_dialog(self, path):
+        if not path:
+            return
+        norm = path.lower().replace("/", "\\")
+        if not self._confirm_dialog(tr("解除工作集硬上限"),
+                                    tr_msg(f"确定解除「{path}」的工作集硬上限？学习数据会重新开始。")):
+            return
+        caps = CFG.get("ws_caps") or {}
+        if norm not in caps:
+            return
+        del caps[norm]
+        _save_cfg()
+        self.engine.ws_cap_rule_removed(norm)
+        self._log(f"⛨ 已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
+
+    def _manage_ws_caps(self):
+        """规则管理窗口：列出/删除（添加入口=进程排行右键，设计 v2.4）。"""
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        self._apply_icon(win)
+        win.title(tr("工作集硬上限规则"))
+        win.transient(self.root)
+        win.grab_set()
+        win.configure(bg="#1c1c1c")
+        cols = (tr("程序路径"), tr("上限 (MB)"), tr("状态"))
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=10)
+        tree.heading(cols[0], text=cols[0]); tree.column(cols[0], width=380, anchor="w")
+        tree.heading(cols[1], text=cols[1]); tree.column(cols[1], width=90, anchor="center")
+        tree.heading(cols[2], text=cols[2]); tree.column(cols[2], width=110, anchor="center")
+        tree.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+
+        def _refresh():
+            for i in tree.get_children():
+                tree.delete(i)
+            caps = CFG.get("ws_caps") or {}
+            applied = getattr(self.engine, "_ws_cap_applied", {}) or {}
+            for path, rule in sorted(caps.items()):
+                if not os.path.isfile(path):
+                    st = tr("路径不存在")
+                elif applied.get(path):
+                    st = tr("生效中")
+                else:
+                    st = tr("等待目标进程")
+                tree.insert("", "end", values=(path, rule.get("mb"), st))
+
+        def _del():
+            sel = tree.selection()
+            if not sel:
+                return
+            path = tree.item(sel[0], "values")[0]
+            if not self._confirm_dialog(tr("删除规则"), tr_msg(f"确定删除「{path}」的规则吗？")):
+                return
+            caps = CFG.get("ws_caps") or {}
+            caps.pop(path, None)
+            _save_cfg()
+            self.engine.ws_cap_rule_removed(path)
+            self._log(f"⛨ 已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
+            _refresh()
+        btn = ttk.Frame(win, style="Dark.TFrame"); btn.pack(pady=(2, 4))
+        ttk.Button(btn, text=tr("删除规则"), command=_del).pack(side="left", padx=4)
+        ttk.Label(win, text=tr("在进程排行中右键可添加规则；上限作用于物理占用，提交内存不变"),
+                  background="#1c1c1c", foreground="#888", wraplength=460).pack(pady=(0, 10))
+        _refresh()
+        self._center_fit(win, min_w=520)
+        win.deiconify()
 
     # ---- 日志 / 状态 ----
 

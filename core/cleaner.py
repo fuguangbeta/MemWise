@@ -7,6 +7,7 @@ Layer 3: 深度聚合 (高压力时重复执行)
 import time, concurrent.futures, threading, os, functools
 from . import winapi
 from .learner import _is_system_core, _is_self_process, _is_self_path
+from .rebound import _key as _norm_ws_path
 
 # ── 游戏进程名单（2026-08-11：默认不再内置，由用户自行配置——内置通用进程名
 # （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
@@ -913,6 +914,10 @@ class PareCleaner:
                 continue
             if name_lower in never:
                 continue
+            # 第八道门（绕行通道补齐 v2.2）：硬上限生效中的进程不再叠加清理——
+            # 被 cap 的页回填即硬缺页，EWS 只会自造抖动
+            if _norm_ws_path(getattr(s, "path", None)) in getattr(self.judger, "_capped_paths", frozenset()):
+                continue
             # 前台进程低压力不碰（与 can_trim 同规则——Layer2 有前台保护，深度聚合不得缺失）
             if getattr(s, 'fg', False) and getattr(self.judger, 'aggressiveness', 0.0) < 0.35:
                 continue
@@ -1121,6 +1126,9 @@ class PareCleaner:
                         continue
                     name_l = s.name.lower()
                     if _is_system_core(name_l) or name_l in never:
+                        continue
+                    # 第八道门（绕行通道补齐 v2.2）：硬上限生效中的进程不做回弹二轮
+                    if _norm_ws_path(getattr(s, "path", None)) in getattr(self.judger, "_capped_paths", frozenset()):
                         continue
                     if getattr(s, 'fg', False) and _agg < 0.35:
                         continue  # 前台进程低压力不碰（与 can_trim 同规则）
