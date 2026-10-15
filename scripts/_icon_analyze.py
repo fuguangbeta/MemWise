@@ -1,7 +1,8 @@
 # 分析 preview 图：边缘锐度 / 暗圈 / M 对比度 / ASCII 预览
-import sys, os, struct, zlib
+import os, struct, zlib, tempfile
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 读取目录必须与 _icon_preview.py 的输出目录一致（2026-10-15：由项目根改为 %TEMP%）
+OUT = os.path.join(tempfile.gettempdir(), "memwise_icon_preview")
 
 def load_png(path):
     d = open(path, "rb").read()
@@ -100,5 +101,5 @@ if __name__ == "__main__":
     print()
     for size in (16, 32):
         print(f"########## {size}px ##########")
-        ascii_art(f"A{size}", os.path.join(BASE, f"preview_A_{size}.png"))
-        ascii_art(f"B{size}", os.path.join(BASE, f"preview_B_{size}.png"))
+        ascii_art(f"A{size}", os.path.join(OUT, f"preview_A_{size}.png"))
+        ascii_art(f"B{size}", os.path.join(OUT, f"preview_B_{size}.png"))

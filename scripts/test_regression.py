@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.7.013 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v4.7.023 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# GBK 控制台容错（2026-10-15）：失败详情含 emoji（如 ⚠）时 print 会抛 UnicodeEncodeError，
+# 把「断言失败」伪装成「脚本崩溃」；与 CLI main() 同款处理（errors=replace）。
+try:
+    sys.stdout.reconfigure(errors="replace")
+except Exception:
+    pass
 
 from core.kalman import KalmanProfile
 from core.prior import HierarchicalPrior
@@ -1202,7 +1208,7 @@ check("F3 GUI 启动失败区分 CLI 占用", "_daemon_busy_cli" in _eng26_src a
 check("F3 learner tmp 隔离", "{os.getpid()}.tmp" in _lm26_src)
 check("F3 efis tmp 隔离", "{os.getpid()}.tmp" in _src26("core", "efis.py"))
 check("F3 config tmp 隔离", "{os.getpid()}.tmp" in _src26("core", "config.py"))
-check("F3 engine tmp 隔离×4（含 ② 校准文件）", _eng26_src.count("{os.getpid()}.tmp") == 4)
+check("F3 engine tmp 隔离×5（含 ② 校准文件与 watchdog 原子写）", _eng26_src.count("{os.getpid()}.tmp") == 5)
 # ── F6 游戏模式实时化（确认计数器全清，启用/退出即时生效）──
 check("F6 游戏退出即时化", "game_gone_count" not in _eng26_src and "game_gone_count" not in _cl26_src)
 check("F6 实时退出注释接线", "实时退出" in _eng26_src and "实时退出" in _cl26_src)
@@ -1256,7 +1262,7 @@ set_language("zh_CN")
 print("\n[30] 图表标度与效率阈值适配（2026-09-06 用户定稿）")
 # ── 任务1: 纵轴 GB 标度 ≥10 取整 ──
 _gui32_src = _src26("memwise_gui.py")
-_eris_v7_src = _src26("core/eris.py")   # ERIS v7 纯函数核心
+_eris_v7_src = _src26("core/eris.py")   # ERIS 纯函数核心（当前口径 v9；变量名沿用历史）
 check("纵轴 GB≥10 取整", '_gb_v = lbl_v / 1024.0' in _gui32_src
       and 'f"{_gb_v:.0f}GB" if _gb_v >= 10 else f"{_gb_v:.1f}GB"' in _gui32_src)
 # ── 任务2: 效率异常下限 60→50（折点着色 + 因子极性，含等于语义不变）──
@@ -2355,7 +2361,7 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.7.0.13"' in _mf41)
+check("F9 manifest 版本随版", 'version="4.7.0.23"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2830,10 +2836,12 @@ _s45b.pid = 4601; _s45b.pf = 0; _s45b.priv = 0; _s45b.fg = False
 _j45g._low_activity[4601] = (2, time.time(), None)
 _ok45b, _r45b = _j45g.can_trim(_s45b)
 check("W3 未钉路径不触发第八道门（对照）", "已设硬上限" not in _r45b, _r45b)
-# W4 绕行通道补齐：L3/回弹二轮跳过（静态接线 ×2）
-check("W4 cleaner 两处绕行通道补齐第八道门",
-      _cl45f.count('_norm_ws_path(getattr(s, "path", None)) in getattr(self.judger, "_capped_paths", frozenset())') == 2
-      and "已设硬上限" not in _cl45f)
+# W4 绕行通道补齐（2026-10-15 强化）：旧实现只补 2 处，桩实验实测 quick_retrim 与 _trim_process
+# 仍会对被钉进程执行 EmptyWorkingSet ⇒ 现改为统一判定方法 ws_cap_blocked，清理侧 5 个入口全走它
+check("W4 第八道门统一判定（cleaner 5 处 / judger 3 处）",
+      _cl45f.count("ws_cap_blocked(") == 5 and _jd45f.count("ws_cap_blocked(") == 3
+      and "def ws_cap_blocked(self, path):" in _jd45f
+      and "if not self._capped_paths or not path:" in _jd45f)
 # W5 引擎接线：施加/簿记/守卫（mock syscall；FakeSniffer 桩）
 _E45 = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(),
                      os.path.join(tempfile.mkdtemp(), "state45.json"))
@@ -2887,6 +2895,207 @@ check("W7 静态接线（DEFAULT_CFG/白名单等效/第八道门源码）",
       '"ws_caps": {}' in _cf45f and "_capped_paths" in _jd45f
       and "已设硬上限" in _jd45f and "_apply_ws_caps(snaps)" in _eg45f)
 
+print("\n[47] 2026-10-15 天花板修复批次回归（P0-P15）")
+def _src47(rel):
+    return open(os.path.join(_ROOT34, rel.replace("/", os.sep)), encoding="utf-8").read()
+_wa47 = _src47("core/winapi.py"); _cf47 = _src47("core/config.py")
+_jd47 = _src47("core/judger.py"); _cl47 = _src47("core/cleaner.py")
+_eg47 = _src47("core/engine.py"); _gui47 = _src47("memwise_gui.py")
+_mw47 = _src47("memwise.py"); _ef47 = _src47("core/efis.py")
+_pl47 = _src47("core/policy.py"); _bk47 = _src47("core/backup.py")
+# P0 管理员自启：argv 形式（含空格路径可用）
+check("P0 schtasks 建/删均为 argv 列表（无 shell=True）",
+      # 2026-10-15 发布前改造：创建改走 /Create /XML（见 [49]），此处按新形态断言
+      'cmd = ["schtasks", "/Create", "/TN", name, "/XML", path, "/F"]' in _wa47
+      and 'cmd = ["schtasks", "/Delete", "/TN", name, "/F"]' in _wa47
+      and "shell=True)" not in _wa47)   # 只查调用形态，注释里的说明文字不算
+# P1 第八道门：静态结构 + 三条执行通道行为
+check("P1 统一判定方法存在（空规则短路）",
+      "def ws_cap_blocked(self, path):" in _jd47 and "if not self._capped_paths or not path:" in _jd47)
+import core.winapi as _w47
+from core.cleaner import PareCleaner as _PC47
+_cb47 = _PC47(PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[],"efis_params":{}}))
+_cb47.judger.set_capped_paths(["d:\\app\\cap47.exe"])
+_saved47 = (_w47.get_foreground_pid, _w47.get_process_path, _w47.get_process_times, _w47.get_process_memory, _w47.empty_ws)
+_calls47 = []
+_w47.get_foreground_pid = lambda: 88888
+_w47.get_process_path = lambda pid: r"D:\App\Cap47.exe"
+_w47.get_process_times = lambda pid: {"create": 7, "kernel": 0, "user": 0}
+_w47.get_process_memory = lambda pid: {"ws": 200 << 20, "pf": 1, "priv": 100 << 20}
+_w47.empty_ws = lambda pid: (_calls47.append(pid), True)[1]
+class _S47:
+    pass
+_sn47 = _S47(); _sn47.pid = 4747; _sn47.name = "cap47.exe"; _sn47.ws = 200 << 20
+_sn47.path = r"D:\App\Cap47.exe"; _sn47.pf = 0; _sn47.priv = 0; _sn47.fg = False
+_sn47.cpu = 0.0; _sn47.parent = 0; _sn47.create = 7; _sn47.has_visible = False
+try:
+    _r47a = _cb47.quick_retrim(4747, 7)
+    _cb47._lite = True; _cb47.judger._mode_guard = "full"
+    _r47b = _cb47._trim_process(_sn47, PareLearner())[3]
+    _r47c = _cb47._probe_process(_sn47, PareLearner())
+finally:
+    (_w47.get_foreground_pid, _w47.get_process_path, _w47.get_process_times,
+     _w47.get_process_memory, _w47.empty_ws) = _saved47
+check("P1 行为：quick_retrim 拒绝被钉进程且零系统调用", _r47a == 0 and _calls47 == [],
+      "%s %s" % (_r47a, _calls47))
+check("P1 行为：_trim_process 执行前拒绝", _r47b == "已设硬上限", _r47b)
+check("P1 行为：_probe_process 拒绝", _r47c == (False, 0, 0), str(_r47c))
+# P2 配置契约：任何路径都含 efis_params + 无 PyYAML 留痕
+import core.config as _cfgm47
+check("P2 显式落位契约键与异常兜底",
+      'd["efis_params"] = {}' in _cf47 and 'if not isinstance(d.get("efis_params"), dict):' in _cf47
+      and '_warn_once("no_yaml"' in _cf47 and '_warn_once("save_no_yaml"' in _cf47)
+_ocp47 = _cfgm47.CONFIG_PATH
+_tf47 = os.path.join(tempfile.gettempdir(), "mw_cfg47.yaml")
+open(_tf47, "w", encoding="utf-8").write("interval: 7\ntarget_usage: 44\n")
+_cfgm47.CONFIG_PATH = _tf47
+try:
+    _d47 = _cfgm47.load()
+finally:
+    _cfgm47.CONFIG_PATH = _ocp47
+    os.remove(_tf47)
+check("P2 行为：临时配置下 efis_params 键恒在且为 dict",
+      "efis_params" in _d47 and isinstance(_d47["efis_params"], dict))
+# P3 进程退出归因
+check("P3 退出分支 freed 记 0（不再回填 ws_before）",
+      'return True, 0, 0, "进程已退出·内存随之释放"' in _cl47 and "ws_before, ws_before" not in _cl47)
+# P4 可写性哨兵（行为：临时改 base 指向不可写盘；桩掉 _event_log 防写真实崩溃日志）
+import core.engine as _egm47
+_ev47 = _egm47._event_log; _base47 = _egm47.base
+_egm47._event_log = lambda *a, **k: None
+try:
+    # 确定性不可写路径（2026-10-15 修正）：原用 Z: 盘，若该盘存在且可写则断言失效；
+    # 改为"在某文件之下创建目录"——任何 Windows 上都必然失败（NotADirectoryError）。
+    _egm47.base = os.path.join(_ROOT34, "README.md", "no_such_dir")
+    _ro47 = _egm47._check_writable()
+finally:
+    _egm47.base = _base47; _egm47._event_log = _ev47
+check("P4 哨兵：可写返回 True / 不可写返回 False", _egm47._check_writable() is True and _ro47 is False,
+      "ro=%s" % _ro47)
+check("P4 接线：三入口（GUI 捕获/CLI 提示/init_runtime 返回）",
+      "self._writable = init_runtime()" in _gui47 and "if not init_runtime():" in _mw47
+      and "return _check_writable()" in _eg47 and "def _check_writable():" in _eg47)
+# P5 备份时间戳
+import core.backup as _bk47m
+_st47 = _bk47m._now_stamp()
+check("P5 时间戳含定宽毫秒（18 位 = 8+1+6+3）", len(_st47) == 18 and _st47[8] == "-" and _st47[9:].isdigit()
+      and '("%03d" % (int(time.time() * 1000) % 1000))' in _bk47, _st47)
+_tb47 = os.path.join(tempfile.mkdtemp(), "data"); os.makedirs(_tb47, exist_ok=True)
+os.makedirs(os.path.join(os.path.dirname(_tb47), "config"), exist_ok=True)
+open(os.path.join(os.path.dirname(_tb47), "config", "config.yaml"), "w", encoding="utf-8").write("interval: 60\n")
+open(os.path.join(_tb47, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4}')
+_origst47 = _bk47m._now_stamp
+_bk47m._now_stamp = lambda: "20260101-000000"   # 强制同一毫秒：真正的覆盖风险场景
+try:
+    _pa47 = _bk47m.create_backup(base=_tb47); _pb47 = _bk47m.create_backup(base=_tb47)
+finally:
+    _bk47m._now_stamp = _origst47
+_n47 = len([f for f in os.listdir(_bk47m.import_export_dir(_tb47)) if f.startswith("MemWise_Backup_")])
+check("P5 行为：强制同毫秒两次备份仍各留一份（顺延后缀）",
+      _pa47 != _pb47 and _n47 == 2 and os.path.isfile(_pa47) and os.path.isfile(_pb47)
+      and "for _i in range(2, 1000):" in _bk47, "%s %s" % (_pa47, _pb47))
+# P6 首周期系统操作基线
+check("P6 首周期基线取自累计值（不再置 0）",
+      'self._last_sys_ops = (s.get("standby", 0) + s.get("modified", 0) + s.get("filecache", 0)' in _eg47)
+# P7 quick 深度置灰
+check("P7 quick 下深度滑杆置灰并说明",
+      'ps_sl.state(["disabled"])' in _gui47 and "quick 模式下「进程清理深度」不适用" in _gui47
+      and "quick 模式下「进程清理深度」不适用" in _EN_A)
+# P8 死分支
+check("P8 _TEMPLATE_PATH 死分支已删", "_TEMPLATE_PATH" not in _cf47)
+# P9 工作集下限统一
+check("P9 下限统一为 MIN_WS_BYTES 且游戏覆盖项已删",
+      "MIN_WS_BYTES = 1 << 20" in _jd47 and "MIN_WS_BYTES" in _cl47
+      and "_game_overrides" not in _jd47 and "min_ws_gate" not in _jd47)
+# P10/P11/P12/P13/P14/P15
+check("P10 发布脚本文案不写死旧版本",
+      "v4.6.044" not in _src47("scripts/release_body.py")
+      and "v4.6.044" not in _src47("scripts/release_upload.py")
+      and "v4.6.044" not in _src47("scripts/release_replace_asset.py")
+      and "f'CHANGELOG 未找到 {marker} 节'" in _src47("scripts/release_body.py"))
+check("P11 图标脚本产物改到 %TEMP%",
+      "tempfile.gettempdir()" in _src47("scripts/_icon_preview.py")
+      and "tempfile.gettempdir()" in _src47("scripts/_icon_analyze.py")
+      and "os.path.join(OUT" in _src47("scripts/_icon_preview.py"))
+check("P12 watchdog.json 原子写", "_wd_tmp" in _eg47 and "os.replace(_wd_tmp, wd_path)" in _eg47)
+check("P13 文档口径订正（EFIS 头/CLI 头/五树注释）",
+      "E.F.I.S. v3" not in _ef47 and "不写文件" not in _mw47
+      and "实际启用 3 棵树" in _pl47 and "不参与在线权重学习" in _pl47)
+check("P14 死导入/死字段/死函数清理",
+      "import time" not in _src47("core/rebound.py") and "import time" not in _src47("core/stable.py")
+      and "import math" not in _pl47 and "import os" not in _src47("core/i18n.py")
+      and "def downscale" not in _src47("scripts/_icon_build_ico.py")
+      and "layer1_done" not in _cl47 and "_last_standby_time" not in _cl47)
+import core.cleaner as _clm47, core.policy as _pm47, core.efis as _em47
+from core.judger import MIN_WS_BYTES as _MW47
+# ── 版本一致性护栏（2026-10-15 补：曾漏改 CHANGELOG 标题）──
+_clhead = [l.strip() for l in open(os.path.join(_ROOT34, "CHANGELOG.md"), encoding="utf-8").read().splitlines()
+           if l.startswith("## v")]
+import core.backup as _bkver
+check("版本一致性：CHANGELOG 标题与 APP_VERSION 一致（且只有一个版本节）",
+      len(_clhead) == 1 and _clhead[0] == "## v%s (2026·10)" % _bkver.APP_VERSION,
+      str(_clhead))
+check("版本一致性：README 标题与 APP_VERSION 一致",
+      ("# MemWise v" + _bkver.APP_VERSION) in open(os.path.join(_ROOT34, "README.md"), encoding="utf-8").read())
+check("P15 分类B阈值常量值与原字面量一致（S=1 行为不变）",
+      _clm47.TIER_WS_DEEP == 200 << 20 and _clm47.TIER_WS_MID == 50 << 20
+      and _clm47.MP_WS_NORMAL == 100 << 20 and _clm47.MP_WS_FULL == 50 << 20
+      and _clm47.COMPOSITE_FREED_SCALE == 200 << 20 and _clm47.COMPOSITE_WS_SCALE == 500 << 20
+      and _pm47.TREE1_HIGH == 50 << 20 and _pm47.TREE1_MID == 10 << 20
+      and _pm47.TREE5_ADV_HIGH_MB == 50 and _pm47.TREE5_ADV_MID_MB == 20
+      and _em47.DEEPEN_WASTE_BYTES == 10 << 20 and _em47.L3_GAIN_BYTES == 50 << 20
+      and _MW47 == 1 << 20)
+
+print("\n[48] E4 重启路径增强（argv 直启 + 新实例自带 --delay-start，2026-10-15 第二批）")
+_bk48 = _src47("core/backup.py"); _gui48 = _src47("memwise_gui.py")
+check("E4 重启改 argv 直启（无 cmd/timeout 拼装）",
+      "subprocess.Popen(argv, creationflags=0x08000000" in _bk48
+      and "f'cmd /c timeout" not in _bk48
+      and 'argv += ["--delay-start", str(int(delay_seconds))]' in _bk48)
+check("E4 新实例自带延迟解析（必须先睡再初始化）",
+      "def _parse_delay_start(argv):" in _gui48
+      and "_delay = _parse_delay_start(sys.argv)" in _gui48 and "time.sleep(_delay)" in _gui48
+      and "_delay > 0:" in _gui48)
+check("E4 提权重启剥离 --delay-start（不重复等待）",
+      '_skip_flags = ("--elevated-retry", "--delay-start")' in _gui48)
+_G48 = sys.modules.get("memwise_gui") or __import__("memwise_gui")
+_dc48 = [(["--delay-start", "3"], 3.0), (["--delay-start"], 0.0), (["--delay-start", "abc"], 0.0),
+         (["--delay-start", "99"], 30.0), (["--delay-start", "-5"], 0.0), (["--minimized"], 0.0)]
+check("E4 行为：--delay-start 解析（非法/越界/缺失一律兜底）",
+      all(abs(_G48._parse_delay_start(a) - e) < 1e-9 for a, e in _dc48),
+      str([_G48._parse_delay_start(a) for a, _ in _dc48]))
+
+print("\n[49] 开机自启：电池条件与执行时限修复（2026-10-15 发布前补修）")
+_wa49 = _src47("core/winapi.py"); _gui49 = _src47("memwise_gui.py")
+check("自启任务改走 schtasks /Create /XML（argv，无命令行参数拼接）",
+      '"/Create", "/TN", name, "/XML", path, "/F"' in _wa49)
+check("XML 显式关闭电池条件与执行时限（三项 schema 默认）",
+      "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in _wa49
+      and "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in _wa49
+      and "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in _wa49
+      and "<RunLevel>HighestAvailable</RunLevel>" in _wa49
+      and "<LogonTrigger>" in _wa49)
+check("任务 XML 以 UTF-16 落盘（schtasks 要求）", 'encoding="utf-16"' in _wa49 and "os.fdopen(fd" in _wa49)
+check("旧任务自动迁移接线（检测 + 重建 + 中文原文日志）",
+      "def auto_start_admin_needs_fix(name):" in _wa49
+      and 'winapi.auto_start_admin_needs_fix("MemWise")' in _gui49
+      and "开机自启动任务已更新（允许电池供电启动、不限运行时长）" in _gui49)
+check("tooltip 补电池说明 + i18n 键就位",
+      "⚠ 笔记本使用电池供电时同样会启动" in _gui49
+      and "⚠ 笔记本使用电池供电时同样会启动" in _EN_A)
+import core.winapi as _W49
+_x49 = _W49._autostart_task_xml("C:\\Program Files\\My App\\MemWise.exe", "--minimized")
+check("行为：任务 XML 关键项齐全（含空格路径与参数、UserId）",
+      all(k in _x49 for k in ("<DisallowStartIfOnBatteries>false<", "<StopIfGoingOnBatteries>false<",
+                              "<ExecutionTimeLimit>PT0S<", "<RunLevel>HighestAvailable<",
+                              "<LogonTrigger>", "<Command>C:\\Program Files\\My App\\MemWise.exe<",
+                              "<Arguments>--minimized<", "<UserId>")))
+_x49b = _W49._autostart_task_xml("C:\\a&b<x>\\y.exe", "")
+check("行为：XML 转义正确且空参数不写 Arguments 元素",
+      "C:\\a&amp;b&lt;x&gt;\\y.exe" in _x49b and "<Arguments>" not in _x49b)
+_W49x = _src47("core/winapi.py")
+check("静态：winapi 顶部已导入 os（曾因漏导入在运行期 NameError）",
+      "import ctypes, ctypes.wintypes as w, os, time, math" in _W49x)
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

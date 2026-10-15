@@ -14,22 +14,8 @@ def render(size):
     return bytes(buf)
 
 
-def downscale(px, src, dst):
-    """整数倍 box 缩小"""
-    k = src // dst
-    out = bytearray(dst * dst * 4)
-    for y in range(dst):
-        for x in range(dst):
-            rs = gs = bs = as_ = 0
-            for sy in range(k):
-                for sx in range(k):
-                    i = ((y * k + sy) * src + (x * k + sx)) * 4
-                    bs += px[i]; gs += px[i + 1]; rs += px[i + 2]; as_ += px[i + 3]
-            nn = k * k
-            j = (y * dst + x) * 4
-            out[j] = bs // nn; out[j + 1] = gs // nn; out[j + 2] = rs // nn
-            out[j + 3] = as_ // nn
-    return bytes(out)
+# 原 downscale()（整数倍 box 缩小）已于 2026-10-15 删除：全仓零调用（AST 复核），
+# 帧缩放改由 _draw_memwise_pixels_hq 直接按目标尺寸渲染（force_large），无需后缩。
 
 
 def png_encode(size, px):

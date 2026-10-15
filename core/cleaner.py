@@ -8,6 +8,7 @@ import time, concurrent.futures, threading, os, functools
 from . import winapi
 from .learner import _is_system_core, _is_self_process, _is_self_path
 from .rebound import _key as _norm_ws_path
+from .judger import MIN_WS_BYTES  # 工作集下限单一来源（judger 定义，见其注释）
 
 # ── 游戏进程名单（2026-08-11：默认不再内置，由用户自行配置——内置通用进程名
 # （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
@@ -22,6 +23,18 @@ DEEP_WSALL_PCT_GATE = 33
 # 回涨量是上轮释放的 131~393%（清完即长回），故小额反复清理只有开销没有收益。
 L3_RETRIM_GROWTH_FLOOR = 8 << 20   # 8 MB
 L3_RETRIM_PRESSURE_PCT = 45        # 内存占用 ≥45% 时不设下限（低于紧急阈值，与"高压豁免"同口径）
+
+# ── 内存量级阈值（分类 B：语义是「对本机是否显著」，与物理内存规模相关）──
+# 2026-10-15 实验（真实 206-242 进程 WS 分布 × k 倍机模拟）：固定绝对值在不同规模机器上
+# 的有效性漂移达 4.3 倍（8MB 收益闸命中率 6.3%→27.2%）；此处统一提升为命名常量，为后续按
+# S = 物理内存/16GB 标度做准备。S=1（本机）时 int(v*S)==v，行为逐位不变。
+# ⚠ 分类 A（WS<1MB 门、PF 允许量、KB/s 速率门）语义是「清理代价是否划算」，不随规模缩放。
+TIER_WS_DEEP = 200 << 20        # 进程深清档位：超过此 WS 视为大进程（全档多轮）
+TIER_WS_MID = 50 << 20          # 中间档位（3 档）
+MP_WS_NORMAL = 100 << 20        # MemoryPriority/EcoQoS 门槛（normal/deep：θ≥0.5 且 WS≥此值）
+MP_WS_FULL = 50 << 20           # 同上（full 放宽：θ≥0.3 且 WS≥此值）
+COMPOSITE_FREED_SCALE = 200 << 20   # 复合评分：预期释放量归一尺度
+COMPOSITE_WS_SCALE = 500 << 20      # 复合评分：WS 归一尺度（与「大进程 +0.15」共用）
 # F1 压力自适应（2026-09-26 用户定稿实施）：full 模式在"内存宽裕（< L3_RETRIM_PRESSURE_PCT）
 # + 上轮释放被快速吃回（回涨 > 上轮释放 60%，用引擎现成的回涨状态机）"时降级为轻量轮：
 # 每进程只清一趟、跳过 Layer3 深度整理与回弹二轮、候选按收益分排序只取前 K 项。
@@ -45,7 +58,6 @@ class PareCleaner:
         self._mem_pri_set = set()  # 已设 MemoryPriority 的 PID（Nt 42 一次性特性：防重复无效调用）
         self._pri_refresh_counter = 0
         self._fast_track = {}  # {pid: create} 高回填率进程，gap-fill 期间快速重清（create 供身份复检）
-        self._last_standby_time = 0
         self._lock = threading.Lock()
         self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
         self._max_workers = min(os.cpu_count() or 2, 8)
@@ -150,6 +162,8 @@ class PareCleaner:
                 if not t or not t.get("create") or t["create"] != create:
                     return 0
             if path:
+                if self.judger.ws_cap_blocked(path):
+                    return 0   # 第八道门（2026-10-15 补）：fast-track 通道此前缺此门
                 if _is_self_path(path):
                     return 0
                 _nl = path.rsplit("\\", 1)[-1].lower()
@@ -264,7 +278,11 @@ class PareCleaner:
     # ── Layer 2: 进程级清理 ──
 
     def _probe_process(self, snap, learner):
-        """微型试探 — 对不确定进程做轻量测试 (单次清理, ~0.2s 等待)"""
+        """微型试探 — 对不确定进程做轻量测试 (单次清理, ~0.2s 等待)
+        执行入口同样过第八道门（2026-10-15 补：旧实现只依赖 can_probe 的判定，决策→执行
+        间隔内新增规则时会漏；快照路径已在手，零额外系统调用）"""
+        if self.judger.ws_cap_blocked(getattr(snap, "path", None)):
+            return False, 0, 0
         pid, name = snap.pid, snap.name
         # 实时读取作为基线（快照值在决策到执行的秒级间隙可能已自然收缩，旧值会虚增
         # 释放统计与学习信号，2026-09-26 审查 F2；读取失败回退快照值）——与 _trim_process 同口径
@@ -311,6 +329,8 @@ class PareCleaner:
             # 间隔数秒，用快照既有路径零成本复核，防期间名单变更后队列中的候选仍被执行
             _rt_path = getattr(snap, "path", None)
             if _rt_path:
+                if self.judger.ws_cap_blocked(_rt_path):
+                    return False, 0, 0, "已设硬上限"   # 第八道门（2026-10-15 补）
                 if _is_self_path(_rt_path):
                     return False, 0, 0, "程序自身"
                 _rt_name = _rt_path.rsplit("\\", 1)[-1].lower()
@@ -329,7 +349,7 @@ class PareCleaner:
         # 实时读取 WS，不用快照旧数据
         mem_before = winapi.get_process_memory(pid)
         ws_before = mem_before["ws"] if mem_before else snap.ws
-        if ws_before < 1 << 20:
+        if ws_before < MIN_WS_BYTES:
             return False, 0, 0, "WS太小"
         if mem_before:
             self.judger.record_pf_before(pid, mem_before["pf"])
@@ -347,10 +367,10 @@ class PareCleaner:
         elif getattr(self.judger, "_mode_guard", "normal") == "full":
             # full 模式：全档多轮深清（极限=每进程清到极限；轮间 3% 截断兜底防白等）
             passes = max_p; total_wait = 1.0 * (max_p / 4.0)
-        elif ws_before > 200 << 20 or theta > deepen:
+        elif ws_before > TIER_WS_DEEP or theta > deepen:
             # 天花板由用户设置决定，total_wait 等比缩放控制 PF
             passes = max_p; total_wait = 1.0 * (max_p / 4.0)
-        elif ws_before > 50 << 20:
+        elif ws_before > TIER_WS_MID:
             passes = min(3, max_p); total_wait = 0.6
         elif theta < 0.15:
             passes = 1; total_wait = 0.3
@@ -392,13 +412,13 @@ class PareCleaner:
         mem = winapi.get_process_memory(pid)
         if mem is None:
             with self._lock:
-                # 进程退出≠清理收益：freed 记 0（防 gain_ewma/Kalman 虚高→θ 虚高→新实例被过度清理；
-                # freed_bytes 不计——返回值的 freed 保留 ws_before 供日志显示，理由串已注明
-                # 内存随退出释放，2026-08-30 审查消除"清理量"歧义）
+                # 进程退出≠清理收益：freed 记 0（防 gain_ewma/Kalman 虚高→θ 虚高→新实例被过度清理）。
+                # 2026-10-15 订正：返回值的 freed 同样记 0——旧实现返回 ws_before，桩实验实测结果卡会
+                # 显示「✓ xxx.exe 1200 MB」（其实是进程自己退出），归因虚高；理由串已如实注明退出原因。
                 learner.record_clean_result(name, True, freed=0, lr=self._efis_lr())
                 self.judger.mark_trimmed(name)
                 self.stats["ws_trim"] += 1
-            return True, ws_before, ws_before, "进程已退出·内存随之释放"
+            return True, 0, 0, "进程已退出·内存随之释放"
         ws_after = mem["ws"]
         ok, freed, pf_delta = self.judger.check_feedback(
             pid, mem["pf"], ws_before, ws_after, passes
@@ -521,11 +541,11 @@ class PareCleaner:
         kw = self.judger.cfg.get("efis_params", {}).get("composite_kalman_w", 0.3)
         tw = 0.6 - kw
         bonus = 0.0
-        if ws > 500 << 20:
+        if ws > COMPOSITE_WS_SCALE:
             bonus += 0.15
         return (tw * min(theta, 1.0) +
-                kw * min(x_freed / (200 << 20), 1.0) +
-                0.2 * min(ws / (500 << 20), 1.0) +
+                kw * min(x_freed / COMPOSITE_FREED_SCALE, 1.0) +
+                0.2 * min(ws / COMPOSITE_WS_SCALE, 1.0) +
                 0.2 * min(regrowth, 2.0) -
                 0.15 * min(x_cost / 500.0, 1.0) +   # 预期 PF 代价惩罚：同等释放下低代价进程优先
                 bonus)
@@ -699,7 +719,7 @@ class PareCleaner:
             #    EcoQoS 仍跳过（压缩池占"使用中"）且存量恢复见 _low_pri_pids 分支
             _is_full = getattr(self.judger, "_mode_guard", "normal") == "full"
             _mp_thr = 0.3 if _is_full else 0.5
-            _mp_ws = (50 << 20) if _is_full else (100 << 20)
+            _mp_ws = MP_WS_FULL if _is_full else MP_WS_NORMAL
             if theta >= _mp_thr and s.ws >= _mp_ws:
                 if not _is_full:
                     if winapi.set_eco_qos(s.pid, True):
@@ -915,8 +935,8 @@ class PareCleaner:
             if name_lower in never:
                 continue
             # 第八道门（绕行通道补齐 v2.2）：硬上限生效中的进程不再叠加清理——
-            # 被 cap 的页回填即硬缺页，EWS 只会自造抖动
-            if _norm_ws_path(getattr(s, "path", None)) in getattr(self.judger, "_capped_paths", frozenset()):
+            # 被 cap 的页回填即硬缺页，EWS 只会自造抖动（2026-10-15 改为统一判定方法）
+            if self.judger.ws_cap_blocked(getattr(s, "path", None)):
                 continue
             # 前台进程低压力不碰（与 can_trim 同规则——Layer2 有前台保护，深度聚合不得缺失）
             if getattr(s, 'fg', False) and getattr(self.judger, 'aggressiveness', 0.0) < 0.35:
@@ -1026,7 +1046,7 @@ class PareCleaner:
         self._fast_track = {}
         self._last_layer2_results = []
         # 管线上下文：层间传递执行状态（局部变量；self._pipeline_ctx 只写不读已删，2026-08-30）
-        pipeline_ctx = {"layer1_done": False, "layer2_trimmed": set()}
+        pipeline_ctx = {"layer2_trimmed": set()}
         # Helper to build result with net_freed tracking
         def _mk_result(l2, probe):
             r = {"mode": mode, "aggressiveness": agg, "layer2": l2, "probe": probe}
@@ -1058,7 +1078,6 @@ class PareCleaner:
                 l1_ops = l1_ops & {"standby", "standby_low", "modified", "registry"}
             self._layer1_memreduct(full=False, total_procs=len(snaps), game_mode=self.game_mode,
                                    ops=l1_ops)
-            pipeline_ctx["layer1_done"] = True
             # Layer3 门槛由 EFIS layer3_agg_gate 自适应控制（无参数时兜底 0.3）；
             # 高频 gap-fill 路径传 allow_layer3=False，深度操作只在 harvest 执行
             if allow_layer3:
@@ -1092,7 +1111,6 @@ class PareCleaner:
                     l1_ops = l1_ops - {"ws_all"}
             self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
                                    ops=l1_ops)
-            pipeline_ctx["layer1_done"] = True
             self._layer3_deep(snaps, learner, ops_filter)
             return _mk_result(l2_results, probe_results)
         
@@ -1108,7 +1126,6 @@ class PareCleaner:
             # full 无条件 ws_all（agg 已在上方 max(agg,0.8) 强制，原 agg<0.4 豁免为恒假死分支）
             self._layer1_memreduct(full=True, total_procs=len(snaps), game_mode=self.game_mode,
                                    ops=l1_ops)
-            pipeline_ctx["layer1_done"] = True
             if self._lite:
                 # F1 轻量轮：跳过 Layer3 深度整理（实测 churn 主源之一），原因计入日志
                 self._cycle_reasons["轻量轮(跳过深度整理)"] = 1
@@ -1127,8 +1144,8 @@ class PareCleaner:
                     name_l = s.name.lower()
                     if _is_system_core(name_l) or name_l in never:
                         continue
-                    # 第八道门（绕行通道补齐 v2.2）：硬上限生效中的进程不做回弹二轮
-                    if _norm_ws_path(getattr(s, "path", None)) in getattr(self.judger, "_capped_paths", frozenset()):
+                    # 第八道门（绕行通道补齐 v2.2）：硬上限生效中的进程不做回弹二轮（2026-10-15 统一判定）
+                    if self.judger.ws_cap_blocked(getattr(s, "path", None)):
                         continue
                     if getattr(s, 'fg', False) and _agg < 0.35:
                         continue  # 前台进程低压力不碰（与 can_trim 同规则）

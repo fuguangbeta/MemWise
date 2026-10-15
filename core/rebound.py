@@ -9,7 +9,6 @@ trim 后 120s 观察回填：回弹率（回填量/释放量）EWMA≥70% 且 �
 未来实现"回弹→保护建议"方向时按当时需求重新设计）。
 """
 import math
-import time
 
 OBSERVE_WINDOW = 120       # 回弹观察期（秒）
 BACKOFF_SECONDS = 1800     # 自动后退期（30 分钟）

@@ -2,13 +2,25 @@
 PolicyVoter — 五树投票决策引擎
 替代阈值判断，综合 Kalman/记忆/因果/时机 投票
 """
-import math
 import time
 
+# ── 树 1 / 树 5 的「显著收益」绝对线（分类 B：语义与物理内存规模相关，见 cleaner 同区注释）──
+# 2026-10-15 实验：固定绝对值下，同一相对表现的判定会随机器规模漂移（本机 S=1 行为不变）。
+TREE1_HIGH = 50 << 20      # 树1：预期释放 > 此值 → +2（收益高）
+TREE1_MID = 10 << 20       # 树1：> 此值 → +1（收益中）
+TREE5_ADV_HIGH_MB = 50     # 树5：相对同类均值优势 > 此 MB → +2
+TREE5_ADV_MID_MB = 20      # 树5：> 此 MB → +1
+
 class PolicyVoter:
-    """五树投票框架: 收益/代价/时机/紧迫/反事实 · 在线权重学习
-    should_trim 启用树 1(收益)/2(压力)/5(反事实)；should_probe 用树 1(信息价值)/2(记忆空缺)/3(资源约束)/5(因果好奇)
-    树 4(紧迫) 预留空实现（加权恒 0，不影响决策）"""
+    """五树投票框架：收益/代价/时机/紧迫/反事实（**实际启用 3 棵树**）
+
+    - should_trim：树 1(收益)/2(压力)/5(反事实) 计分，并经 _apply_weights 应用在线学习权重
+      （权重由 update_weights_per_trim 学习；阈值按模式梯度 normal 0 / deep -1 / full -2）。
+    - should_probe：信息价值/记忆空缺/资源约束/因果好奇四路计分，**不参与在线权重学习**
+      （2026-10-15 AST 复核：函数体不引用 _weights/_apply_weights，权重变化不影响 probe 结论）。
+    - 树 3(时机)/树 4(紧迫)：**预留**——scores[2]/scores[3] 从不赋值（恒 0），其权重保持 1.0
+      但不影响任何决策。命名与注释按此口径，勿再宣称「五树全部生效」。
+    """
     
     def __init__(self):
         self._tree_weights = [1.0] * 5  # 五棵树初始等权重（normal 组，兼容旧引用）
@@ -76,10 +88,10 @@ class PolicyVoter:
                     hour=time.localtime().tm_hour)
                 k_freed = k_freed * max(0.3, min(3.0, f_corr))
                 k_cost  = k_cost  * max(0.3, min(3.0, c_corr))
-            if k_freed > 50 << 20:
+            if k_freed > TREE1_HIGH:
                 scores[0] += 2
                 reasons.append("收益高")
-            elif k_freed > 10 << 20:
+            elif k_freed > TREE1_MID:
                 scores[0] += 1
                 reasons.append("收益中")
 
@@ -109,10 +121,10 @@ class PolicyVoter:
                      if q is not p and q.kalman.x_freed > 0]
             if peers:
                 adv_mb = (k_freed - sum(peers) / len(peers)) / (1 << 20)
-                if adv_mb > 50:
+                if adv_mb > TREE5_ADV_HIGH_MB:
                     scores[4] += 2
                     reasons.append(f"预测优势{adv_mb:.0f}MB")
-                elif adv_mb > 20:
+                elif adv_mb > TREE5_ADV_MID_MB:
                     scores[4] += 1
 
         # 加权求和决策：权重由 update_weights_per_trim 在线学习（可为负），使学习真正影响投票；

@@ -1,4 +1,4 @@
-import ctypes, ctypes.wintypes as w, time, math
+import ctypes, ctypes.wintypes as w, os, time, math
 
 TH32CS_SNAPPROCESS = 2
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -1389,28 +1389,130 @@ def create_memwise_icon(size=32, bg_color=(45,45,50), shadow=True, gradient=0.47
 
 # ─── 开机自启（管理员权限·Task Scheduler） ───
 
+# 任务定义模板（2026-10-15 二次改造：改走 `/Create /XML`）。
+#
+# 为什么不能用命令行参数：`schtasks /Create` 的 schema 默认值是「**仅交流电启动 / 切到电池即停 /
+# 运行 72 小时强制结束**」，而命令行**没有任何开关**能表达这三项。实测本机任务的有效设置正是
+#   DisallowStartIfOnBatteries=True / StopIfGoingOnBatteries=True / ExecutionTimeLimit=PT72H，
+# 用户可见表现为：笔记本用电池登录时「勾了自启却没反应」，插上适配器才启动；拔掉电源守护被停。
+# 用 XML 一次性显式写全，顺带消除 StartWhenAvailable 等其它隐藏默认。
+# ⚠ 打包 excludes 里有 `xml`，故此处不 import xml.sax，转义自己实现。
+_AUTOSTART_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>MemWise</Author>
+    <Description>MemWise 开机自启动（登录时以最高权限静默运行；允许电池供电、不限运行时长）</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+{user_line}      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+{exec_block}
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _xml_escape(s):
+    """XML 文本转义（路径可能含 & < > "；不依赖 xml.sax——打包 excludes 排除了 xml）。"""
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _autostart_task_xml(target_path, arguments=""):
+    """生成任务 XML：Command 单独一项（无需引号，空格路径天然安全）、参数走 Arguments。"""
+    user = "%s\\%s" % (os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", ""))
+    user_line = ("      <UserId>%s</UserId>\n" % _xml_escape(user)) if user.strip("\\") else ""
+    exec_block = "      <Command>%s</Command>" % _xml_escape(target_path)
+    if arguments:
+        exec_block += "\n      <Arguments>%s</Arguments>" % _xml_escape(arguments)
+    return (_AUTOSTART_TASK_XML.replace("{user_line}", user_line)
+            .replace("{exec_block}", exec_block))
+
+
 def set_auto_start_admin(name, target_path, arguments=""):
-    """通过 schtasks 创建计划任务，登录时以最高权限启动（无 UAC 弹窗）"""
+    """以管理员权限创建/覆盖开机自启计划任务（登录时最高权限静默运行，无 UAC 弹窗）。
+
+    走 `/Create /XML`：命令行无法表达省电与执行时限，其默认值会让笔记本电池下自启静默失效
+    （详见 _AUTOSTART_TASK_XML 上方注释）。argv 列表调用（shell=False），路径含空格/特殊字符安全。
+    """
     try:
-        import subprocess
-        quoted = f'"{target_path}"'
-        if arguments:
-            quoted += f" {arguments}"
-        cmd = (
-            f'schtasks /Create /SC ONLOGON /TN "{name}" '
-            f'/TR "{quoted}" /RL HIGHEST /IT /F'
-        )
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, shell=True)
-        return r.returncode == 0
+        import subprocess, tempfile
+        xml = _autostart_task_xml(target_path, arguments)
+        fd, path = tempfile.mkstemp(suffix=".xml", prefix="memwise_task_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-16") as f:   # schtasks 要求 UTF-16（带 BOM）
+                f.write(xml)
+            cmd = ["schtasks", "/Create", "/TN", name, "/XML", path, "/F"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            return r.returncode == 0
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
     except Exception:
         return False
+
+
+def auto_start_admin_needs_fix(name):
+    """已存在的自启任务是否仍带旧默认（仅交流电启动 / 切电池即停 / 72 小时执行上限）。
+
+    用于程序启动时的**自动迁移**：schtasks 命令行时代创建的任务需要按新 XML 重建一次，
+    否则笔记本用电池时表现为「勾了自启却没反应」（用户不会想到要手动取消再勾选）。
+    任务不存在 / 查询失败一律返回 False（不折腾）。stdout 按字节比对，避免控制台编码差异。
+    """
+    try:
+        import subprocess
+        r = subprocess.run(["schtasks", "/Query", "/TN", name, "/XML"],
+                           capture_output=True, timeout=15)
+        if r.returncode != 0:
+            return False
+        out = r.stdout or b""
+        return (b"<DisallowStartIfOnBatteries>false<" not in out
+                or b"<StopIfGoingOnBatteries>false<" not in out
+                or b"<ExecutionTimeLimit>PT0S<" not in out)
+    except Exception:
+        return False
+
 
 def remove_auto_start_admin(name):
     """移除 schtasks 创建的计划任务"""
     try:
         import subprocess
-        cmd = f'schtasks /Delete /TN "{name}" /F'
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, shell=True)
+        # 与 set_auto_start_admin 同款 argv 形式（2026-10-15 统一）：彻底不经 cmd，
+        # 免去引号/%VAR% 展开一类路径改写问题
+        cmd = ["schtasks", "/Delete", "/TN", name, "/F"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         return r.returncode == 0
     except Exception:
         return False

@@ -1,7 +1,7 @@
 """
-MemWise v4.7.013 PARES —— 智能内存看护
+MemWise v4.7.023 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
-全程不杀进程、不写文件、不改代码。
+不杀进程、不挂起、不注入、不联网；仅在按设置写入状态与日志文件。
 """
 
 import ctypes, json, os, sys, time
@@ -329,6 +329,9 @@ def cmd_install_service(args):
                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         print(tr("Scheduled Task 已移除"))
         return
+    # ⚠ 已知限制（2026-10-15）：命令行建任务会继承 schema 默认值「仅交流电启动 / 切电池即停 /
+    # 运行 72 小时强制结束」。GUI 的「管理员权限开机自启动」已改走 /Create /XML 显式关闭这三项；
+    # 本 CLI 子命令不在 exe 内、且是 SYSTEM 启停语义，暂不改（如需可复用同一 XML 方案）。
     cmd = ["schtasks", "/create", "/tn", task_name, "/tr", action,
            "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest", "/f"]
     r = subprocess.run(cmd, capture_output=True,
@@ -371,7 +374,9 @@ def main():
     # 优化结果不持久化（2026-08-14 审查结论保留为兜底分支）。
     try:
         from core.engine import init_runtime
-        init_runtime()
+        if not init_runtime():
+            # 只读目录下配置/状态/日志全部静默失效（2026-10-15）——CLI 侧至少给一行可见提示
+            print(tr("[MemWise] ⚠ 程序所在目录不可写：配置与学习数据将无法保存，请移动到有写入权限的位置"))
     except Exception:
         try:
             os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
@@ -397,7 +402,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v4.7.013 PARES —— 智能内存看护"))
+        print(tr("MemWise v4.7.023 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

@@ -7,7 +7,6 @@ from .learner import _is_system_core, _is_self_process
 from . import winapi
 from .stable import EXPLORE_RATE
 from .rebound import _key as _norm_ws_path  # 路径规范化（与 stable/锚点同规则）
-from .i18n import tr
 
 # frozen windowed 下 sys.stderr 为 None，统一兜底（防异常路径 print 自身崩溃）
 _ERR = sys.stderr or open(os.devnull, "w", encoding="utf-8")
@@ -22,6 +21,11 @@ DEFAULT_KD = 0.1    # 微分系数 — 抑制震荡 (快速升压时提前响应
 TARGET_USAGE = 30.0  # 目标内存使用率 (%) — PidController 签名默认与 judger 构造兜底
                      # （实际始终被 efis_params.target_usage 覆盖；2026-09-06 审查 F12 检测：
                      # 2 处真实消费，保留）
+# 进程工作集下限（全模式统一）：低于 1MB 的进程即便清到极限也只释放几百 KB，却要付出一次
+# EmptyWorkingSet 系统调用与 PF 抖动，不值得。2026-10-15 实测：9.6 天里该门拦下 79,776 次
+# （约 32 次/周期）；原「游戏模式 0.5MB」覆盖项从未生效（决策层放行、执行层仍按 1MB 拒绝）
+# 已删除，三处（can_trim / can_probe / cleaner._trim_process）统一引用本常量。
+MIN_WS_BYTES = 1 << 20
 
 def _system_path_prefixes():
     """系统目录前缀（动态获取，非硬编码 C 盘——换机器/系统盘非 C 盘时依然有效）"""
@@ -101,10 +105,6 @@ class PareJudger:
         self.cfg = config
         self.game_mode = False
         self._game_pid_set = set()  # 当前检测到的游戏进程 PID 集合（精确保护）
-        # 游戏模式参数覆盖（游戏本体由 PID 精确保护，前台/冷却与常规一致避免误伤）
-        self._game_overrides = {
-            "min_ws": 524288,     # 0.5MB（正常 1MB）
-        }
         efis_cfg = config.get("efis_params", {})
         self.pid = PidController(
             kp=efis_cfg.get("pid_kp", config.get("kp", DEFAULT_KP)),
@@ -117,7 +117,7 @@ class PareJudger:
         self.cooldown = {}
         self.pf_before = {}
         self._post_clean_ws = {}  # 进程清理后的 WS 基线
-        self._post_clean_time = {}  # 基线设置时间戳（20分钟填满判定窗口 / 1小时过期清理）
+        self._post_clean_time = {}  # 基线时间戳（判定窗口动态：默认 1200s、范围 120-3600，见 can_trim；整体 1 小时过期清理）
         self._probe_last_time = {}
         # ── P0-C 连续低活动确认：{name: (连续低活动轮数, 时间戳)} ──
         self._low_activity = {}
@@ -149,6 +149,19 @@ class PareJudger:
     def set_capped_paths(self, paths):
         """重建硬上限判定快照（frozenset；调用方持 engine._ws_cap_lock）。"""
         self._capped_paths = frozenset(p for p in (paths or ()) if p)
+
+    def ws_cap_blocked(self, path):
+        """第八道门统一判定：该路径是否处于工作集硬上限生效中。
+
+        ⛔ 必须在全部清理通道调用（判定层 can_trim/can_probe、执行层 _trim_process、
+        fast-track quick_retrim、试探 _probe_process、Layer3 阶段 D、full 回弹二轮）。
+        2026-10-15 桩实验实测：只补 2 处的旧实现下 quick_retrim 与 _trim_process 仍会对被钉
+        进程执行 EmptyWorkingSet（实测调用发生），正是 v2.2 B2 要防的硬缺页回填抖动。
+        _capped_paths 为空时短路返回 False，未设规则的用户零开销、零行为变化。
+        """
+        if not self._capped_paths or not path:
+            return False
+        return _norm_ws_path(path) in self._capped_paths
 
     def _gate(self, key, default):
         """读取 EFIS 可调门限（2026-09-11 审查 F22 接线；缺失/非法时回退默认值——
@@ -267,20 +280,18 @@ class PareJudger:
             return False, "用户黑名单"
         # ── 第八道门：工作集硬上限生效中的进程不清理——cap 本身即对该进程的持续处理，
         #    再叠加 EmptyWorkingSet 会让被钉页面逐页硬缺页回填（自造抖动，v2.2 B2）──
-        if self._capped_paths and _norm_ws_path(getattr(snap, "path", None)) in self._capped_paths:
+        if self.ws_cap_blocked(getattr(snap, "path", None)):
             return False, "已设硬上限"
 
         is_fg = getattr(snap, "fg", False)
 
-        # 游戏模式参数覆盖
         fg_gate = 0.35  # 前台非游戏程序保持保护（游戏全屏时前台即游戏，已被 PID 保护）
-        min_ws_gate = self._game_overrides["min_ws"] if self.game_mode else (1 << 20)
         
         if is_fg:
             if self.aggressiveness < fg_gate:
                 return False, "前台窗口"
 
-        if snap.ws < min_ws_gate:
+        if snap.ws < MIN_WS_BYTES:
             return False, "工作集太小"
 
         # ── 前台/窗口冷却（P0-A + A 方案）：刚切走的进程不碰——有可见窗口 10 分钟
@@ -420,13 +431,13 @@ class PareJudger:
         never = self.cfg.get("never", [])
         if name in never:
             return False
-        # 硬上限生效中：不试探（与 can_trim 第八道门同口径，设计 v2.2）
-        if self._capped_paths and _norm_ws_path(getattr(snap, "path", None)) in self._capped_paths:
+        # 硬上限生效中：不试探（与 can_trim 第八道门同口径，设计 v2.2；统一走 ws_cap_blocked）
+        if self.ws_cap_blocked(getattr(snap, "path", None)):
             return False
         # WS 下限（2026-09-11 审查 F48 恢复）：与 _trim_process 的"WS太小"门槛同为 1 MB。
         # 低于此值的进程即便清到极限也只释放几百 KB，却要为每次试探付出 0.2 s 等待 + PF 抖动；
         # 实测 373 个画像累计试探 207.6 万次、53 个"WS<20MB 却试探>5000 次"的画像即源于此。
-        if (getattr(snap, "ws", 0) or 0) < (1 << 20):
+        if (getattr(snap, "ws", 0) or 0) < MIN_WS_BYTES:
             return False
         # 前台进程不 probe，避免干扰
         if getattr(snap, "fg", False):return False

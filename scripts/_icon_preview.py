@@ -1,9 +1,13 @@
 # 图标对比预览：A=现状(winapi 真函数)  B=建议(参数化副本: 扁平光照+窄柔边+弱阴影)
-# 用法: python scripts/_icon_preview.py —— 生成 preview_A/B_{16,32}.png 及 8x 放大图
-import sys, os, struct, zlib, math, ctypes
+# 用法: python scripts/_icon_preview.py —— 在系统临时目录生成 preview_A/B_{16,32}.png 及 8x 放大图
+import sys, os, struct, zlib, math, ctypes, tempfile
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
+# 输出目录（2026-10-15 订正红线）：预览/调试产物禁止写进项目根目录，改用 %TEMP%（与
+# _icon_analyze.py 约定同一目录，二者必须一致）。
+OUT = os.path.join(tempfile.gettempdir(), "memwise_icon_preview")
+os.makedirs(OUT, exist_ok=True)
 from core.winapi import _draw_memwise_pixels_hq
 
 
@@ -212,8 +216,8 @@ if __name__ == "__main__":
         pb = render(size, (62, 62, 72), off_mult=0.75, shadow=True, gradient=0.47,
                     edge_out=0.4, edge_in=0.7, shade_mid=0.78, shade_spread=0.22,
                     soft_mult=1.22, sh_strength=0.26)
-        save_png(os.path.join(BASE, f"preview_A_{size}.png"), size, pa)
-        save_png(os.path.join(BASE, f"preview_B_{size}.png"), size, pb)
-        save_png(os.path.join(BASE, f"preview_A_{size}x8.png"), size * 8, upscale(pa, size, 8))
-        save_png(os.path.join(BASE, f"preview_B_{size}x8.png"), size * 8, upscale(pb, size, 8))
-    print("已生成 preview_A/B_{16,32}.png + x8 放大图")
+        save_png(os.path.join(OUT, f"preview_A_{size}.png"), size, pa)
+        save_png(os.path.join(OUT, f"preview_B_{size}.png"), size, pb)
+        save_png(os.path.join(OUT, f"preview_A_{size}x8.png"), size * 8, upscale(pa, size, 8))
+        save_png(os.path.join(OUT, f"preview_B_{size}x8.png"), size * 8, upscale(pb, size, 8))
+    print("已生成 preview_A/B_{16,32}.png + x8 放大图 于 " + OUT)

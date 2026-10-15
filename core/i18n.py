@@ -7,8 +7,6 @@
 - tr_msg()：精确优先，前缀匹配保留参数（动态消息如 "WS未填满(80/120)" → "WS below baseline(80/120)"）
 - 日志文件保留中文原文（诊断一致性）；仅显示层翻译
 """
-import os
-
 LANGUAGES = {"zh_CN": "简体中文", "en": "English"}
 _current = "zh_CN"
 
@@ -303,7 +301,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v4.7.013 启动· ": "MemWise v4.7.013 started · ",
+    "MemWise v4.7.023 启动· ": "MemWise v4.7.023 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -739,7 +737,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v4.7.013 PARES —— 智能内存看护": "MemWise v4.7.013 PARES — Intelligent Memory Custodian",
+    "MemWise v4.7.023 PARES —— 智能内存看护": "MemWise v4.7.023 PARES — Intelligent Memory Custodian",
     # ── 工作集硬上限（高级选项，设计 v2.4 文案规格）──
     "已设硬上限": "Hard-capped",
     "设置工作集硬上限…": "Set working-set hard cap…",
@@ -781,6 +779,17 @@ _EN = {
     " 的工作集硬上限（学习数据已重置）": " (learning data reset)",
     "确定解除「": "Really clear the working-set hard cap of \"",
     "」的工作集硬上限？学习数据会重新开始。": "\"? Learning data starts over.",
+    # ── 2026-10-15：启动自检提示（只读安装目录 / 缺少配置读写组件）+ quick 深度说明 ──
+    "⚠ 程序所在目录不可写，配置与学习数据无法保存": "⚠ Program folder is not writable — settings and learning data cannot be saved",
+    "程序所在目录不可写": "Program folder not writable",
+    "程序所在目录不可写，配置与学习数据都无法保存。请把程序移动到有写入权限的位置（例如用户目录）后重新启动。": "The program folder is not writable, so settings and learning data cannot be saved. Move the program to a writable location (for example your user folder) and restart.",
+    "⚠ 缺少配置读写组件，设置与学习数据将无法保存": "⚠ Configuration component missing — settings and learning data cannot be saved",
+    "缺少配置读写组件": "Configuration component missing",
+    "程序缺少配置读写组件，设置与学习数据都无法保存。请重新下载或重新安装程序。": "A configuration component is missing, so settings and learning data cannot be saved. Please download or install the program again.",
+    "quick 模式下「进程清理深度」不适用": "In quick mode, cleaning depth does not apply",
+    "[MemWise] ⚠ 程序所在目录不可写：配置与学习数据将无法保存，请移动到有写入权限的位置": "[MemWise] ⚠ Program folder is not writable: settings and learning data cannot be saved — move the program to a writable location",
+    "⚠ 笔记本使用电池供电时同样会启动": "⚠ Also starts on battery power on laptops",
+    "开机自启动任务已更新（允许电池供电启动、不限运行时长）": "Auto-start task updated (battery start allowed, no run-time limit)",
 }
 
 

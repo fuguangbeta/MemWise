@@ -12,9 +12,43 @@ from collections import deque
 # 进程级副作用（DPI 感知 + 目录预建）改为显式调用 init_runtime()（2026-09-11 审查 F38）：
 # 原先在 import 时执行 ⇒ 任何 `import core.engine`（例如 CLI 只想取守护互斥名/常量）都会
 # 设置进程 DPI 并创建目录，使"库导入"变成有副作用的初始化。现在由入口显式触发。
+def _check_writable():
+    """数据/配置目录可写性哨兵（2026-10-15 新增）。
+
+    实测背景：把 exe 放进只读目录（例如 Program Files）时 learner.save 返回 False、
+    _config.save 只写 stderr（打包 windowed 下是 devnull）、目录创建与看门狗全部静默——
+    用户看到「程序能用」，而学习数据 / 配置 / 日志 / 崩溃恢复全部失效且毫无提示。
+    启动时做一次真实写入并删除；失败经崩溃通道留痕并返回 False，由入口提示用户。
+    """
+    last_err = None
+    # 两次尝试（2026-10-15 循环验证二次修正）：①文件名带 pid——固定名会在「多进程同时启动」
+    # （提权重启的双进程）时互相争抢同一文件，一方 remove 抛异常被误判成"不可写"；
+    # ②单次失败再重试一次——本机双杀软环境下实测会出现**瞬时**拦截（Access denied），
+    # 只试一次会把瞬时拦截误判成只读目录、对用户弹出错误的"目录不可写"提示。
+    for _attempt in (1, 2):
+        try:
+            for d in (os.path.join(base, "data"), os.path.join(base, "config")):
+                os.makedirs(d, exist_ok=True)
+                p = os.path.join(d, ".write_test_%d" % os.getpid())
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                os.remove(p)
+            return True
+        except Exception as _e:
+            last_err = _e
+            if _attempt == 1:
+                time.sleep(0.25)
+    try:
+        _event_log("数据目录不可写（配置与学习数据无法保存）：%r" % (last_err,))
+    except Exception:
+        pass
+    return False
+
+
 def init_runtime():
-    """进程级初始化：DPI 感知 + 数据/配置目录预建 + 旧根目录数据一次性迁移。
-    必须在任何状态文件读写之前调用（GUI __init__ 首行 / CLI main 首段）；幂等。"""
+    """进程级初始化：DPI 感知 + 数据/配置目录预建 + 旧根目录数据一次性迁移 + 可写性哨兵。
+    必须在任何状态文件读写之前调用（GUI __init__ 首行 / CLI main 首段）；幂等。
+    返回 True = 目录可写；False = 不可写（入口据此提示，见 _check_writable）。"""
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
@@ -24,6 +58,7 @@ def init_runtime():
             pass
     _migrate_runtime_data()
     _cleanup_stale_tmp()
+    return _check_writable()
 
 
 def _cleanup_stale_tmp():
@@ -165,9 +200,13 @@ def _spawn_watchdog(daemon_flag=False):
     try:
         wd_path = _watchdog_path()
         import json
-        with open(wd_path, "w", encoding="utf-8") as f:
+        # 原子写（2026-10-15 统一）：与 _update_watchdog_daemon、看门狗子进程同款 tmp+replace，
+        # 防主进程与看门狗子进程并发写同一文件时交错损坏（原先此处是直接 open(w)）。
+        _wd_tmp = f"{wd_path}.{os.getpid()}.tmp"
+        with open(_wd_tmp, "w", encoding="utf-8") as f:
             json.dump({"pid": os.getpid(), "ts": time.time(), "crash_count": 0,
                        "daemon": daemon_flag}, f)
+        os.replace(_wd_tmp, wd_path)
         si = subprocess.STARTUPINFO()
         si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW
         si.wShowWindow = 0        # SW_HIDE
@@ -235,7 +274,7 @@ from core.i18n import set_language, tr  # 界面语言（tr 多数由各算法�
 from core.config import load as _load_cfg
 from core.config import get_state_path
 import core.config as _config
-from core.learner import _is_system_core, _is_self_path
+from core.learner import _is_self_path
 from core.judger import PareJudger as _JudgerCls  # 仅用于静态守卫方法（_is_system_path）
 
 # ── 统一运行日志：单一时间线、线程安全、2MB×2 轮转 ──
@@ -387,7 +426,7 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v4.7.013 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+        _log_write("启动", f"MemWise v4.7.023 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
         try:
             _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
             _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -621,8 +660,7 @@ class MemWiseEngine:
         # ERIS 状态（分位数窗/平滑/趋势/防振荡）
         self._eris_lock = threading.Lock()
         self._eris_save_lock = threading.Lock()    # ERIS 状态持久化互斥锁（守护线程与退出线程可能并发写）
-        # ── ERIS v7 状态（2026-09-11 用户定稿：五维绝对标尺 + N=3 平滑 + Σ÷K）──
-        from collections import deque as _dq
+        # ── ERIS 状态（当前口径 v9：冻结基线 + 分位映射——同一表现永远同一分；平滑窗按模式分桶）──
         from core.eris import SMOOTH_N as _SN
         from core.eris import new_calib as _new_calib
         self._eris_calib = _new_calib()  # ② 自校准状态（独立文件持久化，缺文件=冷启动）
@@ -702,7 +740,10 @@ class MemWiseEngine:
         self._chart_cycle_meta.clear()
         self._chart_bar_seq = 0
         self._load_eris_state()  # 恢复 ERIS 状态
-        self._last_sys_ops = 0
+        # 系统操作计数基线：与 trim/fail 两行同口径（2026-10-15 订正）——原先置 0，使启动守护后的
+        # 首个周期把「进程启动以来（含此前手动优化）」的累计系统操作全算进本轮，播报虚高。
+        self._last_sys_ops = (s.get("standby", 0) + s.get("modified", 0) + s.get("filecache", 0)
+                              + s.get("registry", 0) + s.get("volume", 0))
         self._prev_deepen_cnt = 0
         self._prev_deepen_extra = 0
         self._cycle_trimmed = 0
@@ -1627,8 +1668,9 @@ class MemWiseEngine:
             self._eff_data.append(80.0)
             self._eff_factors.append(["计算异常"])
 
-    # ── ERIS v6：IQR分位数归一化五维加权和（80±40×(raw−p50)/IQR，trimmed IQR + 维级窗口）──
-    # ── ERIS v7：五维绝对标尺（四锚点分段线性 + N=3 平滑 + Σ÷K；设计见记忆 learning-engine-specs §B4）──
+    # ── ERIS 当前口径 = v9（冻结基线 + 分位映射）；纯函数核心在 core/eris.py，状态由本文件持有 ──
+    # 历史层 v6/v7/v8 的演进与否决方案见记忆 learning-engine-specs §B5——代码里不复述旧口径，
+    # 以免"注释讲 v7、实现是 v9"这类名不副实再次出现（2026-10-15 订正）。
     def _eris_hist_for(self, mode):
         """取该模式的平滑窗（按需创建）：四模式各持一份，互不带偏。
         调用方持 `_eris_lock`（`_compute_eris` 内）或处于单线程初始化期（`_load_eris_state`）——

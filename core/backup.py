@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "4.7.013"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "4.7.023"  # 版本同步面之一（manifest 记录用）
 PACKAGE_FILE_MAX = 64 * 1024 * 1024   # 单个状态文件上限（2026-09-11 加固：拒绝异常/恶意大包）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
@@ -56,7 +56,13 @@ def import_export_dir(base=None):
 
 
 def _now_stamp():
-    return time.strftime("%Y%m%d-%H%M%S")
+    """时间戳 = 秒 + 定宽 3 位毫秒。
+
+    2026-10-15 实测：秒级精度下同一秒内的两次 create_backup 会算出同一文件名，后写覆盖前写
+    （强制同一时间戳实测：2 次调用只剩 1 个文件）——与 BACKUP_KEEP「保留最近 N 份可回滚资产」
+    的语义冲突。定宽毫秒 ⇒ 字典序仍等于时间序，_prune_backups 无需改动。
+    """
+    return time.strftime("%Y%m%d-%H%M%S") + ("%03d" % (int(time.time() * 1000) % 1000))
 
 
 def export_state(source="export", base=None):
@@ -70,7 +76,18 @@ def export_state(source="export", base=None):
     pkg_dir = import_export_dir(base)
     os.makedirs(pkg_dir, exist_ok=True)
     prefix = "MemWise_Export_" if source == "export" else "MemWise_Backup_"
-    pkg_path = os.path.join(pkg_dir, f"{prefix}{_now_stamp()}.zip")
+    # 唯一性保证（2026-10-15 循环验证补强）：毫秒时间戳并不绝对——同一毫秒内的两次调用
+    # 实测仍算出同一文件名（zipfile "w" 直接覆盖，丢一份可回滚资产）。这里在同一时间戳内
+    # 顺延 -2/-3…；后缀用 "_" 而非 "-"（"_" 的码位大于 "."），保证「后写的排在后」⇒
+    # 字典序仍严格等于时间序，_prune_backups 的逻辑无需任何改动。
+    stamp = _now_stamp()
+    pkg_path = os.path.join(pkg_dir, f"{prefix}{stamp}.zip")
+    if os.path.exists(pkg_path):
+        for _i in range(2, 1000):
+            _cand = os.path.join(pkg_dir, f"{prefix}{stamp}_{_i}.zip")
+            if not os.path.exists(_cand):
+                pkg_path = _cand
+                break
     manifest = {
         "format_version": PACKAGE_VERSION,
         "app_version": APP_VERSION,
@@ -230,13 +247,20 @@ def reset_factory(backup=True, base=None):
     return True, bak or ""
 
 
-def restart_application():
+def restart_application(delay_seconds=3):
     """删除 watchdog.json（防看门狗把主动重启误判为崩溃而 --restored 抢跑），
-    经 cmd 延迟 3 秒启动新程序进程——延迟期内当前实例完全退出（单实例互斥锁
-    与窗口随进程释放），新实例启动时单实例检查干净通过，不会被"激活旧实例"
-    路径误杀（实测：并行启动会被单实例机制拒绝致程序直接关闭）。调用方随后
-    立即优雅关闭自身——重置/导入场景不得保存任何状态（需要丢弃的正是旧状态），
-    句柄正常释放让 PyInstaller bootloader 干净清理临时目录。"""
+    然后**直启**新程序进程并由它自己承担延迟（`--delay-start N`）——延迟期内当前实例
+    完全退出（单实例互斥锁与窗口随进程释放），新实例的单实例检查才能干净通过，
+    不会被"激活旧实例"路径误杀（实测：并行启动会被单实例机制拒绝致程序直接关闭）。
+    调用方随后立即优雅关闭自身——重置/导入场景不得保存任何状态（需要丢弃的正是旧状态），
+    句柄正常释放让 PyInstaller bootloader 干净清理临时目录。
+
+    2026-10-15 循环验证后的改造（原为 `cmd /c timeout /t 3 /nobreak >nul & start …`）：
+    ①`timeout` 在 stdin 为管道时立即报 "Input redirection is not supported" 并退出，
+    而 `&` 仍会执行 `start` ⇒ **延迟静默消失**、新旧实例抢互斥（真实风险，非理论）；
+    ②cmd 会把路径里的 `%VAR%` 展开，改写待启动的目标路径；
+    ③argv 形式在四种句柄形态下实测延迟均为精确 3.0s（替身进程验证：延迟/cwd/env 过滤全对）。
+    """
     try:
         from core.engine import _watchdog_path
         wd = _watchdog_path()
@@ -248,16 +272,15 @@ def restart_application():
     # 误用旧解包目录 → "Failed to import encodings module" 启动失败（实测实证）
     env = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
     if getattr(sys, "frozen", False):
-        target = f'start "" "{sys.executable}"'
+        argv = [sys.executable]
     else:
         pythonw = sys.executable.replace("python.exe", "pythonw.exe")
         py = pythonw if os.path.isfile(pythonw) else sys.executable
         gui = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "memwise_gui.py")
-        target = f'start "" "{py}" "{gui}"'
+        argv = [py, gui]
+    argv += ["--delay-start", str(int(delay_seconds))]
     # 工作目录显式指向程序位置（防继承旧实例的 _MEI 临时目录导致占用与清理竞争）
     cwd = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
         else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    subprocess.Popen(
-        f'cmd /c timeout /t 3 /nobreak >nul & {target}',
-        creationflags=0x08000000, env=env, cwd=cwd)  # CREATE_NO_WINDOW
+    subprocess.Popen(argv, creationflags=0x08000000, env=env, cwd=cwd)  # CREATE_NO_WINDOW

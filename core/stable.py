@@ -9,7 +9,6 @@
 - 键 = 规范化可执行路径：跨启动/跨版本稳定；P2 族聚合时自然升级为目录键
 抑制非永久：探索机制（EXPLORE_RATE 概率放行验证清理）保持 Thompson 学习闭环不断验证锚点。
 """
-import time
 from .kalman import KalmanProfile
 
 MIN_SAMPLES = 5          # 锚点激活最少样本数

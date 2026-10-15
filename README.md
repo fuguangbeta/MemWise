@@ -1,4 +1,4 @@
-﻿# MemWise v4.7.013
+# MemWise v4.7.023
 
 ## 关于本工具 · *About This Tool*
 
@@ -300,7 +300,7 @@ A diagnostic cycle runs every daemon tick, evaluating:
 
 ---
 
-## 5. EFIS v3 全程序智能调参 · *System-Wide Intelligent Parameter Tuning*
+## 5. EFIS 全程序智能调参 · *System-Wide Intelligent Parameter Tuning*
 
 EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调参引擎，12 参数自动寻优（`deepen_theta`/`layer3_agg_gate`/`pid_kp`/`pid_kd`/`target_usage`/`cooloff_base`/`learning_rate`/`composite_kalman_w`/`kalman_r`/`anchor_margin`/`cpu_gate`/`io_gate`）。
 
@@ -444,11 +444,11 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **界面语言**：简体中文 / English 即时切换（设置面板顶部独立栏目）。切换瞬间生效，守护与统计数据不受影响；未翻译内容自动回退原语言，日志文件保留原始语言便于排障。
 
-**启动设置**：以管理员权限开机自启动（计划任务，登录时以最高权限静默运行）、启动时自动开启守护、开机自启动后最小化到托盘（勾选框名称与说明一致，仅作用于开机自启，不影响手动启动——手动启动时程序会自行请求管理员权限）。
+**启动设置**：以管理员权限开机自启动（计划任务，登录时以最高权限静默运行；笔记本使用电池供电时同样自启）、启动时自动开启守护、开机自启动后最小化到托盘（勾选框名称与说明一致，仅作用于开机自启，不影响手动启动——手动启动时程序会自行请求管理员权限）。
 
 **窗口与托盘**：关闭按钮行为（最小化到托盘（守护继续运行）、直接退出程序、每次询问（默认））、托盘左键行为（显示窗口（默认）/一键清理/无操作，仅窗口隐藏时生效）。
 
-**清理操作**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启；进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。全部取消勾选时不执行任何系统操作、也不做进程清理；quick 模式下 ws / filecache / volume 三项不适用（设置面板中会置灰并说明）。此外，内存达到紧急阈值的 85% 时会先做一轮深度聚合；真正达到紧急阈值则放开锚点与冷却类拦截、按设计放行清理。
+**清理操作**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启；进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。全部取消勾选时不执行任何系统操作、也不做进程清理；quick 模式下 ws / filecache / volume 三项与「进程清理深度」不适用（设置面板中会置灰并说明）。此外，内存达到紧急阈值的 85% 时会先做一轮深度聚合；真正达到紧急阈值则放开锚点与冷却类拦截、按设计放行清理。
 
 **游戏模式**：管理游戏进程名单（一体化窗口：列出/添加/删除，逗号分隔批量输入、重复项提示、删除带确认）。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
@@ -465,9 +465,9 @@ A standalone window lists every learned process's full profile — α/β (cumula
 All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, suppression interval, daemon cycle, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.
 
 - *Language — Simplified Chinese / English, switchable instantly from the top section of Settings. The whole UI (tips, dialogs, log display, CLI) follows the choice; untranslated text falls back to the source language, and the log file keeps the original language for troubleshooting*
-- *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon), auto-enable daemon on launch, minimize to tray on auto-start*
+- *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon; also starts on battery power on laptops), auto-enable daemon on launch, minimize to tray on auto-start*
 - *Window & Tray — close-button behavior (minimize to tray (daemon continues), exit immediately, or ask each time — default) and tray left-click action (show window (default) / one-click cleanup / no action; active only while the window is hidden)*
-- *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected. Also, at 85% of the emergency threshold a deep-aggregation pass runs first; at the threshold itself, anchor and cooldown gates open by design)*
+- *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected; quick mode does not use it. Also, at 85% of the emergency threshold a deep-aggregation pass runs first; at the threshold itself, anchor and cooldown gates open by design)*
 - *Game mode — manage the game-process list (add/remove in one window; comma-separated batch input, duplicate warnings, delete confirmation). A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click switching*
 - *Guard — emergency threshold (50–99%, default 80%), in-cycle suppression interval (8–20 s, default 12), and daemon cycle (10–3600 s, default 60, which sets the full-harvest cadence)*
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
@@ -619,7 +619,7 @@ MemWise/
 │   ├── policy.py               # 五树投票策略（启用 3 树）· Policy Voter (5-tree, 3 active)
 │   ├── kalman.py               # Kalman 滤波器 · Kalman Filter
 │   ├── prior.py                # 分层先验 · Hierarchical Prior
-│   ├── winapi.py               # Win32 API 绑定（70+ 函数）· Win32 API Bindings
+│   ├── winapi.py               # Win32 API 绑定（ctypes，零第三方依赖）· Win32 API Bindings
 │   ├── sniffer.py              # 进程快照采集 · Process Snapshot Collector
 │   ├── stable.py               # 稳态锚点学习（自然基线/代数迁移）· Stable-State Anchor Learning
 │   ├── rebound.py              # 回弹学习（回填过高自动回退）· Rebound Learning & Backoff
@@ -629,7 +629,7 @@ MemWise/
 │   ├── backup.py               # 配置包（导出/导入/备份/恢复出厂）· Config Package Support
 │   └── config.py               # 配置加载/保存 · Configuration Loader
 ├── scripts/
-│   └── test_regression.py            # 回归测试（587 项断言）· Regression Suite
+│   └── test_regression.py            # 回归测试（断言数以脚本实测为准）· Regression Suite
 ```
 
 ---
@@ -638,9 +638,38 @@ MemWise/
 
 - Windows 10 20H1+ / Windows 11（部分缓存操作依赖较新版本）
 - 管理员权限（缓存清理需要；进程 EmptyWorkingSet 不受限制）。程序启动时自动请求提权；若取消提权或使用标准账户，程序仍会以受限模式启动并给出明确提示——进程级清理照常，系统缓存类清理不可用
+- 程序所在目录需可写（配置、学习数据与日志保存在 exe 旁的 config/ 与 data/ 目录）；若放在只读目录，程序会在启动时给出明确提示并建议移动到可写位置
 - 无需安装任何第三方运行库
 
-Windows 10 20H1+ or Windows 11. Administrator elevation is requested automatically at startup for cache operations; per-process EmptyWorkingSet has no elevation requirement. If elevation is declined (or on a standard account), the app still starts in a limited mode with a clear notice — process-level cleanup keeps working while system cache cleanup is unavailable. No third-party runtime dependencies.
+Windows 10 20H1+ or Windows 11. Administrator elevation is requested automatically at startup for cache operations; per-process EmptyWorkingSet has no elevation requirement. If elevation is declined (or on a standard account), the app still starts in a limited mode with a clear notice — process-level cleanup keeps working while system cache cleanup is unavailable. No third-party runtime dependencies. The program folder must be writable — settings, learning data and logs live in the config/ and data/ folders next to the executable; if the folder is read-only the app says so clearly at startup and suggests moving it.
+
+---
+
+## 常见问题 · *Frequently Asked Questions*
+
+**勾选了开机自启动却没有生效？**
+请确认程序**至少以管理员身份运行过一次**（创建计划任务需要该权限）；随后在 Windows「任务计划程序」中找到名为 `MemWise` 的任务，确认其"操作"里的程序路径完整无误；笔记本使用电池供电时同样会自启。若程序位于含特殊字符的深层目录，建议移动到较简单的路径后重新勾选。
+
+**设置或学习数据没有保存？**
+程序把配置、学习数据与日志写在自身目录旁的 `config/` 与 `data/` 文件夹中，因此**程序所在目录必须可写**。放在 `Program Files` 等只读位置时，启动会给出明确提示；把程序移动到用户目录或独立文件夹即可恢复保存。
+
+**效率分数一开始不显示或偏低？**
+效率评分需要先学习本机常态：跳过约 200 轮预热、再积累约 300 轮后建立并冻结基线，此后同一表现恒定得到同一分数。刚安装时读数偏低或尚未出现属正常，详见第 8 节。
+
+**清理后可用内存很快又降回去？**
+内存被程序重新读写时会按需加载，属系统正常行为。程序在各模式下按各自力度持续压制（极限模式还会二次回收），长期看平均可用内存与释放成功率；若长期没有改善，通常是物理内存本身不足。
+
+**Auto-start did not take effect?**
+*Make sure the program has been run as administrator at least once (creating the scheduled task needs it). Then check the task named `MemWise` in Windows Task Scheduler and confirm the program path in its action is complete. It also starts on battery power on laptops. If the program sits in a deeply nested folder with special characters, move it to a simpler path and re-enable the option.*
+
+**Settings or learning data are not saved?**
+*Settings, learning data and logs live in the `config/` and `data/` folders next to the program, so the program folder must be writable. In a read-only location such as `Program Files`, the app says so clearly at startup; move the program to your user folder or a standalone folder to restore saving.*
+
+**Why is the efficiency score missing or low at first?**
+*The score first learns this machine's normal behaviour: it skips about 200 rounds of warm-up, then accumulates about 300 rounds before freezing a baseline; after that the same behaviour always yields the same score. A low or absent score right after installation is expected — see section 8.*
+
+**Why does available memory drop back soon after cleaning?**
+*Memory is loaded on demand as programs read and write it — normal system behaviour. Each mode keeps suppressing at its own strength (full mode adds a second reclaim pass), so the long-run average available memory and release success rate are what matter; if things never improve, the machine is usually simply short of physical memory.*
 
 ---
 

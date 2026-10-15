@@ -1,10 +1,15 @@
 """
-E.F.I.S. v3 - 全程序智能调优大脑
-因果诊断驱动，12 参数联动，覆盖优化管线全部 5 层
+EFIS 调参器 —— 因果诊断驱动的 12 参数自适应
+按清理模式 4 组隔离（每组白名单见 MODE_TUNE_WHITELIST）；状态 schema v5（场景维度已删）
 """
 import os, time, json
 from collections import deque
 
+
+# ── 分类 B：EFIS 诊断用的「显著量」绝对线（语义与物理内存规模相关）──
+# 2026-10-15 实验：固定绝对值在不同规模机器上有效性漂移（见 cleaner 同区注释）；S=1 时行为不变。
+DEEPEN_WASTE_BYTES = 10 << 20   # 深清额外释放均值低于此值 ⇒ 判定「深清无收益」
+L3_GAIN_BYTES = 50 << 20        # L3 单次额外释放均值低于此值 ⇒ 判定「L3 收益不足」
 
 PARAMS = {
     "deepen_theta":       {"min": 0.30, "max": 0.80, "default": 0.60, "step": 0.05},
@@ -274,7 +279,7 @@ class EfisController:
         cycles_sec = sum(s.get("cycle_duration", 30) for s in w)
         deepen_cnt = sum(s.get("deepen_cnt", 0) for s in w)
         deepen_extra = sum(s.get("deepen_extra", 0) for s in w)
-        deepen_waste = (deepen_cnt > 0 and deepen_extra / max(deepen_cnt, 1) < 10 << 20)  # 10MB avg extra
+        deepen_waste = (deepen_cnt > 0 and deepen_extra / max(deepen_cnt, 1) < DEEPEN_WASTE_BYTES)
         layer3_ran = sum(1 for s in w if s.get("layer3_ran"))
         layer3_extra = sum(s.get("layer3_extra", 0) for s in w)
         cool_cnt = sum(s.get("cooldown_cnt", 0) for s in w)
@@ -294,7 +299,7 @@ class EfisController:
             # 仅 normal 模式寻优（deep/full 无条件执行 Layer3，调 gate 无消费方会空转）
             if layer3_ran < n * 0.1 and mem_avg > target:
                 results["layer3_agg_gate"] = -1
-            elif layer3_ran >= n * 0.9 and layer3_extra / max(layer3_ran, 1) < 50 << 20:
+            elif layer3_ran >= n * 0.9 and layer3_extra / max(layer3_ran, 1) < L3_GAIN_BYTES:
                 results["layer3_agg_gate"] = +1
         if mem_amp > 0.10 or (agg_change > 0.2 and pf_total / max(cycles_sec, 1) > 80):
             results["pid_kp"] = -1

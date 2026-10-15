@@ -20,13 +20,29 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 
-# 打包内初始模板（PyInstaller _MEIPASS）：exe 旁无配置时作为首次运行兜底来源
-_TEMPLATE_PATH = None
-if getattr(sys, "frozen", False):
+# ⛔ 冷启动契约（2026-10-15 实测订正）：发布形态 MemWise.spec 为 datas=[]，exe 内不存在
+# config/config.yaml（解析 dist/MemWise.exe 的 CArchive：995 个条目零含 config），故旧版
+# 「打包内初始模板（_MEIPASS）」分支永不成立、已删除——首次运行一律回退 DEFAULT_CFG。
+_warned = set()
+
+
+def _warn_once(key, msg):
+    """一次性留痕：配置加载/保存的静默失败必须可见。
+
+    2026-10-15 实测：环境缺 PyYAML 时 .yaml 被整体忽略、save() 直接不写盘，且返回字典一度
+    缺 efis_params 键（回归当场 KeyError）——静默即事故。主通道 stderr（打包 windowed 下为
+    devnull，由 GUI 启动提示兜底），旁路再写一次统一日志（延迟导入避免 import 循环）。
+    """
+    if key in _warned:
+        return
+    _warned.add(key)
     try:
-        _t = os.path.join(sys._MEIPASS, "config", "config.yaml")
-        if os.path.isfile(_t):
-            _TEMPLATE_PATH = _t
+        print(f"[MemWise] {msg}", file=_ERR)
+    except Exception:
+        pass
+    try:
+        from core.engine import _diag_log
+        _diag_log(msg)
     except Exception:
         pass
 
@@ -76,13 +92,17 @@ def get_state_path():
 
 def load():
     """加载 config.yaml，缺失字段用 DEFAULT_CFG 兜底。
-    exe 旁无配置时回退打包内模板（_MEIPASS），保证独立部署首次运行即有完整配置"""
+
+    ⛔ 契约（2026-10-15 实测加固）：无论走哪条分支（无配置文件 / 无 PyYAML / 解析异常 /
+    类型畸形），返回字典都必须含 efis_params 键——存在直接下标访问的消费方，缺键当场崩溃。
+    """
     # 深拷贝列表/字典默认值：防消费方 append/赋值污染 DEFAULT_CFG（曾见 clean_operations 被 toggle_op 追加）
     d = {k: (list(v) if isinstance(v, list) else (dict(v) if isinstance(v, dict) else v))
          for k, v in DEFAULT_CFG.items()}
+    d["efis_params"] = {}   # 契约键（DEFAULT_CFG 不含它，显式落位；文件值经 d.update 覆盖后归一）
+    if not yaml:
+        _warn_once("no_yaml", "未找到 PyYAML：config.yaml 不会被读取或保存（本次运行使用默认配置）")
     path = CONFIG_PATH
-    if not os.path.isfile(path) and _TEMPLATE_PATH:
-        path = _TEMPLATE_PATH
     if not os.path.isfile(path):
         return d
     try:
@@ -96,6 +116,7 @@ def load():
                 with open(alt_path, "r", encoding="utf-8") as f:
                     u = json.load(f)
             else:
+                _warn_once("no_yaml_file", "配置文件是 .yaml 但环境无 PyYAML：已回退默认配置")
                 return d
         d.update(u)
         # 顶层键白名单（2026-08-14 审查）：历史遗留键（daemon_trim_every_ticks/scheduled_clean 等）
@@ -155,15 +176,22 @@ def load():
         else:
             d["clean_operations"] = [k for k in d["clean_operations"] if k in CLEAN_OPS_WHITELIST]
     except Exception as e:
-        print(f"[MemWise] 配置加载失败: {e}", file=_ERR)
+        _warn_once("load_fail", f"配置加载失败，本次使用默认配置：{e!r}")
+    # 契约兜底：任何异常路径都不得让 efis_params 退化为非 dict（消费方直接下标访问）
+    if not isinstance(d.get("efis_params"), dict):
+        d["efis_params"] = {}
     return d
 
 # 写锁：EFIS 调参（daemon 线程）与 GUI 设置（主线程）可能并发写同一 tmp 文件，加锁防交错损坏
 _save_lock = threading.Lock()
 
 def save(cfg):
-    """原子保存配置到 config.yaml（先写 tmp 再 rename，防止写半截崩溃）"""
+    """原子保存配置到 config.yaml（先写 tmp 再 rename，防止写半截崩溃）。
+
+    ⛔ 无 PyYAML 时必须留痕：save() 直接返回 = 用户所有设置静默丢失（2026-10-15 实测）。
+    """
     if not yaml:
+        _warn_once("save_no_yaml", "未找到 PyYAML：设置无法保存到文件")
         return
     with _save_lock:
         try:
@@ -174,4 +202,4 @@ def save(cfg):
                 yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
             os.replace(tmp, CONFIG_PATH)
         except Exception as e:
-            print(f"[MemWise] 配置保存失败: {e}", file=_ERR)
+            _warn_once("save_fail", f"配置保存失败（本次设置不会落盘）：{e!r}")

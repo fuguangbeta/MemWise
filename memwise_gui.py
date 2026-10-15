@@ -1,5 +1,5 @@
 """
-MemWise v4.7.013 GUI —— 图形界面
+MemWise v4.7.023 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -29,6 +29,7 @@ from core.sniffer import Sniffer
 from core.icon_flat import FLAT_48_PNG, decode_png  # 任务栏扁平图标（内嵌 PNG，冷启动 exe 兼容）
 from core.i18n import tr, tr_msg, set_language, LANGUAGES, get_language  # 界面语言
 from core import backup  # 配置包：导出/导入/自动备份/恢复出厂（任务3，2026-09-06）
+from core import config as _config_mod  # 配置读写组件可用性自检（2026-10-15）
 
 # ── user32 图标/窗口句柄 API：必须声明 64 位位宽，否则 HICON 句柄被 c_int 截断 → WM_SETICON 静默失效（v3.4.19 图标失效根因）──
 _Usr32 = ctypes.windll.user32
@@ -263,6 +264,40 @@ def _insert_log_lines(text_widget, ts, msg, tag):
         text_widget.insert("end", rest + chr(10), tag)
 
 
+def _parse_delay_start(argv):
+    """解析 `--delay-start N`（重启路径专用，见 core/backup.restart_application）。
+
+    含义：在**任何初始化之前**睡眠 N 秒——给"正在退出的旧实例"留出释放单实例互斥
+    （Global\\MemWise_SingleInstance）与清理 PyInstaller 临时目录的时间。
+    为何不由父进程延迟：父进程 Popen 后立即退出（GUI 需马上关闭），而 `cmd /c timeout`
+    在 stdin 为管道时立即失败、延迟静默消失（2026-10-15 实测）⇒ 改由新实例自己等待。
+    非法/缺失一律视为 0（不影响正常启动路径），上限 30s 防误配卡死。
+    """
+    try:
+        i = argv.index("--delay-start")
+        return max(0.0, min(30.0, float(argv[i + 1])))
+    except Exception:
+        return 0.0
+
+
+def _autostart_target_args(minimized=False):
+    """管理员自启计划任务的目标与参数（frozen=exe 本体 / dev=pythonw+脚本引号）。
+
+    模块级：设置面板（`_admin_task_args` 委托本函数）与**启动迁移**（旧任务自动重建）共用，
+    杜绝两处构造漂移（2026-09-06 审查 F4 的同类理由）。
+    """
+    if getattr(sys, "frozen", False):
+        target = sys.executable
+        args = ""
+    else:
+        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+        target = pythonw if os.path.isfile(pythonw) else sys.executable
+        args = '"%s"' % os.path.abspath(__file__)   # 引号：脚本路径含空格时计划任务仍可解析
+    if minimized:
+        args = (args + " --minimized") if args else "--minimized"
+    return target, args
+
+
 def _align_log_line(s):
     """把一行播报规整为「图标位 + 文字」（多行消息逐行处理；原前导空白收进图标位）。
     · 保留字形图标（勾叉/箭头）→ 该图标 + 制表
@@ -449,7 +484,16 @@ def _relaunch_elevated():
             pythonw = sys.executable.replace("python.exe", "pythonw.exe")
             exe = pythonw if os.path.isfile(pythonw) else sys.executable
             params = '"%s"' % os.path.abspath(__file__)
-        args = [a for a in sys.argv[1:] if a != "--elevated-retry"]
+        # 过滤 --elevated-retry 与 --delay-start（连同其数值）：延迟只为让**旧实例**退出，
+        # 提权副本是同一轮启动的延续，再睡一次只会让用户多等（2026-10-15）
+        _skip_flags = ("--elevated-retry", "--delay-start")
+        args, _it = [], iter(sys.argv[1:])
+        for _a in _it:
+            if _a in _skip_flags:
+                if _a == "--delay-start":
+                    next(_it, None)
+                continue
+            args.append(_a)
         tail = " ".join(('"%s"' % a) if " " in a else a for a in args)
         params = (params + " " + tail).strip()
         params = (params + " --elevated-retry").strip()
@@ -616,7 +660,8 @@ class MemWiseGUI:
     def __init__(self):
         # 进程级初始化（DPI 感知 + 数据/配置目录预建，2026-09-11 审查 F38：
         # 不再由 `import core.engine` 触发副作用，改为入口显式调用）
-        init_runtime()
+        # 返回值 = 数据/配置目录可写性哨兵结果（2026-10-15 P4）：只读安装目录下必须提示用户
+        self._writable = init_runtime()
         # 常驻崩溃现场（2026-08-30）：独立于「记录运行日志到文件」开关——默认关日志的
         # 分发用户崩溃后仍有 data/memwise_crash.log 可反馈（看门狗子进程不安装）
         _install_crash_sink()
@@ -657,7 +702,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.7.013", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v4.7.023", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -681,7 +726,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.7.013")
+        self.root.title("MemWise v4.7.023")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -739,10 +784,24 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.7.013 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v4.7.023 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
+        # 启动自检提示（2026-10-15 P4/P2）：只读安装目录或缺少配置读写组件时，配置与学习数据
+        # 会静默失效（实测：save 返回 False / 只写 devnull，用户毫无感知）——必须让用户看见，
+        # 并告知怎么修（移动位置 / 重新下载）。日志行即时可见，弹窗延迟到主循环后一次弹出。
+        if not getattr(self, "_writable", True):
+            # ⚠ F51：写进日志历史的必须是**中文原文**（显示层再翻译），此处不得包 tr()
+            self._log("⚠ 程序所在目录不可写，配置与学习数据无法保存")
+            self.root.after(1200, lambda: self._dark_message(
+                tr("程序所在目录不可写"),
+                tr("程序所在目录不可写，配置与学习数据都无法保存。请把程序移动到有写入权限的位置（例如用户目录）后重新启动。")))
+        if getattr(_config_mod, "yaml", None) is None:
+            self._log("⚠ 缺少配置读写组件，设置与学习数据将无法保存")
+            self.root.after(1600, lambda: self._dark_message(
+                tr("缺少配置读写组件"),
+                tr("程序缺少配置读写组件，设置与学习数据都无法保存。请重新下载或重新安装程序。")))
         # 看门狗：spawn 子进程监控崩溃
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
@@ -760,6 +819,16 @@ class MemWiseGUI:
         if CFG.get("auto_start_admin"):
             try:
                 winapi.remove_auto_start("MemWise")
+            except Exception:
+                pass
+            # 旧任务自动迁移（2026-10-15）：命令行时代创建的任务带「仅交流电启动 / 切电池即停 /
+            # 72 小时执行上限」三项 schema 默认，笔记本用电池时表现为"勾了自启却没反应"。
+            # 检测到就按新 XML 重建一次（用户不会想到要手动取消再勾选）；失败静默、不影响启动。
+            try:
+                if winapi.auto_start_admin_needs_fix("MemWise"):
+                    _t, _a = _autostart_target_args(bool(CFG.get("auto_start_minimize", False)))
+                    if winapi.set_auto_start_admin("MemWise", _t, _a):
+                        self._log("开机自启动任务已更新（允许电池供电启动、不限运行时长）")
             except Exception:
                 pass
         # 启动消息队列轮询（每 100ms 检查一次，主线程安全）
@@ -798,7 +867,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.013")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.023")
                     if fw:
                         top = fw
                 except Exception:
@@ -1362,19 +1431,10 @@ class MemWiseGUI:
         asa_var = tk.BooleanVar(value=CFG.get("auto_start_admin", False))
 
         def _admin_task_args():
-            """管理员自启计划任务的目标与参数（frozen=exe 本体 / dev=pythonw+脚本引号），
+            """管理员自启计划任务的目标与参数（委托模块级 _autostart_target_args）——
             参数随「开机自启动后最小化到托盘」勾选联动（2026-09-06 审查 F4：on_autostart_admin
-            与 on_minimize 共用，杜绝两处构造漂移）"""
-            if getattr(sys, "frozen", False):
-                target = sys.executable
-                args = ""
-            else:
-                pythonw = sys.executable.replace("python.exe", "pythonw.exe")
-                target = pythonw if os.path.isfile(pythonw) else sys.executable
-                args = f'"{os.path.abspath(__file__)}"'  # 引号：脚本路径含空格时计划任务仍可解析
-            if asm_var.get():
-                args = (args + " --minimized") if args else "--minimized"
-            return target, args
+            与 on_minimize 共用；2026-10-15 起启动迁移也复用同一构造，杜绝漂移）"""
+            return _autostart_target_args(asm_var.get())
 
         def on_autostart_admin():
             en = asa_var.get()
@@ -1400,7 +1460,8 @@ class MemWiseGUI:
             "1. 通过 Windows 计划任务实现\n"
             "2. 以最高权限启动后受限的功能可完整执行\n"
             "⚠ 系统缓存类清理需要管理员权限\n"
-            "⚠ 需先以管理员身份运行过一次本程序才能启用")
+            "⚠ 需先以管理员身份运行过一次本程序才能启用\n"
+            "⚠ 笔记本使用电池供电时同样会启动")
 
         asd_var = tk.BooleanVar(value=CFG.get("auto_start_daemon", False))
         def on_auto_daemon():
@@ -1565,6 +1626,15 @@ class MemWiseGUI:
                          command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
         ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
         ps_sl.pack(fill="x", pady=(0,6))
+        if CFG.get("clean_mode", "normal") == "quick":
+            # quick 模式零进程清理 ⇒ 深度无消费（2026-10-15 实测：quick 下 _trim_process
+            # 调用 0 次，滑杆可调但完全无作用）——与上面三个开关同款置灰 + 说明
+            try:
+                ps_sl.state(["disabled"])
+            except Exception:
+                pass
+            ttk.Label(cf, text=tr("quick 模式下「进程清理深度」不适用"), foreground="#888",
+                      wraplength=470, justify="left").pack(anchor="w")
         ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
                   foreground="#888").pack(anchor="w")
 
@@ -1986,8 +2056,8 @@ class MemWiseGUI:
 
     def _restart_with_new_config(self):
         """重启生效的统一收尾：事件留痕（crash 通道不受日志开关控制）+ 统一日志
-        → 启动新实例（backup.restart_application 经 cmd 延迟 3 秒启动，期间当前
-        实例完全退出——互斥锁与窗口随进程释放，新实例单实例检查干净通过）
+        → 启动新实例（backup.restart_application 以 argv 直启，新实例带 --delay-start 3
+        自行等待——期间当前实例完全退出、互斥锁与窗口随进程释放，新实例检查干净通过）
         → 移除托盘图标 → 立即优雅关闭自身：不保存任何状态（需要丢弃的正是旧
         状态，此路径无 save_state 钩子），句柄正常释放让 PyInstaller bootloader
         干净清理临时目录（延迟启动同时错开杀软对新旧实例的扫描窗口）"""
@@ -3312,4 +3382,9 @@ class MemWiseGUI:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    # 重启路径：先睡再初始化（必须在 init_runtime / 单实例互斥之前——否则会与
+    # 尚未退出的旧实例抢互斥）。正常启动无该参数，行为零变化。
+    _delay = _parse_delay_start(sys.argv)
+    if _delay > 0:
+        time.sleep(_delay)
     MemWiseGUI().run()
