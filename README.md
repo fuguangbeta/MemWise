@@ -6,8 +6,6 @@
 
 MemWise 是一个运行在 Windows 用户态的内存整理工具。它的工作方式并不复杂：借助系统公开的内存管理接口，在内存吃紧时，把进程暂时不用的页面和系统缓存回收回来，让正在使用的程序有更充裕的空间。
 
-MemWise 永久免费，没有任何付费版本，也没有任何付费渠道。如果你是在某个下载站或商家处付费获得的，那不是作者的行为——这个工具始终可以在这里免费获取。遇到这类情况，请及时申请退款，并到 Releases 页面重新下载。
-
 在 Windows 上，内存管理本身是系统一直在做的事情——压缩、缓存、换页，自有其成熟的机制。MemWise 并不试图取代这些机制，也不对系统做任何修改。它只是在用户需要时，让回收发生得更主动一些、更可控一些。因此，你可以把它理解为一个"手动 + 定时"的补充，而不是一套额外的内存体系。
 
 也正因为如此，有几件事需要提前说明。
@@ -22,9 +20,9 @@ MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网
 
 如果你正在为内存紧张而困扰，希望这个工具能帮上一点忙；也欢迎在使用中提出意见，让它变得更好。
 
-MemWise is a user-mode memory tidying tool for Windows. Its approach is simple: through the system's public memory-management interfaces, it reclaims idle process pages and system caches when memory runs tight, leaving more room for the programs you are actually using.
+MemWise 永久免费，没有任何付费版本，也没有任何付费渠道。如果你是在某个下载站或商家处付费获得的，那不是作者的行为——这个工具始终可以在这里免费获取。遇到这类情况，请及时申请退款，并到 Releases 页面重新下载。
 
-MemWise is free, permanently — no paid edition and no paid channel of any kind. If you paid a download site or a reseller for it, that is not the author's doing; the tool is always available here at no cost. In such a case, please request a refund and download it again from the Releases page.
+MemWise is a user-mode memory tidying tool for Windows. Its approach is simple: through the system's public memory-management interfaces, it reclaims idle process pages and system caches when memory runs tight, leaving more room for the programs you are actually using.
 
 Memory management on Windows is something the system already does — compression, caching, and paging have their own mature mechanisms. MemWise does not try to replace them, nor does it modify the system in any way. It simply makes reclamation more proactive and more controllable, on your schedule. Think of it as a manual and scheduled supplement, not a separate memory system of its own.
 
@@ -39,6 +37,8 @@ MemWise terminates no processes, suspends no threads, injects no code, and touch
 Since MemWise does not connect to the network, it cannot update itself. When a new version is released, users will need to visit the Releases page and download it themselves. This is a small inconvenience of being offline — in return, the program never communicates with any server, so it can be used on personal devices without any concern about data leakage.
 
 If memory pressure has been troubling you, I hope this tool helps a little; and if you have suggestions along the way, they would be most welcome.
+
+MemWise is free, permanently — no paid edition and no paid channel of any kind. If you paid a download site or a reseller for it, that is not the author's doing; the tool is always available here at no cost. In such a case, please request a refund and download it again from the Releases page.
 
 ---
 
