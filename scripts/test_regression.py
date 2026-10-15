@@ -3037,6 +3037,21 @@ check("版本一致性：CHANGELOG 标题与 APP_VERSION 一致（且只有一�
       str(_clhead))
 check("版本一致性：README 标题与 APP_VERSION 一致",
       ("# MemWise v" + _bkver.APP_VERSION) in open(os.path.join(_ROOT34, "README.md"), encoding="utf-8").read())
+_readme52 = open(os.path.join(_ROOT34, "README.md"), encoding="utf-8").read()
+check("README 顶部徽章行：版本/平台/依赖/许可/Star/总下载（shields 动态字段优先）",
+      all(k in _readme52 for k in (
+          "img.shields.io/github/v/release/fuguangbeta/MemWise",
+          "img.shields.io/github/license/fuguangbeta/MemWise",
+          "img.shields.io/github/stars/fuguangbeta/MemWise",
+          "img.shields.io/github/downloads/fuguangbeta/MemWise/total",
+          "img.shields.io/badge/")))
+check("README 永久免费声明 + MIT 许可文件齐备",
+      "MemWise 永久免费" in _readme52 and "MIT 许可" in _readme52
+      and os.path.isfile(os.path.join(_ROOT34, "LICENSE"))
+      and "MIT License" in open(os.path.join(_ROOT34, "LICENSE"), encoding="utf-8").read()
+      and "Copyright (c) 2026 fuguangbeta" in open(os.path.join(_ROOT34, "LICENSE"), encoding="utf-8").read())
+check("README 只放事实徽章（无奖牌/自造奖项）",
+      "奖牌" not in _readme52 and "Repository Of The" not in _readme52)
 check("P15 分类B阈值常量值与原字面量一致（S=1 行为不变）",
       _clm47.TIER_WS_DEEP == 200 << 20 and _clm47.TIER_WS_MID == 50 << 20
       and _clm47.MP_WS_NORMAL == 100 << 20 and _clm47.MP_WS_FULL == 50 << 20

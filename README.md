@@ -1,8 +1,12 @@
 # MemWise v4.7.023
 
+[![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
+
 ## 关于本工具 · *About This Tool*
 
 MemWise 是一个运行在 Windows 用户态的内存整理工具。它的工作方式并不复杂：借助系统公开的内存管理接口，在内存吃紧时，把进程暂时不用的页面和系统缓存回收回来，让正在使用的程序有更充裕的空间。
+
+MemWise 永久免费，没有付费版本，也没有任何付费渠道。如果它是在某个下载站或商家那里花钱买来的，那并不是本项目的行为——这个工具始终可以在这里免费获取。遇到这类情况，建议及时申请退款，并到 Releases 页面重新下载。
 
 在 Windows 上，内存管理本身是系统一直在做的事情——压缩、缓存、换页，自有其成熟的机制。MemWise 并不试图取代这些机制，也不对系统做任何修改。它只是在用户需要时，让回收发生得更主动一些、更可控一些。因此，你可以把它理解为一个"手动 + 定时"的补充，而不是一套额外的内存体系。
 
@@ -12,13 +16,15 @@ MemWise 释放的是"暂时用不到的内存"，它不能让物理内存凭空�
 
 回收的页面在被程序再次使用时需要重新加载，这通常表现为一瞬间的轻微延迟；清理系统缓存后，首次访问大文件也可能稍有变慢。这是内存管理本身的性质，并非工具的缺陷，也不会影响数据安全与程序稳定性。所有操作都可以在设置中单独关闭，你可以根据自己对流畅度的要求自行取舍。
 
-MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网络，也没有任何附带组件。它仅使用 Windows 公开的 API，代码完全开源。
+MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网络，也没有任何附带组件。它仅使用 Windows 公开的 API，代码以 MIT 许可完全开源。
 
 由于不联网，MemWise 自身无法做到自动更新。当新版本发布时，需要用户自行前往 Releases 页面查看与下载。这算是不联网带来的一个小小不便——不过相应地，程序自始至终不会与任何服务器通信，个人设备在使用上毫无泄露数据顾虑。
 
 如果你正在为内存紧张而困扰，希望这个工具能帮上一点忙；也欢迎在使用中提出意见，让它变得更好。
 
 MemWise is a user-mode memory tidying tool for Windows. Its approach is simple: through the system's public memory-management interfaces, it reclaims idle process pages and system caches when memory runs tight, leaving more room for the programs you are actually using.
+
+MemWise is free, permanently — no paid edition, no paid channel of any kind. If you paid a download site or a reseller for it, that has nothing to do with this project: the tool is always available here at no cost. In such a case, ask for a refund and download it again from the Releases page.
 
 Memory management on Windows is something the system already does — compression, caching, and paging have their own mature mechanisms. MemWise does not try to replace them, nor does it modify the system in any way. It simply makes reclamation more proactive and more controllable, on your schedule. Think of it as a manual and scheduled supplement, not a separate memory system of its own.
 
@@ -28,7 +34,7 @@ What MemWise frees is memory that is not being used right now. It cannot make ph
 
 Reclaimed pages are reloaded the next time a program needs them, usually as a momentary, barely noticeable delay; the first access to a large file after cache clearing may also be slightly slower. This follows from the nature of memory management itself — it is not a flaw of the tool, and it affects neither data safety nor program stability. Every operation can be disabled individually in Settings, so you can decide for yourself how it balances with your need for smoothness.
 
-MemWise terminates no processes, suspends no threads, injects no code, and touches no network, with no bundled components. It uses only public Windows APIs, and the source is fully open.
+MemWise terminates no processes, suspends no threads, injects no code, and touches no network, with no bundled components. It uses only public Windows APIs, and the source is fully open under the MIT license.
 
 Since MemWise does not connect to the network, it cannot update itself. When a new version is released, users will need to visit the Releases page and download it themselves. This is a small inconvenience of being offline — in return, the program never communicates with any server, so it can be used on personal devices without any concern about data leakage.
 
