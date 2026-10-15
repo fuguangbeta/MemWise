@@ -3052,6 +3052,34 @@ check("README 永久免费声明 + MIT 许可文件齐备",
       and "Copyright (c) 2026 fuguangbeta" in open(os.path.join(_ROOT34, "LICENSE"), encoding="utf-8").read())
 check("README 只放事实徽章（无奖牌/自造奖项）",
       "奖牌" not in _readme52 and "Repository Of The" not in _readme52)
+
+# 「中文标点 + 加粗」的 CommonMark 坑（2026-10-15 实测）：收尾 ** 前是标点、后接非空白字符时
+# 不是右翼定界符 ⇒ 整段原样显示（**原样显示**）。用静态扫描锁住，防止再犯。
+def _uni_p52(c):
+    import unicodedata as _ud52
+    return _ud52.category(c).startswith("P")
+def _bold_pitfall52(t):
+    bad = []
+    for _ln, _line in enumerate(t.splitlines(), 1):
+        _k = 0
+        while True:
+            _i = _line.find("**", _k)
+            if _i < 0:
+                break
+            _j = _line.find("**", _i + 2)
+            if _j < 0:
+                break
+            _prev = _line[_j - 1] if _j > 0 else ""
+            _nxt = _line[_j + 2] if _j + 2 < len(_line) else ""
+            if _prev and _nxt and (not _nxt.isspace()) and _uni_p52(_prev) and (not _uni_p52(_nxt)):
+                bad.append((_ln, _line[max(0, _j - 14):_j + 2]))
+            _k = _j + 2
+    return bad
+check("README 无「中文标点+加粗」渲染失败形态（收尾 ** 后缺空格）",
+      not _bold_pitfall52(_readme52), str(_bold_pitfall52(_readme52)[:2]))
+check("永久免费声明引入语加粗且带空格（已用 GitHub 渲染接口验证）",
+      "**需要额外声明的是：** MemWise 永久免费" in _readme52
+      and "**One more thing worth stating plainly:** MemWise is free" in _readme52)
 check("P15 分类B阈值常量值与原字面量一致（S=1 行为不变）",
       _clm47.TIER_WS_DEEP == 200 << 20 and _clm47.TIER_WS_MID == 50 << 20
       and _clm47.MP_WS_NORMAL == 100 << 20 and _clm47.MP_WS_FULL == 50 << 20

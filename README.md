@@ -20,7 +20,7 @@ MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网
 
 如果你正在为内存紧张而困扰，希望这个工具能帮上一点忙；也欢迎在使用中提出意见，让它变得更好。
 
-**需要额外声明的是：**MemWise 永久免费，没有任何付费版本，也没有任何付费渠道。如果你是在某个下载站或商家处付费获得的，那不是作者的行为——这个工具始终可以在这里免费获取。遇到这类情况，请及时申请退款，并到 Releases 页面重新下载。
+**需要额外声明的是：** MemWise 永久免费，没有任何付费版本，也没有任何付费渠道。如果你是在某个下载站或商家处付费获得的，那不是作者的行为——这个工具始终可以在这里免费获取。遇到这类情况，请及时申请退款，并到 Releases 页面重新下载。
 
 MemWise is a user-mode memory tidying tool for Windows. Its approach is simple: through the system's public memory-management interfaces, it reclaims idle process pages and system caches when memory runs tight, leaving more room for the programs you are actually using.
 
