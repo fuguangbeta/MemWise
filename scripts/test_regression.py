@@ -3096,6 +3096,45 @@ check("行为：XML 转义正确且空参数不写 Arguments 元素",
 _W49x = _src47("core/winapi.py")
 check("静态：winapi 顶部已导入 os（曾因漏导入在运行期 NameError）",
       "import ctypes, ctypes.wintypes as w, os, time, math" in _W49x)
+
+print("\n[50] 可写性哨兵判定修正（2026-10-15 发布后补修：误报程序目录不可写）")
+_eg50 = _src47("core/engine.py")
+check("哨兵判定：删除探针失败不得影响结论（源码口径）",
+      "def _sweep_probes(d):" in _eg50
+      and "pass                  # 收尾失败（杀软占用）≠ 目录不可写" in _eg50)
+import core.engine as _E50
+import shutil as _sh50, tempfile as _tf50
+_bt50 = _tf50.mkdtemp(prefix="mw_wtest50_")
+_b50 = _E50.base
+_ev50 = _E50._event_log
+try:
+    os.makedirs(os.path.join(_bt50, "data"), exist_ok=True)
+    os.makedirs(os.path.join(_bt50, "config"), exist_ok=True)
+    _E50.base = _bt50
+    _E50._event_log = lambda *a, **k: None
+    _rm50 = os.remove
+    def _boom50(*a, **k):
+        raise PermissionError("[WinError 32] 模拟杀软占用")
+    os.remove = _boom50
+    try:
+        _verdict50 = _E50._check_writable()
+    finally:
+        os.remove = _rm50
+    check("行为：remove 恒失败时仍判定为可写（原误报根因）", _verdict50 is True, "verdict=%s" % _verdict50)
+    # 阶段B：remove 恢复正常 —— 历史遗留探针应被顺手清理，正常目录结论可写且不残留
+    _left50 = os.path.join(_bt50, "data", ".write_test_999999")
+    with open(_left50, "w") as f:
+        f.write("x")
+    _ok50b = _E50._check_writable()
+    _res50 = [n for n in os.listdir(os.path.join(_bt50, "data")) if n.startswith(".write_test_")]
+    check("行为：历史残留探针被清理且不新增残留",
+          _ok50b is True and (not os.path.exists(_left50)) and not _res50, str(_res50))
+    _E50.base = os.path.join(_ROOT34, "README.md", "no_such_dir")
+    check("行为：真正不可写时仍返回 False（能力未丢）", _E50._check_writable() is False)
+finally:
+    _E50.base = _b50
+    _E50._event_log = _ev50
+    _sh50.rmtree(_bt50, ignore_errors=True)
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

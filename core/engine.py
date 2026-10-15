@@ -12,27 +12,53 @@ from collections import deque
 # 进程级副作用（DPI 感知 + 目录预建）改为显式调用 init_runtime()（2026-09-11 审查 F38）：
 # 原先在 import 时执行 ⇒ 任何 `import core.engine`（例如 CLI 只想取守护互斥名/常量）都会
 # 设置进程 DPI 并创建目录，使"库导入"变成有副作用的初始化。现在由入口显式触发。
+def _sweep_probes(d):
+    """清理历史可写性探针（2026-10-15 发布后补修）。
+
+    探针名固定为 .write_test_<pid>；删除时若被杀软 / 搜索索引器短暂占用就会残留在数据目录
+    （实测本机曾遗留 3 个）。模式锚定，只删本程序自己的探针名，不碰其它文件。
+    """
+    try:
+        for n in os.listdir(d):
+            if n.startswith(".write_test_") and n[12:].isdigit():
+                try:
+                    os.remove(os.path.join(d, n))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _check_writable():
-    """数据/配置目录可写性哨兵（2026-10-15 新增）。
+    """数据/配置目录可写性哨兵（2026-10-15 新增；同日发布后修正判定口径）。
 
     实测背景：把 exe 放进只读目录（例如 Program Files）时 learner.save 返回 False、
     _config.save 只写 stderr（打包 windowed 下是 devnull）、目录创建与看门狗全部静默——
     用户看到「程序能用」，而学习数据 / 配置 / 日志 / 崩溃恢复全部失效且毫无提示。
-    启动时做一次真实写入并删除；失败经崩溃通道留痕并返回 False，由入口提示用户。
+    启动时做一次真实写入；失败经崩溃通道留痕并返回 False，由入口提示用户。
+
+    ⛔ 判定口径：**能创建文件即视为可写**——删除探针只是收尾，其失败**不得**影响结论。
+    原实现把 os.remove 的异常也算作失败：杀软 / 索引器短暂占用刚创建的探针时（Windows 上是
+    ERROR_SHARING_VIOLATION），就会对用户**误弹**「程序所在目录不可写」——而同一进程此刻
+    正把日志正常写在同一目录里（自相矛盾）。2026-10-15 实测：用户弹出该窗时 data/ 里遗留了
+    3 个 .write_test_<pid>，而 ACL（Authenticated Users 可写）、提权状态、日志写入全部正常。
+
+    另：文件名带 pid，避免「多进程同时启动」（提权重启的双进程）互相争抢；
+    失败重试一次以吸收瞬时的创建失败；每次探测前顺手清理历史残留探针。
     """
     last_err = None
-    # 两次尝试（2026-10-15 循环验证二次修正）：①文件名带 pid——固定名会在「多进程同时启动」
-    # （提权重启的双进程）时互相争抢同一文件，一方 remove 抛异常被误判成"不可写"；
-    # ②单次失败再重试一次——本机双杀软环境下实测会出现**瞬时**拦截（Access denied），
-    # 只试一次会把瞬时拦截误判成只读目录、对用户弹出错误的"目录不可写"提示。
     for _attempt in (1, 2):
         try:
             for d in (os.path.join(base, "data"), os.path.join(base, "config")):
                 os.makedirs(d, exist_ok=True)
+                _sweep_probes(d)
                 p = os.path.join(d, ".write_test_%d" % os.getpid())
                 with open(p, "w", encoding="utf-8") as f:
                     f.write("ok")
-                os.remove(p)
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass                  # 收尾失败（杀软占用）≠ 目录不可写
             return True
         except Exception as _e:
             last_err = _e
