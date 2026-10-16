@@ -3101,23 +3101,34 @@ class MemWiseGUI:
         self.lbl_upd.pack(anchor="w")
         row_up = ttk.Frame(upf)
         row_up.pack(anchor="w", pady=(4, 0))
-        ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True)).pack(side="left")
-        ttk.Checkbutton(row_up, text=tr("启动时自动检查更新"), variable=upd_var,
-                        command=_on_upd_toggle).pack(side="left", padx=(14, 0))
-        ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
-                        command=_on_upd_auto).pack(anchor="w", pady=(2, 0))
+        btn_upd = ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True))
+        btn_upd.pack(side="left")
+        cb_upd = ttk.Checkbutton(row_up, text=tr("启动时自动检查更新"), variable=upd_var,
+                                 command=_on_upd_toggle)
+        cb_upd.pack(side="left", padx=(14, 0))
+        cb_auto = ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
+                                  command=_on_upd_auto)
+        cb_auto.pack(anchor="w", pady=(2, 0))
         row_px = ttk.Frame(upf)
         row_px.pack(anchor="w", pady=(2, 0), fill="x")
-        ttk.Label(row_px, text=tr("代理地址"), foreground="#aaa").pack(side="left")
+        lbl_px = ttk.Label(row_px, text=tr("代理地址"), foreground="#aaa")
+        lbl_px.pack(side="left")
         ent_px = ttk.Entry(row_px, textvariable=upd_proxy_var, width=24)
         ent_px.pack(side="left", padx=(6, 0))
         ent_px.bind("<FocusOut>", _on_upd_proxy)
         # 提示独立成行（2026-10-16 用户反馈：与输入框同排会被面板宽度截断，只剩"(留空 ="）
-        ttk.Label(upf, text=tr("留空则自动使用系统代理"), foreground="#777").pack(anchor="w", pady=(2, 0))
-        # tooltip 逐行覆盖（Tk 的 Enter/Leave 不冒泡到父级：只挂外框会让按钮/勾选框/输入框悬停无声）
-        _tip54 = self._upd_tooltip()
-        for _row in (upf, row_up, row_px):
-            self._add_tip_row(_row, _tip54)
+        lbl_hint = ttk.Label(upf, text=tr("留空则自动使用系统代理"), foreground="#777")
+        lbl_hint.pack(anchor="w", pady=(2, 0))
+        # tooltip 挂法**照其他栏**（逐个控件挂 + 整行补）：按钮、勾选框、输入框与其文字都能悬停出提示
+        _tip_upd = self._upd_tooltip()
+        self._add_tip(btn_upd, _tip_upd)
+        self._add_tip(cb_upd, _tip_upd)
+        self._add_tip(cb_auto, _tip_upd)
+        self._add_tip(lbl_px, _tip_upd)
+        self._add_tip(ent_px, _tip_upd)
+        self._add_tip(lbl_hint, _tip_upd)
+        self._add_tip_row(row_px, _tip_upd)
+        self._add_tip_row(upf, _tip_upd)
 
     def _upd_status_init(self):
         """设置面板打开时的初始状态行（读运行态：上次检查/跳过版本 → 给一句人话）。"""
