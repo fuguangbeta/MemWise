@@ -814,9 +814,10 @@ class ToolTip:
         # 关闭窗口的递归销毁会二次删除其 Tcl 命令（can't delete Tcl command）导致
         # 销毁中断、窗口只销毁部分（曾见设置面板只剩语言行消失）
         sw, sh = self.widget.winfo_screenwidth(), self.widget.winfo_screenheight()
-        # 自适应宽度（2026-10-16 用户反馈"用着不顺手"）：旧实现固定 wraplength=800，
-        # 长文案会拉成一条横贯屏幕的大条并越过屏幕右缘被切掉 ⇒ 改为随屏幕宽度收窄换行。
-        wrap = max(260, min(560, sw - 140))
+        # 换行口径（2026-10-17 用户定稿）：**按源码里写的换行显示，不做自动折行**——
+        # 自动折行会丢掉续行缩进（"  ⚠ 长句"被折成顶格，用户实测），而自动补缩进也不是用户要的。
+        # 故 wraplength 只在**超出屏幕宽度**时兜底（防越界被切），平时不折行。
+        wrap = max(0, sw - 40)
         tip = tk.Toplevel(self.widget.winfo_toplevel())
         tip.withdraw()          # 先隐藏：量完尺寸再定位，避免在 (0,0) 闪一下
         tip.wm_overrideredirect(True)
