@@ -14,9 +14,9 @@ MemWise 释放的是"暂时用不到的内存"，它不能让物理内存凭空�
 
 回收的页面在被程序再次使用时需要重新加载，这通常表现为一瞬间的轻微延迟；清理系统缓存后，首次访问大文件也可能稍有变慢。这是内存管理本身的性质，并非工具的缺陷，也不会影响数据安全与程序稳定性。所有操作都可以在设置中单独关闭，你可以根据自己对流畅度的要求自行取舍。
 
-MemWise 不随意终止进程、不挂起线程、不注入代码，也**默认不访问网络**——只有你主动开启「检查更新」后，它才会访问官方发布渠道读取版本号；没有任何附带组件。它仅使用 Windows 公开的 API，代码以 MIT 许可完全开源。
+MemWise 不随意终止进程、不挂起线程、不注入代码，也默认不访问网络。它仅使用 Windows 公开的 API，代码以 MIT 许可完全开源。
 
-MemWise **默认完全不联网**：只有在你主动开启「检查更新」后，它才会向官方发布渠道（GitHub）读取版本号与更新包信息，不发送任何设备信息、不含任何标识符、不做任何统计。开启后它还能自动下载并校验（SHA-256）新版本、替换程序并自动重启，配置与学习数据原样保留；网络不可用时降级为提示，并给出官方发布页地址。需要说明的是，请求由 GitHub 接收，因此对方可见你的 IP——这是任何联网检查都无法回避的事实。
+MemWise 只有在你主动开启「检查更新」后，它才会向官方发布渠道（GitHub）读取版本号与更新包信息，不发送任何设备信息、不含任何标识符、不做任何统计。开启后它还能自动下载并校验（SHA-256）新版本、替换程序并自动重启，配置与学习数据原样保留；网络不可用时降级为提示，并给出官方发布页地址。需要说明的是，请求由 GitHub 接收，因此对方可见你的 IP——这是任何联网检查都无法回避的事实。
 
 如果你正在为内存紧张而困扰，希望这个工具能帮上一点忙；也欢迎在使用中提出意见，让它变得更好。
 
@@ -32,9 +32,9 @@ What MemWise frees is memory that is not being used right now. It cannot make ph
 
 Reclaimed pages are reloaded the next time a program needs them, usually as a momentary, barely noticeable delay; the first access to a large file after cache clearing may also be slightly slower. This follows from the nature of memory management itself — it is not a flaw of the tool, and it affects neither data safety nor program stability. Every operation can be disabled individually in Settings, so you can decide for yourself how it balances with your need for smoothness.
 
-MemWise terminates no processes, suspends no threads, and injects no code, and by default it does not touch the network either — it contacts the official release channel only after you enable "Check for Updates" yourself. It has no bundled components, uses only public Windows APIs, and the source is fully open under the MIT license.
+MemWise terminates no processes, suspends no threads, and injects no code, and by default it does not touch the network either. It uses only public Windows APIs, and the source is fully open under the MIT license.
 
-MemWise stays completely offline by default: only after you enable "Check for Updates" does it read the version number and update package information from the official release channel (GitHub). It sends no device information, carries no identifier, and performs no analytics. Once enabled, it can also download a new version, verify it with SHA-256, replace the program and restart it automatically, keeping your settings and learning data intact; when the network is unavailable it degrades to a notice with the official release page address. One honest note: the request is received by GitHub, so the other side can see your IP — that is unavoidable for any online update check.
+MemWise reads the version number and update package information from the official release channel (GitHub) only after you enable "Check for Updates". It sends no device information, carries no identifier, and performs no analytics. Once enabled, it can also download a new version, verify it with SHA-256, replace the program and restart it automatically, keeping your settings and learning data intact; when the network is unavailable it degrades to a notice with the official release page address. One honest note: the request is received by GitHub, so the other side can see your IP — that is unavoidable for any online update check.
 
 If memory pressure has been troubling you, I hope this tool helps a little; and if you have suggestions along the way, they would be most welcome.
 

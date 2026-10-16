@@ -3307,7 +3307,7 @@ check("配置键默认值：默认关 / 自动替换开 / 代理空",
       '"update_check": False' in _c54 and '"update_auto_apply": True' in _c54 and '"update_proxy": ""' in _c54)
 check("承诺改写：默认不联网，且不再声称无法自动更新",
       "默认不访问网络" in _r54 and "默认完全不联网" in _r54
-      and "无法做到自动更新" not in _r54
+      and "无法做到自动更新" not in _r54 and "只有在你主动开启「检查更新」后" in _r54
       and "does not connect to the network, it cannot update itself" not in _r54
       and "默认不联网" in _ch54 and "默认不联网" in _src47("memwise.py"))
 check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
