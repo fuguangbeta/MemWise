@@ -32,7 +32,7 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 1. **禁 git 回退/checkout 恢复**：任何情况下不用 `git checkout --`、`git reset --hard`、`git revert` 恢复文件
 2. **禁删除文件**：不删用户文件、不删 memwise.log、不删旧版本发布资产
 3. **禁牺牲功能**：不砍功能换实现，不草率弃用方法；所有改动最小化
-4. **测试禁写真实状态文件**：`config/config.yaml`、`memwise_state.json`、`memwise_efis_state.json`、`memwise_eris_ewma.json` 是真实数据——验证必须用临时路径/临时文件
+4. **测试禁写真实状态文件**：`config/config.yaml`、`memwise_state.json`、`memwise_efis_state.json`、`memwise_eris_ewma.json`、`memwise_eris_calib.json`（ERIS 冻结基线，不进配置包）是真实数据——验证必须用临时路径/临时文件
 5. **构建 exe 前必须确认 config 状态**（MemWise.spec datas=[] 冷启动，不打包本机 config.yaml）
 6. **发布新版本绝不修改/删除旧版本**：旧 tag、release、exe 资产一律保留原样，只创建新 tag + release + 新 exe
 
