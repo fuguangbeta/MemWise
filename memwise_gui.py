@@ -1949,47 +1949,10 @@ class MemWiseGUI:
                       "  · 游戏模式切换等\n"
                       "⚠ 日志自动轮转保留最近两份，无需手动清理")
 
-        # ─── 全局热键（独立栏，汇总所有热键） ───
         # ── 更新（2026-10-16 新增，第 11 栏）：**默认不联网**，仅开启后启动时自动检查 ──
-        upf = ttk.LabelFrame(inner_frame, text=tr("更新"), padding=8)
-        upf.pack(fill="x", pady=4)
-        upd_var = tk.BooleanVar(value=CFG.get("update_check", False))
-        upa_var = tk.BooleanVar(value=CFG.get("update_auto_apply", True))
+        self._build_update_section(inner_frame)
 
-        def _on_upd_toggle():
-            CFG["update_check"] = upd_var.get()
-            _save_cfg()
-            if upd_var.get():
-                self._upd_check(manual=True)      # 开启即立即查一次，给用户即时反馈
-
-        def _on_upd_auto():
-            CFG["update_auto_apply"] = upa_var.get()
-            _save_cfg()
-
-        def _on_upd_proxy(_e=None):
-            CFG["update_proxy"] = upd_proxy_var.get().strip()
-            _save_cfg()
-
-        self.lbl_upd = ttk.Label(upf, text=self._upd_status_init(), background="#1c1c1c", foreground="#aaa")
-        self.lbl_upd.pack(anchor="w")
-        row_up = ttk.Frame(upf, background="#1c1c1c")
-        row_up.pack(anchor="w", pady=(4, 0))
-        ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True)).pack(side="left")
-        ttk.Checkbutton(row_up, text=tr("启动时自动检查更新（每周一次）"), variable=upd_var,
-                        command=_on_upd_toggle).pack(side="left", padx=(14, 0))
-        ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
-                        command=_on_upd_auto).pack(anchor="w", pady=(2, 0))
-        upd_proxy_var = tk.StringVar(value=CFG.get("update_proxy", ""))
-        row_px = ttk.Frame(upf, background="#1c1c1c")
-        row_px.pack(anchor="w", pady=(2, 0), fill="x")
-        ttk.Label(row_px, text=tr("代理地址"), background="#1c1c1c",
-                  foreground="#aaa").pack(side="left")
-        ent_px = ttk.Entry(row_px, textvariable=upd_proxy_var, width=28)
-        ent_px.pack(side="left", padx=(6, 6))
-        ent_px.bind("<FocusOut>", _on_upd_proxy)
-        ttk.Label(row_px, text=tr("（留空 = 自动使用系统代理）"), background="#1c1c1c",
-                  foreground="#777").pack(side="left")
-        self._add_tip(upf, self._upd_tooltip())
+        # ─── 全局热键（独立栏，汇总所有热键） ───
 
         hkf = ttk.LabelFrame(inner_frame, text=tr("全局热键"), padding=8)
         hkf.pack(fill="x", padx=12, pady=4)
@@ -3092,6 +3055,50 @@ class MemWiseGUI:
     #       → 5 秒倒计时 → 启动新版 exe 当"更新助手"（--apply-update）→ 本进程退出。
     # 失败：降级为提示 + 「打开发布页/复制链接」；自动检查失败只写日志（不打扰）。
     # 额外提醒（用户指定）：日志面板一行 + 设置面板「有新版本 vX」常驻状态行（弹窗是主提醒）。
+
+    def _build_update_section(self, parent):
+        """构建设置面板「更新」栏（2026-10-16；抽成方法便于回归用真实 Tk 构建一次）。
+
+        ⚠ 血泪约束：**ttk.Frame / ttk.LabelFrame 不支持 `background=`**（`TclError: unknown option`）——
+        2026-10-16 发布后事故：本栏原先给 ttk.Frame 传了 background，导致 `_open_settings` 一构建即抛异常，
+        **设置按钮直接打不开**。回归只做静态断言所以漏掉了；现已改为"真实构建一次"的烟测（见 test_regression）。"""
+        upf = ttk.LabelFrame(parent, text=tr("更新"), padding=8)
+        upf.pack(fill="x", pady=4)
+        upd_var = tk.BooleanVar(value=CFG.get("update_check", False))
+        upa_var = tk.BooleanVar(value=CFG.get("update_auto_apply", True))
+        upd_proxy_var = tk.StringVar(value=CFG.get("update_proxy", ""))
+
+        def _on_upd_toggle():
+            CFG["update_check"] = upd_var.get()
+            _save_cfg()
+            if upd_var.get():
+                self._upd_check(manual=True)      # 开启即立即查一次，给用户即时反馈
+
+        def _on_upd_auto():
+            CFG["update_auto_apply"] = upa_var.get()
+            _save_cfg()
+
+        def _on_upd_proxy(_e=None):
+            CFG["update_proxy"] = upd_proxy_var.get().strip()
+            _save_cfg()
+
+        self.lbl_upd = ttk.Label(upf, text=self._upd_status_init(), foreground="#aaa")
+        self.lbl_upd.pack(anchor="w")
+        row_up = ttk.Frame(upf)
+        row_up.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True)).pack(side="left")
+        ttk.Checkbutton(row_up, text=tr("启动时自动检查更新（每周一次）"), variable=upd_var,
+                        command=_on_upd_toggle).pack(side="left", padx=(14, 0))
+        ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
+                        command=_on_upd_auto).pack(anchor="w", pady=(2, 0))
+        row_px = ttk.Frame(upf)
+        row_px.pack(anchor="w", pady=(2, 0), fill="x")
+        ttk.Label(row_px, text=tr("代理地址"), foreground="#aaa").pack(side="left")
+        ent_px = ttk.Entry(row_px, textvariable=upd_proxy_var, width=28)
+        ent_px.pack(side="left", padx=(6, 6))
+        ent_px.bind("<FocusOut>", _on_upd_proxy)
+        ttk.Label(row_px, text=tr("（留空 = 自动使用系统代理）"), foreground="#777").pack(side="left")
+        self._add_tip(upf, self._upd_tooltip())
 
     def _upd_status_init(self):
         """设置面板打开时的初始状态行（读运行态：上次检查/跳过版本 → 给一句人话）。"""

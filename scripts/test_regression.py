@@ -3375,6 +3375,29 @@ check("静态自检：更新相关方法引用的 self 成员全部存在（防�
       "缺失: %s" % sorted(k for k in _used54 if k not in _def54 and k not in _asg54))
 check("侧视加固 I：.old 15 分钟保护期（覆盖助手确认窗口）",
       "> 900" in _g54 and "保护窗口必须覆盖确认窗口" in _g54)
+check("静态守卫：ttk.Frame/LabelFrame 不得传 background（2026-10-16 设置面板打不开事故）",
+      not any(("ttk.Frame(" in l or "ttk.LabelFrame(" in l) and "background" in l for l in _g54.splitlines()))
+import tkinter as _tk54s
+from tkinter import ttk as _ttk54s
+_smoke54_ok, _smoke54_err = False, ""
+try:
+    _root54s = _tk54s.Tk()
+    _root54s.withdraw()
+    import memwise_gui as _G54s
+    _o54s = _G54s.MemWiseGUI.__new__(_G54s.MemWiseGUI)
+    _o54s.root = _root54s
+    _o54s._upd_st = None; _o54s._upd_busy = False; _o54s._upd_prog = None
+    _o54s._upd_cancel = False; _o54s._upd_downloading = False
+    _o54s._add_tip = lambda w, t: None          # tooltip 需真实窗口与计时器，烟测打桩
+    _o54s._upd_check = lambda manual=False: None
+    _f54s = _ttk54s.LabelFrame(_root54s, text="t", padding=8)
+    _o54s._build_update_section(_f54s)          # ← 真实构建：ttk 选项非法会在此抛异常
+    _smoke54_ok = len(_f54s.winfo_children()) >= 1
+    _root54s.destroy()
+except Exception as _e54s:
+    _smoke54_err = "%s: %s" % (type(_e54s).__name__, _e54s)
+check("真实构建烟测：设置面板更新栏能在真实 Tk 中构建（静态断言看不见的那类事故）",
+      _smoke54_ok, _smoke54_err)
 check("更新后清理：只动自己的产物（.old/.new/%TEMP% 残留）",
       "def _update_housekeeping():" in _g54 and "_update_housekeeping()" in _g54
       and 'exe + ".old"' in _g54 and '"MemWise_*.exe"' in _g54)
