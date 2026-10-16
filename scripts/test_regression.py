@@ -3454,6 +3454,16 @@ try:
                   "📈 内存 55%（正常）· 清理强度：低→高", "📈 内存 70%（偏高）· 清理强度：维持中"]
     _bad54 = [t for t in _samples54 if any("\u4e00" <= c <= "\u9fff" for c in _i18g54.tr_msg(t))]
     check("英文态：内存/清理强度播报不得残留中文", not _bad54, str([b[:34] for b in _bad54[:2]]))
+    # 全量 tooltip 真渲染守卫（2026-10-17 用户报"翻译不完整"）：逐条渲染，任何残留中文即失败
+    import ast as _ast54t
+    _tree54t = _ast54t.parse(_src47("memwise_gui.py"))
+    _tips54t = [a.value for n in _ast54t.walk(_tree54t) if isinstance(n, _ast54t.Call)
+                for fn in [getattr(n.func, "attr", "") or getattr(n.func, "id", "")]
+                if fn in ("_add_tip", "_add_tip_row") for a in n.args[1:2]
+                if isinstance(a, _ast54t.Constant) and isinstance(a.value, str)]
+    _bad54t = sorted({ln.strip() for t in _tips54t for ln in _i18g54.tr(t).split("\n")
+                      if any("\u4e00" <= c <= "\u9fff" for c in ln)})
+    check("英文态：全部 tooltip 逐条真渲染不得残留中文", not _bad54t, str(_bad54t[:3]))
     _tight54 = [t for t in _samples54 if ")·" in _i18g54.tr_msg(t)]
     check("英文态：状态标签与分隔符之间不得缺空格（防\")·\" 粘连）", not _tight54, str(_tight54[:2]))
     # 语言切换可逆（2026-10-17 用户报告）：原文缓存必须是中文 ⇒ 切回中文逐字还原

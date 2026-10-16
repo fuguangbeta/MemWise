@@ -14,6 +14,9 @@ _current = "zh_CN"
 
 # ── 英文翻译表（键 = 中文原文；覆盖全部用户可见面）──
 _EN = {
+    "2. 开启后会自动规划清理策略，根据系统状态持续优化调整": "2. Plans its cleanup strategy automatically and keeps tuning to system state",
+    "3. 守护模式下有游戏自动检测，也可以手动开启游戏模式": "3. Guard detects games automatically; you can also turn Game Mode on manually",
+    "4. 内置崩溃监测，程序因意外崩溃后会自动尝试恢复": "4. Built-in crash monitoring restores operation after an unexpected crash",
     "上次检查：": "Last checked: ",
     "代理地址": "Proxy address",
     "即将重启完成更新": "Restarting to Finish Update",
@@ -26,7 +29,7 @@ _EN = {
     "「启动时自动检查更新」": "“Check for updates at startup”",
     "1. 开启后每次启动都会自动查询一次": "1. When on, it queries once on every launch",
     "2. 手动检查不受此开关影响，随时可用": "2. Manual checks are always available regardless of this switch",
-    "⚠ 默认关闭；不开启时程序完全不联网": "⚠ Off by default, nothing touches the network while it is off",
+    "⚠ 默认关闭，不开启时程序完全不联网": "⚠ Off by default, nothing touches the network while it is off",
     "「发现新版本时自动下载并替换重启」": "“Download and replace automatically when a new version is found”",
     "1. 自动下载并校验更新包完整性，通过后才替换程序并重启": "1. Downloads and verifies the package, then replaces and restarts only if verification passes",
     "2. 配置与学习数据原样保留": "2. Settings and learning data are kept intact",
