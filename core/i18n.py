@@ -346,7 +346,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v5.0.008 启动· ": "MemWise v5.0.008 started · ",
+    "MemWise v5.0.012 启动· ": "MemWise v5.0.012 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -782,7 +782,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v5.0.008 PARES —— 智能内存看护": "MemWise v5.0.008 PARES — Intelligent Memory Custodian",
+    "MemWise v5.0.012 PARES —— 智能内存看护": "MemWise v5.0.012 PARES — Intelligent Memory Custodian",
     # ── 工作集硬上限（高级选项，设计 v2.4 文案规格）──
     "已设硬上限": "Hard-capped",
     "设置工作集硬上限…": "Set working-set hard cap…",

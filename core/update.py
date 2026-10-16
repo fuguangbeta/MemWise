@@ -83,8 +83,12 @@ def _split(url):
     return m.group(1).lower(), host, port, (m.group(3) or "/")
 
 
-def _request(url, method="GET", proxy=None, want_body=False, on_chunk=None, cancel=None, max_bytes=None):
-    """单次请求。返回 (ok, status, body_bytes_or_empty, final_url, reason)。"""
+def _request(url, method="GET", proxy=None, want_body=False, on_chunk=None, cancel=None, max_bytes=None,
+             headers=None, ok_statuses=(200,)):
+    """单次请求。返回 (ok, status, body_bytes_or_empty, final_url, reason)。
+
+    headers：额外请求头（分段下载用，如 Range）；ok_statuses：可接受的状态码（分段需 206）。
+    """
     sp = _split(url)
     if not sp:
         return False, 0, b"", "", "bad_url"
@@ -105,13 +109,18 @@ def _request(url, method="GET", proxy=None, want_body=False, on_chunk=None, canc
             return False, 0, b"", "", "request_failed"
         pol = w.DWORD(POL_ALWAYS)
         _wh.WinHttpSetOption(req, OPT_REDIRECT_POLICY, ctypes.byref(pol), 4)
-        if not _wh.WinHttpSendRequest(req, None, 0, None, 0, None, 0):
+        # 头参数是 LPCWSTR（宽字符）⇒ 传 str，长度按 UTF-16 字节数（2026-10-17 修：此前传 ASCII 字节，
+        # 导致 Range 头实际未发出、分段下载静默退化为单连接）
+        _hdr = None
+        if headers:
+            _hdr = "".join("%s: %s\r\n" % (k, v) for k, v in headers.items())
+        if not _wh.WinHttpSendRequest(req, _hdr, len(_hdr) if _hdr else 0, None, 0, None, 0):
             return False, 0, b"", "", "send_failed"
         if not _wh.WinHttpReceiveResponse(req, None):
             return False, 0, b"", "", "recv_failed"
         st = _status(req)
         final = _final_url(req)
-        if st != 200:
+        if st not in ok_statuses:
             return False, st, b"", final, "http_%d" % st
         if not want_body:
             return True, st, b"", final, ""
@@ -240,6 +249,83 @@ def check_latest(proxy=None, notes_limit=400, api_url=None, head_url=None):
     return {"ok": False, "reason": (why or why2 or "unknown"), "page": RELEASES_PAGE}
 
 
+# ── 分段并发下载（2026-10-17）：安全优先——探测到 Range 支持才并发，任何异常/短读/取消
+#    都由调用方回退到单连接路径；合并后仍走同一套 SHA-256 + 大小 + PE + 原子改名校验。──
+_PARALLEL_MIN_BYTES = 2 << 20   # 小于 2MB 不值得并发（三段各自的固定开销抵不过收益）
+_PARALLEL_WORKERS = 3           # 3 段：再多容易触发对端限速，收益反而下降
+
+
+def _download_ranges(url, dest, total, proxy, progress, cancel):
+    """分段并发下载到 dest。返回 (ok, reason)。
+
+    reason="fallback" 表示"对端不支持或某段失败"（调用方应回退单连接）；
+    reason="cancelled" 表示用户取消（调用方应终止，不要回退重试）。
+    """
+    import threading
+    parts = []
+    try:
+        def _discard(_c):
+            pass
+        # 探测：只要 0-0 一字节。206 ⇒ 支持分段；200/其他 ⇒ 不支持（回退）
+        okp, _st, _b, _u, whyp = _request(url, proxy=_normalize_proxy(proxy), want_body=True,
+                                         on_chunk=_discard, cancel=cancel, max_bytes=2,
+                                         headers={"Range": "bytes=0-0"}, ok_statuses=(206,))
+        if not okp:
+            return (False, "cancelled") if whyp == "cancelled" else (False, "fallback")
+        step = max(1, total // _PARALLEL_WORKERS)
+        done = [0]
+        lock = threading.Lock()
+        errs = []
+
+        def _one(i, a, b):
+            path = dest + ".p%d" % i
+            parts.append(path)
+            got = [0]
+            try:
+                with open(path, "wb") as pf:
+                    def _cb(c, _pf=pf):
+                        _pf.write(c)
+                        got[0] += len(c)
+                        with lock:
+                            done[0] += len(c)
+                            if progress is not None:
+                                try: progress(done[0], total)
+                                except Exception: pass
+                    okr, _st2, _b2, _u2, whyr = _request(url, proxy=_normalize_proxy(proxy),
+                                                         want_body=True, on_chunk=_cb, cancel=cancel,
+                                                         max_bytes=(b - a + 1) + 65536,
+                                                         headers={"Range": "bytes=%d-%d" % (a, b)},
+                                                         ok_statuses=(206,))
+                if not okr:
+                    errs.append(whyr or "range_failed")
+                elif got[0] != (b - a + 1):
+                    errs.append("short_part")
+            except Exception as e:
+                errs.append("part_exc:%s" % type(e).__name__)
+
+        ts = []
+        for i in range(_PARALLEL_WORKERS):
+            a = i * step
+            b = (total - 1) if i == _PARALLEL_WORKERS - 1 else min(a + step - 1, total - 1)
+            t = threading.Thread(target=_one, args=(i, a, b), daemon=True)
+            t.start()
+            ts.append(t)
+        for t in ts:
+            t.join()
+        if errs:
+            if any("cancel" in str(x) for x in errs):
+                return False, "cancelled"
+            return False, "fallback"
+        with open(dest, "wb") as out:
+            for i in range(_PARALLEL_WORKERS):
+                with open(dest + ".p%d" % i, "rb") as pf:
+                    shutil.copyfileobj(pf, out)
+        return True, ""
+    finally:
+        for p in parts:
+            try: os.remove(p)
+            except Exception: pass
+
 def download(url, dest, sha256=None, size=None, proxy=None, progress=None, cancel=None):
     """下载到 dest（内部先写 .part，校验通过后改名转正）。返回 (ok, reason)。
 
@@ -260,17 +346,47 @@ def download(url, dest, sha256=None, size=None, proxy=None, progress=None, cance
     try:
         try: os.remove(tmp)
         except Exception: pass
-        f = open(tmp, "wb")
-        # 已知大小 ⇒ 允许 1MB 余量作为硬上限（防"出错时无限拉取"或对端返回超大文件）
-        _cap = (int(size) + (1 << 20)) if size else None
-        ok, st, _b, _u, why = _request(url, proxy=_normalize_proxy(proxy), want_body=True,
-                                       on_chunk=_chunk, cancel=cancel, max_bytes=_cap)
-        f.close(); f = None
-        if not ok:
+        # ① 优先尝试分段并发（≥2MB 且对端支持 Range）；不支持或失败 ⇒ ② 回退单连接（行为与原实现一致）
+        _par = False
+        if size and int(size) >= _PARALLEL_MIN_BYTES:
+            try:
+                _okp, _whyp = _download_ranges(url, tmp, int(size), proxy, progress, cancel)
+            except Exception:
+                _okp, _whyp = False, "fallback"
+            if _okp:
+                _par = True
+            elif _whyp == "cancelled":
+                try: os.remove(tmp)
+                except Exception: pass
+                return False, "cancelled"
+        if not _par:
+            f = open(tmp, "wb")
+            # 已知大小 ⇒ 允许 1MB 余量作为硬上限（防"出错时无限拉取"或对端返回超大文件）
+            _cap = (int(size) + (1 << 20)) if size else None
+            ok, st, _b, _u, why = _request(url, proxy=_normalize_proxy(proxy), want_body=True,
+                                           on_chunk=_chunk, cancel=cancel, max_bytes=_cap)
+            f.close(); f = None
+            if not ok:
+                try: os.remove(tmp)
+                except Exception: pass
+                return False, why
+        ok2, why2 = verify_file(tmp, sha256=sha256, size=size)
+        if not ok2 and _par:
+            # 分段结果校验不过（例如中间代理/加速器对 Range 处理异常）⇒ **再走一遍单连接**再判失败：
+            # 无加速器的普通网络下宁可慢也不能失败（2026-10-17 用户要求）
             try: os.remove(tmp)
             except Exception: pass
-            return False, why
-        ok2, why2 = verify_file(tmp, sha256=sha256, size=size)
+            _par = False
+            f = open(tmp, "wb")
+            _cap = (int(size) + (1 << 20)) if size else None
+            ok3, _st3, _b3, _u3, why3 = _request(url, proxy=_normalize_proxy(proxy), want_body=True,
+                                                 on_chunk=_chunk, cancel=cancel, max_bytes=_cap)
+            f.close(); f = None
+            if not ok3:
+                try: os.remove(tmp)
+                except Exception: pass
+                return False, why3
+            ok2, why2 = verify_file(tmp, sha256=sha256, size=size)
         if not ok2:
             try: os.remove(tmp)
             except Exception: pass

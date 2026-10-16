@@ -1,5 +1,5 @@
 """
-MemWise v5.0.008 GUI —— 图形界面
+MemWise v5.0.012 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -932,7 +932,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v5.0.008", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v5.0.012", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -956,7 +956,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v5.0.008")
+        self.root.title("MemWise v5.0.012")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -1020,7 +1020,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v5.0.008 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v5.0.012 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1106,7 +1106,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.0.008")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.0.012")
                     if fw:
                         top = fw
                 except Exception:
@@ -2880,8 +2880,10 @@ class MemWiseGUI:
         cap_now = tr("未设置") if rule is None else f"{rule['mb']} MB"
         ttk.Label(dlg, text=tr("工作集硬上限"), font=("微软雅黑", 11, "bold"),
                   background="#1c1c1c", foreground="#e0e0e0").pack(pady=(16, 2))
+        # 动态拼接行（数值随进程变化）⇒ 必须换行，否则会被弹窗边界裁剪（2026-10-17 全界面巡检）
         ttk.Label(dlg, text=tr("工作集: ") + f"{ws_mb} MB · " + tr("提交内存: ") + f"{commit_mb} MB · "
-                  + tr("上限: ") + cap_now, background="#1c1c1c", foreground="#aaa").pack()
+                  + tr("上限: ") + cap_now, background="#1c1c1c", foreground="#aaa",
+                  justify="left", wraplength=400).pack()
         row = ttk.Frame(dlg, style="Dark.TFrame"); row.pack(pady=(10, 2))
         ttk.Label(row, text=tr("上限（MB）："), background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
         _default = max(256, ((ws_mb + 127) // 128) * 128)
@@ -3324,9 +3326,9 @@ class MemWiseGUI:
 
     def _apply_and_exit(self, dest):
         """启动新版 exe 作"更新助手"，随后本进程优雅退出（释放互斥与文件锁）。"""
+        # 更新是用户的显式操作 ⇒ 重启后**把界面露出来**，不继承"最小化到托盘"
+        # （此前会沿用本进程的 --minimized，用户更新完找不到窗口，2026-10-17 用户反馈）
         args = [dest, "--apply-update", os.path.abspath(sys.executable), str(os.getpid())]
-        if "--minimized" in sys.argv:
-            args.append("--minimized")
         try:
             env = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
             subprocess.Popen(args, creationflags=0x08000000,
@@ -3410,8 +3412,22 @@ class MemWiseGUI:
                   foreground=tfg).pack(side="left", padx=(0, 12))
         ttk.Label(top, text=title, font=("微软雅黑", 11, "bold"), background="#1c1c1c",
                   foreground="#e0e0e0").pack(side="left")
-        ttk.Label(dlg, text=text, justify="left", wraplength=470, background="#1c1c1c",
-                  foreground="#aaa").pack(padx=18, pady=(4, 6))
+        # 长正文（如发布说明）用只读可滚动文本：段落多时不会再让弹窗高过屏幕；
+        # 短文本仍用 Label（居中与换行更自然）。（2026-10-17 用户要求可滚动查看完整说明）
+        if len(text) > 220:
+            holder = ttk.Frame(dlg, style="DarkUpd.TFrame")
+            holder.pack(fill="x", padx=18, pady=(4, 6))
+            body = tk.Text(holder, height=12, width=52, wrap="word", bd=0, highlightthickness=0,
+                           background="#1c1c1c", foreground="#aaa", font=("微软雅黑", 9))
+            sb = ttk.Scrollbar(holder, orient="vertical", command=body.yview)
+            body.configure(yscrollcommand=sb.set)
+            body.insert("1.0", text)
+            body.configure(state="disabled")
+            body.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+        else:
+            ttk.Label(dlg, text=text, justify="left", wraplength=470, background="#1c1c1c",
+                      foreground="#aaa").pack(padx=18, pady=(4, 6))
         row = ttk.Frame(dlg, style="DarkUpd.TFrame")
         row.pack(pady=(4, 14))
 
@@ -3497,7 +3513,8 @@ class MemWiseGUI:
         ttk.Style().configure("DarkUpd2.TFrame", background="#1c1c1c")
         ttk.Label(dlg, text=tr("即将重启完成更新"), font=("微软雅黑", 11, "bold"),
                   background="#1c1c1c", foreground="#4aa3ff").pack(padx=18, pady=(16, 4))
-        cnt = ttk.Label(dlg, text="", background="#1c1c1c", foreground="#aaa")
+        cnt = ttk.Label(dlg, text="", background="#1c1c1c", foreground="#aaa",
+                        justify="left", wraplength=430)   # 文案随守护状态变长 ⇒ 必须换行（2026-10-17 用户反馈被裁）
         cnt.pack(padx=18, pady=(0, 6))
         row = ttk.Frame(dlg, style="DarkUpd2.TFrame")
         row.pack(pady=(2, 14))

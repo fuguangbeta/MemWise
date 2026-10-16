@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v5.0.008 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v5.0.012 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -3317,6 +3317,95 @@ check("承诺改写：默认不联网，且不再声称无法自动更新",
 check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
       'text=tr("更新"), padding=8' in _g54 and "_upd_check(manual=False)" in _g54
       and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log("发现新版本' in _g54)
+def _scan_trunc54(src):
+    """全界面裁剪风险扫描：凡用 _center_fit 显式定型的弹窗，其**动态文本**标签
+    （f-string / 拼接）必须带 wraplength，否则长内容会被弹窗边界裁掉。
+    判例：2026-10-17 倒计时弹窗与工作集上限弹窗都因此被裁 ⇒ 二者已修，本扫描常驻防回归。"""
+    bad = []
+    for seg in src.split("def ")[1:]:
+        if "_center_fit" not in seg:
+            continue
+        lines = seg.split("\n")
+        for i, ln in enumerate(lines):
+            if "ttk.Label(" in ln and (chr(102) + chr(34) in ln or "+ tr(" in ln or "+ str(" in ln):
+                win = "\n".join(lines[i:i + 3])
+                if "wraplength" not in win:
+                    bad.append(ln.strip()[:70])
+    return bad
+
+def _par_test54():
+    """分段并发下载（2026-10-17）：Range 支持 ⇒ 并发 3 段；不支持 ⇒ 回退单连接。两条都必须校验通过。"""
+    import hashlib as _hl, http.server as _hs, os as _os, socketserver as _ss
+    import struct as _st, threading as _th
+    import core.update as _up
+    _old = _up.ACCESS_AUTOMATIC_PROXY
+    _up.ACCESS_AUTOMATIC_PROXY = 0   # WINHTTP_ACCESS_TYPE_DEFAULT_PROXY 之外的直连：环回测试不被代理劫持
+    try:
+        _b = bytearray(0x100)
+        _b[0:2] = b"MZ"
+        _st.pack_into("<I", _b, 0x3C, 0x80)
+        _b[0x80:0x84] = b"PE\x00\x00"
+        _pay = bytes(_b) + _os.urandom(2_600_000)
+        _sha = _hl.sha256(_pay).hexdigest()
+        _seen = {"n": 0}
+        class _RH(_hs.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+            def do_GET(self):
+                r = self.headers.get("Range")
+                if r and r.startswith("bytes="):
+                    _seen["n"] += 1
+                    a, b = r[6:].split("-")
+                    a = int(a)
+                    b = int(b) if b else len(_pay) - 1
+                    c = _pay[a:b + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Range", "bytes %d-%d/%d" % (a, b, len(_pay)))
+                    self.send_header("Content-Length", str(len(c)))
+                    self.end_headers()
+                    self.wfile.write(c)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(_pay)))
+                self.end_headers()
+                self.wfile.write(_pay)
+        class _PH(_RH):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(_pay)))
+                self.end_headers()
+                self.wfile.write(_pay)
+        def _run(_cls, _dst):
+            _srv = _ss.ThreadingTCPServer(("127.0.0.1", 0), _cls)
+            _srv.daemon_threads = True
+            _th.Thread(target=_srv.serve_forever, daemon=True).start()
+            try:
+                return _up.download("http://127.0.0.1:%d/x" % _srv.server_address[1], _dst,
+                                    sha256=_sha, size=len(_pay))
+            finally:
+                _srv.shutdown()
+        _d1 = _os.path.join(_os.environ.get("TEMP", "."), "mw_par_r.exe")
+        _d2 = _os.path.join(_os.environ.get("TEMP", "."), "mw_par_p.exe")
+        for _d in (_d1, _d2):
+            try: _os.remove(_d)
+            except Exception: pass
+        _ok1, _ = _run(_RH, _d1)
+        _n1 = _seen["n"]
+        _seen["n"] = 0
+        _ok2, _ = _run(_PH, _d2)
+        _n2 = _seen["n"]
+        _h1 = _os.path.exists(_d1) and _hl.sha256(open(_d1, "rb").read()).hexdigest() == _sha
+        _h2 = _os.path.exists(_d2) and _hl.sha256(open(_d2, "rb").read()).hexdigest() == _sha
+        return bool(_ok1 and _ok2 and _h1 and _h2 and _n1 >= 4 and _n2 == 0)
+    finally:
+        _up.ACCESS_AUTOMATIC_PROXY = _old
+
+check("更新下载：Range 支持 ⇒ 分段并发；不支持 ⇒ 回退单连接（两条都校验通过）", _par_test54())
+check("全界面裁剪风险：_center_fit 弹窗里的动态文本标签必须换行（扫描常驻）",
+      not _scan_trunc54(_src47("memwise_gui.py")),
+      str(_scan_trunc54(_src47("memwise_gui.py"))[:3]))
+check("倒计时弹窗文案必须换行（防被弹窗边界裁剪）",
+      "wraplength=430" in _src47("memwise_gui.py").split("def _countdown_dialog")[1].split("def ")[0])
 check("引擎不得翻译（F51）：不允许提前 tr() 把语言烙进日志（切语言必须可逆）",
       'tr(f"维持' not in _src47("core/engine.py")
       and "a_cur = tr(" not in _src47("core/engine.py")
