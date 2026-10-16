@@ -3394,7 +3394,7 @@ try:
     _o54s.root = _root54s
     _o54s._upd_st = None; _o54s._upd_busy = False; _o54s._upd_prog = None
     _o54s._upd_cancel = False; _o54s._upd_downloading = False
-    _o54s._add_tip = lambda w, t: None          # tooltip 需真实窗口与计时器，烟测打桩
+    # 注意：_add_tip 不能打桩——它是"控件是否挂上提示"的被测对象；真实调用只创建对象，不会弹窗
     _o54s._upd_check = lambda manual=False: None
     _f54s = _ttk54s.LabelFrame(_root54s, text="t", padding=8)
     _o54s._build_update_section(_f54s)          # ← 真实构建：ttk 选项非法会在此抛异常
