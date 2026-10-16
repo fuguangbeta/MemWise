@@ -17,7 +17,7 @@ _EN = {
     "即将重启完成更新": "Restarting to Finish Update",
     "发现新版本": "New version found",
     "发现新版本时自动下载并替换重启": "Download and replace automatically when a new version is found",
-    "启动时自动检查更新（每周一次）": "Check for updates at startup (weekly)",
+    "启动时自动检查更新": "Check for updates at startup",
     "复制链接": "Copy Link",
     "尚未检查更新": "Not checked yet",
     "已是最新版本": "You are up to date",

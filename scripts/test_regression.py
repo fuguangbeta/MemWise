@@ -589,16 +589,22 @@ check("tooltip拼接翻译", "optimization" in _tr_r and "protected" in _tr_r an
 check("维持高分离", tr_msg("维持高") == "staying high", tr_msg("维持高"))
 check("维持中分离", tr_msg("维持中") == "staying medium", tr_msg("维持中"))
 check("维持低分离", tr_msg("维持低") == "staying low", tr_msg("维持低"))
-# GUI 全部 tr("中文") 字面量静态完整性（精确键或可片段替换）
+# GUI 全部 tr("中文") 字面量静态完整性（**精确键**；2026-10-16 收紧）
+# 旧判据 `any(len(k)>=4 and k in lit for k in _EN)` 的"子串近似"会把"启动时自动检查更新"判成已覆盖
+# （因为"检查更新"是它的子串）⇒ 缺英文也能全绿。静态 UI 字符串在 i18n 规格里要求精确匹配，故改为精确键。
 import io as _io, re as _re
 _src = _io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memwise_gui.py"),
                 encoding="utf-8").read()
 _missing = []
-for m in _re.finditer(r'tr\("([^"]*[\u4e00-\u9fff][^"]*)"\)', _src):
-    lit = m.group(1).replace("\\n", "\n")  # 源码转义还原（\n → 真实换行）
-    if lit not in _EN and not any(len(k) >= 4 and k in lit for k in _EN):
-        _missing.append(lit[:30])
-check("GUI tr 字面量全覆盖", not _missing, f"缺映射: {_missing[:5]}")
+for _m in _re.finditer(r'tr\("((?:[^"\\]|\\.)*)"\)', _src):
+    _raw = _m.group(1)
+    if not _re.search(r"[\u4e00-\u9fff]", _raw):
+        continue
+    # 源码转义还原（\n 与 \uXXXX）后再与 _EN 精确比对，避免"转义写法不同"造成的假阳性
+    _lit = _re.sub(r"\\u([0-9a-fA-F]{4})", lambda _x: chr(int(_x.group(1), 16)), _raw).replace("\\n", "\n")
+    if _lit not in _EN:
+        _missing.append(_lit[:30])
+check("GUI tr 字面量全覆盖（精确键，含转义还原）", not _missing, f"缺映射: {_missing[:5]}")
 
 print("\n[20] 2026-08-14 全量审查修复回归")
 # ── A1 稳态锚点多实例聚合（同路径多实例锚点不再每轮重置）──
@@ -3288,7 +3294,7 @@ _c54 = _src47("core/config.py"); _i54 = _src47("core/i18n.py")
 _r54 = _src47("README.md"); _ch54 = _src47("CHANGELOG.md")
 check("更新模块与关键能力齐备（WinHTTP/双通道/校验/节流）",
       all(k in _u54 for k in ("WinHttpOpen", "def parse_version(", "def is_newer(", "def check_latest(",
-                               "def download(", "def verify_file(", "def due(", "sha256_mismatch", "POL_ALWAYS")))
+                               "def download(", "def verify_file(", "sha256_mismatch", "POL_ALWAYS")))
 check("零第三方依赖：不引入 ssl/http/urllib（与打包 excludes 一致）",
       "import urllib" not in _u54 and "import ssl" not in _u54 and "import http" not in _u54
       and "MEMWISE_UPDATE" not in _u54)

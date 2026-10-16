@@ -3087,7 +3087,7 @@ class MemWiseGUI:
         row_up = ttk.Frame(upf)
         row_up.pack(anchor="w", pady=(4, 0))
         ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True)).pack(side="left")
-        ttk.Checkbutton(row_up, text=tr("启动时自动检查更新（每周一次）"), variable=upd_var,
+        ttk.Checkbutton(row_up, text=tr("启动时自动检查更新"), variable=upd_var,
                         command=_on_upd_toggle).pack(side="left", padx=(14, 0))
         ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
                         command=_on_upd_auto).pack(anchor="w", pady=(2, 0))
@@ -3151,9 +3151,9 @@ class MemWiseGUI:
 
     def _upd_worker(self, manual):
         try:
+            # 每次启动都检查（2026-10-16 用户定稿：不再按 7 天节流）；last_check 仍记录，
+            # 供设置面板显示"上次检查"用。手动检查同样忽略任何节流。
             st = self._upd_state()
-            if not manual and not _update.due(st.get("last_check")):
-                return
             info = _update.check_latest(proxy=(CFG.get("update_proxy") or "").strip() or None)
             st["last_check"] = time.time()
             _update.save_state(base, st)

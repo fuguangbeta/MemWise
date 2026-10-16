@@ -23,7 +23,6 @@ RELEASES_PAGE = "https://github.com/%s/%s/releases" % (OWNER, REPO)
 UA = "MemWise-UpdateCheck/1.0"
 TIMEOUT_CONNECT_MS = 8000
 TIMEOUT_RECV_MS = 30000
-CHECK_INTERVAL_DAYS = 7
 STATE_NAME = "memwise_update.json"     # data/ 下的运行态（last_check / skip_version）
 
 # ── WinHTTP 绑定（仅本模块使用）──
@@ -324,10 +323,3 @@ def save_state(base, d):
         return False
 
 
-def due(last_check, now=None, days=CHECK_INTERVAL_DAYS):
-    """节流：距上次检查是否已超过 days 天（0/异常 ⇒ 立即到期）。"""
-    now = time.time() if now is None else now
-    try:
-        return (now - float(last_check or 0)) >= days * 86400
-    except Exception:
-        return True
