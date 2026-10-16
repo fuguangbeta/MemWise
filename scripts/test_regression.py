@@ -3454,6 +3454,8 @@ try:
                   "📈 内存 55%（正常）· 清理强度：低→高", "📈 内存 70%（偏高）· 清理强度：维持中"]
     _bad54 = [t for t in _samples54 if any("\u4e00" <= c <= "\u9fff" for c in _i18g54.tr_msg(t))]
     check("英文态：内存/清理强度播报不得残留中文", not _bad54, str([b[:34] for b in _bad54[:2]]))
+    _tight54 = [t for t in _samples54 if ")·" in _i18g54.tr_msg(t)]
+    check("英文态：状态标签与分隔符之间不得缺空格（防\")·\" 粘连）", not _tight54, str(_tight54[:2]))
     # 语言切换可逆（2026-10-17 用户报告）：原文缓存必须是中文 ⇒ 切回中文逐字还原
     _i18g54.set_language("zh_CN")
     check("中文态：原文回渲染逐字还原（切语言可逆，防引擎提前翻译）",

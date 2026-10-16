@@ -876,6 +876,9 @@ def tr(s):
 _AGG_EN = {"极低": "very low", "低": "low", "中": "medium", "高": "high"}
 _RE_AGG = "|".join(sorted(_AGG_EN, key=len, reverse=True))
 _RE_CHG = re.compile(r"清理强度：(" + _RE_AGG + r")")
+# 带分隔符的变体优先：状态标签键会先吃掉"（极高）"，此时残留的"· 清理强度：高"只有这条能命中，
+# 且能把英文里的空格补齐（否则英文会渲染成"(critical)· intensity"）
+_RE_CHG_DOT = re.compile(r"· 清理强度：(" + _RE_AGG + r")")
 _RE_KEEP = re.compile(r"维持(" + _RE_AGG + r")")
 _RE_TRANS = re.compile(r"(" + _RE_AGG + r")→(" + _RE_AGG + r")")
 
@@ -889,6 +892,7 @@ def _tr_strength(s):
     # 顺序要紧：过渡式先跑，否则"清理强度：低→高"里的左标签会被强度规则先吃掉、留下"→高"
     s = _RE_TRANS.sub(lambda m: _AGG_EN[m.group(1)] + "→" + _AGG_EN[m.group(2)], s)
     s = _RE_KEEP.sub(lambda m: "staying " + _AGG_EN[m.group(1)], s)
+    s = _RE_CHG_DOT.sub(lambda m: " · intensity: " + _AGG_EN[m.group(1)], s)   # 带分隔符的优先
     s = _RE_CHG.sub(lambda m: "intensity: " + _AGG_EN[m.group(1)], s)
     return s
 
