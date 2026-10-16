@@ -3396,9 +3396,20 @@ try:
     _o54s._upd_cancel = False; _o54s._upd_downloading = False
     # 注意：_add_tip 不能打桩——它是"控件是否挂上提示"的被测对象；真实调用只创建对象，不会弹窗
     _o54s._upd_check = lambda manual=False: None
+    # 记录每个控件的挂载次数：同一控件被挂两次 ⇒ 悬停时两个实例各弹一次（同屏重影的根因）
+    _bind54s = []
+    _origbind54s = _G54s.ToolTip._bind
+    def _rec54s(self, _w, _ob=_origbind54s, _acc=_bind54s):
+        _acc.append(str(_w))
+        return _ob(self, _w)
+    _G54s.ToolTip._bind = _rec54s
     _f54s = _ttk54s.LabelFrame(_root54s, text="t", padding=8)
     _o54s._build_update_section(_f54s)          # ← 真实构建：ttk 选项非法会在此抛异常
     _smoke54_ok = len(_f54s.winfo_children()) >= 1
+    _dup54s = sorted({x for x in _bind54s if _bind54s.count(x) > 1})
+    if _dup54s:
+        _smoke54_ok = False
+        _smoke54_err = "同一控件重复挂载: %d 个" % len(_dup54s)
     # 行宽检查（2026-10-16 用户反馈"提示被截断"）：任一行请求宽度超限即视为布局缺陷
     _upf54s = _f54s.winfo_children()[0]
     _root54s.update_idletasks()

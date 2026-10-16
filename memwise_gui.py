@@ -751,7 +751,8 @@ class ToolTip:
     整行范围提示用 add_widget 挂多个控件（Tk Enter/Leave 不冒泡，逐控件绑定），
     所有控件共享同一延迟回调与提示窗：快速滑动时后 Enter 取消前 Enter 的回调，
     不产生双提示；提示窗全局唯一（类属性），任意时刻至多一个悬浮提示"""
-    _tip = None  # 全局唯一提示窗
+    _tip = None      # 当前提示窗
+    _tips = []       # 2026-10-17：所有活着的提示窗。_show 前统一清空 ⇒ 机制上保证同屏至多一个
 
     def __init__(self, widget, text, delay=400):
         self.widget = widget
@@ -792,9 +793,21 @@ class ToolTip:
             self._id = None
         self._hide()
 
+    @classmethod
+    def _hide_all(cls):
+        """销毁全部存活提示窗（2026-10-17：多实例各自的延迟回调可能同时触发，
+        仅靠 _tip 单引用会出现同屏两个提示框——用户实测到"重影"）。"""
+        for t in list(cls._tips):
+            try:
+                if t.winfo_exists():
+                    t.destroy()
+            except Exception:
+                pass
+        cls._tips = []
+        cls._tip = None
+
     def _show(self):
-        if self._tip is not None:
-            self._hide()  # 先销毁已有提示窗（可能是其他实例的延迟回调所建）
+        ToolTip._hide_all()   # 先清空所有已有提示窗（防同屏重影）
         if not self.widget.winfo_exists():
             return  # 窗口已销毁（after 回调残留）：跳过创建防 TclError
         # master 用控件所在顶层窗口而非控件本身：Toplevel 挂在行内控件路径下时，
@@ -823,6 +836,7 @@ class ToolTip:
         tip.wm_geometry(f"+{x}+{y}")
         tip.deiconify()
         self._tip = tip
+        ToolTip._tips.append(tip)
 
     def _hide(self):
         if self._tip is not None:
@@ -3119,16 +3133,28 @@ class MemWiseGUI:
         # 提示独立成行（2026-10-16 用户反馈：与输入框同排会被面板宽度截断，只剩"(留空 ="）
         lbl_hint = ttk.Label(upf, text=tr("留空则自动使用系统代理"), foreground="#777")
         lbl_hint.pack(anchor="w", pady=(2, 0))
-        # tooltip 挂法**照其他栏**（逐个控件挂 + 整行补）：按钮、勾选框、输入框与其文字都能悬停出提示
-        _tip_upd = self._upd_tooltip()
-        self._add_tip(btn_upd, _tip_upd)
-        self._add_tip(cb_upd, _tip_upd)
-        self._add_tip(cb_auto, _tip_upd)
-        self._add_tip(lbl_px, _tip_upd)
-        self._add_tip(ent_px, _tip_upd)
-        self._add_tip(lbl_hint, _tip_upd)
-        self._add_tip_row(row_px, _tip_upd)
-        self._add_tip_row(upf, _tip_upd)
+        # tooltip **按功能分发**（2026-10-17 用户反馈：全文案共享到每个位置"偏颇"、且同屏出现两个提示框）。
+        # 两条纪律：①每个可交互控件挂**与自己相关**的提示 ②同一控件只挂一次（重复挂载是同屏重影的根因）
+        self._add_tip(btn_upd,
+            "「检查更新」\n"
+            "1. 立即向官方发布渠道（GitHub）查询是否有更高版本\n"
+            "2. 只读取版本号与下载信息，不发送设备信息\n"
+            "⚠ 仅在点击时联网，平时不产生任何网络请求")
+        self._add_tip(cb_upd,
+            "「启动时自动检查更新」\n"
+            "1. 开启后每次启动都会自动查询一次\n"
+            "2. 手动检查不受此开关影响，随时可用\n"
+            "⚠ 默认关闭；不开启时程序完全不联网")
+        self._add_tip(cb_auto,
+            "「发现新版本时自动下载并替换重启」\n"
+            "1. 自动下载并校验更新包完整性，通过后才替换程序并重启\n"
+            "2. 配置与学习数据原样保留\n"
+            "⚠ 关闭时只给出提示，由你手动下载安装\n"
+            "⚠ 校验不通过会自动放弃，保留当前版本")
+        self._add_tip_row(row_px,
+            "「代理地址」\n"
+            "1. 一般留空即可，由系统自动选择合适的通道\n"
+            "2. 仅在系统自动通道不可用时才需要填写")
 
     def _upd_status_init(self):
         """设置面板打开时的初始状态行（读运行态：上次检查/跳过版本 → 给一句人话）。"""
@@ -3139,19 +3165,6 @@ class MemWiseGUI:
         import datetime as _dt
         return tr("上次检查：") + _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M")
 
-    def _upd_tooltip(self):
-        """更新栏 tooltip（八规则：功能名 + 数字条目 + ⚠ 提示；纯中文，专有名词 GitHub 保留）。
-
-        2026-10-16 重写：旧版出现算法名（SHA-256）与版本变更口吻，且只挂在外框上——
-        悬停按钮/勾选框/输入框都不显示；现改为逐行覆盖（见 _build_update_section）。"""
-        return (
-            "「检查更新」\n"
-            "1. 检查官方发布渠道（GitHub）上是否有更高版本\n"
-            "2. 开启「启动时自动检查更新」后，每次启动都会自动检查一次\n"
-            "3. 开启「发现新版本时自动下载并替换重启」后，会先下载并校验完整性，确认无误再替换程序并自动重启\n"
-            "⚠ 默认关闭，不开启时程序完全不联网\n"
-            "⚠ 校验不通过会自动放弃，保留当前版本"
-        )
 
     def _upd_state(self):
         if self._upd_st is None:
