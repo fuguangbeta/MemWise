@@ -14,6 +14,10 @@ _current = "zh_CN"
 
 # ── 英文翻译表（键 = 中文原文；覆盖全部用户可见面）──
 _EN = {
+    "  · 启动 — 以管理员权限开机自启动、": "  · Startup — auto-start with admin rights, ",
+    "             启动时自动守护、": "             auto-guard at startup, ",
+    "             开机自启动后最小化到托盘": "             minimize to tray after auto-start",
+    "  · 更新 — 检查更新、自动下载替换与代理地址": "  · Update — check for updates, auto-download/replace, proxy address",
     "2. 开启后会自动规划清理策略，根据系统状态持续优化调整": "2. Plans its cleanup strategy automatically and keeps tuning to system state",
     "3. 守护模式下有游戏自动检测，也可以手动开启游戏模式": "3. Guard detects games automatically; you can also turn Game Mode on manually",
     "4. 内置崩溃监测，程序因意外崩溃后会自动尝试恢复": "4. Built-in crash monitoring restores operation after an unexpected crash",
@@ -560,7 +564,6 @@ _EN = {
     "「打开设置面板进行配置调整」": "Open the settings panel to adjust configuration",
     "1. 可配置的内容：": "1. Configurable:",
     "  · 语言 — 中英文界面即时切换": "  · Language — instant Chinese/English switching",
-    "  · 启动 — 以管理员权限开机自启动、启动时自动守护、开机自启动后最小化到托盘": "  · Startup — elevated auto-start at boot, guard on launch, minimize to tray on auto-start",
     "  · 窗口与托盘 — 关闭按钮行为、托盘左键行为": "  · Window & Tray — close-button behavior, tray left-click action",
     "  · 清理 — 6 种操作独立开关与清理深度": "  · Cleanup — six independent toggles and cleaning depth",
     "  · 游戏模式 — 管理游戏进程名单": "  · Game Mode — manage game process list",
