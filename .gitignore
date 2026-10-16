@@ -43,5 +43,5 @@ Thumbs.db
 
 config/*.bak*
 config/*.tmp
-config/.write_test*   # 目录可写性探针（运行时产生，勿提交）
+config/.write_test*
 *.json
