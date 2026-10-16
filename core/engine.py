@@ -1475,17 +1475,19 @@ class MemWiseEngine:
                 agg_peak = agg_max
                 mem_str = self.judger._mem_label(m['pct'])
                 a_cur_raw = self.judger._agg_label(agg_peak)
-                # 单字标签（高/中/低）必须在此精确翻译：显示层片段替换的门槛是 2 字，
-                # 单字只认精确匹配，否则英文界面下残留中文（2026-09-26 用户报告）
-                a_cur = tr(a_cur_raw)
+                # 原文直接进入消息（F51）：**引擎不得翻译**——2026-09-26 曾在此 `tr()` 绕过
+                # "单字标签片段替换门槛 2 字"的问题，结果日志历史被固定成生成时的语言，
+                # 切换语言无法还原（2026-10-17 用户报告）。单字强度词改由显示层规则处理
+                # （core/i18n.py 的 _tr_strength），引擎只产中文原文。
+                a_cur = a_cur_raw
                 last_peak = self._last_agg_peak
                 last_mem = self._last_pressure_mem
                 if last_peak is None:
                     change_str = a_cur  # 首轮直接显示
                 elif a_cur_raw == self.judger._agg_label(last_peak):
-                    change_str = tr(f"维持{a_cur_raw}")
+                    change_str = f"维持{a_cur_raw}"
                 else:
-                    change_str = f"{tr(self.judger._agg_label(last_peak))}→{a_cur}"
+                    change_str = f"{self.judger._agg_label(last_peak)}→{a_cur}"
                 deep_changed = deep_triggered != self._last_deep_triggered
                 if last_mem != mem_str or change_str != self._last_pressure_chg or deep_changed:
                     deep_str = " · 已触发深度清理" if deep_triggered else ""

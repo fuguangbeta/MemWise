@@ -2213,11 +2213,13 @@ check("F1 引擎接线（判据+传参；本轮是否轻量不再单独播报）
       and "恢复全强度处理" not in _eng26_src and "本轮进行轻量处理" not in _eng26_src)
 check("回涨状态机前移（先判回涨快慢，再定本轮强度）",
       _eng26_src.index("if self._refill_cycle:") < _eng26_src.index("is_lite_round("))
-check("i18n:单字强度标签必须精确翻译（片段替换门槛 2 字，否则英文下残留中文）",
+check("i18n:单字强度标签由显示层规则翻译（引擎不得提前翻译——否则切语言不可逆）",
       '"高": "high"' in _src26("core", "i18n.py")
       and '"维持高": "staying high"' in _src26("core", "i18n.py")
-      and "tr(a_cur_raw)" in _eng26_src
-      and 'tr(f"维持{a_cur_raw}")' in _eng26_src)
+      # 2026-10-17：原断言要求引擎里有 tr(a_cur_raw)——那是把语言烙进日志的绕过做法，已推翻
+      and "_tr_strength" in _src26("core", "i18n.py")
+      and '"tr(a_cur_raw)" not in _eng26_src'
+      and 'tr(f"维持{a_cur_raw}")' not in _eng26_src)
 check("F1 默认关闭（手动/紧急/CLI 路径不传 lite）",
       _cln39.count("self._lite = bool(lite)") == 1
       and "lite=False" in _cln39 and "lite=_lite" not in _cln39)
@@ -3315,6 +3317,10 @@ check("承诺改写：默认不联网，且不再声称无法自动更新",
 check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
       'text=tr("更新"), padding=8' in _g54 and "_upd_check(manual=False)" in _g54
       and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log("发现新版本' in _g54)
+check("引擎不得翻译（F51）：不允许提前 tr() 把语言烙进日志（切语言必须可逆）",
+      'tr(f"维持' not in _src47("core/engine.py")
+      and "a_cur = tr(" not in _src47("core/engine.py")
+      and "_agg_label(last_peak))}→" not in _src47("core/engine.py"))
 check("侧视加固 A：更新退出必须走优雅收尾（否则丢未落盘状态/硬杀线程）",
       "self.engine.shutdown()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
       and "self.engine.save_state()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
@@ -3437,6 +3443,39 @@ except Exception as _e54s:
     _smoke54_err = "%s: %s" % (type(_e54s).__name__, _e54s)
 check("真实构建烟测：设置面板更新栏能在真实 Tk 中构建（静态断言看不见的那类事故）",
       _smoke54_ok, _smoke54_err)
+# 英文态守卫（2026-10-17 用户报告：英文下勾选框文字超宽被截断；强度词切换语言后不还原）
+import core.i18n as _i18g54
+_lang54_before = _i18g54.get_language()
+try:
+    _i18g54.set_language("en")
+    # ① 强度播报不得残留中文（高/低/中 是单字键，片段替换有 len>=2 门槛 ⇒ 必须整短语覆盖）
+    _samples54 = ["📈 内存 87%（极高）· 清理强度：高", "📈 内存 12%（充裕）· 清理强度：极低",
+                  "📈 内存 55%（正常）· 清理强度：低", "📈 内存 70%（偏高）· 清理强度：中",
+                  "📈 内存 55%（正常）· 清理强度：低→高", "📈 内存 70%（偏高）· 清理强度：维持中"]
+    _bad54 = [t for t in _samples54 if any("\u4e00" <= c <= "\u9fff" for c in _i18g54.tr_msg(t))]
+    check("英文态：内存/清理强度播报不得残留中文", not _bad54, str([b[:34] for b in _bad54[:2]]))
+    # 语言切换可逆（2026-10-17 用户报告）：原文缓存必须是中文 ⇒ 切回中文逐字还原
+    _i18g54.set_language("zh_CN")
+    check("中文态：原文回渲染逐字还原（切语言可逆，防引擎提前翻译）",
+          [_i18g54.tr_msg(t) for t in _samples54] == _samples54)
+    # ② 英文态下更新栏各行宽度同样不得超限（英文文案普遍更长）
+    _r54e = _tk54s.Tk()
+    _r54e.withdraw()
+    _o54e = _G54s.MemWiseGUI.__new__(_G54s.MemWiseGUI)
+    _o54e.root = _r54e
+    _o54e._upd_st = None; _o54e._upd_busy = False; _o54e._upd_prog = None
+    _o54e._upd_cancel = False; _o54e._upd_downloading = False
+    _o54e._upd_check = lambda manual=False: None
+    _f54e = _ttk54s.LabelFrame(_r54e, text="t", padding=8)
+    _o54e._build_update_section(_f54e)
+    _r54e.update_idletasks()
+    _wide54e = [(_c.winfo_class(), _c.winfo_reqwidth()) for _c in _f54e.winfo_children()[0].winfo_children()
+                if _c.winfo_reqwidth() > 430]
+    _r54e.destroy()
+    check("英文态：更新栏各行宽度不得超限（防英文文案被截断）", not _wide54e, str(_wide54e[:3]))
+finally:
+    _i18g54.set_language(_lang54_before)
+
 check("更新后清理：只动自己的产物（.old/.new/%TEMP% 残留）",
       "def _update_housekeeping():" in _g54 and "_update_housekeeping()" in _g54
       and 'exe + ".old"' in _g54 and '"MemWise_*.exe"' in _g54)

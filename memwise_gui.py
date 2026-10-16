@@ -3092,7 +3092,7 @@ class MemWiseGUI:
         2026-10-16 发布后事故：本栏原先给 ttk.Frame 传了 background，导致 `_open_settings` 一构建即抛异常，
         **设置按钮直接打不开**。回归只做静态断言所以漏掉了；现已改为"真实构建一次"的烟测（见 test_regression）。"""
         upf = ttk.LabelFrame(parent, text=tr("更新"), padding=8)
-        upf.pack(fill="x", pady=4)
+        upf.pack(fill="x", padx=12, pady=4)
         upd_var = tk.BooleanVar(value=CFG.get("update_check", False))
         upa_var = tk.BooleanVar(value=CFG.get("update_auto_apply", True))
         upd_proxy_var = tk.StringVar(value=CFG.get("update_proxy", ""))
@@ -3117,9 +3117,10 @@ class MemWiseGUI:
         row_up.pack(anchor="w", pady=(4, 0))
         btn_upd = ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True))
         btn_upd.pack(side="left")
-        cb_upd = ttk.Checkbutton(row_up, text=tr("启动时自动检查更新"), variable=upd_var,
+        # 勾选框自成一行（2026-10-17 用户反馈：与按钮同排时文字被挤，且与下方开关的行式不一致）
+        cb_upd = ttk.Checkbutton(upf, text=tr("启动时自动检查更新"), variable=upd_var,
                                  command=_on_upd_toggle)
-        cb_upd.pack(side="left", padx=(14, 0))
+        cb_upd.pack(anchor="w", pady=(2, 0))
         cb_auto = ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
                                   command=_on_upd_auto)
         cb_auto.pack(anchor="w", pady=(2, 0))
@@ -3144,7 +3145,7 @@ class MemWiseGUI:
             "「启动时自动检查更新」\n"
             "1. 开启后每次启动都会自动查询一次\n"
             "2. 手动检查不受此开关影响，随时可用\n"
-            "⚠ 默认关闭；不开启时程序完全不联网")
+            "⚠ 默认关闭，不开启时程序完全不联网")
         self._add_tip(cb_auto,
             "「发现新版本时自动下载并替换重启」\n"
             "1. 自动下载并校验更新包完整性，通过后才替换程序并重启\n"

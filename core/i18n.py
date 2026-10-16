@@ -7,6 +7,8 @@
 - tr_msg()：精确优先，前缀匹配保留参数（动态消息如 "WS未填满(80/120)" → "WS below baseline(80/120)"）
 - 日志文件保留中文原文（诊断一致性）；仅显示层翻译
 """
+import re   # 强度标签专用规则 _tr_strength 用（2026-10-17）
+
 LANGUAGES = {"zh_CN": "简体中文", "en": "English"}
 _current = "zh_CN"
 
@@ -16,7 +18,7 @@ _EN = {
     "代理地址": "Proxy address",
     "即将重启完成更新": "Restarting to Finish Update",
     "发现新版本": "New version found",
-    "发现新版本时自动下载并替换重启": "Download and replace automatically when a new version is found",
+    "发现新版本时自动下载并替换重启": "Auto-download and replace updates",
     "「检查更新」": "“Check for Updates”",
     "1. 立即向官方发布渠道（GitHub）查询是否有更高版本": "1. Immediately queries the official release channel (GitHub) for a higher version",
     "2. 只读取版本号与下载信息，不发送设备信息": "2. Reads only the version and download info; sends no device information",
@@ -24,7 +26,7 @@ _EN = {
     "「启动时自动检查更新」": "“Check for updates at startup”",
     "1. 开启后每次启动都会自动查询一次": "1. When on, it queries once on every launch",
     "2. 手动检查不受此开关影响，随时可用": "2. Manual checks are always available regardless of this switch",
-    "⚠ 默认关闭；不开启时程序完全不联网": "⚠ Off by default; nothing touches the network while it is off",
+    "⚠ 默认关闭；不开启时程序完全不联网": "⚠ Off by default, nothing touches the network while it is off",
     "「发现新版本时自动下载并替换重启」": "“Download and replace automatically when a new version is found”",
     "1. 自动下载并校验更新包完整性，通过后才替换程序并重启": "1. Downloads and verifies the package, then replaces and restarts only if verification passes",
     "2. 配置与学习数据原样保留": "2. Settings and learning data are kept intact",
@@ -201,7 +203,7 @@ _EN = {
     " 个画像": " profiles",
     "📈 内存 ": "📈 Memory ",
     "%（": "% (",
-    "）· 清理强度：": ") · intensity: ",
+    "· 清理强度：": " · intensity: ",   # 去掉多余括号：括号已由状态标签键处理，两条路径都能命中（2026-10-17）
     " · 已触发深度清理": " · deep cleanup triggered",
     "本轮释放 ": "This round freed ",
     "本轮优化 ": "This round optimized ",
@@ -854,6 +856,7 @@ def tr(s):
     仅 UI 构建等低频路径调用。门槛 len>=2（"释放 " 等 3 字符键参与）；单字键（"轮"/"秒"）走精确"""
     if _current == "zh_CN" or not s:
         return s
+    s = _tr_strength(s)
     hit = _EN.get(s)
     if hit is not None:
         return hit
@@ -870,12 +873,33 @@ def tr(s):
     return out if replaced else s
 
 
+_AGG_EN = {"极低": "very low", "低": "low", "中": "medium", "高": "high"}
+_RE_AGG = "|".join(sorted(_AGG_EN, key=len, reverse=True))
+_RE_CHG = re.compile(r"清理强度：(" + _RE_AGG + r")")
+_RE_KEEP = re.compile(r"维持(" + _RE_AGG + r")")
+_RE_TRANS = re.compile(r"(" + _RE_AGG + r")→(" + _RE_AGG + r")")
+
+
+def _tr_strength(s):
+    """强度标签专用（2026-10-17 用户报告"切语言不还原"）：
+    单字标签（高/低/中）在片段替换里被 len>=2 门槛挡住，早先的绕过做法是让引擎提前 tr()——
+    那会把日志历史固定成生成时的语言，切换语言无法还原。这里在**显示层**按下标精确替换，
+    覆盖引擎实际产出的三种形态：清理强度：X / 维持X / X→Y。极高（内存状态标签）不在集合内，
+    由既有键 "极高" → "critical" 处理，互不干扰。"""
+    # 顺序要紧：过渡式先跑，否则"清理强度：低→高"里的左标签会被强度规则先吃掉、留下"→高"
+    s = _RE_TRANS.sub(lambda m: _AGG_EN[m.group(1)] + "→" + _AGG_EN[m.group(2)], s)
+    s = _RE_KEEP.sub(lambda m: "staying " + _AGG_EN[m.group(1)], s)
+    s = _RE_CHG.sub(lambda m: "intensity: " + _AGG_EN[m.group(1)], s)
+    return s
+
+
 def _tr_msg_raw(s):
     """动态消息翻译：精确匹配 → 前缀匹配（参数后缀递归翻译）→ 片段全替换（一轮遍历全部可替键）。
     覆盖 "WS未填满(80/120)"、"🔴 守护中 90% — 内存紧张" 与多片段摘要（"释放 X · 整理 Y · 试探 Z"）三类；
     门槛 len>=2（"释放 "/"效率 "/"试探 "/"成功)" 等 3 字符键）；模板有限，微秒级——仅日志展示等低频路径"""
     if _current == "zh_CN" or not s:
         return s
+    s = _tr_strength(s)   # 单字强度标签（高/低/中/极低）在此按下标精确翻译（2026-10-17）
     hit = _EN.get(s)
     if hit is not None:
         return hit
