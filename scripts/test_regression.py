@@ -3312,6 +3312,9 @@ check("承诺改写：默认不联网，且不再声称无法自动更新",
       and "无法做到自动更新" not in _r54
       and "does not connect to the network, it cannot update itself" not in _r54
       and "默认不联网" in _ch54 and "默认不联网" in _src47("memwise.py"))
+check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
+      'text=tr("更新"), padding=8' in _g54 and "_upd_check(manual=False)" in _g54
+      and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log("发现新版本' in _g54)
 check("侧视加固 A：更新退出必须走优雅收尾（否则丢未落盘状态/硬杀线程）",
       "self.engine.shutdown()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
       and "self.engine.save_state()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
