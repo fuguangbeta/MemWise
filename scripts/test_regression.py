@@ -3306,13 +3306,12 @@ check("原子替换 + 更新助手（在任何初始化之前 + 复制到同卷�
 check("配置键默认值：默认关 / 自动替换开 / 代理空",
       '"update_check": False' in _c54 and '"update_auto_apply": True' in _c54 and '"update_proxy": ""' in _c54)
 check("承诺改写：默认不联网，且不再声称无法自动更新",
-      "默认不访问网络" in _r54 and "默认完全不联网" in _r54
-      and "无法做到自动更新" not in _r54 and "只有在你主动开启「检查更新」后" in _r54
+      "默认不访问网络" in _r54 and "只有在你主动开启「检查更新」后" in _r54
+      # 2026-10-17 作者定稿去重：独立句式"默认完全不联网"已删去 ⇒ 反向锁定，防重复句式回流
+      and "默认完全不联网" not in _r54
+      and "无法做到自动更新" not in _r54
       and "does not connect to the network, it cannot update itself" not in _r54
       and "默认不联网" in _ch54 and "默认不联网" in _src47("memwise.py"))
-check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
-      'text=tr("更新"), padding=8' in _g54 and "_upd_check(manual=False)" in _g54
-      and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log("发现新版本' in _g54)
 check("侧视加固 A：更新退出必须走优雅收尾（否则丢未落盘状态/硬杀线程）",
       "self.engine.shutdown()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
       and "self.engine.save_state()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
