@@ -3399,6 +3399,14 @@ try:
     _f54s = _ttk54s.LabelFrame(_root54s, text="t", padding=8)
     _o54s._build_update_section(_f54s)          # ← 真实构建：ttk 选项非法会在此抛异常
     _smoke54_ok = len(_f54s.winfo_children()) >= 1
+    # 行宽检查（2026-10-16 用户反馈"提示被截断"）：任一行请求宽度超限即视为布局缺陷
+    _upf54s = _f54s.winfo_children()[0]
+    _root54s.update_idletasks()
+    _wide54s = [(_c.winfo_class(), _c.winfo_reqwidth()) for _c in _upf54s.winfo_children()
+                if _c.winfo_reqwidth() > 430]
+    if _wide54s:
+        _smoke54_ok = False
+        _smoke54_err = "行宽超限: %s" % _wide54s[:3]
     _root54s.destroy()
 except Exception as _e54s:
     _smoke54_err = "%s: %s" % (type(_e54s).__name__, _e54s)

@@ -3094,10 +3094,11 @@ class MemWiseGUI:
         row_px = ttk.Frame(upf)
         row_px.pack(anchor="w", pady=(2, 0), fill="x")
         ttk.Label(row_px, text=tr("代理地址"), foreground="#aaa").pack(side="left")
-        ent_px = ttk.Entry(row_px, textvariable=upd_proxy_var, width=28)
-        ent_px.pack(side="left", padx=(6, 6))
+        ent_px = ttk.Entry(row_px, textvariable=upd_proxy_var, width=24)
+        ent_px.pack(side="left", padx=(6, 0))
         ent_px.bind("<FocusOut>", _on_upd_proxy)
-        ttk.Label(row_px, text=tr("（留空 = 自动使用系统代理）"), foreground="#777").pack(side="left")
+        # 提示独立成行（2026-10-16 用户反馈：与输入框同排会被面板宽度截断，只剩"(留空 ="）
+        ttk.Label(upf, text=tr("留空则自动使用系统代理"), foreground="#777").pack(anchor="w", pady=(2, 0))
         self._add_tip(upf, self._upd_tooltip())
 
     def _upd_status_init(self):

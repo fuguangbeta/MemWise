@@ -35,7 +35,7 @@ _EN = {
     "立即更新": "Update Now",
     "立即重启": "Restart Now",
     "跳过此版本": "Skip This Version",
-    "（留空 = 自动使用系统代理）": "(empty = use the system proxy)",
+    "留空则自动使用系统代理": "Leave empty to use the system proxy",
     "  · 绿色 — 低于60%": "  · Green — below 60%",
     "  · 黄色 — 60~74%": "  · Yellow — 60~74%",
     "  · 橙色 — 75~89%": "  · Orange — 75~89%",
