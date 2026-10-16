@@ -31,6 +31,12 @@ PARAMS = {
 
 WINDOW = 5
 EVAL_INTERVAL = 5
+# 同参数两次调整之间的最小间隔（轮）。2026-10-16 依据实测取值：cooloff_base 中位停留仅 10 轮、
+# cpu_gate/io_gate 15 轮（其余参数 126~676 轮）——这三项被 _apply 的协方差冻结刻意豁免，
+# 于是"同向连续 2 次才调"挡不住 A→B→A 交替（方向一换计数器就清零重来）。本常量只**延迟**
+# 调整、不反转任何判定：dwell 期内丢弃本次症状累积，到期后按**新证据**重新累计 ⇒ 既不携带
+# 过期证据，也不影响慢参数（其停留远大于 30）。仅内存态：不落盘、不涉状态 schema。
+MIN_ADJUST_DWELL = 30
 
 # ── 模式参数组（2026-09-26 用户定稿：删除场景维度）：每个清理模式一个参数组（懒创建），
 #    模式切换互不污染。原有"模式×场景 16 组"那一层只切参数、不切清理深度（深度由模式本身
@@ -77,6 +83,8 @@ class EfisController:
         self._window = deque(maxlen=WINDOW)
         self._cycle = 0
         self._adjust_log = []
+        self._last_change = {}      # param -> 最近一次调整的轮号（内存态；见 MIN_ADJUST_DWELL）
+        self._dwell_skipped = 0     # 因最小停留被推迟的调整次数（诊断用）
         self.load()
 
     def _group(self, mode=None):
@@ -127,6 +135,7 @@ class EfisController:
             self.current_mode = mode
             self._window.clear()
             self._cycle = 0
+            self._last_change.clear()   # 新模式=新上下文：不继承上一模式的停留计时钟
 
     def get_params(self, mode=None):
         """返回指定（或当前）模式的参数快照（浅拷贝，防外部修改污染组）"""
@@ -373,6 +382,13 @@ class EfisController:
             step = cfg["step"]
             cur = self.params[param]
             key = f"{param}{'+' if direction > 0 else '-'}"
+            # 最小停留（2026-10-16）：距上次调整不足 MIN_ADJUST_DWELL 轮则推迟本次，并丢弃累积
+            # （不带过期证据；到期后按新证据重新累计）。依据与取舍见 MIN_ADJUST_DWELL 常量注释。
+            _last = self._last_change.get(param)
+            if _last is not None and (self._cycle - _last) < MIN_ADJUST_DWELL:
+                self._dwell_skipped += 1
+                self._symptoms.pop(key, None)
+                continue
             prev = self._symptoms.get(key, 0)
             # 参数已在该方向顶格：症状无调整空间，直接清除（防无界累积，曾见 pid_kd+ 涨到 264）
             if (direction > 0 and cur >= cfg["max"] - 1e-9) or (direction < 0 and cur <= cfg["min"] + 1e-9):
@@ -397,6 +413,7 @@ class EfisController:
                     "reason": f"symptom_x{abs(self._symptoms[key])}",
                 })
             self.params[param] = new_val
+            self._last_change[param] = self._cycle   # 记停留钟（见 MIN_ADJUST_DWELL）
             self._symptoms.pop(key, None)  # 删除而非置0，防止dict无限膨胀
             # 内存中保留最近200条，防长期运行无限增长（持久化截取50条在save中）
             if len(self._adjust_log) > 200:

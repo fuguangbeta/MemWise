@@ -11,10 +11,14 @@
 """
 from .kalman import KalmanProfile
 
+from .winapi import memory_scale
+
+_S = memory_scale()      # 机器内存标度（尺寸类阈值统一按 S 缩放；本机 1.0 ⇒ 逐位不变）
+
 MIN_SAMPLES = 5          # 锚点激活最少样本数
 CONFIDENCE_GATE = 0.7    # Kalman 置信度门（p 收敛才激活）
 RELATIVE_MARGIN = 0.15   # 相对余量（锚点×15%）
-ABSOLUTE_MARGIN = 32 << 20  # 绝对余量 32MB
+ABSOLUTE_MARGIN = int((32 << 20) * _S)  # 绝对余量 32MB（按机器内存规模缩放）
 EXPLORE_RATE = 0.05      # 探索概率：抑制并非永久，周期性验证清理保持学习闭环
 MAX_AGE = 86400 * 7      # 锚点 7 天无更新过期（对齐 learner 画像口径）
 

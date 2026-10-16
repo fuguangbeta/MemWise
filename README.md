@@ -1,4 +1,4 @@
-# MemWise v4.7.023
+# MemWise v5.0.004
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -14,9 +14,9 @@ MemWise 释放的是"暂时用不到的内存"，它不能让物理内存凭空�
 
 回收的页面在被程序再次使用时需要重新加载，这通常表现为一瞬间的轻微延迟；清理系统缓存后，首次访问大文件也可能稍有变慢。这是内存管理本身的性质，并非工具的缺陷，也不会影响数据安全与程序稳定性。所有操作都可以在设置中单独关闭，你可以根据自己对流畅度的要求自行取舍。
 
-MemWise 不随意终止进程、不挂起线程、不注入代码、不访问网络，也没有任何附带组件。它仅使用 Windows 公开的 API，代码以 MIT 许可完全开源。
+MemWise 不随意终止进程、不挂起线程、不注入代码，也**默认不访问网络**——只有你主动开启「检查更新」后，它才会访问官方发布渠道读取版本号；没有任何附带组件。它仅使用 Windows 公开的 API，代码以 MIT 许可完全开源。
 
-由于不联网，MemWise 自身无法做到自动更新。当新版本发布时，需要用户自行前往 Releases 页面查看与下载。这算是不联网带来的一个小小不便——不过相应地，程序自始至终不会与任何服务器通信，个人设备在使用上毫无泄露数据顾虑。
+MemWise **默认完全不联网**：只有在你主动开启「检查更新」后，它才会向官方发布渠道（GitHub）读取版本号与更新包信息，不发送任何设备信息、不含任何标识符、不做任何统计。开启后它还能自动下载并校验（SHA-256）新版本、替换程序并自动重启，配置与学习数据原样保留；网络不可用时降级为提示，并给出官方发布页地址。需要说明的是，请求由 GitHub 接收，因此对方可见你的 IP——这是任何联网检查都无法回避的事实。
 
 如果你正在为内存紧张而困扰，希望这个工具能帮上一点忙；也欢迎在使用中提出意见，让它变得更好。
 
@@ -32,9 +32,9 @@ What MemWise frees is memory that is not being used right now. It cannot make ph
 
 Reclaimed pages are reloaded the next time a program needs them, usually as a momentary, barely noticeable delay; the first access to a large file after cache clearing may also be slightly slower. This follows from the nature of memory management itself — it is not a flaw of the tool, and it affects neither data safety nor program stability. Every operation can be disabled individually in Settings, so you can decide for yourself how it balances with your need for smoothness.
 
-MemWise terminates no processes, suspends no threads, injects no code, and touches no network, with no bundled components. It uses only public Windows APIs, and the source is fully open under the MIT license.
+MemWise terminates no processes, suspends no threads, and injects no code, and by default it does not touch the network either — it contacts the official release channel only after you enable "Check for Updates" yourself. It has no bundled components, uses only public Windows APIs, and the source is fully open under the MIT license.
 
-Since MemWise does not connect to the network, it cannot update itself. When a new version is released, users will need to visit the Releases page and download it themselves. This is a small inconvenience of being offline — in return, the program never communicates with any server, so it can be used on personal devices without any concern about data leakage.
+MemWise stays completely offline by default: only after you enable "Check for Updates" does it read the version number and update package information from the official release channel (GitHub). It sends no device information, carries no identifier, and performs no analytics. Once enabled, it can also download a new version, verify it with SHA-256, replace the program and restart it automatically, keeping your settings and learning data intact; when the network is unavailable it degrades to a notice with the official release page address. One honest note: the request is received by GitHub, so the other side can see your IP — that is unavoidable for any online update check.
 
 If memory pressure has been troubling you, I hope this tool helps a little; and if you have suggestions along the way, they would be most welcome.
 
@@ -170,7 +170,7 @@ The File Cache toggle in Settings enables that operation within the mode gradien
 4. **PID 增益调度**：根据当前内存压力自动分三区调节响应强度——低压（<40%）保守、中压（40–75%）标准、高压（>75%）激进
 5. **执行前复检**：清理执行瞬间重新检查前台窗口与游戏进程树，用户刚切过去或游戏刚启动会即时取消
 6. **并行执行**：最多 8 线程池（按 CPU 核数自适应），按评分降序提交
-7. **自适应 Pass 数**：大进程（WS>200 MB 或 θ 超阈值）→ 用户设定上限（默认 4）；中进程 → 3；低 θ → 1；其余 → 2；full 模式全部按用户上限执行（轮间低效截断兜底）。天花板由设置面板 `clean_passes` 直接决定
+7. **自适应 Pass 数**：大进程（WS>200 MB 或 θ 超阈值）→ 用户设定上限（默认 4）；中进程 → 3；低 θ → 1；其余 → 2；full 模式全部按用户上限执行（轮间低效截断兜底）。天花板由设置面板 `clean_passes` 直接决定（进程大小类阈值随机器物理内存等比缩放，基准 16 GB）
 8. **PF 反馈（先收后审）**：对比清理前后缺页计数。释放量无条件计入统计，缺页仅用作 Thompson 学习信号的正负向判定
 
 手动优化时跳过等待类保护（前台冷却、连续确认、稳态抑制、回弹后退），实时安全门（CPU/IO 活跃）在 normal/deep 仍然生效（full 跳过）。
@@ -183,7 +183,7 @@ Invokes EmptyWorkingSet on every process except MemWise itself to release idle p
 4. *PID gain scheduling — three-zone response: conservative below 40%, standard at 40–75%, aggressive above 75%*
 5. *Pre-execution recheck — foreground and game-process-tree are re-verified at execution time; a switch to the app or a game launch cancels the trim instantly*
 6. *Parallel execution — up to 8-worker thread pool (CPU-core-adaptive), submitted in descending score order*
-7. *Adaptive pass count — large processes (WS>200 MB or θ above threshold) receive the user-configured ceiling (default 4); mid-size processes receive 3; low-θ processes receive 1; the rest receive 2; full mode applies the ceiling to every process (with low-yield round truncation as a safety net). The ceiling is directly set by the clean_passes slider*
+7. *Adaptive pass count — large processes (WS>200 MB or θ above threshold) receive the user-configured ceiling (default 4); mid-size processes receive 3; low-θ processes receive 1; the rest receive 2; full mode applies the ceiling to every process (with low-yield round truncation as a safety net). The ceiling is directly set by the clean_passes slider* (size-class thresholds scale with the machine's physical memory, referenced to 16 GB)
 8. *PF feedback (collect-first, judge-later) — freed bytes always counted; PF excess only affects the learning signal*
 
 Manual optimization skips the waiting-type guards (recent-foreground cooldown, idle confirmation, stable-state suppression, rebound backoff) while the real-time safety gates (CPU/I/O activity) remain active in normal/deep (skipped in full).
@@ -450,6 +450,8 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **界面语言**：简体中文 / English 即时切换（设置面板顶部独立栏目）。切换瞬间生效，守护与统计数据不受影响；未翻译内容自动回退原语言，日志文件保留原始语言便于排障。
 
+**更新检查**：默认关闭——关闭时程序完全不联网。开启后启动时自动检查（每周一次），发现新版本会弹窗提示（可立即更新／稍后／跳过此版本）；「自动下载并替换」默认开启，更新包经 SHA-256 校验后替换程序并自动重启，配置与学习数据原样保留；网络不可用时降级为提示并给出官方发布页地址。请求只读取版本号与更新包信息，不发送任何设备信息（链路层由 GitHub 接收，对方可见你的 IP）。
+
 **启动设置**：以管理员权限开机自启动（计划任务，登录时以最高权限静默运行；笔记本使用电池供电时同样自启）、启动时自动开启守护、开机自启动后最小化到托盘（勾选框名称与说明一致，仅作用于开机自启，不影响手动启动——手动启动时程序会自行请求管理员权限）。
 
 **窗口与托盘**：关闭按钮行为（最小化到托盘（守护继续运行）、直接退出程序、每次询问（默认））、托盘左键行为（显示窗口（默认）/一键清理/无操作，仅窗口隐藏时生效）。
@@ -471,6 +473,7 @@ A standalone window lists every learned process's full profile — α/β (cumula
 All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, suppression interval, daemon cycle, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.
 
 - *Language — Simplified Chinese / English, switchable instantly from the top section of Settings. The whole UI (tips, dialogs, log display, CLI) follows the choice; untranslated text falls back to the source language, and the log file keeps the original language for troubleshooting*
+- *Update check — off by default, and while it is off the program does not touch the network at all. When enabled, MemWise checks at startup (weekly) and offers a dialog when a new version appears (Update Now / Later / Skip This Version). "Download and replace automatically" is on by default: the package is verified with SHA-256, then the program is replaced and restarted automatically with settings and learning data kept intact. If the network is unavailable it degrades to a notice with the official release page address. The request reads only the version and package information, sends no device information (at the transport layer it is received by GitHub, which can see your IP).*
 - *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon; also starts on battery power on laptops), auto-enable daemon on launch, minimize to tray on auto-start*
 - *Window & Tray — close-button behavior (minimize to tray (daemon continues), exit immediately, or ask each time — default) and tray left-click action (show window (default) / one-click cleanup / no action; active only while the window is hidden)*
 - *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected; quick mode does not use it. Also, at 85% of the emergency threshold a deep-aggregation pass runs first; at the threshold itself, anchor and cooldown gates open by design)*
@@ -557,6 +560,9 @@ Command reference:
 | `game_processes` | list | `[]` | 游戏进程 exe 名 |
 | `emergency_abs_pct` | int | `0` | 紧急触发兜底（可用内存百分比，0=禁用） |
 | `language` | str | `"zh_CN"` | 界面语言（`zh_CN`=简体中文 / `en`=English） |
+| `update_check` | bool | `false` | 启动时自动检查更新（默认关闭；关闭时完全不联网） |
+| `update_auto_apply` | bool | `true` | 发现新版本时自动下载、校验并替换重启 |
+| `update_proxy` | str | `""` | 更新检查使用的代理地址（留空 = 自动使用系统代理） |
 | `efis_params` | dict | 12 参数默认值 | EFIS 参数 |
 
 `efis_params` 包含第 5 节所列的十二个 EFIS 参数（各自默认值与范围如该节参数表所示）；同时提供 `efis_params.target_usage` 时，其优先于顶层 `target_usage`。

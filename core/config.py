@@ -51,6 +51,12 @@ DEFAULT_CFG = {
     "interval": 60, "never": [], "clean_mode": "normal",
     # auto_start（普通权限快捷方式自启）已于 2026-08-15 移除，仅保留管理员权限自启
     "auto_start_daemon": False,
+    # 更新检查（2026-10-16）：**默认不联网**——update_check 关闭时一行网络代码都不执行；
+    # 开启后启动时自动检查（7 天节流），update_auto_apply 决定是否自动下载并替换重启，
+    # update_proxy 留空 = 自动使用系统代理。
+    "update_check": False,
+    "update_auto_apply": True,
+    "update_proxy": "",
     "auto_start_admin": False, "auto_start_minimize": False,
     "gap_seconds": 12, "clean_passes": 4,
     "hotkey": "ctrl+shift+m", "game_hotkey": "ctrl+shift+g", "game_processes": [],

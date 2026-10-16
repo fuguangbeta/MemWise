@@ -10,6 +10,9 @@ from .learner import _is_system_core, _is_self_process, _is_self_path
 from .rebound import _key as _norm_ws_path
 from .judger import MIN_WS_BYTES  # 工作集下限单一来源（judger 定义，见其注释）
 
+# 机器内存标度（2026-10-16 启用）：尺寸类阈值统一按 S 缩放（本机 S=1.0 ⇒ 逐位不变）
+_S = winapi.memory_scale()
+
 # ── 游戏进程名单（2026-08-11：默认不再内置，由用户自行配置——内置通用进程名
 # （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
 GAME_PROCESSES = set()
@@ -29,12 +32,12 @@ L3_RETRIM_PRESSURE_PCT = 45        # 内存占用 ≥45% 时不设下限（低�
 # 的有效性漂移达 4.3 倍（8MB 收益闸命中率 6.3%→27.2%）；此处统一提升为命名常量，为后续按
 # S = 物理内存/16GB 标度做准备。S=1（本机）时 int(v*S)==v，行为逐位不变。
 # ⚠ 分类 A（WS<1MB 门、PF 允许量、KB/s 速率门）语义是「清理代价是否划算」，不随规模缩放。
-TIER_WS_DEEP = 200 << 20        # 进程深清档位：超过此 WS 视为大进程（全档多轮）
-TIER_WS_MID = 50 << 20          # 中间档位（3 档）
-MP_WS_NORMAL = 100 << 20        # MemoryPriority/EcoQoS 门槛（normal/deep：θ≥0.5 且 WS≥此值）
-MP_WS_FULL = 50 << 20           # 同上（full 放宽：θ≥0.3 且 WS≥此值）
-COMPOSITE_FREED_SCALE = 200 << 20   # 复合评分：预期释放量归一尺度
-COMPOSITE_WS_SCALE = 500 << 20      # 复合评分：WS 归一尺度（与「大进程 +0.15」共用）
+TIER_WS_DEEP = int((200 << 20) * _S)        # 进程深清档位：超过此 WS 视为大进程（全档多轮）
+TIER_WS_MID = int((50 << 20) * _S)          # 中间档位（3 档）
+MP_WS_NORMAL = int((100 << 20) * _S)        # MemoryPriority/EcoQoS 门槛（normal/deep：θ≥0.5 且 WS≥此值）
+MP_WS_FULL = int((50 << 20) * _S)           # 同上（full 放宽：θ≥0.3 且 WS≥此值）
+COMPOSITE_FREED_SCALE = int((200 << 20) * _S)   # 复合评分：预期释放量归一尺度
+COMPOSITE_WS_SCALE = int((500 << 20) * _S)      # 复合评分：WS 归一尺度（与「大进程 +0.15」共用）
 # F1 压力自适应（2026-09-26 用户定稿实施）：full 模式在"内存宽裕（< L3_RETRIM_PRESSURE_PCT）
 # + 上轮释放被快速吃回（回涨 > 上轮释放 60%，用引擎现成的回涨状态机）"时降级为轻量轮：
 # 每进程只清一趟、跳过 Layer3 深度整理与回弹二轮、候选按收益分排序只取前 K 项。

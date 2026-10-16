@@ -1,9 +1,9 @@
 """
-MemWise v4.7.023 GUI —— 图形界面
+MemWise v5.0.004 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
-import os, sys, time, tkinter as tk, queue
+import os, sys, time, shutil, subprocess, threading, tempfile, tkinter as tk, queue
 from collections import deque
 from tkinter import ttk, font as tkfont
 import ctypes
@@ -20,6 +20,8 @@ from core.engine import (
 )
 
 from core import winapi
+from core import update as _update
+from core.backup import APP_VERSION
 from core.learner import PareLearner as Learner
 from core.learner import _is_system_core, _is_self_path  # 系统核心保护名单（进程排行终止保护等）/自身可执行路径（WS 硬上限守卫）
 from core.judger import PareJudger as Judger
@@ -278,6 +280,205 @@ def _parse_delay_start(argv):
         return max(0.0, min(30.0, float(argv[i + 1])))
     except Exception:
         return 0.0
+
+
+def _upd_reason_text(why):
+    """更新失败原因码 → 用户可读中文（UI 文案；日志仍记原始码）。"""
+    key = str(why or "").split(":")[0]
+    return {
+        "timeout": "网络超时",
+        "connect_failed": "无法连接（网络受限或需要代理）",
+        "send_failed": "请求发送失败",
+        "recv_failed": "未收到响应",
+        "bad_url": "地址无效",
+        "open_failed": "无法初始化网络会话",
+        "cancelled": "已取消",
+        "sha256_mismatch": "更新包校验失败（哈希不符）",
+        "size_mismatch": "更新包大小不符",
+        "io_error": "写入文件失败",
+        "not_pe": "更新包不是可执行文件（已丢弃）",
+        "no_asset_url": "发布页未找到更新包",
+        "spawn_helper_failed": "无法启动更新助手",
+        "exception": "内部错误",
+    }.get(key, ("服务器返回 %s" % key.split("_", 1)[1]) if key.startswith("http_") else ("未知原因（%s）" % why))
+
+
+def _upd_log(base, msg):
+    """更新助手写日志：**写到目标目录**的 data/memwise.log。
+
+    助手自身是从 %TEMP% 运行的新版 exe，engine 的 base 会解析到 %TEMP% ⇒ 不能复用 engine 的日志路径。
+    （日志历史只存中文原文，符合 F51：不在逻辑层翻译。）"""
+    try:
+        import datetime
+        d = os.path.join(base, "data")
+        os.makedirs(d, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(os.path.join(d, "memwise.log"), "a", encoding="utf-8") as f:
+            f.write("[%s][更新] %s\n" % (ts, msg))
+    except Exception:
+        pass
+
+
+def _wait_pid_exit(pid, timeout):
+    """等待进程退出（SYNCHRONIZE 句柄 + WaitForSingleObject）。进程不存在 ⇒ 视为已退出。"""
+    try:
+        h = winapi.OpenProcess(0x00100000, False, int(pid))   # SYNCHRONIZE
+        if not h:
+            return True
+        try:
+            return winapi.WaitForSingleObject(h, int(timeout * 1000)) == 0
+        finally:
+            winapi.CloseHandle(h)
+    except Exception:
+        return True
+
+
+def _launch_app(target, minimized=False):
+    """启动目标 exe（清理 PyInstaller 的 _MEI*/_PYI* 环境变量，防新版误用旧解包目录）。"""
+    try:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
+        argv = [target] + (["--minimized"] if minimized else [])
+        return subprocess.Popen(argv, creationflags=0x08000000,   # CREATE_NO_WINDOW
+                                cwd=os.path.dirname(os.path.abspath(target)), env=env)
+    except Exception:
+        return None
+
+
+def _apply_update(argv):
+    """更新助手：`--apply-update <目标exe> <旧PID> [--minimized]`。
+
+    为什么要独立进程：运行中的 exe 文件被锁、**无法自替换**；助手由下载到的新版 exe 充任
+    （拷到 %TEMP% 后启动），因此它本身就是新版代码。时序：
+      ① 等旧实例退出（最多 60s）→ ② 复制旧 exe 为 .old（供回滚）
+      → ③ MoveFileEx 一步原子替换 → ④ 启动新版（原参数）→ ⑤ 10s 内存活确认
+      → ⑥ 失败则用 .old 还原并重启旧版（最坏结果：还是旧版在跑，不会更坏）
+    日志写入目标目录 data/memwise.log；返回 0=成功（供测试断言）。"""
+    _swapped = False    # 真实性加固（真机测试发现）：替换成功之后任何异常都必须尝试回滚
+    try:
+        rest = [a for a in argv[1:] if a != "--apply-update"]
+        minimized = "--minimized" in rest
+        rest = [a for a in rest if a != "--minimized"]
+        if len(rest) < 2:
+            return 2
+        target, pid = os.path.abspath(rest[0]), int(rest[1])
+        new_exe = sys.executable
+        base = os.path.dirname(target)
+        if not os.path.isfile(target) or not os.path.isfile(new_exe):
+            return 2
+        _upd_log(base, "更新助手启动：等待旧实例退出（PID %d）" % pid)
+        if not _wait_pid_exit(pid, 120.0):     # 侧视补：守护/长清理周期下 60s 可能不够
+            _upd_log(base, "\u7b49\u5f85\u8d85\u65f6\uff0c\u653e\u5f03\u66f4\u65b0\uff08\u65e7\u7248\u672c\u672a\u52a8\uff09")
+            _launch_app(target, minimized)     # 关键：不能让用户"程序消失且没更新"
+            return 3
+
+
+        bak = target + ".old"   # 侧视修正误删后补回（真机测试抓到：备份步骤 NameError）
+
+        def _rollback():
+            """用 .old 还原旧版；失败必须显式留痕（此时只能靠用户手动改名，不能沉默）。"""
+            if winapi.replace_file_atomic(bak, target):
+                _upd_log(base, "已回滚到旧版")
+                return True
+            _upd_log(base, "⚠ 回滚失败：请手动把 %s 改名为 %s" % (os.path.basename(bak), os.path.basename(target)))
+            return False
+        try:
+            shutil.copy2(target, bak)
+        except Exception as _e:
+            _upd_log(base, "备份失败（%r），放弃更新" % _e)
+            _launch_app(target, minimized)
+            return 4
+        # 新版落地：**先复制到目标同目录**再"同卷一步换名"（2026-10-16 演练修正）：
+        #   ① 直接 MoveFileEx(助手自身文件 → 目标) 会搬走运行中的镜像，且助手若在别的卷
+        #      （%TEMP% 常在 C:，程序可能在 D:）时**跨卷 MoveFileEx 不是原子操作**；
+        #   ② 先复制到目标同目录可保证同卷，MoveFileEx 才是真正的原子替换。
+        stage = target + ".new"
+        try:
+            try:
+                os.remove(stage)
+            except Exception:
+                pass
+            shutil.copy2(new_exe, stage)
+        except Exception as _e:
+            _upd_log(base, "落盘新版本失败（%r），保留原版本" % _e)
+            return 4
+        # 侧视补：替换失败要重试——双杀软对"替换可执行文件"常有瞬时占用（曾见 Access denied 稍后即好）
+        _ok_swap = False
+        for _i in range(5):
+            if winapi.replace_file_atomic(stage, target):
+                _ok_swap = True
+                break
+            _upd_log(base, "替换第 %d 次未成功，1 秒后重试" % (_i + 1))
+            time.sleep(1.0)
+        if not _ok_swap:
+            _upd_log(base, "替换失败（文件被占用或权限不足），保留原版本并重启旧版")
+            try:
+                os.remove(stage)
+            except Exception:
+                pass
+            _launch_app(target, minimized)     # 早期失败也要把旧版拉起来，不能留"无人看护"状态
+            return 5
+        _swapped = True
+        _upd_log(base, "已替换为新版（来源：%s）" % os.path.basename(new_exe))
+        proc = _launch_app(target, minimized)
+        if proc is None:
+            _upd_log(base, "启动新版失败，回滚")
+            _rollback()
+            _launch_app(target, minimized)
+            return 6
+        time.sleep(10)
+        if proc.poll() is None:
+            _upd_log(base, "新版启动成功，更新完成")
+            return 0
+        _upd_log(base, "新版启动后立即退出（rc=%s），回滚到旧版" % proc.returncode)
+        _rollback()
+        _launch_app(target, minimized)
+        return 7
+    except Exception as _e:
+        try:
+            _upd_log(os.path.dirname(os.path.abspath(argv[2] if len(argv) > 2 else ".")), "更新助手异常：%r" % _e)
+        except Exception:
+            pass
+        try:
+            if _swapped:
+                _upd_log(os.path.dirname(os.path.abspath(argv[2])) if len(argv) > 2 else ".",
+                         "异常发生在替换之后，尝试回滚")
+                _rollback()
+                _launch_app(os.path.abspath(argv[2]), "--minimized" in argv)
+        except Exception:
+            pass
+        return 9
+
+
+def _update_housekeeping():
+    """更新后清理（2026-10-16）：能执行到这里 ⇒ 当前版本启动正常，上一轮的 .old 备份已完成使命。
+
+    只清理**我们自己的产物**：`<exe>.old`（旧版备份）、`<exe>.new`（替换中间文件）、
+    `%TEMP%\\MemWise_*.exe[.part]`（下载/助手残留）。**绝不触碰任何用户文件**；
+    任何一步失败都静默忽略（清理不是关键路径，不得影响启动）。"""
+    try:
+        exe = os.path.abspath(sys.executable)
+        for p in (exe + ".old", exe + ".new"):
+            try:
+                # 侧视修正（2026-10-16）：只清理"早已完成使命"的备份（>15 分钟）。
+                # 否则新版刚启动就把 .old 删了，而助手的 10s 存活确认尚未结束——
+                # 一旦新版随即崩溃，回滚就无料可用（保护窗口必须覆盖确认窗口）。
+                if os.path.isfile(p) and (time.time() - os.path.getmtime(p)) > 900:
+                    os.remove(p)
+            except Exception:
+                pass
+        try:
+            import glob as _g
+            import tempfile as _tf
+            for p in (_g.glob(os.path.join(_tf.gettempdir(), "MemWise_*.exe"))
+                      + _g.glob(os.path.join(_tf.gettempdir(), "MemWise_*.exe.part"))):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _autostart_target_args(minimized=False):
@@ -702,7 +903,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v4.7.023", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v5.0.004", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -726,7 +927,7 @@ class MemWiseGUI:
 
         self.root = tk.Tk()
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v4.7.023")
+        self.root.title("MemWise v5.0.004")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -776,6 +977,12 @@ class MemWiseGUI:
         # 注意：_minimized_to_tray 已在上方初始化（--minimized/auto_start_minimize 分支），此处不得重复赋值覆盖
         # 消息队列 = 引擎事件队列（动作格式完全复用——消费端 _poll_msg_queue 零改动）
         self._msg_queue = self.engine.events
+        # 更新检查状态（2026-10-16）：busy 防重入、st 为 data 侧运行态、prog 为进度弹窗句柄
+        self._upd_busy = False
+        self._upd_st = None
+        self._upd_prog = None
+        self._upd_cancel = False
+        self._upd_downloading = False
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
         self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
         self._mem_pct = 0
@@ -784,7 +991,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v4.7.023 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v5.0.004 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -832,6 +1039,9 @@ class MemWiseGUI:
             except Exception:
                 pass
         # 启动消息队列轮询（每 100ms 检查一次，主线程安全）
+        # 启动后自动检查更新（用户开启 update_check 才联网；4 秒后等界面画完再查，避免与启动抢资源）
+        if CFG.get("update_check", False) and getattr(sys, "frozen", False):
+            self.root.after(4000, lambda: self._upd_check(manual=False))
         self._poll_msg_queue()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         if CFG.get("auto_start_daemon"):
@@ -867,7 +1077,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v4.7.023")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.0.004")
                     if fw:
                         top = fw
                 except Exception:
@@ -1740,6 +1950,47 @@ class MemWiseGUI:
                       "⚠ 日志自动轮转保留最近两份，无需手动清理")
 
         # ─── 全局热键（独立栏，汇总所有热键） ───
+        # ── 更新（2026-10-16 新增，第 11 栏）：**默认不联网**，仅开启后启动时自动检查 ──
+        upf = ttk.LabelFrame(inner_frame, text=tr("更新"), padding=8)
+        upf.pack(fill="x", pady=4)
+        upd_var = tk.BooleanVar(value=CFG.get("update_check", False))
+        upa_var = tk.BooleanVar(value=CFG.get("update_auto_apply", True))
+
+        def _on_upd_toggle():
+            CFG["update_check"] = upd_var.get()
+            _save_cfg()
+            if upd_var.get():
+                self._upd_check(manual=True)      # 开启即立即查一次，给用户即时反馈
+
+        def _on_upd_auto():
+            CFG["update_auto_apply"] = upa_var.get()
+            _save_cfg()
+
+        def _on_upd_proxy(_e=None):
+            CFG["update_proxy"] = upd_proxy_var.get().strip()
+            _save_cfg()
+
+        self.lbl_upd = ttk.Label(upf, text=self._upd_status_init(), background="#1c1c1c", foreground="#aaa")
+        self.lbl_upd.pack(anchor="w")
+        row_up = ttk.Frame(upf, background="#1c1c1c")
+        row_up.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row_up, text=tr("检查更新"), command=lambda: self._upd_check(manual=True)).pack(side="left")
+        ttk.Checkbutton(row_up, text=tr("启动时自动检查更新（每周一次）"), variable=upd_var,
+                        command=_on_upd_toggle).pack(side="left", padx=(14, 0))
+        ttk.Checkbutton(upf, text=tr("发现新版本时自动下载并替换重启"), variable=upa_var,
+                        command=_on_upd_auto).pack(anchor="w", pady=(2, 0))
+        upd_proxy_var = tk.StringVar(value=CFG.get("update_proxy", ""))
+        row_px = ttk.Frame(upf, background="#1c1c1c")
+        row_px.pack(anchor="w", pady=(2, 0), fill="x")
+        ttk.Label(row_px, text=tr("代理地址"), background="#1c1c1c",
+                  foreground="#aaa").pack(side="left")
+        ent_px = ttk.Entry(row_px, textvariable=upd_proxy_var, width=28)
+        ent_px.pack(side="left", padx=(6, 6))
+        ent_px.bind("<FocusOut>", _on_upd_proxy)
+        ttk.Label(row_px, text=tr("（留空 = 自动使用系统代理）"), background="#1c1c1c",
+                  foreground="#777").pack(side="left")
+        self._add_tip(upf, self._upd_tooltip())
+
         hkf = ttk.LabelFrame(inner_frame, text=tr("全局热键"), padding=8)
         hkf.pack(fill="x", padx=12, pady=4)
         ttk.Label(hkf, text=tr("格式：修饰键+按键\n如 ctrl+shift+m / alt+f1 / shift+f5"),
@@ -1937,8 +2188,10 @@ class MemWiseGUI:
                   background="#1c1c1c", foreground="#aaa").pack(padx=18, pady=(2, 4))
         btn_row = ttk.Frame(dlg, style="DarkMsg.TFrame")
         btn_row.pack(pady=(6, 14))
-        if extra:
-            ttk.Button(btn_row, text=tr(extra[0]), command=extra[1]).pack(side="left", padx=6)
+        # extra：单个 (标签, 回调) 或列表（更新失败需同时给「打开发布页」与「复制链接」）
+        _extras = extra if isinstance(extra, list) else ([extra] if extra else [])
+        for _lab, _cb in _extras:
+            ttk.Button(btn_row, text=tr(_lab), command=_cb).pack(side="left", padx=6)
         ttk.Button(btn_row, text=tr("确认"), command=dlg.destroy).pack(side="left", padx=6)
         self._center_fit(dlg, min_w=430)
         dlg.deiconify()
@@ -2833,6 +3086,393 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    # ══════════ 更新检查（2026-10-16 用户逐项定稿）══════════
+    # **默认不联网**：仅当 CFG["update_check"] 开启（或用户点「检查更新」）才发起请求。
+    # 流程：后台检查 → 弹窗（立即更新/稍后/跳过此版本）→ 下载（进度）→ SHA-256 校验
+    #       → 5 秒倒计时 → 启动新版 exe 当"更新助手"（--apply-update）→ 本进程退出。
+    # 失败：降级为提示 + 「打开发布页/复制链接」；自动检查失败只写日志（不打扰）。
+    # 额外提醒（用户指定）：日志面板一行 + 设置面板「有新版本 vX」常驻状态行（弹窗是主提醒）。
+
+    def _upd_status_init(self):
+        """设置面板打开时的初始状态行（读运行态：上次检查/跳过版本 → 给一句人话）。"""
+        st = self._upd_state()
+        last = st.get("last_check") or 0
+        if not last:
+            return tr("尚未检查更新")
+        import datetime as _dt
+        return tr("上次检查：") + _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M")
+
+    def _upd_tooltip(self):
+        """更新栏 tooltip（八规则：标题 + 数字条目 + ⚠ 提示，纯中文原文由 i18n 提供英文）。"""
+        return (
+            "「检查更新」\n"
+            "1. 仅在你开启后才会访问官方发布渠道（GitHub）\n"
+            "2. 只读取版本号与更新包信息，不发送任何设备信息\n"
+            "3. 更新包用 SHA-256 校验，校验失败会自动放弃\n"
+            "⚠ 默认关闭，不开启则完全不联网\n"
+            "⚠ 更新会替换程序并自动重启，配置与学习数据原样保留"
+        )
+
+    def _upd_state(self):
+        if self._upd_st is None:
+            self._upd_st = _update.load_state(base)
+        return self._upd_st
+
+    def _upd_status(self, text):
+        """设置面板状态行（不存在/已销毁则忽略——状态行只在设置窗口打开时存在）。"""
+        try:
+            lbl = getattr(self, "lbl_upd", None)
+            if lbl is not None and lbl.winfo_exists():
+                lbl["text"] = text
+        except Exception:
+            pass
+
+    def _upd_check(self, manual=False):
+        """发起检查。manual=True 为用户主动点按钮（忽略自动检查开关与节流）。"""
+        if self._upd_busy:
+            return
+        if not getattr(sys, "frozen", False):
+            if manual:
+                self._dark_message(tr("检查更新"), tr("源码运行模式没有可替换的 exe，更新功能仅正式版可用"))
+            return
+        if not manual and not CFG.get("update_check", False):
+            return
+        self._upd_busy = True
+        if manual:
+            self._upd_status(tr("正在检查更新…"))
+        threading.Thread(target=self._upd_worker, args=(manual,), daemon=True).start()
+
+    def _upd_worker(self, manual):
+        try:
+            st = self._upd_state()
+            if not manual and not _update.due(st.get("last_check")):
+                return
+            info = _update.check_latest(proxy=(CFG.get("update_proxy") or "").strip() or None)
+            st["last_check"] = time.time()
+            _update.save_state(base, st)
+            if not info.get("ok"):
+                self._msg_queue.put(("upd_failed", {"manual": manual, "reason": info.get("reason") or "unknown"}))
+            else:
+                self._msg_queue.put(("upd_result", {"manual": manual, "info": info}))
+        except Exception:
+            self._msg_queue.put(("upd_failed", {"manual": manual, "reason": "exception"}))
+        finally:
+            self._upd_busy = False
+
+    def _on_update_result(self, d):
+        info = d.get("info") or {}
+        manual = d.get("manual")
+        tag = info.get("tag") or ""
+        ver = info.get("version")
+        if not _update.is_newer(tag, APP_VERSION):
+            self._upd_status(tr("已是最新版本"))
+            if manual:
+                self._log("检查更新：已是最新版本（当前 v%s）" % APP_VERSION)
+            return
+        self._upd_status(tr("有新版本可用") + " " + tag)
+        self._log("发现新版本 %s（当前 v%s）" % (tag, APP_VERSION))
+        st = self._upd_state()
+        if str(ver) == str(st.get("skip_version") or ""):
+            return                      # 用户已"跳过此版本" ⇒ 不再弹窗（状态行与日志仍保留）
+        if not CFG.get("update_auto_apply", True):
+            self._dark_message(tr("发现新版本"),
+                tr_msg("发现新版本 %s（当前 v%s，%.1f MB）。\n\n可在设置中开启「自动下载并替换」。"
+                       % (tag, APP_VERSION, (info.get("size") or 0) / 1048576.0)),
+                extra=(tr("打开发布页"), self._open_release_page))
+            return
+        # 侧视补（2026-10-16）：**没有校验信息就绝不自动装**——HTTPS 只保证链路，哈希才是锚；
+        # 目录不可写/权限不足同样不下载（省一次 12MB 下载，也避免"装完才知道装不了"）。
+        if not info.get("sha256"):
+            self._dark_message(tr("发现新版本"),
+                tr_msg("发现新版本 %s（当前 v%s）。\n\n此版本未提供校验信息，为安全起见不自动更新，请手动下载。"
+                       % (tag, APP_VERSION)),
+                kind="warning", extra=(tr("打开发布页"), self._open_release_page))
+            return
+        if not getattr(self, "_writable", True):
+            self._dark_message(tr("发现新版本"),
+                tr_msg("发现新版本 %s，但程序所在目录不可写，无法自动替换。\n\n请手动下载后覆盖安装。" % tag),
+                kind="warning", extra=(tr("打开发布页"), self._open_release_page))
+            return
+        choice = self._choice_dialog(tr("发现新版本"), self._update_prompt_text(info),
+                                     [(tr("立即更新"), "now"), (tr("稍后"), "later"), (tr("跳过此版本"), "skip")])
+        if choice == "later" or choice is None:
+            self._log("更新已推迟（下次启动仍会提示）")
+            return
+        if choice == "skip":
+            st["skip_version"] = str(ver)
+            _update.save_state(base, st)
+            self._log("已跳过版本 %s（此后不再弹窗）" % tag)
+            self._upd_status(tr("有新版本可用") + " " + tag)
+            return
+        self._start_download(info)
+
+    def _update_prompt_text(self, info):
+        tag = info.get("tag")
+        mb = (info.get("size") or 0) / 1048576.0
+        body = tr_msg("发现新版本 %s（当前 v%s，%.1f MB）" % (tag, APP_VERSION, mb))
+        notes = (info.get("notes") or "").strip()
+        if notes:
+            body += "\n\n" + (notes[:360] + ("…" if len(notes) > 360 else ""))
+        return body
+
+    def _start_download(self, info):
+        if self._upd_downloading:
+            return                          # 侧视补：下载中禁止再次触发（防双下载/双进度窗）
+        url = info.get("url")
+        if not url:
+            self._on_update_failed({"manual": True, "reason": "no_asset_url"})
+            return
+        # 文件名只保留安全字符（tag 来自远端，不直接拼进路径）
+        _safe = "".join(c for c in str(info.get("tag") or "new").lstrip("v") if c.isalnum() or c in "._-") or "new"
+        dest = os.path.join(tempfile.gettempdir(), "MemWise_%s.exe" % _safe)
+        self._upd_cancel = False
+        self._upd_downloading = True
+        self._upd_prog = self._progress_dialog(info)
+        self._log("开始下载更新 %s（%.1f MB）" % (info.get("tag"), (info.get("size") or 0) / 1048576.0))
+        threading.Thread(target=self._download_worker, args=(info, url, dest), daemon=True).start()
+
+    def _download_worker(self, info, url, dest):
+        def _prog(done, total):
+            self._msg_queue.put(("upd_progress", {"done": done, "total": total or (info.get("size") or 0)}))
+        ok, why = _update.download(url, dest, sha256=info.get("sha256"), size=info.get("size"),
+                                   proxy=(CFG.get("update_proxy") or "").strip() or None,
+                                   progress=_prog, cancel=lambda: self._upd_cancel)
+        if ok:
+            self._msg_queue.put(("upd_ready", {"dest": dest, "tag": info.get("tag")}))
+        else:
+            self._msg_queue.put(("upd_failed", {"manual": True, "reason": why}))
+
+    def _on_update_progress(self, d):
+        if self._upd_prog is not None:
+            try:
+                self._upd_prog.set(d.get("done", 0), d.get("total", 0))
+            except Exception:
+                pass
+
+    def _on_update_ready(self, d):
+        self._upd_downloading = False
+        if self._upd_prog is not None:
+            try:
+                self._upd_prog.close()
+            except Exception:
+                pass
+            self._upd_prog = None
+        dest, tag = d.get("dest"), d.get("tag")
+        self._log("更新包校验通过（%s）" % tag)
+        if not self._countdown_dialog(5):
+            self._log("已取消重启，本次更新作废（下次启动仍会提示）")
+            try:
+                os.remove(dest)
+            except Exception:
+                pass
+            return
+        self._apply_and_exit(dest)
+
+    def _apply_and_exit(self, dest):
+        """启动新版 exe 作"更新助手"，随后本进程优雅退出（释放互斥与文件锁）。"""
+        args = [dest, "--apply-update", os.path.abspath(sys.executable), str(os.getpid())]
+        if "--minimized" in sys.argv:
+            args.append("--minimized")
+        try:
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
+            subprocess.Popen(args, creationflags=0x08000000,
+                             cwd=os.path.dirname(os.path.abspath(sys.executable)), env=env)
+        except Exception:
+            self._on_update_failed({"manual": True, "reason": "spawn_helper_failed"})
+            return
+        self._log("即将重启完成更新…")
+        try:
+            remove_watchdog()   # 关键：先摘看门狗——否则它会把这次"退出"当崩溃并抢先拉起旧版
+        except Exception:
+            pass
+        try:
+            winapi.tray_remove(self.root.winfo_id(), TRAY_UID)
+        except Exception:
+            pass
+        # 与 _do_exit 完全一致的优雅收尾（侧视修正 2026-10-16：原先只 destroy ⇒ 会丢未落盘的
+        # 学习/ERIS 状态，且守护与清理线程被硬杀）。顺序：停守护与线程池 → 存配置 → 落状态 → 关窗。
+        try:
+            self.engine.shutdown()
+        except Exception:
+            pass
+        try:
+            _save_cfg()
+            self.engine.save_state()
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def _on_update_failed(self, d):
+        manual, why = d.get("manual"), d.get("reason") or "unknown"
+        self._upd_downloading = False
+        if str(why).split(":")[0] == "cancelled":
+            self._log("已取消更新")      # 侧视补：用户主动取消不该报「失败」
+            return
+        if self._upd_prog is not None:
+            try:
+                self._upd_prog.close()
+            except Exception:
+                pass
+            self._upd_prog = None
+        self._log("更新失败：%s" % why)
+        if not manual:
+            return                          # 自动检查失败：只留日志，不弹窗（用户指定"降级提示"仅限手动/下载阶段）
+        self._upd_status(tr("更新检查失败"))
+        self._dark_message(tr("更新失败"),
+            tr_msg("更新失败：%s\n\n可手动前往官方发布页下载新版本。" % _upd_reason_text(why)),
+            kind="warning",
+            extra=[(tr("打开发布页"), self._open_release_page), (tr("复制链接"), self._copy_link)])
+
+    def _open_release_page(self):
+        try:
+            ctypes.windll.shell32.ShellExecuteW(None, "open", _update.RELEASES_PAGE, None, None, 1)
+        except Exception:
+            pass
+
+    def _copy_link(self):
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(_update.RELEASES_PAGE)
+        except Exception:
+            pass
+
+    def _choice_dialog(self, title, text, options, kind="info"):
+        """通用暗色多按钮弹窗（options=[(标签, 返回值)]）：返回被点中的值；关闭 ⇒ None。"""
+        res = {"v": None}
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Style().configure("DarkUpd.TFrame", background="#1c1c1c")
+        top = ttk.Frame(dlg, style="DarkUpd.TFrame")
+        top.pack(fill="x", padx=18, pady=(16, 2))
+        icon = {"info": "ℹ", "warning": "⚠", "error": "❌"}.get(kind, "ℹ")
+        tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(kind, "#e0e0e0")
+        ttk.Label(top, text=icon, font=("Segoe UI Emoji", 18), background="#1c1c1c",
+                  foreground=tfg).pack(side="left", padx=(0, 12))
+        ttk.Label(top, text=title, font=("微软雅黑", 11, "bold"), background="#1c1c1c",
+                  foreground="#e0e0e0").pack(side="left")
+        ttk.Label(dlg, text=text, justify="left", wraplength=470, background="#1c1c1c",
+                  foreground="#aaa").pack(padx=18, pady=(4, 6))
+        row = ttk.Frame(dlg, style="DarkUpd.TFrame")
+        row.pack(pady=(4, 14))
+
+        def _pick(v):
+            res["v"] = v
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        for label, value in options:
+            ttk.Button(row, text=label, command=lambda v=value: _pick(v)).pack(side="left", padx=6)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: _pick(None))
+        self._center_fit(dlg, min_w=470)
+        dlg.deiconify()
+        dlg.wait_window()
+        return res["v"]
+
+    def _progress_dialog(self, info):
+        """下载进度弹窗（非模态，可取消）。返回带 set(done,total)/close() 的句柄。"""
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(tr("正在下载更新"))
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.configure(bg="#1c1c1c")
+        ttk.Label(dlg, text=tr("正在下载更新") + "  " + str(info.get("tag") or ""),
+                  font=("微软雅黑", 11, "bold"), background="#1c1c1c",
+                  foreground="#e0e0e0").pack(padx=18, pady=(16, 2))
+        lbl = ttk.Label(dlg, text="0.0 / %.1f MB" % ((info.get("size") or 0) / 1048576.0),
+                        background="#1c1c1c", foreground="#aaa")
+        lbl.pack(padx=18, pady=(0, 6))
+        cv = tk.Canvas(dlg, width=380, height=10, bg="#2a2a2a", highlightthickness=0)
+        cv.pack(padx=18, pady=(0, 10))
+        bar = cv.create_rectangle(0, 0, 0, 10, fill="#4aa3ff", width=0)
+
+        def _cancel():
+            self._upd_cancel = True
+            self._log("已取消下载更新")
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        ttk.Button(dlg, text=tr("取消"), command=_cancel).pack(pady=(0, 14))
+        self._center_fit(dlg, min_w=420)
+        dlg.deiconify()
+        holder = {"dlg": dlg}
+
+        def _set(done, total):
+            d = holder.get("dlg")
+            if d is None or not d.winfo_exists():
+                return
+            total = total or 0
+            frac = min(1.0, (done / total)) if total else 0.0
+            cv.coords(bar, 0, 0, int(380 * frac), 10)
+            lbl["text"] = ("%.1f / %.1f MB（%d%%）" % (done / 1048576.0, total / 1048576.0, int(frac * 100))
+                           if total else "%.1f MB" % (done / 1048576.0))
+
+        def _close():
+            d = holder.get("dlg")
+            holder["dlg"] = None
+            if d is not None:
+                try:
+                    d.destroy()
+                except Exception:
+                    pass
+        cls = type("_UpdProg", (), {})
+        cls.set = staticmethod(_set)
+        cls.close = staticmethod(_close)
+        return cls
+
+    def _countdown_dialog(self, seconds):
+        """倒计时弹窗（默认 5 秒后继续；可取消或立即重启）。返回 True=继续更新。"""
+        res = {"go": False}
+        dlg = tk.Toplevel(self.root)
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(tr("即将重启完成更新"))
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Style().configure("DarkUpd2.TFrame", background="#1c1c1c")
+        ttk.Label(dlg, text=tr("即将重启完成更新"), font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#4aa3ff").pack(padx=18, pady=(16, 4))
+        cnt = ttk.Label(dlg, text="", background="#1c1c1c", foreground="#aaa")
+        cnt.pack(padx=18, pady=(0, 6))
+        row = ttk.Frame(dlg, style="DarkUpd2.TFrame")
+        row.pack(pady=(2, 14))
+
+        _daemon_on = bool(getattr(self.engine, "daemon_running", False))
+
+        def _go():
+            res["go"] = True
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+        def _tick(n):
+            if not dlg.winfo_exists():
+                return
+            cnt["text"] = tr_msg("将在 %d 秒后自动重启完成更新" % n) + (tr("（守护会随重启短暂中断，随后自动恢复）") if _daemon_on else "")
+            if n <= 0:
+                _go()
+                return
+            dlg.after(1000, lambda: _tick(n - 1))
+        ttk.Button(row, text=tr("立即重启"), command=_go).pack(side="left", padx=6)
+        ttk.Button(row, text=tr("取消"), command=dlg.destroy).pack(side="left", padx=6)
+        self._center_fit(dlg, min_w=430)
+        dlg.deiconify()
+        _tick(seconds)
+        dlg.wait_window()
+        return res["go"]
+
     def _poll_msg_queue(self):
         # ── 托盘事件 — 从 wndproc 标志安全分发（零 Tkinter 调用于 wndproc）──
         global _tray_action
@@ -2873,6 +3513,10 @@ class MemWiseGUI:
                 elif action == 'upd_ui': self._upd_dae_ui(*args)
                 elif action == 'opt_done': self._opt_done(args)
                 elif action == 'dae_stopped': self._dae_stopped()
+                elif action == 'upd_result': self._on_update_result(args)
+                elif action == 'upd_progress': self._on_update_progress(args)
+                elif action == 'upd_ready': self._on_update_ready(args)
+                elif action == 'upd_failed': self._on_update_failed(args)
         except queue.Empty:
             pass
         except Exception:
@@ -3382,6 +4026,12 @@ class MemWiseGUI:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    # 更新助手分支：必须在**任何初始化之前**退出（不建 GUI、不取单实例互斥、不写运行态）
+    if "--apply-update" in sys.argv:
+        sys.exit(_apply_update(sys.argv))
+    # 更新后清理（能跑到这里说明当前版本启动正常 ⇒ 上一轮的 .old 备份已完成使命）：
+    # 只动我们自己的产物（<exe>.old / <exe>.new / %TEMP%/MemWise_*.exe[.part]），绝不触碰用户文件。
+    _update_housekeeping()
     # 重启路径：先睡再初始化（必须在 init_runtime / 单实例互斥之前——否则会与
     # 尚未退出的旧实例抢互斥）。正常启动无该参数，行为零变化。
     _delay = _parse_delay_start(sys.argv)

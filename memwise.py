@@ -1,7 +1,7 @@
 """
-MemWise v4.7.023 PARES —— 智能内存看护
+MemWise v5.0.004 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
-不杀进程、不挂起、不注入、不联网；仅在按设置写入状态与日志文件。
+不杀进程、不挂起、不注入；默认不联网（仅在你开启「检查更新」后访问官方发布渠道，不发送任何设备信息）；仅在按设置写入状态与日志文件。
 """
 
 import ctypes, json, os, sys, time
@@ -154,6 +154,15 @@ def cmd_optimize(args):
     winapi.report_event("MemWise", tr_msg(f"优化完成: {stats['freed_mb']}MB 释放, {len(trimmed)} 进程"))
     learner.save(STATE_PATH)
 
+# ── CLI 服务模式计划任务（2026-10-16 改走 /Create /XML；任务名与动作构造只此一份，防两处漂移）──
+_SERVICE_TASK = "MemWiseDaemon"
+
+
+def _service_action():
+    """服务任务的参数部分：本脚本 + daemon --minimized（脚本路径含空格时保留引号）。"""
+    return '"%s" daemon --minimized' % os.path.abspath(__file__)
+
+
 def cmd_daemon(args):
     # 命令行守护互斥（2026-09-06 审查 F3）：防 CLI 双开与 GUI 守护并发——双进程同时
     # 写同一状态文件，进程内锁不跨进程会交错损坏画像唯一副本
@@ -162,6 +171,14 @@ def cmd_daemon(args):
     if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
         print(tr("命令行守护已在运行，本实例退出"))
         return
+    # 任务自愈（2026-10-16）：若本任务由旧的命令行方式创建，会带「仅交流电启动 / 切电池即停 /
+    # 72 小时执行上限」三项 schema 默认值（表现：笔记本用电池时守护不启动、跑满 3 天被系统结束）。
+    # SYSTEM 身份允许改写自身任务 ⇒ 此处幂等重建一次，已安装的用户无需重装；失败静默、不影响守护。
+    try:
+        if winapi.service_task_needs_fix(_SERVICE_TASK):
+            winapi.set_service_task(_SERVICE_TASK, sys.executable, _service_action())
+    except Exception:
+        pass
     print(tr("MemWise PARES 守护 (Ctrl+C 停止)"))
     learner, judger, cleaner = _build_pipeline()
     sniffer = Sniffer()
@@ -318,29 +335,21 @@ def cmd_import(args):
     print(tr("配置已导入，重启程序后生效"))
 
 def cmd_install_service(args):
-    import subprocess
-    exe = sys.executable
-    script = os.path.abspath(__file__)
-    task_name = "MemWiseDaemon"
-    action = f'"{exe}" "{script}" daemon --minimized'
+    task_name = _SERVICE_TASK
     if args and args[0] == "remove":
+        import subprocess
         # shell=False：列表直接传 schtasks，不经过 cmd.exe 二次解析（引号错乱隐患源）
         subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         print(tr("Scheduled Task 已移除"))
         return
-    # ⚠ 已知限制（2026-10-15）：命令行建任务会继承 schema 默认值「仅交流电启动 / 切电池即停 /
-    # 运行 72 小时强制结束」。GUI 的「管理员权限开机自启动」已改走 /Create /XML 显式关闭这三项；
-    # 本 CLI 子命令不在 exe 内、且是 SYSTEM 启停语义，暂不改（如需可复用同一 XML 方案）。
-    cmd = ["schtasks", "/create", "/tn", task_name, "/tr", action,
-           "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest", "/f"]
-    r = subprocess.run(cmd, capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
-    if r.returncode == 0:
+    ok = winapi.set_service_task(task_name, sys.executable, _service_action())
+    if ok:
         print(tr("✓ Scheduled Task 已安装 (系统启动时自动运行)"))
         winapi.report_event("MemWise", tr_msg("服务模式已安装 (Scheduled Task)"))
     else:
-        print(tr("✗ 安装失败 (需管理员权限): ") + r.stderr.decode('gbk','ignore').strip())
+        _d = winapi.last_task_detail()
+        print(tr("✗ 安装失败 (需管理员权限)") + (("：" + _d) if _d else ""))
 
 def cmd_profile(args):
     if not args: print(tr("用法: memwise profile <pid>")); return
@@ -402,7 +411,7 @@ def main():
     except Exception:
         pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v4.7.023 PARES —— 智能内存看护"))
+        print(tr("MemWise v5.0.004 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

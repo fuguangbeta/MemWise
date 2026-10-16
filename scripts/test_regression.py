@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v4.7.023 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v5.0.004 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 # GBK 控制台容错（2026-10-15）：失败详情含 emoji（如 ⚠）时 print 会抛 UnicodeEncodeError，
 # 把「断言失败」伪装成「脚本崩溃」；与 CLI main() 同款处理（errors=replace）。
 try:
@@ -3053,6 +3055,108 @@ check("README 永久免费声明 + MIT 许可文件齐备",
 check("README 只放事实徽章（无奖牌/自造奖项）",
       "奖牌" not in _readme52 and "Repository Of The" not in _readme52)
 
+print("\n[51] CLI 服务模式任务改走 XML + 守护自愈（2026-10-16 收口）")
+_wa51 = _src47("core/winapi.py"); _mw51 = _src47("memwise.py")
+check("两个任务模板共用同一份 Settings 单一权威源（字面量全文件仅一份）",
+      "_TASK_SETTINGS_XML" in _wa51
+      and _wa51.count("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>") == 1
+      and _wa51.count('.replace("{settings}", _TASK_SETTINGS_XML)') == 2)
+check("服务模板：开机触发 + SYSTEM（UserId=S-1-5-18）+ 不写 LogonType",
+      "<BootTrigger>" in _wa51 and "<UserId>S-1-5-18</UserId>" in _wa51
+      and "<LogonType>ServiceAccount</LogonType>" not in _wa51
+      and "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in _wa51
+      and "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in _wa51)
+check("CLI 安装改走 winapi.set_service_task（旧命令行建任务已移除）",
+      "winapi.set_service_task(task_name, sys.executable, _service_action())" in _mw51
+      and '"/sc", "onstart", "/ru", "SYSTEM"' not in _mw51
+      and '"schtasks", "/create"' not in _mw51)
+check("CLI 守护自带旧任务幂等自愈",
+      "if winapi.service_task_needs_fix(_SERVICE_TASK):" in _mw51
+      and "winapi.set_service_task(_SERVICE_TASK, sys.executable, _service_action())" in _mw51)
+check("建任务失败可诊断（last_task_detail 留痕，CLI 失败时打印）",
+      "def last_task_detail():" in _wa51 and "_LAST_TASK_DETAIL" in _wa51
+      and "winapi.last_task_detail()" in _mw51)
+
+print("\n[52] 调参器最小停留（2026-10-16：cooloff_base/cpu_gate/io_gate 实测每 10~15 轮翻转）")
+_ef52 = _src47("core/efis.py")
+check("常量与字段就位（MIN_ADJUST_DWELL / _last_change / _dwell_skipped）",
+      "MIN_ADJUST_DWELL = 30" in _ef52 and "self._last_change = {}" in _ef52
+      and "self._dwell_skipped = 0" in _ef52
+      and "self._last_change[param] = self._cycle" in _ef52)
+check("set_mode 切换即清除停留钟", "self._last_change.clear()" in _ef52)
+import core.efis as _E52, tempfile as _tf52, shutil as _sh52
+_d52 = _tf52.mkdtemp(prefix="mw_efis52_")
+try:
+    _e52 = _E52.EfisController(os.path.join(_d52, "efis_state.json"))
+    _e52.set_mode("full")
+    _e52.params["cooloff_base"] = 360.0
+    _e52._cycle = 1000
+    _e52._apply({"cooloff_base": -1}); _e52._apply({"cooloff_base": -1})
+    _v1 = _e52.params["cooloff_base"]
+    check("行为：连续同向证据仍能正常调整（既有能力未丢）", _v1 == 330.0, "v=%s" % _v1)
+    _e52._cycle = 1005
+    _e52._apply({"cooloff_base": -1}); _e52._apply({"cooloff_base": -1})
+    check("行为：停留期内不再调整（抖动被抑制）",
+          _e52.params["cooloff_base"] == _v1, "v=%s" % _e52.params["cooloff_base"])
+    check("行为：停留期推迟有留痕", _e52._dwell_skipped > 0, "n=%s" % _e52._dwell_skipped)
+    _e52._cycle = 1000 + _E52.MIN_ADJUST_DWELL + 1
+    _e52._apply({"cooloff_base": -1}); _e52._apply({"cooloff_base": -1})
+    check("行为：停留期过后恢复调整（延迟而非反转）",
+          _e52.params["cooloff_base"] == 300.0, "v=%s" % _e52.params["cooloff_base"])
+    _e52.set_mode("deep")
+    check("行为：模式切换清空停留钟", not _e52._last_change)
+finally:
+    _sh52.rmtree(_d52, ignore_errors=True)
+
+print("\n[53] S 缩放：尺寸类阈值按机器内存规模缩放（本机 S=1 逐位不变）")
+_wa53 = _src47("core/winapi.py"); _cl53 = _src47("core/cleaner.py"); _st53 = _src47("core/stable.py")
+check("winapi 提供 memory_scale（量化 + 夹取 + 回退）",
+      "def memory_scale():" in _wa53 and "round(s * 4) / 4.0" in _wa53
+      and "max(0.5, min(4.0" in _wa53 and "return 1.0" in _wa53)
+check("7 个尺寸类阈值按 S 缩放（源码形态）",
+      _cl53.count("* _S)") == 6 and "int((32 << 20) * _S)" in _st53)
+check("代价/收益量级类阈值不缩放（语义=划不划算，与机器规模无关）",
+      "TREE1_HIGH = 50 << 20" in _src47("core/policy.py")
+      and "MIN_WS_BYTES = 1 << 20" in _src47("core/judger.py")
+      and "DEEPEN_WASTE_BYTES = 10 << 20" in _src47("core/efis.py")
+      and "L3_RETRIM_GROWTH_FLOOR = 8 << 20" in _cl53
+      and "WS_CAP_MIN_BYTES = 256 << 20" in _wa53)
+import core.winapi as _W53, core.cleaner as _C53, core.stable as _S53
+check("本机 S=1.0 ⇒ 缩放阈值与原字面量逐位一致（行为零变化）",
+      _W53.memory_scale() == 1.0
+      and _W53.WS_CAP_MIN_BYTES == 256 << 20 and _C53.TIER_WS_DEEP == 200 << 20
+      and _C53.TIER_WS_MID == 50 << 20 and _C53.MP_WS_NORMAL == 100 << 20
+      and _C53.MP_WS_FULL == 50 << 20 and _C53.COMPOSITE_FREED_SCALE == 200 << 20
+      and _C53.COMPOSITE_WS_SCALE == 500 << 20 and _S53.ABSOLUTE_MARGIN == 32 << 20,
+      "S=%s" % _W53.memory_scale())
+_orig53 = _W53.get_memory_status
+try:
+    _W53.get_memory_status = lambda: {"total": 8 << 30}
+    check("行为：8GB 机 S=0.5", _W53.memory_scale() == 0.5, str(_W53.memory_scale()))
+    _W53.get_memory_status = lambda: {"total": 64 << 30}
+    check("行为：64GB 机 S=4.0（夹上限）", _W53.memory_scale() == 4.0, str(_W53.memory_scale()))
+    _W53.get_memory_status = lambda: {"total": 20 << 30}
+    check("行为：20GB 机 S=1.25（量化档位）", _W53.memory_scale() == 1.25, str(_W53.memory_scale()))
+    _W53.get_memory_status = lambda: {"total": 0}
+    check("行为：异常值 ⇒ 回退 1.0（绝不产生 0/负值）", _W53.memory_scale() == 1.0)
+    def _boom53():
+        raise RuntimeError("boom")
+    _W53.get_memory_status = _boom53
+    check("行为：读取异常 ⇒ 回退 1.0", _W53.memory_scale() == 1.0)
+finally:
+    _W53.get_memory_status = _orig53
+import core.winapi as _W51
+_svc51 = _W51._service_task_xml("C:/x/python.exe", '"C:/a b/m.py" daemon --minimized')
+_auto51 = _W51._autostart_task_xml("C:/x/MemWise.exe", "--minimized")
+check("行为：服务 XML 关键项齐全且与自启模板互不串味",
+      all(k in _svc51 for k in ("<BootTrigger>", "S-1-5-18", "<RunLevel>HighestAvailable</RunLevel>",
+                                "<ExecutionTimeLimit>PT0S<", "<DisallowStartIfOnBatteries>false<",
+                                "<Command>C:/x/python.exe</Command>", "<Arguments>"))
+      and "LogonType" not in _svc51 and "<LogonTrigger>" not in _svc51
+      and "<BootTrigger>" not in _auto51
+      and "<LogonType>InteractiveToken</LogonType>" in _auto51
+      and _svc51.count("<Settings>") == 1 and _auto51.count("<Settings>") == 1)
+
 # 「中文标点 + 加粗」的 CommonMark 坑（2026-10-15 实测）：收尾 ** 前是标点、后接非空白字符时
 # 不是右翼定界符 ⇒ 整段原样显示（**原样显示**）。用静态扫描锁住，防止再犯。
 def _uni_p52(c):
@@ -3178,6 +3282,168 @@ finally:
     _E50.base = _b50
     _E50._event_log = _ev50
     _sh50.rmtree(_bt50, ignore_errors=True)
+print("\n[54] 更新检查（默认不联网；双通道/哈希校验/原子替换/降级）")
+_u54 = _src47("core/update.py"); _g54 = _src47("memwise_gui.py"); _w54 = _src47("core/winapi.py")
+_c54 = _src47("core/config.py"); _i54 = _src47("core/i18n.py")
+_r54 = _src47("README.md"); _ch54 = _src47("CHANGELOG.md")
+check("更新模块与关键能力齐备（WinHTTP/双通道/校验/节流）",
+      all(k in _u54 for k in ("WinHttpOpen", "def parse_version(", "def is_newer(", "def check_latest(",
+                               "def download(", "def verify_file(", "def due(", "sha256_mismatch", "POL_ALWAYS")))
+check("零第三方依赖：不引入 ssl/http/urllib（与打包 excludes 一致）",
+      "import urllib" not in _u54 and "import ssl" not in _u54 and "import http" not in _u54
+      and "MEMWISE_UPDATE" not in _u54)
+check("原子替换 + 更新助手（在任何初始化之前 + 复制到同卷再换名）",
+      "def replace_file_atomic(" in _w54 and "MOVEFILE_REPLACE_EXISTING" in _w54
+      and '"--apply-update" in sys.argv' in _g54 and "def _apply_update(argv):" in _g54
+      and "def _rollback():" in _g54 and 'stage = target + ".new"' in _g54
+      and "shutil.copy2(new_exe, stage)" in _g54)
+check("配置键默认值：默认关 / 自动替换开 / 代理空",
+      '"update_check": False' in _c54 and '"update_auto_apply": True' in _c54 and '"update_proxy": ""' in _c54)
+check("承诺改写：默认不联网，且不再声称无法自动更新",
+      "默认不访问网络" in _r54 and "默认完全不联网" in _r54
+      and "无法做到自动更新" not in _r54
+      and "does not connect to the network, it cannot update itself" not in _r54
+      and "默认不联网" in _ch54 and "默认不联网" in _src47("memwise.py"))
+check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
+      'text=tr("更新"), padding=8' in _g54 and "_upd_check(manual=False)" in _g54
+      and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log("发现新版本' in _g54)
+check("侧视加固 A：更新退出必须走优雅收尾（否则丢未落盘状态/硬杀线程）",
+      "self.engine.shutdown()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
+      and "self.engine.save_state()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0]
+      and "_save_cfg()" in _g54.split("def _apply_and_exit")[1].split("def _on_update_failed")[0])
+check("侧视加固 B：无校验信息/目录不可写 ⇒ 绝不自动装",
+      'if not info.get("sha256"):' in _g54 and "_writable" in _g54.split("def _on_update_result")[1].split("def _update_prompt_text")[0])
+check("侧视加固 C：助手早期失败（等待超时/备份失败/替换失败）都要把旧版拉起来",
+      _g54.split("def _apply_update(argv):")[1].count("_launch_app(target, minimized)") >= 3)
+check("侧视加固 D/E：取消不算失败 + 替换重试 + 等待放宽到 120s",
+      '== "cancelled"' in _g54 and "for _i in range(5):" in _g54 and "_wait_pid_exit(pid, 120.0)" in _g54)
+check("侧视加固 F/G/H：可写性门控 + 下载中锁 + 代理归一 + 体积上限",
+      "self._upd_downloading" in _g54 and "def _normalize_proxy(" in _u54 and "_cap = (int(size)" in _u54)
+_ast54 = __import__("ast")
+_t54tree = _ast54.parse(_g54)
+_def54 = {n.name for n in _ast54.walk(_t54tree) if isinstance(n, _ast54.FunctionDef)}
+_asg54 = {a.attr for n in _ast54.walk(_t54tree) if isinstance(n, _ast54.Assign) for a in n.targets
+          if isinstance(a, _ast54.Attribute) and isinstance(a.value, _ast54.Name) and a.value.id == "self"}
+_mine54 = {"_upd_state", "_upd_status", "_upd_check", "_upd_worker", "_on_update_result", "_start_download",
+           "_download_worker", "_on_update_ready", "_apply_and_exit", "_on_update_failed", "_open_release_page",
+           "_copy_link", "_choice_dialog", "_progress_dialog", "_countdown_dialog", "_upd_status_init"}
+_used54 = {sub.attr for n in _ast54.walk(_t54tree) if isinstance(n, _ast54.FunctionDef) and n.name in _mine54
+           for sub in _ast54.walk(n) if isinstance(sub, _ast54.Attribute)
+           and isinstance(sub.value, _ast54.Name) and sub.value.id == "self"}
+# 真实助手行为演练（2026-10-16 真机测试抓到 NameError 后新增）：
+# 用替身 exe + 打桩 sys.executable（绝不指向真实解释器——曾把系统 python.exe 搬走），
+# 验证"替换失败必须回滚"这条真实路径，而不是只做字符串断言。
+import tempfile as _tf54b, shutil as _sh54b, hashlib as _hb54b
+_rt54 = _tf54b.mkdtemp(prefix="mw_upd54rt_")
+class _P54:
+    returncode = 2
+    def poll(self): return 2      # 立即"退出" ⇒ 走回滚分支
+_real_exe54 = sys.executable
+try:
+    _fake54 = os.path.join(_rt54, "New.exe")
+    _tgt54 = os.path.join(_rt54, "App.exe")
+    _sh54b.copy2(_real_exe54, _tgt54)                      # 目标 = 可执行的替身（真解释器副本）
+    open(_fake54, "wb").write(b"NOT-AN-EXE")               # "新版" = 非可执行 ⇒ 启动必失败 ⇒ 必须回滚
+    _orig54 = _hb54b.sha256(open(_tgt54, "rb").read()).hexdigest()
+    import memwise_gui as _G54
+    _sp54, _sl54 = _G54.subprocess.Popen, _G54.time.sleep
+    _realsleep54 = time.sleep   # 先存真实引用：G.time 与本测试的 time 是同一模块，直接套 lambda 会自递归
+    try:
+        _G54.subprocess.Popen = lambda *a, **k: _P54()
+        _G54.time.sleep = lambda s: _realsleep54(min(s, 1.0))
+        sys.executable = _fake54            # 打桩：助手"新版"= 替身，绝不碰真解释器
+        _rc54 = _G54._apply_update(["x", "--apply-update", _tgt54, "999999"])
+    finally:
+        sys.executable = _real_exe54
+        _G54.subprocess.Popen, _G54.time.sleep = _sp54, _sl54
+    _log54 = open(os.path.join(_rt54, "data", "memwise.log"), encoding="utf-8", errors="ignore").read()
+    check("真实助手演练：新版启动失败 ⇒ 必须回滚（目标字节还原 + 回滚留痕）",
+          _hb54b.sha256(open(_tgt54, "rb").read()).hexdigest() == _orig54
+          and "回滚" in _log54, "rc=%s" % _rc54)
+finally:
+    _sh54b.rmtree(_rt54, ignore_errors=True)
+
+import core.update as _Up54, tempfile as _tf54c
+_pe54 = os.path.join(_tf54c.mkdtemp(prefix="mw_pe54_"), "x.bin")
+open(_pe54, "wb").write(b"NOT-AN-EXE")
+check("PE 形态校验：非可执行文件必须被识别（真机测试补）",
+      _Up54.is_pe(_pe54) is False and _Up54.is_pe(sys.executable) is True)
+check("下载落盘后先验哈希、再验 PE 形态（源码形态）",
+      "if not is_pe(tmp):" in _src47("core/update.py") and '"not_pe"' in _src47("core/update.py"))
+check("静态自检：更新相关方法引用的 self 成员全部存在（防拼写漏洞）",
+      bool(_used54) and all(k in _def54 or k in _asg54 for k in _used54),
+      "缺失: %s" % sorted(k for k in _used54 if k not in _def54 and k not in _asg54))
+check("侧视加固 I：.old 15 分钟保护期（覆盖助手确认窗口）",
+      "> 900" in _g54 and "保护窗口必须覆盖确认窗口" in _g54)
+check("更新后清理：只动自己的产物（.old/.new/%TEMP% 残留）",
+      "def _update_housekeeping():" in _g54 and "_update_housekeeping()" in _g54
+      and 'exe + ".old"' in _g54 and '"MemWise_*.exe"' in _g54)
+check("失败弹窗支持多按钮（打开发布页 + 复制链接）——_dark_message 需接受列表",
+      "isinstance(extra, list)" in _g54 and 'extra=[(tr("打开发布页"), self._open_release_page)' in _g54)
+check("i18n：更新相关静态文案已翻译",
+      all(k in _i54 for k in ("Check for Updates", "Skip This Version", "Open Release Page", "Update Failed")))
+import http.server, socketserver, threading as _th54, hashlib as _h54, json as _j54, tempfile as _tf54, shutil as _sh54
+_t54 = _tf54.mkdtemp(prefix="mw_upd54_")
+_payload = open(sys.executable, "rb").read()   # 真 PE 载荷（is_pe 校验要求）
+_digest = "sha256:" + _h54.sha256(_payload).hexdigest()
+class _H54(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def do_HEAD(self):
+        self.do_GET()
+    def do_GET(self):
+        if self.path == "/latest":
+            body = _j54.dumps({"tag_name": "v9.9.9", "body": "notes", "assets": [
+                {"name": "MemWise.exe", "size": len(_payload), "digest": _digest,
+                 "browser_download_url": "http://127.0.0.1:%d/MemWise.exe" % self.server.server_address[1]}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/MemWise.exe":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(_payload)))
+            self.end_headers()
+            self.wfile.write(_payload)
+        elif self.path.startswith("/releases/tag/"):
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+_srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _H54)
+_srv.daemon_threads = True
+_th54.Thread(target=_srv.serve_forever, daemon=True).start()
+_port = _srv.server_address[1]
+try:
+    import core.update as _U54
+    _res54 = _U54.check_latest(api_url="http://127.0.0.1:%d/latest" % _port)
+    check("离线端到端：API 通道解析出版本/大小/SHA-256（回环，不联网）",
+          bool(_res54.get("ok")) and _res54.get("tag") == "v9.9.9" and _res54.get("size") == len(_payload)
+          and _res54.get("sha256") == _digest, str(_res54.get("reason")))
+    check("离线端到端：版本比较（v9.9.9 > 本地 4.7.23）", _U54.is_newer(_res54.get("tag"), "4.7.23"))
+    _dst54 = os.path.join(_t54, "dl.exe")
+    _ok54, _why54 = _U54.download(_res54["url"], _dst54, sha256=_res54["sha256"], size=_res54["size"])
+    check("离线端到端：下载 + 哈希校验通过（逐字节一致）",
+          _ok54 and open(_dst54, "rb").read() == _payload, _why54)
+    _bad54 = os.path.join(_t54, "bad.exe")
+    _okb54, _whyb54 = _U54.download(_res54["url"], _bad54, sha256="sha256:" + "0" * 64, size=_res54["size"])
+    check("离线端到端：哈希不符必须拒绝且不留残留",
+          (not _okb54) and _whyb54 == "sha256_mismatch"
+          and not os.path.exists(_bad54) and not os.path.exists(_bad54 + ".part"), _whyb54)
+    _res54b = _U54.check_latest(api_url="http://127.0.0.1:%d/nope" % _port,
+                                head_url="http://127.0.0.1:%d/releases/tag/v9.9.9" % _port)
+    check("离线端到端：API 失败降级到 HEAD 通道（无哈希 ⇒ 仅提示）",
+          bool(_res54b.get("ok")) and _res54b.get("source") == "head" and _res54b.get("sha256") is None,
+          str(_res54b.get("reason")))
+    _r54c = _U54.check_latest(api_url="http://127.0.0.1:9/nope", head_url="http://127.0.0.1:9/nope")
+    check("离线端到端：两个通道都失败 ⇒ 结构化失败原因（不抛异常）",
+          (not _r54c.get("ok")) and bool(_r54c.get("reason")))
+finally:
+    _srv.shutdown()
+    _srv.server_close()
+    _sh54.rmtree(_t54, ignore_errors=True)
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

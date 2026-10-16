@@ -68,6 +68,21 @@ Process32FirstW = k32.Process32FirstW; Process32FirstW.argtypes=[w.HANDLE,ctypes
 Process32NextW = k32.Process32NextW; Process32NextW.argtypes=[w.HANDLE,ctypes.POINTER(PROCESSENTRY32W)]; Process32NextW.restype=w.BOOL
 OpenProcess = k32.OpenProcess; OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD]; OpenProcess.restype=w.HANDLE
 CloseHandle = k32.CloseHandle; CloseHandle.argtypes=[w.HANDLE]; CloseHandle.restype=w.BOOL
+WaitForSingleObject = k32.WaitForSingleObject; WaitForSingleObject.argtypes=[w.HANDLE, w.DWORD]; WaitForSingleObject.restype=w.DWORD
+MoveFileExW = k32.MoveFileExW; MoveFileExW.argtypes=[w.LPCWSTR, w.LPCWSTR, w.DWORD]; MoveFileExW.restype=w.BOOL
+MOVEFILE_REPLACE_EXISTING = 0x1
+MOVEFILE_WRITE_THROUGH = 0x8
+
+
+def replace_file_atomic(src, dst):
+    """原子替换文件（MoveFileEx + REPLACE_EXISTING + WRITE_THROUGH）——更新助手专用。
+
+    用"一步换名"而不是"删除+复制"：后者会留下"目标文件不存在"的窗口（此时用户双击会失败）。
+    返回是否成功；失败原因交给调用方（多为文件被占用或权限不足）。"""
+    try:
+        return bool(MoveFileExW(str(src), str(dst), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    except Exception:
+        return False
 GetCurrentProcess = k32.GetCurrentProcess; GetCurrentProcess.argtypes=[]; GetCurrentProcess.restype=w.HANDLE
 CreateFileW = k32.CreateFileW; CreateFileW.argtypes=[w.LPCWSTR, w.DWORD, w.DWORD, ctypes.c_void_p, w.DWORD, w.DWORD, w.HANDLE]; CreateFileW.restype=w.HANDLE
 FlushFileBuffers = k32.FlushFileBuffers; FlushFileBuffers.argtypes=[w.HANDLE]; FlushFileBuffers.restype=w.BOOL
@@ -119,6 +134,32 @@ def get_memory_status():
     ms = MEMORYSTATUSEX(); ms.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
     if GlobalMemoryStatusEx(ctypes.byref(ms)):
         return {"pct": ms.dwMemoryLoad, "total": ms.ullTotalPhys, "avail": ms.ullAvailPhys, "used": ms.ullTotalPhys - ms.ullAvailPhys}
+
+
+# 机器内存标度（2026-10-16）：S = 总物理内存 / 参照机 16 GB，夹取 [0.5, 4.0]。
+# 依据：固定绝对值阈值在不同内存规模的机器上语义失衡——实测 8MB 收益闸命中率跨 k=0.25~4 为
+# 6.8%→49.7%（7.3× 漂移）、50MB 档 17×、256MB 下限从 0% 到 5.1%；按 S 缩放后各档恒定。
+# 仅用于「按机器规模相对判断」的**尺寸类**阈值；语义为"划不划算"的代价类阈值
+# （WS 低限 MIN_WS_BYTES / PF 允许量 / KB/s 门 / 收益量级类）**不缩放**。
+# 读不到或数值异常 ⇒ 1.0（回到固定绝对值行为，绝不产生 0/负值）。本机 S=1 ⇒ 逐位不变。
+_S_REFERENCE_BYTES = 16 << 30
+
+
+def memory_scale():
+    """机器内存标度 S（见上方说明）。异常一律回退 1.0。"""
+    try:
+        st = get_memory_status() or {}
+        total = float(st.get("total") or 0)
+        if not (total >= (1 << 30)):      # 读不到 / 小于 1GB：视为不可信
+            return 1.0
+        s = total / _S_REFERENCE_BYTES
+        if not (s == s) or s <= 0:        # NaN / 非正
+            return 1.0
+        # 量化到 0.25 步：①常见容量（8/16/32/64GB）落在整齐档位；②本机 ullTotalPhys 为 15.73GiB
+        # （"16GB 机"的可用值）⇒ 原样算出 0.983 会破坏"本机逐位不变"，量化后恰为 1.0 ✔
+        return max(0.5, min(4.0, round(s * 4) / 4.0))
+    except Exception:
+        return 1.0
     return None
 
 # ── GetPerformanceInfo（SystemCache 精确测量文件缓存，filecache 释放量统计用）──
@@ -1389,6 +1430,8 @@ def create_memwise_icon(size=32, bg_color=(45,45,50), shadow=True, gradient=0.47
 
 # ─── 开机自启（管理员权限·Task Scheduler） ───
 
+_LAST_TASK_DETAIL = ""   # 最近一次建任务失败详情（见 _create_task_from_xml）
+
 # 任务定义模板（2026-10-15 二次改造：改走 `/Create /XML`）。
 #
 # 为什么不能用命令行参数：`schtasks /Create` 的 schema 默认值是「**仅交流电启动 / 切到电池即停 /
@@ -1397,24 +1440,9 @@ def create_memwise_icon(size=32, bg_color=(45,45,50), shadow=True, gradient=0.47
 # 用户可见表现为：笔记本用电池登录时「勾了自启却没反应」，插上适配器才启动；拔掉电源守护被停。
 # 用 XML 一次性显式写全，顺带消除 StartWhenAvailable 等其它隐藏默认。
 # ⚠ 打包 excludes 里有 `xml`，故此处不 import xml.sax，转义自己实现。
-_AUTOSTART_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Author>MemWise</Author>
-    <Description>MemWise 开机自启动（登录时以最高权限静默运行；允许电池供电、不限运行时长）</Description>
-  </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-    </LogonTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-{user_line}      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
+# <Settings> 段抽为单一权威源（2026-10-16）：自启任务与 CLI 服务任务必须**同时**显式关闭
+# 「仅交流电启动 / 切电池即停 / 72 小时执行上限」，两处复制粘贴必然漂移——故只此一份。
+_TASK_SETTINGS_XML = """  <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
@@ -1432,7 +1460,56 @@ _AUTOSTART_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
-  </Settings>
+  </Settings>"""
+
+
+# 登录触发 + 当前用户交互令牌（GUI「管理员权限开机自启动」）
+_AUTOSTART_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>MemWise</Author>
+    <Description>MemWise 开机自启动（登录时以最高权限静默运行；允许电池供电、不限运行时长）</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+{user_line}      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+{settings}
+  <Actions Context="Author">
+    <Exec>
+{exec_block}
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+# 开机触发 + SYSTEM 服务账户（CLI `service` 子命令：无窗口守护，登录与否都运行）
+_SERVICE_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>MemWise</Author>
+    <Description>MemWise 服务模式（系统启动时以 SYSTEM 运行命令行守护；允许电池供电、不限运行时长）</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+{settings}
   <Actions Context="Author">
     <Exec>
 {exec_block}
@@ -1448,6 +1525,58 @@ def _xml_escape(s):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def _task_exec_block(target_path, arguments=""):
+    """生成 <Exec> 块：Command 单独一项（无需引号，空格路径天然安全）、参数走 Arguments。"""
+    block = "      <Command>%s</Command>" % _xml_escape(target_path)
+    if arguments:
+        block += "\n      <Arguments>%s</Arguments>" % _xml_escape(arguments)
+    return block
+
+
+def _service_task_xml(target_path, arguments=""):
+    """开机触发的服务任务 XML（SYSTEM 服务账户 + 最高权限）——CLI `service` 子命令用。
+
+    与自启模板共用 _TASK_SETTINGS_XML（单一权威源）：两处都必须显式关闭「仅交流电启动 /
+    切电池即停 / 72 小时执行上限」，否则命令行建出来的任务会重蹈电池静默失效
+    （2026-10-15 实测：schtasks 命令行建任务三项均继承 schema 默认值）。
+    """
+    return (_SERVICE_TASK_XML.replace("{settings}", _TASK_SETTINGS_XML)
+            .replace("{exec_block}", _task_exec_block(target_path, arguments)))
+
+
+def _create_task_from_xml(name, xml):
+    """落盘 UTF-16 XML 并调 `schtasks /Create /XML`（argv 列表，shell=False）：成功返回 True。
+
+    失败详情（schtasks 的 stderr/stdout）存入 `_LAST_TASK_DETAIL` 并经 last_task_detail() 暴露——
+    2026-10-16 真机验收时因丢失 stderr 无法定位失败原因，故必须留痕。"""
+    global _LAST_TASK_DETAIL
+    try:
+        import subprocess, tempfile
+        fd, path = tempfile.mkstemp(suffix=".xml", prefix="memwise_task_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-16") as f:   # schtasks 要求 UTF-16（带 BOM）
+                f.write(xml)
+            cmd = ["schtasks", "/Create", "/TN", name, "/XML", path, "/F"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            _LAST_TASK_DETAIL = ((r.stderr or "") + (r.stdout or "")).strip()
+            if r.returncode != 0:
+                _LAST_TASK_DETAIL = "rc=%d %s" % (r.returncode, _LAST_TASK_DETAIL)
+            return r.returncode == 0
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    except Exception as _e:
+        _LAST_TASK_DETAIL = repr(_e)
+        return False
+
+
+def last_task_detail():
+    """最近一次建任务失败的原因（成功时为空串）——供 CLI 报错与诊断使用。"""
+    return _LAST_TASK_DETAIL
+
+
 def _autostart_task_xml(target_path, arguments=""):
     """生成任务 XML：Command 单独一项（无需引号，空格路径天然安全）、参数走 Arguments。"""
     user = "%s\\%s" % (os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", ""))
@@ -1456,7 +1585,8 @@ def _autostart_task_xml(target_path, arguments=""):
     if arguments:
         exec_block += "\n      <Arguments>%s</Arguments>" % _xml_escape(arguments)
     return (_AUTOSTART_TASK_XML.replace("{user_line}", user_line)
-            .replace("{exec_block}", exec_block))
+            .replace("{settings}", _TASK_SETTINGS_XML)
+            .replace("{exec_block}", _task_exec_block(target_path, arguments)))
 
 
 def set_auto_start_admin(name, target_path, arguments=""):
@@ -1465,23 +1595,16 @@ def set_auto_start_admin(name, target_path, arguments=""):
     走 `/Create /XML`：命令行无法表达省电与执行时限，其默认值会让笔记本电池下自启静默失效
     （详见 _AUTOSTART_TASK_XML 上方注释）。argv 列表调用（shell=False），路径含空格/特殊字符安全。
     """
-    try:
-        import subprocess, tempfile
-        xml = _autostart_task_xml(target_path, arguments)
-        fd, path = tempfile.mkstemp(suffix=".xml", prefix="memwise_task_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-16") as f:   # schtasks 要求 UTF-16（带 BOM）
-                f.write(xml)
-            cmd = ["schtasks", "/Create", "/TN", name, "/XML", path, "/F"]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-            return r.returncode == 0
-        finally:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-    except Exception:
-        return False
+    return _create_task_from_xml(name, _autostart_task_xml(target_path, arguments))
+
+
+def set_service_task(name, target_path, arguments=""):
+    """创建/覆盖 CLI 服务模式计划任务（系统启动时以 SYSTEM 运行命令行守护）。
+
+    与自启任务同走 `/Create /XML`：CLI 原先用命令行建任务，继承了「仅交流电启动 / 切电池即停 /
+    72 小时执行上限」三项 schema 默认值（笔记本用电池时不启动、跑满 3 天被系统结束）。
+    """
+    return _create_task_from_xml(name, _service_task_xml(target_path, arguments))
 
 
 def auto_start_admin_needs_fix(name):
@@ -1503,6 +1626,11 @@ def auto_start_admin_needs_fix(name):
                 or b"<ExecutionTimeLimit>PT0S<" not in out)
     except Exception:
         return False
+
+
+def service_task_needs_fix(name):
+    """CLI 服务任务是否仍带旧默认（电池 / 执行时限）——判据与自启任务完全一致。"""
+    return auto_start_admin_needs_fix(name)
 
 
 def remove_auto_start_admin(name):
@@ -1527,6 +1655,9 @@ def remove_auto_start_admin(name):
 
 QUOTA_LIMITS_HARDWS_MAX_ENABLE = 0x4    # QUOTA_LIMITS_HARDWS_MAX_ENABLE（MSDN）
 QUOTA_LIMITS_HARDWS_MAX_DISABLE = 0x8   # QUOTA_LIMITS_HARDWS_MAX_DISABLE
+# ⚠ 此下限**不随机器内存缩放**（2026-10-16 定论）：目标进程的缺页抖动取决于它自身的工作集，
+# 与机器内存规模无关；且界面/config 侧限制是固定 256MB，若缩放会造成 64GB 机上 API 下限
+# （1024MB）与界面限制（256MB）静默不一致。分类 A（代价类）阈值一律保持绝对值。
 WS_CAP_MIN_BYTES = 256 << 20            # 安全下限：低于此值目标程序缺页抖动不可接受（防自残）
 
 GetProcessWorkingSetSize = k32.GetProcessWorkingSetSize
