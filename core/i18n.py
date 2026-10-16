@@ -14,9 +14,7 @@ _current = "zh_CN"
 
 # ── 英文翻译表（键 = 中文原文；覆盖全部用户可见面）──
 _EN = {
-    "  · 启动 — 以管理员权限开机自启动、": "  · Startup — auto-start with admin rights, ",
-    "             启动时自动守护、": "             auto-guard at startup, ",
-    "             开机自启动后最小化到托盘": "             minimize to tray after auto-start",
+    "  · 启动 — 开机自启动、自动守护与托盘最小化": "  · Startup — auto-start, auto-guard and tray minimize",
     "  · 更新 — 检查更新、自动下载替换与代理地址": "  · Update — check for updates, auto-download/replace, proxy address",
     "2. 开启后会自动规划清理策略，根据系统状态持续优化调整": "2. Plans its cleanup strategy automatically and keeps tuning to system state",
     "3. 守护模式下有游戏自动检测，也可以手动开启游戏模式": "3. Guard detects games automatically; you can also turn Game Mode on manually",
