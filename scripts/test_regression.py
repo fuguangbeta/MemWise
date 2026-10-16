@@ -3402,11 +3402,23 @@ try:
     # 行宽检查（2026-10-16 用户反馈"提示被截断"）：任一行请求宽度超限即视为布局缺陷
     _upf54s = _f54s.winfo_children()[0]
     _root54s.update_idletasks()
+    # tooltip 覆盖（2026-10-16 用户反馈"悬停没反应"）：可交互子控件必须绑了 <Enter>
+    _noTip54s = []
+    def _walk54s(w):
+        for _c in w.winfo_children():
+            if _c.winfo_class() in ("TButton", "TCheckbutton", "TEntry"):
+                if not _c.bind("<Enter>"):
+                    _noTip54s.append(_c.winfo_class())
+            _walk54s(_c)
+    _walk54s(_f54s)
     _wide54s = [(_c.winfo_class(), _c.winfo_reqwidth()) for _c in _upf54s.winfo_children()
                 if _c.winfo_reqwidth() > 430]
     if _wide54s:
         _smoke54_ok = False
         _smoke54_err = "行宽超限: %s" % _wide54s[:3]
+    if _noTip54s:
+        _smoke54_ok = False
+        _smoke54_err = "这些控件缺 tooltip: %s" % _noTip54s[:4]
     _root54s.destroy()
 except Exception as _e54s:
     _smoke54_err = "%s: %s" % (type(_e54s).__name__, _e54s)

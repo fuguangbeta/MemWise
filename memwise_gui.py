@@ -772,6 +772,7 @@ class ToolTip:
     def _bind(self, w):
         w.bind("<Enter>", self._enter, add="+")
         w.bind("<Leave>", self._leave, add="+")
+        w.bind("<Button-1>", self._leave, add="+")   # 点击即隐藏（2026-10-16：此前点了按钮提示仍挡在那里）
 
     def _enter(self, e):
         self.widget = e.widget  # 定位跟随当前悬停控件
@@ -796,18 +797,32 @@ class ToolTip:
             self._hide()  # 先销毁已有提示窗（可能是其他实例的延迟回调所建）
         if not self.widget.winfo_exists():
             return  # 窗口已销毁（after 回调残留）：跳过创建防 TclError
-        x = self.widget.winfo_rootx() + 16
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
         # master 用控件所在顶层窗口而非控件本身：Toplevel 挂在行内控件路径下时，
         # 关闭窗口的递归销毁会二次删除其 Tcl 命令（can't delete Tcl command）导致
         # 销毁中断、窗口只销毁部分（曾见设置面板只剩语言行消失）
-        self._tip = tk.Toplevel(self.widget.winfo_toplevel())
-        self._tip.wm_overrideredirect(True)
-        self._tip.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(self._tip, text=self.text, justify="left",
+        sw, sh = self.widget.winfo_screenwidth(), self.widget.winfo_screenheight()
+        # 自适应宽度（2026-10-16 用户反馈"用着不顺手"）：旧实现固定 wraplength=800，
+        # 长文案会拉成一条横贯屏幕的大条并越过屏幕右缘被切掉 ⇒ 改为随屏幕宽度收窄换行。
+        wrap = max(260, min(560, sw - 140))
+        tip = tk.Toplevel(self.widget.winfo_toplevel())
+        tip.withdraw()          # 先隐藏：量完尺寸再定位，避免在 (0,0) 闪一下
+        tip.wm_overrideredirect(True)
+        lbl = tk.Label(tip, text=self.text, justify="left",
                        bg="#2d2d2d", fg="#eee", font=("Microsoft YaHei UI", 9),
-                       padx=8, pady=4, wraplength=800)
+                       padx=8, pady=4, wraplength=wrap)
         lbl.pack()
+        tip.update_idletasks()
+        tw, th = tip.winfo_reqwidth(), tip.winfo_reqheight()
+        wx, wy = self.widget.winfo_rootx(), self.widget.winfo_rooty()
+        x = wx + 16
+        y = wy + self.widget.winfo_height() + 4
+        if y + th > sh - 8:                     # 下方放不下 ⇒ 翻到控件上方显示
+            y = max(8, wy - th - 4)
+        if x + tw > sw - 8:                     # 右侧越界 ⇒ 向左收边，保证完整可读
+            x = max(8, sw - tw - 8)
+        tip.wm_geometry(f"+{x}+{y}")
+        tip.deiconify()
+        self._tip = tip
 
     def _hide(self):
         if self._tip is not None:
@@ -3099,7 +3114,10 @@ class MemWiseGUI:
         ent_px.bind("<FocusOut>", _on_upd_proxy)
         # 提示独立成行（2026-10-16 用户反馈：与输入框同排会被面板宽度截断，只剩"(留空 ="）
         ttk.Label(upf, text=tr("留空则自动使用系统代理"), foreground="#777").pack(anchor="w", pady=(2, 0))
-        self._add_tip(upf, self._upd_tooltip())
+        # tooltip 逐行覆盖（Tk 的 Enter/Leave 不冒泡到父级：只挂外框会让按钮/勾选框/输入框悬停无声）
+        _tip54 = self._upd_tooltip()
+        for _row in (upf, row_up, row_px):
+            self._add_tip_row(_row, _tip54)
 
     def _upd_status_init(self):
         """设置面板打开时的初始状态行（读运行态：上次检查/跳过版本 → 给一句人话）。"""
@@ -3111,14 +3129,17 @@ class MemWiseGUI:
         return tr("上次检查：") + _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M")
 
     def _upd_tooltip(self):
-        """更新栏 tooltip（八规则：标题 + 数字条目 + ⚠ 提示，纯中文原文由 i18n 提供英文）。"""
+        """更新栏 tooltip（八规则：功能名 + 数字条目 + ⚠ 提示；纯中文，专有名词 GitHub 保留）。
+
+        2026-10-16 重写：旧版出现算法名（SHA-256）与版本变更口吻，且只挂在外框上——
+        悬停按钮/勾选框/输入框都不显示；现改为逐行覆盖（见 _build_update_section）。"""
         return (
             "「检查更新」\n"
-            "1. 仅在你开启后才会访问官方发布渠道（GitHub）\n"
-            "2. 只读取版本号与更新包信息，不发送任何设备信息\n"
-            "3. 更新包用 SHA-256 校验，校验失败会自动放弃\n"
-            "⚠ 默认关闭，不开启则完全不联网\n"
-            "⚠ 更新会替换程序并自动重启，配置与学习数据原样保留"
+            "1. 检查官方发布渠道（GitHub）上是否有更高版本\n"
+            "2. 开启「启动时自动检查更新」后，每次启动都会自动检查一次\n"
+            "3. 开启「发现新版本时自动下载并替换重启」后，会先下载并校验完整性，确认无误再替换程序并自动重启\n"
+            "⚠ 默认关闭，不开启时程序完全不联网\n"
+            "⚠ 校验不通过会自动放弃，保留当前版本"
         )
 
     def _upd_state(self):
