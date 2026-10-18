@@ -1,6 +1,12 @@
 # MemWise 项目指令（AGENTS.md）
 
-本文件是 MemWise 仓库工作区行为准则，每次会话注入。**开始工作前先读知识库索引**；涉及发布/规范细节时读取对应记忆文件。
+本文件是 MemWise 仓库工作区行为准则，每次会话注入。
+
+## 0. 启动门
+
+进入项目：先调用 `skill("memwise")`，再读 `workstate.md`；预热轮按 `session-protocols` 例外。任务篇目由技能路由，按需读，不通读全库。
+
+**知识库索引见下表**；涉及发布/规范细节时读取对应记忆文件。
 
 ## 项目速览
 Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方依赖，单 exe）。GUI 入口 `memwise_gui.py`，CLI `memwise.py`。当前版本 v5.1.037（**2026-10-18 发布**）。核心模块 `core/`：cleaner（三层清理）/ judger（决策冷却）/ kalman / learner（Pareto 画像）/ policy（五树投票）/ efis（EFIS 参数自适应）/ eris（ERIS v9 冻结基线效率评分）/ winapi / config / icon_flat / stable / rebound / i18n / backup（配置包导出/导入/恢复默认）/ **update（可选更新检查，2026-10-16）**/ **engine（无 UI 引擎，2026-08-14 解耦）**。测试 `scripts/test_regression.py`（**735 项**）。发布脚本 `scripts/release_*.py`（本地工具，gitignore 不上传）。
@@ -8,7 +14,7 @@ Windows 内存看护工具（Python 3.14 + 纯 ctypes Win32 API，零第三方�
 ## 📚 知识库索引（工作前必读）
 项目记忆在项目记忆目录（路径见用户级指令，**13 篇内容文件 + MEMORY.md 索引**——2026-09-10 全量归纳后的结构，按需读取）：
 
-**新窗口阅读顺序**：workstate（现场）→ memory-writing-rules（怎么记）→ red-lines-and-work-ethics（怎么干）→ session-protocols + project-overview（项目是什么）→ 按任务取用下表其余文件。
+**新窗口阅读顺序**：**`skill("memwise")` → workstate（现场）** → memory-writing-rules（怎么记）→ red-lines-and-work-ethics（怎么干）→ session-protocols + project-overview（项目是什么）→ 按任务取用下表其余文件。
 
 | 文件 | 内容 | 何时读 |
 |---|---|---|
