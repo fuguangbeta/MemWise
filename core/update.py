@@ -13,7 +13,7 @@
 - **版本比较**：`v4.7.026` → (4,7,26) 数值元组；解析失败或本地≥远端 ⇒ 不更新（兼容开发态）。
 - 所有失败都返回**结构化原因**，UI 据此降级为"提示 + 打开发布页"。
 """
-import ctypes, ctypes.wintypes as w, hashlib, json, os, re, time
+import ctypes, ctypes.wintypes as w, json, os, re, shutil, time
 
 OWNER, REPO = "fuguangbeta", "MemWise"
 ASSET_NAME = "MemWise.exe"
@@ -25,8 +25,9 @@ TIMEOUT_CONNECT_MS = 8000
 TIMEOUT_RECV_MS = 30000
 STATE_NAME = "memwise_update.json"     # data/ 下的运行态（last_check / skip_version）
 
-# ── WinHTTP 绑定（仅本模块使用）──
-_wh = ctypes.WinDLL("winhttp")
+# ── WinHTTP 绑定（仅本模块使用；P36：绝对路径加载，防便携目录 DLL 劫持）──
+_SYS32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+_wh = ctypes.WinDLL(os.path.join(_SYS32, "winhttp.dll"))
 _H = ctypes.c_void_p
 _wh.WinHttpOpen.argtypes = [w.LPCWSTR, w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD]; _wh.WinHttpOpen.restype = _H
 _wh.WinHttpConnect.argtypes = [_H, w.LPCWSTR, w.WORD, w.DWORD]; _wh.WinHttpConnect.restype = _H
@@ -126,6 +127,7 @@ def _request(url, method="GET", proxy=None, want_body=False, on_chunk=None, canc
             return True, st, b"", final, ""
         buf = ctypes.create_string_buffer(CHUNK)
         out = bytearray()
+        received = 0
         got = w.DWORD(0)
         while True:
             if cancel is not None and cancel():
@@ -133,11 +135,13 @@ def _request(url, method="GET", proxy=None, want_body=False, on_chunk=None, canc
             if not _wh.WinHttpReadData(req, buf, CHUNK, ctypes.byref(got)) or got.value == 0:
                 break
             chunk = buf.raw[:got.value]
+            received += len(chunk)
             if on_chunk is not None:
                 on_chunk(chunk)
             else:
                 out += chunk
-            if max_bytes is not None and len(out) > max_bytes:
+            # P02：无论走回调还是内存累积都必须计数——回调路径下 out 恒空，旧判据完全失效
+            if max_bytes is not None and received > max_bytes:
                 return False, st, b"", final, "too_large"
         return True, st, bytes(out), final, ""
     except Exception as e:
@@ -192,18 +196,57 @@ def is_pe(path):
         return False
 
 
+# ── SHA-256 via Windows CNG（P31）：不引入 hashlib/OpenSSL（打包体积 −1.9MB 压缩 / −5.2MB 解压）──
+# bcrypt.dll 也按绝对路径加载（P36）。BCryptHash 为 Win10 1507+ 提供，项目要求 Win10 20H1+。
+_bcrypt = None
+try:
+    _bcrypt = ctypes.WinDLL(os.path.join(_SYS32, "bcrypt.dll"))
+    _bcrypt.BCryptOpenAlgorithmProvider.argtypes = [ctypes.POINTER(ctypes.c_void_p), w.LPCWSTR, w.LPCWSTR, w.ULONG]
+    _bcrypt.BCryptOpenAlgorithmProvider.restype = w.LONG
+    _bcrypt.BCryptHash.argtypes = [ctypes.c_void_p, ctypes.c_void_p, w.ULONG, ctypes.c_void_p, w.ULONG, ctypes.c_void_p, w.ULONG]
+    _bcrypt.BCryptHash.restype = w.LONG
+    _bcrypt.BCryptCloseAlgorithmProvider.argtypes = [ctypes.c_void_p, w.ULONG]
+    _bcrypt.BCryptCloseAlgorithmProvider.restype = w.LONG
+except Exception:
+    _bcrypt = None
+
+
+def _sha256_bytes(data):
+    """SHA-256（CNG）。失败抛异常——调用方按 verify_error 拒绝更新，绝不静默放行。"""
+    if _bcrypt is None:
+        raise OSError("bcrypt/BCryptHash unavailable")
+    alg = ctypes.c_void_p()
+    st = _bcrypt.BCryptOpenAlgorithmProvider(ctypes.byref(alg), "SHA256", None, 0)
+    if st != 0 or not alg:
+        raise OSError("BCryptOpenAlgorithmProvider 0x%08X" % (st & 0xFFFFFFFF))
+    try:
+        out = (ctypes.c_ubyte * 32)()
+        buf = ctypes.create_string_buffer(data)
+        st = _bcrypt.BCryptHash(alg, None, 0, ctypes.cast(buf, ctypes.c_void_p), len(data), out, 32)
+        if st != 0:
+            raise OSError("BCryptHash 0x%08X" % (st & 0xFFFFFFFF))
+        return bytes(out).hex()
+    finally:
+        try:
+            _bcrypt.BCryptCloseAlgorithmProvider(alg, 0)
+        except Exception:
+            pass
+
+
+def sha256_file(path):
+    """文件 SHA-256（一次读入；更新包约 12MB，内存可接受）。"""
+    with open(path, "rb") as f:
+        return _sha256_bytes(f.read())
+
+
 def verify_file(path, sha256=None, size=None):
     """校验文件：大小必须匹配（若给出）；sha256 必须匹配（若给出）。返回 (ok, reason)。"""
     try:
         if size is not None and os.path.getsize(path) != int(size):
             return False, "size_mismatch"
         if sha256:
-            h = hashlib.sha256()
-            with open(path, "rb") as f:
-                for blk in iter(lambda: f.read(1 << 20), b""):
-                    h.update(blk)
             want = sha256.split(":", 1)[-1].strip().lower()
-            if h.hexdigest() != want:
+            if sha256_file(path) != want:
                 return False, "sha256_mismatch"
         return True, ""
     except Exception as e:
@@ -360,6 +403,11 @@ def download(url, dest, sha256=None, size=None, proxy=None, progress=None, cance
                 except Exception: pass
                 return False, "cancelled"
         if not _par:
+            # P35：分段失败/取消后进度从头开始，避免进度条回跳
+            done[0] = 0
+            if progress is not None:
+                try: progress(0, total)
+                except Exception: pass
             f = open(tmp, "wb")
             # 已知大小 ⇒ 允许 1MB 余量作为硬上限（防"出错时无限拉取"或对端返回超大文件）
             _cap = (int(size) + (1 << 20)) if size else None
@@ -377,6 +425,10 @@ def download(url, dest, sha256=None, size=None, proxy=None, progress=None, cance
             try: os.remove(tmp)
             except Exception: pass
             _par = False
+            done[0] = 0
+            if progress is not None:
+                try: progress(0, total)
+                except Exception: pass
             f = open(tmp, "wb")
             _cap = (int(size) + (1 << 20)) if size else None
             ok3, _st3, _b3, _u3, why3 = _request(url, proxy=_normalize_proxy(proxy), want_body=True,
@@ -420,7 +472,17 @@ def load_state(base):
         with open(p, encoding="utf-8") as f:
             got = json.load(f)
         if isinstance(got, dict):
-            d.update({k: got.get(k, d[k]) for k in d})
+            # P16：schema 校验——损坏/手改的字段不得把设置面板带崩（fromtimestamp 只接受数值）
+            _v = got.get("v", d["v"])
+            if isinstance(_v, int) and not isinstance(_v, bool):
+                d["v"] = _v
+            _lc = got.get("last_check", d["last_check"])
+            if (isinstance(_lc, (int, float)) and not isinstance(_lc, bool)
+                    and 0 <= float(_lc) <= time.time() + 86400):
+                d["last_check"] = float(_lc)
+            _sv = got.get("skip_version", d["skip_version"])
+            if isinstance(_sv, str):
+                d["skip_version"] = _sv
     except Exception:
         pass
     return d

@@ -4,12 +4,17 @@ PolicyVoter — 五树投票决策引擎
 """
 import time
 
+from .winapi import memory_scale
+
 # ── 树 1 / 树 5 的「显著收益」绝对线（分类 B：语义与物理内存规模相关，见 cleaner 同区注释）──
 # 2026-10-15 实验：固定绝对值下，同一相对表现的判定会随机器规模漂移（本机 S=1 行为不变）。
-TREE1_HIGH = 50 << 20      # 树1：预期释放 > 此值 → +2（收益高）
-TREE1_MID = 10 << 20       # 树1：> 此值 → +1（收益中）
-TREE5_ADV_HIGH_MB = 50     # 树5：相对同类均值优势 > 此 MB → +2
-TREE5_ADV_MID_MB = 20      # 树5：> 此 MB → +1
+# P21：按 S=物理内存/16GiB 缩放——64GB 机上 50MB 仅 0.08%，不缩放的 +2 几乎对所有人成立，
+# 投票失去区分度；S=1（本机 16GB 档）时逐位等于旧常量。
+_S = memory_scale()
+TREE1_HIGH = int((50 << 20) * _S)      # 树1：预期释放 > 此值 → +2（收益高）
+TREE1_MID = int((10 << 20) * _S)       # 树1：> 此值 → +1（收益中）
+TREE5_ADV_HIGH_MB = max(1, int(round(50 * _S)))     # 树5：相对同类均值优势 > 此 MB → +2
+TREE5_ADV_MID_MB = max(1, int(round(20 * _S)))      # 树5：> 此 MB → +1
 
 class PolicyVoter:
     """五树投票框架：收益/代价/时机/紧迫/反事实（**实际启用 3 棵树**）

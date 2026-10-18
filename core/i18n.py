@@ -53,6 +53,49 @@ _EN = {
     "检查更新": "Check for Updates",
     "正在下载更新": "Downloading Update",
     "正在检查更新…": "Checking for updates…",
+    # ── 更新流程动态模板（P03：先翻译模板再 % 格式化，避免参数破坏 key 匹配）──
+    "检查更新：已是最新版本（当前 v%s）": "Check for updates: you are up to date (current v%s)",
+    "发现新版本 %s（当前 v%s）": "New version found %s (current v%s)",
+    "发现新版本 %s（当前 v%s，%.1f MB）": "New version found %s (current v%s, %.1f MB)",
+    "开始下载更新 %s（%.1f MB）": "Downloading update %s (%.1f MB)",
+    "更新包校验通过（%s）": "Update package verified (%s)",
+    "已取消重启，本次更新作废（下次启动仍会提示）": "Restart cancelled; this update is discarded (you will be prompted on the next launch)",
+    "更新已推迟（下次启动仍会提示）": "Update postponed (you will be prompted on the next launch)",
+    "已跳过版本 %s（此后不再弹窗）": "Skipped version %s (no more prompts)",
+    "已取消更新": "Update cancelled",
+    "已取消下载更新": "Update download cancelled",
+    "发现新版本 %s（当前 v%s，%.1f MB）。\n\n可在设置中开启「自动下载并替换」。": "New version found %s (current v%s, %.1f MB).\n\nYou can enable \"Auto-download and replace\" in Settings.",
+    "发现新版本 %s（当前 v%s）。\n\n此版本未提供校验信息，为安全起见不自动更新，请手动下载。": "New version found %s (current v%s).\n\nThis release provides no checksum, so it will not be applied automatically. Please download it manually.",
+    "发现新版本 %s，但程序所在目录不可写，无法自动替换。\n\n请手动下载后覆盖安装。": "New version found %s, but the program folder is not writable, so it cannot be replaced automatically.\n\nPlease download it manually and overwrite the current version.",
+    "将在 %d 秒后自动重启完成更新": "Restarting in %d seconds to finish the update",
+    "即将重启完成更新…": "Restarting to finish the update…",
+    "更新失败：%s": "Update failed: %s",
+    "更新失败：%s\n\n可手动前往官方发布页下载新版本。": "Update failed: %s\n\nYou can download the new version from the official release page.",
+    "网络超时": "network timeout",
+    "无法连接（网络受限或需要代理）": "cannot connect (network restricted or a proxy is required)",
+    "请求发送失败": "request could not be sent",
+    "未收到响应": "no response received",
+    "地址无效": "invalid address",
+    "无法初始化网络会话": "could not initialize the network session",
+    "已取消": "cancelled",
+    "更新包校验失败（哈希不符）": "package verification failed (checksum mismatch)",
+    "更新包大小不符": "package size mismatch",
+    "写入文件失败": "failed to write the file",
+    "更新包不是可执行文件（已丢弃）": "the package is not a Windows executable (discarded)",
+    "发布页未找到更新包": "no package found on the release page",
+    "无法启动更新助手": "could not start the update helper",
+    "内部错误": "internal error",
+    "服务器返回 %s": "server returned %s",
+    "未知原因（%s）": "unknown reason (%s)",
+    "发布说明（原文）：": "Release notes (original):",
+    "4. 双击进程可终止（会先弹窗确认）": "4. Double-click a process to terminate it (confirmation required)",
+    "规则数量已达上限（%d 条），请先删除一条。": "The rule limit (%d) has been reached. Delete one first.",
+    "⛨ 已设置工作集硬上限（%sMB）：%s": "⛨ Hard working-set cap set (%s MB): %s",
+    "重启失败": "Restart Failed",
+    "无法自动启动新实例，请手动重新打开程序。\n本次更改已保存，下次启动生效。": "Could not start a new instance automatically. Please reopen the program manually.\nThis change has been saved and will take effect on the next launch.",
+    "重置失败": "Reset Failed",
+    "部分文件无法删除（可能被占用）。\n请关闭占用程序后重试；本次未重启。": "Some files could not be deleted (they may be in use).\nClose the program using them and try again; the app was not restarted.",
+    "%s 内存 %d%% | 可用 %.1fGB | 释放 %.1fMB | 整理 %d": "%s Memory %d%% | Free %.1f GB | Freed %.1f MB | Trimmed %d",
     "源码运行模式没有可替换的 exe，更新功能仅正式版可用": "Auto-update is available in the packaged build only",
     "稍后": "Later",
     "立即更新": "Update Now",
@@ -348,7 +391,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v5.0.012 启动· ": "MemWise v5.0.012 started · ",
+    "MemWise v5.1.037 启动· ": "MemWise v5.1.037 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -783,7 +826,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v5.0.012 PARES —— 智能内存看护": "MemWise v5.0.012 PARES — Intelligent Memory Custodian",
+    "MemWise v5.1.037 PARES —— 智能内存看护": "MemWise v5.1.037 PARES — Intelligent Memory Custodian",
     # ── 工作集硬上限（高级选项，设计 v2.4 文案规格）──
     "已设硬上限": "Hard-capped",
     "设置工作集硬上限…": "Set working-set hard cap…",
@@ -851,6 +894,18 @@ _EN_SORTED = tuple(sorted(_EN, key=len, reverse=True))
 
 def get_language():
     return _current
+
+
+def tr_fmt(template, *args):
+    """模板翻译：**先翻译模板、再 % 格式化**（P03）。
+    运行时拼接的 "前缀 %s 后缀" 在参数插入后不再等于任何 key，片段替换只能命中半段；
+    此入口先拿完整模板做精确/片段翻译，参数不会破坏匹配。翻译失败回退模板原文格式化。
+    仅显示层使用；文件日志仍保留中文原文（F51）。"""
+    t = tr(template)
+    try:
+        return t % args
+    except Exception:
+        return template % args
 
 
 def tr(s):

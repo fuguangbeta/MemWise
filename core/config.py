@@ -11,7 +11,10 @@ except ImportError:
 
 if getattr(sys, "frozen", False):
     _exe_dir = os.path.dirname(sys.executable)
-    if os.path.basename(_exe_dir).lower() == "dist":
+    # P33：dist 特判只用于开发态（同级存在 MemWise.spec）；用户把 exe 放进名为 dist 的文件夹时
+    # 数据仍在 exe 旁，避免“数据跑到父目录/不可写”的意外
+    if (os.path.basename(_exe_dir).lower() == "dist"
+            and os.path.isfile(os.path.join(os.path.dirname(_exe_dir), "MemWise.spec"))):
         _base = os.path.dirname(_exe_dir)
     else:
         _base = _exe_dir
@@ -71,6 +74,10 @@ DEFAULT_CFG = {
 # 清理操作合法键（GUI 六开关全量映射）；历史遗留键（compress/combine 等旧版操作名）
 # 无任何消费方——加载时白名单清洗，防止死配置残留（名不副实）
 CLEAN_OPS_WHITELIST = {"ws", "standby", "modified", "filecache", "volume", "registry"}
+
+# 工作集硬上限的界面/配置共用上限（P19：两处口径必须同一常量，防“界面能设、加载被截”）
+WS_CAP_MAX_MB = 65536
+WS_CAP_MAX_RULES = 16
 
 
 def _norm_proc_name(raw):
@@ -139,6 +146,8 @@ def load():
         # never 黑名单规范化（2026-09-06 审查 F9）：手改配置的无后缀条目（如 chrome）也能
         # 精准匹配快照进程名；幂等——GUI 写回的已规范化条目零变化，空/None 条目剔除
         d["never"] = [n for n in (_norm_proc_name(x) for x in d["never"] if x and str(x).strip()) if n]
+        # P35：游戏名单与 never 同口径归一（补 .exe/小写）；旧配置零行为变化（消费方本就会归一）
+        d["game_processes"] = [n for n in (_norm_proc_name(x) for x in d["game_processes"] if x and str(x).strip()) if n]
         # 工作集硬上限规则（高级选项）：键=规范化完整路径；mb 钳 256-65536；条目上限 16
         # （先全量校验再截断——有效条目优先于位置）；非法/越界/畸形条目整体剔除
         _wc = d.get("ws_caps")
@@ -151,9 +160,9 @@ def load():
                 _om = int(float(_v.get("orig_max", 0)))
             except (TypeError, ValueError, AttributeError):
                 continue
-            if isinstance(_k, str) and _k and 256 <= _mb <= 65536 and _om > 0:
+            if isinstance(_k, str) and _k and 256 <= _mb <= WS_CAP_MAX_MB and _om > 0:
                 _clean[_k.strip().lower().replace("/", "\\")] = {"mb": _mb, "orig_max": _om}
-        d["ws_caps"] = dict(list(_clean.items())[:16])
+        d["ws_caps"] = dict(list(_clean.items())[:WS_CAP_MAX_RULES])
         # efis_params 类型校验（2026-08-15 审查）：畸形配置（列表/字符串）会致
         # Judger 构造 .get 崩溃（启动即崩）；内层数值键清洗——手改字符串会在
         # PidController 运行时 TypeError（守护异常），坏键删除回退默认
@@ -169,7 +178,9 @@ def load():
         # 越界值会绕过全部门槛——已实证两例：emergency_threshold:0 → 每周期固定紧急 full；
         # emergency_abs_pct ≥100 → "可用率 ≤ ap" 恒真 → 同样每周期恒紧急 full（本次新增钳制）。
         # target_usage 是 EFIS 同名参数的兜底（EFIS 恒提供该键），按其边界 35-65 钳制。
-        for _k, _lo, _hi in (("emergency_threshold", 50, 99), ("emergency_abs_pct", 0, 99),
+        # P20：emergency_abs_pct 是“可用率 ≤ ap”的兜底；ap=90/99 在可用率常态 20-60% 下恒真
+        # ⇒ 每周期紧急 full。上限收到 50（仍足够激进），0=禁用。
+        for _k, _lo, _hi in (("emergency_threshold", 50, 99), ("emergency_abs_pct", 0, 50),
                              ("clean_passes", 2, 6), ("interval", 10, 3600),
                              ("gap_seconds", 8, 20), ("target_usage", 35, 65)):
             try:

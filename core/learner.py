@@ -86,7 +86,7 @@ class Profile:
                  "clean_count", "refill_ewma",
                  "kalman", "last_feedback_time",
                  "last_foreground_at",  # 最后前台时间（前台历史冷却：刚切走不碰）
-                 "_info_msgs", "timeout_count")
+                 "_info_msgs", "timeout_count", "samples_total", "last_drift_at")
 
     def __init__(self, name, kalman_r=5.0):
         self.name = name
@@ -130,10 +130,13 @@ class Profile:
         self.kalman = KalmanProfile(r=kalman_r)
         self._info_msgs = []  # 泄漏检测等消息缓冲
         self.timeout_count = 0  # 超时累计（仅内存，不持久化）
+        self.samples_total = 0  # P05：累计观测次数（滑动窗 total_samples 只有 20，不能当累计用）
+        self.last_drift_at = 0.0  # 上次概念漂移复位时间（防同一漂移每次 tick 反复削 α/β）
 
     def feed(self, ws, is_fg=False):
         """喂入 WS 样本，更新 EWMA 和 Z-score 基线；is_fg=True 记录最后前台时间（前台历史冷却）"""
         self.ws_deque.append(ws)
+        self.samples_total += 1
         prev_seen = self.last_seen
         self.last_seen = time.time()
         if is_fg:
@@ -217,6 +220,16 @@ class Profile:
         self._theta_dirty = False
         return self._theta_cache
 
+    def _cap_ab(self):
+        """P09：α/β 上界与软缩唯一实现（record_clean / record_probe 共用）。
+        与 from_dict 的 100/50 上界一致，避免“运行期 182、重启后 100”的不一致。"""
+        self.alpha = min(self.alpha, 100)
+        self.beta = min(self.beta, 50)
+        if self.alpha > 80:
+            ratio = self.beta / max(self.alpha, 1)
+            self.alpha = int(self.alpha * 0.85)
+            self.beta = max(1, int(self.alpha * ratio))
+
     def record_clean(self, ok, freed=0, pf_delta=0, lr=None):
         """连续反馈记录清理结果 — 考虑释放质量和PF代价"""
         self.last_ok = ok
@@ -271,13 +284,7 @@ class Profile:
             self.fail_cnt += 1
             self.ok_cnt = 0
             self.beta += 1
-        self.alpha = min(self.alpha, 100)   # 防止 Alpha 无限膨胀导致 Thompson 退化
-        self.beta = min(self.beta, 50)      # 同上
-        # 软上限：超限后等比缩归，保持 α/β 比例不畸变
-        if self.alpha > 80:
-            ratio = self.beta / max(self.alpha, 1)
-            self.alpha = int(self.alpha * 0.85)
-            self.beta = max(1, int(self.alpha * ratio))
+        self._cap_ab()   # P09：统一上限/软缩
         self._theta_dirty = True
 
     def record_probe(self, ok, lr=None, freed=0):
@@ -303,6 +310,7 @@ class Profile:
         else:
             self.probe_fail += 1
             self.beta += 1
+        self._cap_ab()   # P09：探针路径此前无上限（实测 60 次后 α=182）
         self._theta_dirty = True
 
     @property
@@ -347,6 +355,8 @@ class Profile:
             "name": self.name,
             "alpha": self.alpha, "beta": self.beta,
             "ws": list(self.ws_deque),
+            "samples_total": self.samples_total,
+            "last_drift_at": self.last_drift_at,
             "gain_ewma": self.gain_ewma, "cost_ewma": self.cost_ewma,
             "gain_ewma_fast": self.gain_ewma_fast, "gain_ewma_slow": self.gain_ewma_slow,
             "cost_ewma_fast": self.cost_ewma_fast, "cost_ewma_slow": self.cost_ewma_slow,
@@ -385,6 +395,9 @@ class Profile:
         p._theta_dirty = True
         ws_raw = d.get("ws", [])
         p.ws_deque = deque([_num(x) for x in ws_raw if isinstance(x, (int, float))][-WINDOW:], maxlen=WINDOW)
+        # P05：旧状态无 samples_total ⇒ 用窗口长度兜底（首启略低，但不会 0 造成漂移误判）
+        p.samples_total = max(len(p.ws_deque), int(_num(d.get("samples_total", 0))))
+        p.last_drift_at = max(0.0, _num(d.get("last_drift_at", 0.0)))
         p.gain_ewma = max(0.0, _num(d.get("gain_ewma", 0.0)))
         p.cost_ewma = max(0.0, _num(d.get("cost_ewma", 0.0)))
         p.gain_ewma_fast = max(0.0, _num(d.get("gain_ewma_fast", 0.0)))
@@ -459,9 +472,12 @@ class PareLearner:
         key = self._ctx_bucket(mem_pct, is_fg, hour)
         fr = max(0.1, min(5.0, actual_freed / kalman_freed))
         cr = max(0.1, min(5.0, actual_pf / max(kalman_cost, 1))) if kalman_cost > 0 and actual_pf > 0 else 1.0
-        old_f, old_c = self._ctx_corrections.get(key, (1.0, 1.0))
-        if not isinstance(old_f, tuple):
-            old_f, old_c = (old_f, 1.0)
+        # P23：先取值再判类型——旧单值格式直接解包会 TypeError（实测）
+        _val = self._ctx_corrections.get(key, (1.0, 1.0))
+        if isinstance(_val, (tuple, list)) and len(_val) == 2:
+            old_f, old_c = float(_val[0]), float(_val[1])
+        else:
+            old_f, old_c = float(_val), 1.0
         self._ctx_corrections[key] = (0.85 * old_f + 0.15 * fr, 0.85 * old_c + 0.15 * cr)
 
  
@@ -549,6 +565,12 @@ class PareLearner:
                     # 策略树权重按模式持久化（2026-08-30）：在线学习成果随画像保存，
                     # 重启后沿用；旧格式无此键 → 加载端回退默认等权（完全向后兼容）
                     "policy": {m: list(w) for m, w in self.policy._mode_weights.items()},
+                    # P23：上下文修正表（30 桶 × 2 float）随画像持久化；旧版无此键 → 空表
+                    "ctx_corrections": [
+                        {"k": list(k),
+                         "v": ([float(v[0]), float(v[1])]
+                               if isinstance(v, (tuple, list)) and len(v) == 2 else [float(v), 1.0])}
+                        for k, v in dict(self._ctx_corrections).items()],
                 }
                 # tmp 附加进程号（2026-09-06 审查 F3）：进程内锁不跨进程——CLI daemon 与
                 # GUI 并发保存时各写各的 tmp，os.replace 原子替换，退化为"最后写者胜"
@@ -593,6 +615,19 @@ class PareLearner:
                         and len(weights) == 5
                         and all(isinstance(x, (int, float)) and math.isfinite(x) for x in weights)):
                     learner.policy._mode_weights[mode] = [max(-2.0, min(2.0, float(x))) for x in weights]
+        # P23：恢复上下文修正（有限性/范围校验；坏条目跳过）
+        _cc = data.get("ctx_corrections")
+        if isinstance(_cc, list):
+            for _it in _cc:
+                try:
+                    _k = tuple(_it.get("k"))
+                    _v = _it.get("v")
+                    if (len(_k) == 3 and isinstance(_v, (list, tuple)) and len(_v) == 2
+                            and all(isinstance(x, (int, float)) and math.isfinite(x) for x in _v)):
+                        learner._ctx_corrections[_k] = (max(0.1, min(5.0, float(_v[0]))),
+                                                       max(0.1, min(5.0, float(_v[1]))))
+                except Exception:
+                    continue
         return learner
 
     # ── 反饋 ──

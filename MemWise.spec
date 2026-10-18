@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+# P32：PyYAML 是构建期硬依赖——缺失时 config.load/save 会静默退化为默认值，
+# 必须在构建开始就失败，而不是产出一个“设置永远不保存”的 exe。
+import yaml  # noqa: F401
+
 
 a = Analysis(
     ['memwise_gui.py'],
@@ -10,7 +14,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['ssl','email','http','urllib','xml','unittest','pydoc','asyncio','multiprocessing'],
+    excludes=['ssl','_ssl','_hashlib','email','http','urllib','xml','unittest','pydoc','asyncio','multiprocessing'],
     noarchive=False,
     optimize=2,
 )

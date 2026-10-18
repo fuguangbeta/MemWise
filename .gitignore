@@ -45,3 +45,6 @@ config/*.bak*
 config/*.tmp
 config/.write_test*
 *.json
+
+# DSH 工作区本地配置（含记忆库目录联接）
+.dsh/

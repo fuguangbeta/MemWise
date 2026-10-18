@@ -1,5 +1,5 @@
 """
-MemWise v5.0.012 GUI —— 图形界面
+MemWise v5.1.037 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -29,7 +29,7 @@ from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
 from core.sniffer import Sniffer
 from core.icon_flat import FLAT_48_PNG, decode_png  # 任务栏扁平图标（内嵌 PNG，冷启动 exe 兼容）
-from core.i18n import tr, tr_msg, set_language, LANGUAGES, get_language  # 界面语言
+from core.i18n import tr, tr_msg, tr_fmt, set_language, LANGUAGES, get_language  # 界面语言
 from core import backup  # 配置包：导出/导入/自动备份/恢复出厂（任务3，2026-09-06）
 from core import config as _config_mod  # 配置读写组件可用性自检（2026-10-15）
 
@@ -283,9 +283,10 @@ def _parse_delay_start(argv):
 
 
 def _upd_reason_text(why):
-    """更新失败原因码 → 用户可读中文（UI 文案；日志仍记原始码）。"""
+    """更新失败原因码 → 当前语言可读文本（UI 文案；日志仍记原始码）。
+    P03：返回值必须已翻译——外层的 "更新失败：%s" 模板只负责外壳。"""
     key = str(why or "").split(":")[0]
-    return {
+    mapped = {
         "timeout": "网络超时",
         "connect_failed": "无法连接（网络受限或需要代理）",
         "send_failed": "请求发送失败",
@@ -300,7 +301,12 @@ def _upd_reason_text(why):
         "no_asset_url": "发布页未找到更新包",
         "spawn_helper_failed": "无法启动更新助手",
         "exception": "内部错误",
-    }.get(key, ("服务器返回 %s" % key.split("_", 1)[1]) if key.startswith("http_") else ("未知原因（%s）" % why))
+    }.get(key)
+    if mapped:
+        return tr(mapped)
+    if key.startswith("http_"):
+        return tr("服务器返回 %s") % key.split("_", 1)[1]
+    return tr("未知原因（%s）") % why
 
 
 def _upd_log(base, msg):
@@ -344,6 +350,33 @@ def _launch_app(target, minimized=False):
         return None
 
 
+def _validate_update_target(target, pid):
+    """更新助手目标校验（P12）：只允许替换名为 MemWise.exe 的 PE 文件。
+    不再把“任意路径”当合法目标；旧 PID 仍存活时额外要求镜像路径一致（防误传），
+    PID 已退出（更新助手启动耗时可能数秒）时降级为“名字 + PE + 非本助手 + 非临时目录”。
+    返回 (ok, reason)。"""
+    try:
+        target = os.path.abspath(str(target))
+        if not target or not os.path.isfile(target):
+            return False, "target_missing"
+        if os.path.basename(target).lower() != "memwise.exe":
+            return False, "target_name"
+        if not _update.is_pe(target):
+            return False, "target_not_pe"
+        if os.path.normcase(target) == os.path.normcase(os.path.abspath(sys.executable)):
+            return False, "target_self"
+        try:
+            img = winapi.get_process_path(int(pid))
+        except Exception:
+            img = None
+        if img:
+            if os.path.normcase(os.path.abspath(img)) != os.path.normcase(target):
+                return False, "pid_mismatch"
+        return True, ""
+    except Exception:
+        return False, "target_invalid"
+
+
 def _apply_update(argv):
     """更新助手：`--apply-update <目标exe> <旧PID> [--minimized]`。
 
@@ -365,6 +398,10 @@ def _apply_update(argv):
         base = os.path.dirname(target)
         if not os.path.isfile(target) or not os.path.isfile(new_exe):
             return 2
+        _ok_t, _why_t = _validate_update_target(target, pid)
+        if not _ok_t:
+            _upd_log(base, "目标校验失败（%s），拒绝替换：%s" % (_why_t, target))
+            return 8
         _upd_log(base, "更新助手启动：等待旧实例退出（PID %d）" % pid)
         if not _wait_pid_exit(pid, 120.0):     # 侧视补：守护/长清理周期下 60s 可能不够
             _upd_log(base, "\u7b49\u5f85\u8d85\u65f6\uff0c\u653e\u5f03\u66f4\u65b0\uff08\u65e7\u7248\u672c\u672a\u52a8\uff09")
@@ -472,7 +509,9 @@ def _update_housekeeping():
             for p in (_g.glob(os.path.join(_tf.gettempdir(), "MemWise_*.exe"))
                       + _g.glob(os.path.join(_tf.gettempdir(), "MemWise_*.exe.part"))):
                 try:
-                    os.remove(p)
+                    # P35：只清“程序自己留下的陈旧下载”（>1 小时），不误删用户刚放的同名文件
+                    if time.time() - os.path.getmtime(p) > 3600:
+                        os.remove(p)
                 except Exception:
                     pass
         except Exception:
@@ -559,6 +598,20 @@ def _tree_measure_columns(cols, rows, pad=26, p90_cols=(), floor=0):
             w = max(w, ws[j] if i in p90_cols else ws[-1])
         out.append(max(int(w + pad), floor))
     return out
+
+
+def _rank_cell_key(v):
+    """进程排行单元格排序键（P04）：数字与空值/文本分离为不同类型标签，避免 str/float 比较崩溃。
+    空单元格（未设上限）排在数字之后（降序时最后），文本列按小写比较。"""
+    s = str(v).strip()
+    if s.endswith(" MB"):
+        s = s[:-3]
+    elif s.endswith("%"):
+        s = s[:-1]
+    try:
+        return (1, float(s))
+    except ValueError:
+        return (0, s.lower())
 
 
 def _tree_sort_by(tree, rows_by_iid, idx, reverse=True):
@@ -698,9 +751,17 @@ def _relaunch_elevated():
         tail = " ".join(('"%s"' % a) if " " in a else a for a in args)
         params = (params + " " + tail).strip()
         params = (params + " --elevated-retry").strip()
-        ctypes.windll.shell32.ShellExecuteW.restype = ctypes.c_void_p
-        r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
-        return int(r or 0) > 32     # ShellExecuteW >32 = 成功
+        # P14：ShellExecute 不提供 env 参数；临时移除 _MEI*/_PYI*，防提权副本继承旧解包目录。
+        # 进程随后让位退出；失败时在 finally 恢复，不影响当前实例继续运行。
+        _env_saved = {}
+        for _k in [k for k in os.environ if k.startswith(("_MEI", "_PYI"))]:
+            _env_saved[_k] = os.environ.pop(_k)
+        try:
+            ctypes.windll.shell32.ShellExecuteW.restype = ctypes.c_void_p
+            r = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
+            return int(r or 0) > 32     # ShellExecuteW >32 = 成功
+        finally:
+            os.environ.update(_env_saved)
     except Exception:
         return False
 
@@ -933,7 +994,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v5.0.012", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v5.1.037", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -956,8 +1017,11 @@ class MemWiseGUI:
         self._minimized_to_tray = False  # 显式初始化（--minimized 分支下方覆盖为 True）
 
         self.root = tk.Tk()
+        # P13：Tk 回调异常默认只写 sys.stderr（windowed 下为 devnull）⇒ 不进 sys.excepthook。
+        # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
+        self.root.report_callback_exception = self._tk_exception_hook
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v5.0.012")
+        self.root.title("MemWise v5.1.037")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -1021,7 +1085,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v5.0.012 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v5.1.037 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1107,7 +1171,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.0.012")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.1.037")
                     if fw:
                         top = fw
                 except Exception:
@@ -1209,22 +1273,26 @@ class MemWiseGUI:
                 _fb, _color, tip = "idle_mid", ICO_MID, tr_msg(f"内存 {pct}% — 偏高")
             else:
                 _fb, _color, tip = "idle", ICO_IDLE, tr_msg(f"内存 {pct}%")
-        pct_icon_handle = winapi.create_tray_percent_icon(pct, color=_color)
-        icon = pct_icon_handle or self._get_colored_icon(_fb, _color)
-        # 释放旧图标防止 GDI 泄漏（长期运行崩溃根因）
-        # 仅成功创建时轮换：失败（None）时保留旧句柄继续复用，避免句柄被丢弃泄漏
-        try:
-            if pct_icon_handle:
-                prev = getattr(self, '_prev_pct_icon', None)
-                if prev:
-                    ctypes.windll.user32.DestroyIcon(prev)
-                self._prev_pct_icon = pct_icon_handle
-            elif getattr(self, '_prev_pct_icon', None):
-                # 创建失败：旧百分数图标已不再复用，销毁防 GDI 泄漏（2026-08-15 审查）
-                ctypes.windll.user32.DestroyIcon(self._prev_pct_icon)
-                self._prev_pct_icon = None
-        except Exception:
-            pass
+        # P27：图标只在颜色档变化（或首次/创建失败）时重建；百分比文字通过 tray_modify 更新 tip。
+        # 原实现每 5s 新建并销毁一个 HICON，长期空转是持续 GDI/CPU 抖动。
+        _prev = getattr(self, '_prev_pct_icon', None)
+        if _fb != getattr(self, '_tray_fb', None) or not _prev:
+            pct_icon_handle = winapi.create_tray_percent_icon(pct, color=_color)
+            try:
+                if pct_icon_handle:
+                    if _prev:
+                        ctypes.windll.user32.DestroyIcon(_prev)
+                    self._prev_pct_icon = pct_icon_handle
+                    _prev = pct_icon_handle
+                elif _prev:
+                    # 创建失败：旧百分数图标已不再复用，销毁防 GDI 泄漏
+                    ctypes.windll.user32.DestroyIcon(_prev)
+                    self._prev_pct_icon = None
+                    _prev = None
+            except Exception:
+                pass
+            self._tray_fb = _fb
+        icon = _prev or self._get_colored_icon(_fb, _color)
         self._tray_icon_handle = icon
         winapi.tray_modify(self.root.winfo_id(), TRAY_UID, icon, f"MemWise — {tip}")
 
@@ -1268,6 +1336,10 @@ class MemWiseGUI:
                 cmd = um.TrackPopupMenu(hmenu, 0x0002 | 0x0100, pt.x, pt.y, 0, hwnd, None)
             finally:
                 um.DestroyMenu(hmenu)  # 异常路径也销毁，防句柄泄漏
+            try:
+                um.PostMessageW(hwnd, 0, 0, 0)   # P35：点击菜单外时立即收起
+            except Exception:
+                pass
             # 执行操作
             if cmd == ID_SHOW:
                 self._show_window()
@@ -1526,7 +1598,8 @@ class MemWiseGUI:
             "「所有进程当前的排行」\n"
             "1. 按指定标度按一定顺序排列\n"
             "2. 打开期间自动刷新\n"
-            "3. 点击列标题可切换排序方式")
+            "3. 点击列标题可切换排序方式\n"
+            "4. 双击进程可终止（会先弹窗确认）")
         ttk.Label(mf, text="  ").pack(side="left")
 
         # 统计
@@ -1963,7 +2036,7 @@ class MemWiseGUI:
             _save_cfg()
             # 开关即时生效：开 → 打开统一日志；关 → 关闭并停止写入
             if lg_var.get():
-                _log_open()
+                _log_open(announce=False)   # 运行时重开不重复写“启动”行、不重探 K32
             else:
                 _log_close()
         lg_cb = ttk.Checkbutton(lgf, text=tr("记录运行日志到文件"),
@@ -2310,12 +2383,19 @@ class MemWiseGUI:
         干净清理临时目录（延迟启动同时错开杀软对新旧实例的扫描窗口）"""
         _log_write("系统", tr("即将重启程序以生效新配置…"))
         _event_log("主动重启：重置/导入配置生效，程序退出以启动新实例")
-        backup.restart_application()
+        if not backup.restart_application():
+            # P17：重启失败必须可见；不保存内存旧态（重置/导入结果已落盘，下次启动生效）
+            self._dark_message(tr("重启失败"),
+                               tr("无法自动启动新实例，请手动重新打开程序。\n本次更改已保存，下次启动生效。"),
+                               kind="error")
+            self.root.destroy()
+            return False
         try:
             winapi.tray_remove(self.root.winfo_id(), TRAY_UID)
         except Exception:
             pass
         self.root.destroy()
+        return True
 
     def _on_factory_reset(self):
         if self.engine.daemon_running:
@@ -2328,7 +2408,12 @@ class MemWiseGUI:
                "选择\"确认但不备份\"将直接清除。"))
         if choice is None:
             return
-        backup.reset_factory(backup=choice)
+        _rok, _rbak = backup.reset_factory(backup=choice)
+        if not _rok:
+            self._dark_message(tr("重置失败"),
+                               tr("部分文件无法删除（可能被占用）。\n请关闭占用程序后重试；本次未重启。"),
+                               kind="error")
+            return
         self._restart_with_new_config()
 
     def _on_export_config(self):
@@ -2476,7 +2561,7 @@ class MemWiseGUI:
             if p.total_samples < 2:
                 continue
             # 存**原始数值**（排序按数值而非显示字符串），显示时再格式化
-            info_data.append((name, p.alpha, p.beta, p.total_samples,
+            info_data.append((name, p.alpha, p.beta, getattr(p, "samples_total", p.total_samples),
                               float(p.thompson_theta), float(p.roi),
                               float(p.z_score), float(p.slope), bool(p.leak_suspect),
                               p.clean_count, p.probe_ok, p.probe_fail))
@@ -2664,17 +2749,7 @@ class MemWiseGUI:
         _sort_col_idx = 2  # 0=进程 1=进程号 2=内存占用(提交) 3=工作集 4=CPU占用 5=上限 6=学习
         _sort_rev = True
 
-        def _sort_key_c(v):
-            """排序键提取：支持 "X MB"/"X%" 格式转数字"""
-            v = v.strip()
-            if v.endswith(" MB"):
-                v = v[:-3]
-            elif v.endswith("%"):
-                v = v[:-1]
-            try:
-                return float(v)
-            except ValueError:
-                return v.lower()
+        _sort_key_c = _rank_cell_key   # P04：类型安全排序键（空值/数字/文本分离）
 
         def _sort_tree(col):
             nonlocal _sort_col_idx, _sort_rev
@@ -2869,7 +2944,6 @@ class MemWiseGUI:
         commit_mb = (mem["priv"] >> 20) if mem else 0
         caps = CFG.get("ws_caps") or {}
         rule = caps.get(norm)
-        quota = winapi.get_process_ws_quota(pid)
 
         dlg = tk.Toplevel(self.root)
         dlg.withdraw()
@@ -2889,15 +2963,20 @@ class MemWiseGUI:
         row = ttk.Frame(dlg, style="Dark.TFrame"); row.pack(pady=(10, 2))
         ttk.Label(row, text=tr("上限（MB）："), background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
         _default = max(256, ((ws_mb + 127) // 128) * 128)
-        ent = ttk.Spinbox(row, from_=256, to=8192, increment=128, width=8)
+        ent = ttk.Spinbox(row, from_=256, to=_config_mod.WS_CAP_MAX_MB, increment=128, width=8)
         ent.set(_default); ent.pack(side="left", padx=(4, 0))
         ttk.Style().configure("DarkW.TCheckbutton", background="#1c1c1c", foreground="#ffb84d")
         ack_var = tk.BooleanVar(value=False)
 
         def _confirm():
             try:
-                mb = max(256, min(8192, int(float(ent.get()))))
+                mb = max(256, min(_config_mod.WS_CAP_MAX_MB, int(float(ent.get()))))
             except (TypeError, ValueError):
+                return
+            if norm not in (CFG.get("ws_caps") or {}) and len(CFG.get("ws_caps") or {}) >= _config_mod.WS_CAP_MAX_RULES:
+                self._dark_message(tr("工作集硬上限"),
+                                   tr_msg("规则数量已达上限（%d 条），请先删除一条。" % _config_mod.WS_CAP_MAX_RULES),
+                                   kind="warning")
                 return
             ok, reason, orig_max = winapi.set_ws_cap(pid, mb << 20)
             if not ok:
@@ -2906,7 +2985,7 @@ class MemWiseGUI:
             CFG.setdefault("ws_caps", {})[norm] = {"mb": mb, "orig_max": int(orig_max)}
             _save_cfg()
             self.engine.ws_cap_rule_added(norm, int(orig_max), pid)
-            self._log(f"⛨ 已设置工作集硬上限（{mb}MB）：{base}")
+            self._log_t("⛨ 已设置工作集硬上限（%sMB）：%s", mb, base)
             dlg.destroy()
         btn = ttk.Frame(dlg, style="Dark.TFrame"); btn.pack(pady=(8, 14))
         btn_ok = ttk.Button(btn, text=tr("确认"), command=_confirm, state="disabled")
@@ -2964,8 +3043,8 @@ class MemWiseGUI:
             for path, rule in sorted(caps.items()):
                 if not os.path.isfile(path):
                     st = tr("路径不存在")
-                elif applied.get(path):
-                    st = tr("生效中")
+                elif any(winapi.get_process_path(_pid) for _pid in (applied.get(path) or {})):
+                    st = tr("生效中")   # P35：按活 PID 判定，目标退出后不再显示“生效中”
                 else:
                     st = tr("等待目标进程")
                 tree.insert("", "end", values=(path, rule.get("mb"), st))
@@ -3005,6 +3084,17 @@ class MemWiseGUI:
 
     # ---- 日志 / 状态 ----
 
+    @staticmethod
+    def _log_display(item):
+        """日志项 → 当前语言显示串（P03/F51）：历史存中文原文，显示时才翻译。
+        项可以是 str（普通消息）或 (raw, template, args)（带参数的模板消息）。"""
+        if isinstance(item, tuple) and len(item) == 3:
+            _raw, _tpl, _args = item
+            if _tpl:
+                return tr_fmt(_tpl, *_args)
+            return tr_msg(_raw)
+        return tr_msg(item)
+
     def _write_group(self, msgs, to_file=True):
         """分组原子写入日志面板（2026-08-30 分组语义，三种写入路径统一走此原语）：
         · 组 = 逻辑上同批的消息集合，一次清屏判断后整组输出，绝不逐行判断
@@ -3018,6 +3108,7 @@ class MemWiseGUI:
         # 连续重复去重：单条消息与上一条完全相同则跳过
         if len(msgs) == 1 and msgs[0] == self._last_msg:
             return
+        displays = [self._log_display(m) for m in msgs]
         for m in msgs:
             self._log_history.append(m)
         self.log.configure(state="normal")
@@ -3027,16 +3118,16 @@ class MemWiseGUI:
             cur_lines = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
         except Exception:
             cur_lines = 0
-        if _panel_needs_clear(cur_lines, _msg_lines(msgs)):
+        if _panel_needs_clear(cur_lines, _msg_lines(displays)):
             self.log.delete("1.0", "end")
-        for m in msgs:
-            _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(tr_msg(m)), _LOG_TAG)
+        for _d in displays:
+            _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(_d), _LOG_TAG)
         self.log.see("end")
         self.log.configure(state="disabled")
         self._last_msg = msgs[-1] if msgs else None
         if to_file and CFG.get("log_to_file"):
             for m in msgs:
-                _log_write("界面", m)
+                _log_write("界面", m[0] if isinstance(m, tuple) else m)
 
     def _log_op(self, m):
         """即时事件（单行组）——分组语义见 _write_group"""
@@ -3049,6 +3140,12 @@ class MemWiseGUI:
     def _log(self, m):
         """实时日志（单行组）——分组语义见 _write_group"""
         self._write_group([m])
+
+    def _log_t(self, template, *args):
+        """带参数的模板日志（P03/F51）：历史存中文原文，显示按当前语言渲染；
+        参数不会破坏 i18n 的整句匹配，切语言也能完整还原。"""
+        raw = (template % args) if args else template
+        self._write_group([(raw, template, args)], to_file=True)
 
     def _rerender_log(self):
         """语言切换后按新语言重渲染日志面板——按切换前可见行数取历史尾部
@@ -3066,7 +3163,8 @@ class MemWiseGUI:
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             for m in msgs:
-                _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(tr_msg(m)), _LOG_TAG)
+                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+                                  _align_log_line(self._log_display(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
         except Exception:
@@ -3168,7 +3266,10 @@ class MemWiseGUI:
         if not last:
             return tr("尚未检查更新")
         import datetime as _dt
-        return tr("上次检查：") + _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M")
+        try:
+            return tr("上次检查：") + _dt.datetime.fromtimestamp(float(last)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return tr("尚未检查更新")
 
 
     def _upd_state(self):
@@ -3225,41 +3326,41 @@ class MemWiseGUI:
         if not _update.is_newer(tag, APP_VERSION):
             self._upd_status(tr("已是最新版本"))
             if manual:
-                self._log("检查更新：已是最新版本（当前 v%s）" % APP_VERSION)
+                self._log_t("检查更新：已是最新版本（当前 v%s）", APP_VERSION)
             return
         self._upd_status(tr("有新版本可用") + " " + tag)
-        self._log("发现新版本 %s（当前 v%s）" % (tag, APP_VERSION))
+        self._log_t("发现新版本 %s（当前 v%s）", tag, APP_VERSION)
         st = self._upd_state()
         if str(ver) == str(st.get("skip_version") or ""):
             return                      # 用户已"跳过此版本" ⇒ 不再弹窗（状态行与日志仍保留）
         if not CFG.get("update_auto_apply", True):
             self._dark_message(tr("发现新版本"),
-                tr_msg("发现新版本 %s（当前 v%s，%.1f MB）。\n\n可在设置中开启「自动下载并替换」。"
-                       % (tag, APP_VERSION, (info.get("size") or 0) / 1048576.0)),
+                tr_fmt("发现新版本 %s（当前 v%s，%.1f MB）。\n\n可在设置中开启「自动下载并替换」。"
+                       , tag, APP_VERSION, (info.get("size") or 0) / 1048576.0),
                 extra=(tr("打开发布页"), self._open_release_page))
             return
         # 侧视补（2026-10-16）：**没有校验信息就绝不自动装**——HTTPS 只保证链路，哈希才是锚；
         # 目录不可写/权限不足同样不下载（省一次 12MB 下载，也避免"装完才知道装不了"）。
         if not info.get("sha256"):
             self._dark_message(tr("发现新版本"),
-                tr_msg("发现新版本 %s（当前 v%s）。\n\n此版本未提供校验信息，为安全起见不自动更新，请手动下载。"
-                       % (tag, APP_VERSION)),
+                tr_fmt("发现新版本 %s（当前 v%s）。\n\n此版本未提供校验信息，为安全起见不自动更新，请手动下载。"
+                       , tag, APP_VERSION),
                 kind="warning", extra=(tr("打开发布页"), self._open_release_page))
             return
         if not getattr(self, "_writable", True):
             self._dark_message(tr("发现新版本"),
-                tr_msg("发现新版本 %s，但程序所在目录不可写，无法自动替换。\n\n请手动下载后覆盖安装。" % tag),
+                tr_fmt("发现新版本 %s，但程序所在目录不可写，无法自动替换。\n\n请手动下载后覆盖安装。", tag),
                 kind="warning", extra=(tr("打开发布页"), self._open_release_page))
             return
         choice = self._choice_dialog(tr("发现新版本"), self._update_prompt_text(info),
                                      [(tr("立即更新"), "now"), (tr("稍后"), "later"), (tr("跳过此版本"), "skip")])
         if choice == "later" or choice is None:
-            self._log("更新已推迟（下次启动仍会提示）")
+            self._log_t("更新已推迟（下次启动仍会提示）")
             return
         if choice == "skip":
             st["skip_version"] = str(ver)
             _update.save_state(base, st)
-            self._log("已跳过版本 %s（此后不再弹窗）" % tag)
+            self._log_t("已跳过版本 %s（此后不再弹窗）", tag)
             self._upd_status(tr("有新版本可用") + " " + tag)
             return
         self._start_download(info)
@@ -3267,10 +3368,10 @@ class MemWiseGUI:
     def _update_prompt_text(self, info):
         tag = info.get("tag")
         mb = (info.get("size") or 0) / 1048576.0
-        body = tr_msg("发现新版本 %s（当前 v%s，%.1f MB）" % (tag, APP_VERSION, mb))
+        body = tr_fmt("发现新版本 %s（当前 v%s，%.1f MB）", tag, APP_VERSION, mb)
         notes = (info.get("notes") or "").strip()
         if notes:
-            body += "\n\n" + (notes[:360] + ("…" if len(notes) > 360 else ""))
+            body += "\n\n" + tr("发布说明（原文）：") + "\n" + (notes[:360] + ("…" if len(notes) > 360 else ""))
         return body
 
     def _start_download(self, info):
@@ -3285,8 +3386,13 @@ class MemWiseGUI:
         dest = os.path.join(tempfile.gettempdir(), "MemWise_%s.exe" % _safe)
         self._upd_cancel = False
         self._upd_downloading = True
-        self._upd_prog = self._progress_dialog(info)
-        self._log("开始下载更新 %s（%.1f MB）" % (info.get("tag"), (info.get("size") or 0) / 1048576.0))
+        try:
+            self._upd_prog = self._progress_dialog(info)
+        except Exception:
+            self._upd_downloading = False
+            self._on_update_failed({"manual": True, "reason": "exception"})
+            return
+        self._log_t("开始下载更新 %s（%.1f MB）", info.get("tag"), (info.get("size") or 0) / 1048576.0)
         threading.Thread(target=self._download_worker, args=(info, url, dest), daemon=True).start()
 
     def _download_worker(self, info, url, dest):
@@ -3316,9 +3422,9 @@ class MemWiseGUI:
                 pass
             self._upd_prog = None
         dest, tag = d.get("dest"), d.get("tag")
-        self._log("更新包校验通过（%s）" % tag)
+        self._log_t("更新包校验通过（%s）", tag)
         if not self._countdown_dialog(5):
-            self._log("已取消重启，本次更新作废（下次启动仍会提示）")
+            self._log_t("已取消重启，本次更新作废（下次启动仍会提示）")
             try:
                 os.remove(dest)
             except Exception:
@@ -3338,7 +3444,7 @@ class MemWiseGUI:
         except Exception:
             self._on_update_failed({"manual": True, "reason": "spawn_helper_failed"})
             return
-        self._log("即将重启完成更新…")
+        self._log_t("即将重启完成更新…")
         try:
             remove_watchdog()   # 关键：先摘看门狗——否则它会把这次"退出"当崩溃并抢先拉起旧版
         except Exception:
@@ -3364,7 +3470,7 @@ class MemWiseGUI:
         manual, why = d.get("manual"), d.get("reason") or "unknown"
         self._upd_downloading = False
         if str(why).split(":")[0] == "cancelled":
-            self._log("已取消更新")      # 侧视补：用户主动取消不该报「失败」
+            self._log_t("已取消更新")      # 侧视补：用户主动取消不该报「失败」
             return
         if self._upd_prog is not None:
             try:
@@ -3372,12 +3478,12 @@ class MemWiseGUI:
             except Exception:
                 pass
             self._upd_prog = None
-        self._log("更新失败：%s" % why)
+        self._log_t("更新失败：%s", why)
         if not manual:
             return                          # 自动检查失败：只留日志，不弹窗（用户指定"降级提示"仅限手动/下载阶段）
         self._upd_status(tr("更新检查失败"))
         self._dark_message(tr("更新失败"),
-            tr_msg("更新失败：%s\n\n可手动前往官方发布页下载新版本。" % _upd_reason_text(why)),
+            tr_fmt("更新失败：%s\n\n可手动前往官方发布页下载新版本。", _upd_reason_text(why)),
             kind="warning",
             extra=[(tr("打开发布页"), self._open_release_page), (tr("复制链接"), self._copy_link)])
 
@@ -3533,7 +3639,7 @@ class MemWiseGUI:
         def _tick(n):
             if not dlg.winfo_exists():
                 return
-            cnt["text"] = tr_msg("将在 %d 秒后自动重启完成更新" % n) + (tr("（守护会随重启短暂中断，随后自动恢复）") if _daemon_on else "")
+            cnt["text"] = tr_fmt("将在 %d 秒后自动重启完成更新", n) + (tr("（守护会随重启短暂中断，随后自动恢复）") if _daemon_on else "")
             if n <= 0:
                 _go()
                 return
@@ -3595,7 +3701,8 @@ class MemWiseGUI:
         except Exception:
             import traceback; traceback.print_exc(file=_ERR)
         finally:
-            self.root.after(100, self._poll_msg_queue)
+            # P27：空闲 250ms（下载中 100ms）——减少 10Hz 常驻唤醒，UI 响应仍 ≤0.25s
+            self.root.after(100 if getattr(self, "_upd_downloading", False) else 250, self._poll_msg_queue)
 
     def _upd_learned(self):
         self.lbl_lr.config(text=tr("已学习: ") + str(len(self.learner.profiles)))
@@ -4068,6 +4175,23 @@ class MemWiseGUI:
         try:
             if read_watchdog_daemon():
                 self._on_daemon(log_msg="🔄 从崩溃中恢复 — 守护模式已自动继续")
+        except Exception:
+            pass
+
+    def _tk_exception_hook(self, et, ev, tb):
+        """P13：Tk 回调异常 → 崩溃通道（不改默认弹窗/中断语义）。"""
+        import traceback
+        try:
+            _txt = "Tk 回调异常\n" + "".join(traceback.format_exception(et, ev, tb))
+        except Exception:
+            _txt = "Tk 回调异常: %r" % (ev,)
+        try:
+            from core.engine import _write_crash_text
+            _write_crash_text(_txt)
+        except Exception:
+            pass
+        try:
+            self._log("⚠ 界面回调异常，现场已写入崩溃日志")
         except Exception:
             pass
 

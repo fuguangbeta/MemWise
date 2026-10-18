@@ -97,7 +97,7 @@ def ascii_art(tag, path, invert=False):
 if __name__ == "__main__":
     for size in (16, 32):
         for tag, fn in (("A", f"preview_A_{size}.png"), ("B", f"preview_B_{size}.png")):
-            analyze(tag + str(size), os.path.join(BASE, fn))
+            analyze(tag + str(size), os.path.join(OUT, fn))
     print()
     for size in (16, 32):
         print(f"########## {size}px ##########")

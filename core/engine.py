@@ -76,7 +76,9 @@ def init_runtime():
     必须在任何状态文件读写之前调用（GUI __init__ 首行 / CLI main 首段）；幂等。
     返回 True = 目录可写；False = 不可写（入口据此提示，见 _check_writable）。"""
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        # P36：shcore 按绝对路径加载，防便携目录 DLL 劫持
+        _sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+        ctypes.WinDLL(os.path.join(_sys32, "shcore.dll")).SetProcessDpiAwareness(2)
     except Exception:
         try:
             ctypes.windll.user32.SetProcessDPIAware()
@@ -84,6 +86,21 @@ def init_runtime():
             pass
     _migrate_runtime_data()
     _cleanup_stale_tmp()
+    # P18：上次导入若在四文件落位途中中断，先恢复再继续（有 journal 才动作）
+    try:
+        from core import backup as _bk
+        _rec_msg = _bk.recover_pending()
+        if _rec_msg:
+            _event_log(_rec_msg)
+            # 恢复可能改写了 config.yaml：本进程已加载的 CFG 同步刷新（GUI 共享同一 dict）
+            try:
+                _fresh = _load_cfg()
+                CFG.clear()
+                CFG.update(_fresh)
+            except Exception:
+                pass
+    except Exception:
+        pass
     return _check_writable()
 
 
@@ -110,8 +127,10 @@ def _cleanup_stale_tmp():
 
 if getattr(sys, "frozen", False):
     exe_dir = os.path.dirname(sys.executable)
-    # exe 在 dist 目录下时，用项目根目录做数据目录，与脚本共用状态文件
-    if os.path.basename(exe_dir).lower() == "dist":
+    # dist 特判仅用于开发态（同级存在 MemWise.spec）；普通用户把 exe 放进名为 dist 的文件夹时
+    # 仍在 exe 旁读写数据（P33：避免“数据跑到父目录/不可写”的意外）
+    if (os.path.basename(exe_dir).lower() == "dist"
+            and os.path.isfile(os.path.join(os.path.dirname(exe_dir), "MemWise.spec"))):
         base = os.path.dirname(exe_dir)
     else:
         base = exe_dir
@@ -130,6 +149,13 @@ def _watchdog_path():
     """看门狗状态文件路径：运行时数据统一在 data/ 目录（base/data，dist 部署时在项目根 data/；
     主进程与 watchdog 子进程同 exe → 同路径）"""
     return os.path.join(base, "data", "watchdog.json")
+
+
+def _clean_env():
+    """P14：过滤 PyInstaller bootloader 的 _MEI*/_PYI* 环境变量。
+    子进程继承会让新实例误用旧解包目录（历史上已由 restart_application 修复，
+    看门狗/提权重启此前漏了同一过滤）。"""
+    return {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
 
 
 def _migrate_runtime_data():
@@ -204,16 +230,19 @@ if "--watchdog" in sys.argv:
                 else:
                     # 非 frozen 必须指向 GUI 入口（engine.py 无主流程，重启即退=崩溃恢复失效）
                     _cmd = [exe, os.path.join(base, "memwise_gui.py"), "--restored"]
+                if d.get("minimized"):
+                    _cmd.append("--minimized")   # P33：崩溃恢复保留自启最小化形态
                 p = subprocess.Popen(_cmd,
                     startupinfo=si, creationflags=0x08000008,  # CREATE_NO_WINDOW | DETACHED_PROCESS
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_clean_env())
                 # 更新 watchdog.json 为新 PID（保留崩溃前的守护状态，供恢复分支判断）；tmp+replace 原子写，与主进程协议一致
                 # tmp 附加进程号（2026-09-06 审查 F3）：主进程 _update_watchdog_daemon 与
                 # 看门狗子进程可能并发更新此文件，各写各的 tmp 防交错损坏
                 _wd_tmp = f"{wd_path}.{os.getpid()}.tmp"
                 with open(_wd_tmp, "w", encoding="utf-8") as f:
                     json.dump({"pid": p.pid, "ts": now, "crash_count": len(crash_history),
-                               "daemon": d.get("daemon", False)}, f)
+                               "daemon": d.get("daemon", False),
+                               "minimized": bool(d.get("minimized", False))}, f)
                 os.replace(_wd_tmp, wd_path)
             except Exception:
                 continue
@@ -231,7 +260,7 @@ def _spawn_watchdog(daemon_flag=False):
         _wd_tmp = f"{wd_path}.{os.getpid()}.tmp"
         with open(_wd_tmp, "w", encoding="utf-8") as f:
             json.dump({"pid": os.getpid(), "ts": time.time(), "crash_count": 0,
-                       "daemon": daemon_flag}, f)
+                       "daemon": daemon_flag, "minimized": "--minimized" in sys.argv}, f)
         os.replace(_wd_tmp, wd_path)
         si = subprocess.STARTUPINFO()
         si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW
@@ -241,7 +270,7 @@ def _spawn_watchdog(daemon_flag=False):
         else:
             _cmd = [sys.executable, os.path.abspath(__file__), "--watchdog"]
         subprocess.Popen(_cmd,
-            startupinfo=si, creationflags=0x08000000)  # CREATE_NO_WINDOW
+            startupinfo=si, creationflags=0x08000000, env=_clean_env())  # CREATE_NO_WINDOW
     except Exception:
         pass
 
@@ -421,7 +450,7 @@ def _log_close():
             _LOG_FD = None
 
 
-def _log_open():
+def _log_open(announce=True):
     """按开关打开统一日志（幂等；主进程；看门狗跳过）；关闭状态不调用"""
     global _LOG_FD, _LOG_DIR, _ATEXIT_REGISTERED
     if _LOG_FD is not None or "--watchdog" in sys.argv:
@@ -452,28 +481,29 @@ def _log_open():
         if not _ATEXIT_REGISTERED:   # 只注册一次（2026-09-11 审查 F27）
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
-        _log_write("启动", f"MemWise v5.0.012 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
-        try:
-            _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
-            _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
-                               "清理深度 %s · 操作[%s] · 日志落盘 %s · 语言 %s · 排除 %d 项 · 游戏 %d 项"
-                      % (CFG.get("clean_mode", "normal"), CFG.get("interval", 60),
-                         CFG.get("gap_seconds", 12), CFG.get("emergency_threshold", 80),
-                         CFG.get("clean_passes", 4), _ops, bool(CFG.get("log_to_file")),
-                         CFG.get("language", "zh_CN"), len(CFG.get("never") or []),
-                         len(CFG.get("game_processes") or [])))
-        except Exception:
-            pass
-        # 环境画像（跨机器归因第一手证据）：仅在日志开启路径执行 ⇒ 关日志用户零开销；
-        # K32 通道态决定运行期回收行为语义（可用=可反复设置/恢复；失效=Nt 一次性直通）
-        try:
-            _mp_ok, _eco_ok = winapi.probe_k32_channels()
-            _log_write("启动", "环境: Windows build %d · K32 内存优先级通道 %s · K32 节能标记通道 %s"
-                       % (winapi.get_os_build(),
-                          "可用" if _mp_ok else "回退Nt直通",
-                          "可用" if _eco_ok else "回退Nt直通"))
-        except Exception:
-            pass
+        if announce:
+            _log_write("启动", f"MemWise v5.1.037 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+            try:
+                _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
+                _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
+                                   "清理深度 %s · 操作[%s] · 日志落盘 %s · 语言 %s · 排除 %d 项 · 游戏 %d 项"
+                          % (CFG.get("clean_mode", "normal"), CFG.get("interval", 60),
+                             CFG.get("gap_seconds", 12), CFG.get("emergency_threshold", 80),
+                             CFG.get("clean_passes", 4), _ops, bool(CFG.get("log_to_file")),
+                             CFG.get("language", "zh_CN"), len(CFG.get("never") or []),
+                             len(CFG.get("game_processes") or [])))
+            except Exception:
+                pass
+            # 环境画像（跨机器归因第一手证据）：仅在日志开启路径执行 ⇒ 关日志用户零开销；
+            # K32 通道态决定运行期回收行为语义（可用=可反复设置/恢复；失效=Nt 一次性直通）
+            try:
+                _mp_ok, _eco_ok = winapi.probe_k32_channels()
+                _log_write("启动", "环境: Windows build %d · K32 内存优先级通道 %s · K32 节能标记通道 %s"
+                           % (winapi.get_os_build(),
+                              "可用" if _mp_ok else "回退Nt直通",
+                              "可用" if _eco_ok else "回退Nt直通"))
+            except Exception:
+                pass
     except Exception as _e:
         _LOG_FD = None
         # 开启失败必须留痕（2026-09-11 实测：某次启动统一日志未开成 ⇒ 整场无文件日志，
@@ -519,11 +549,61 @@ def _install_crash_sink():
             except Exception:
                 pass
             _log_write("异常", "未捕获异常（现场已写入 memwise_crash.log）")
-            sys.__excepthook__(et, ev, tb)
+            try:
+                sys.__excepthook__(et, ev, tb)
+            except Exception:
+                pass
         sys.excepthook = _crash_hook
+        _install_thread_hook()
         atexit.register(_close_crash_sink)
     except Exception:
         _CRASH_FD = None
+
+
+def _write_crash_text(text):
+    """P13：把任意异常现场写入崩溃通道（独立于日志开关）。Tk 回调/线程钩子共用。
+    返回 True = 已落 crash 文件；False = 仅尽力写统一日志。"""
+    try:
+        if _CRASH_FD is not None:
+            _CRASH_FD.write(str(text).rstrip() + "\n")
+            _CRASH_FD.flush()
+            return True
+    except Exception:
+        pass
+    try:
+        _log_write("异常", str(text).strip().splitlines()[0][:200])
+    except Exception:
+        pass
+    return False
+
+
+_THREAD_HOOK_INSTALLED = False
+
+
+def _install_thread_hook():
+    """P13：threading.excepthook 默认写 stderr（windowed 下为 devnull）⇒ 线程异常零现场。
+    包装原钩子：先落 crash 文件，再调用原钩子（保持默认行为）。"""
+    global _THREAD_HOOK_INSTALLED
+    if _THREAD_HOOK_INSTALLED:
+        return
+    _orig = threading.excepthook
+
+    def _hook(args):
+        try:
+            import traceback
+            _name = getattr(getattr(args, "thread", None), "name", "?")
+            _write_crash_text("未捕获线程异常（%s）\n%s" % (
+                _name, "".join(traceback.format_exception(
+                    args.exc_type, args.exc_value, args.exc_traceback))))
+        except Exception:
+            pass
+        try:
+            _orig(args)
+        except Exception:
+            pass
+
+    threading.excepthook = _hook
+    _THREAD_HOOK_INSTALLED = True
 
 
 def _close_crash_sink():
@@ -728,7 +808,7 @@ class MemWiseEngine:
         self._refill_cycle = False # 本周期是否触发过回涨快（周期末判定）
         self._refill_total = 0     # 最新回涨量（进入回涨快时展示）
         # ── 工作集硬上限（高级选项，设计 v2.1-v2.5）：簿记与锁 ──
-        self._ws_cap_lock = threading.Lock()
+        self._ws_cap_lock = threading.RLock()   # P11：_apply_ws_caps 内需调用 ws_cap_rule_removed（同锁）
         self._ws_cap_applied = {}   # {规范化路径: {pid: orig_max}}（解除凭它；跨重启丢失即回退规则存储值）
         self._ws_cap_fail = {}      # {规范化路径: 连续失败次数（≥3 降频至每 10 周期）}
         self._ws_cap_announced = set()  # 已播报过的路径（每规则仅首条）
@@ -835,14 +915,25 @@ class MemWiseEngine:
             pass
 
     # ── 手动优化（数据产生属引擎；展示层只做按钮编排）──
+    def _start_opt_thread(self, target, mode, ops):
+        """P35：线程创建失败必须复位 UI 状态（否则按钮/即时优化永久卡死）。"""
+        try:
+            threading.Thread(target=target, args=(mode, ops), daemon=True).start()
+            return True
+        except Exception:
+            self.events.put(('log', "⚠ 无法启动优化线程，请稍后重试"))
+            self.events.put(('opt_done', {"mode": mode, "layer2": [], "probe": [],
+                                          "released": 0.0, "net": 0, "pct0": None, "pct1": None}))
+            return False
+
     def optimize_manual_async(self, mode, ops):
-        threading.Thread(target=self._opt_worker, args=(mode, ops), daemon=True).start()
+        self._start_opt_thread(self._opt_worker, mode, ops)
 
     def optimize_manual_once(self, mode, ops):
         """守护运行中的手动即时优化：按当前模式执行单轮完整优化。
         与守护周期经 cleaner._exec_lock 串行（持锁期间设 _manual_run，
         守护周期 optimize 等待锁后 _manual_run 已复位，互不污染）"""
-        threading.Thread(target=self._opt_worker_once, args=(mode, ops), daemon=True).start()
+        self._start_opt_thread(self._opt_worker_once, mode, ops)
 
     def _opt_worker(self, mode, ops):
         with self.cleaner._exec_lock:
@@ -876,10 +967,10 @@ class MemWiseEngine:
                 freed0 = self.cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
                 for round_idx in range(3):
                     if round_idx == 0:
-                        r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                        r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops, deadline=time.time() + 30)
                     else:
                         snaps = self._snap()
-                        r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                        r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops, deadline=time.time() + 30)
                     all_l2.extend(r.get("layer2", []))
                     all_probe.extend(r.get("probe", []))
                     total_net += r.get("net_freed", 0)
@@ -927,7 +1018,7 @@ class MemWiseEngine:
                     pass
                 m0 = winapi.get_memory_status()
                 freed0 = self.cleaner.summary()['freed_mb']
-                r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops)
+                r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops, deadline=time.time() + 30)
                 self.learner.save(self._state_file)
                 m1 = winapi.get_memory_status()
                 freed1 = self.cleaner.summary()['freed_mb']
@@ -980,7 +1071,8 @@ class MemWiseEngine:
                             ph.result(timeout=5)
                     except Exception:
                         pass
-                    self._pending_harvest = None
+                    if ph.done():
+                        self._pending_harvest = None   # 未完成则保留，下一周期跳过新收割
 
                 # 事件驱动等待：内存变化或超时（仅短等待，由 deadline 控制总周期）
                 pre_wait = max(3, interval // 15)
@@ -1040,13 +1132,17 @@ class MemWiseEngine:
                     _saved_efis = self.judger.cfg.get("efis_params")
                     self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                     agg_emerg = self.judger.update_pressure(m_emerg["pct"])
-                    self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg)
+                    self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg,
+                                           deadline=time.time() + 25)
                     if _saved_efis is not None:
                         self.judger.cfg["efis_params"] = _saved_efis
                     self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])
                     self._emergency_done_cycle = True
                 interval = CFG.get("interval", 60)  # 周期由配置驱动（默认 60s，原硬编码 60 使配置键失效）
                 deadline = time.time() + interval - 3 - overtime_debt
+                # P26：债务不得把本周期压到“连一次 gap 都没有”；至少保留 0.5s 轻量压制段
+                if deadline - 6 <= time.time():
+                    deadline = time.time() + 6.5
                 l2_all = []; probe_all = []
                 gap_base = max(8, min(20, CFG.get("gap_seconds", 12)))
                 gap = gap_base
@@ -1113,7 +1209,9 @@ class MemWiseEngine:
                                         self.cleaner._fast_track.pop(ft_pid, None)
                                         continue
                                     # 带回记录时的创建时间做身份复检（PID 复用防护，2026-09-11 审查 F12）
-                                    if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid)):
+                                    _ft_snap = next((s for s in snaps if s.pid == ft_pid), None)
+                                    if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid),
+                                                                    snap=_ft_snap):
                                         self.cleaner._fast_track.pop(ft_pid, None)
                                     else:
                                         # 成功者移到队尾：下轮轮转后续成员，全池覆盖（2026-09-26 审查
@@ -1134,7 +1232,8 @@ class MemWiseEngine:
                                 _saved_efis = self.judger.cfg.get("efis_params")
                                 self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                                 self.cleaner.optimize(snaps, self.learner, "full",
-                                                      operations=ops, aggressiveness=agg)
+                                                      operations=ops, aggressiveness=agg,
+                                                      deadline=time.time() + 25)
                                 if _saved_efis is not None:
                                     self.judger.cfg["efis_params"] = _saved_efis
                                 m2 = winapi.get_memory_status()
@@ -1148,7 +1247,8 @@ class MemWiseEngine:
                     gap_fill_mode = "quick" if mode == "quick" else "normal"
                     # 游戏模式同样执行：optimize 内部对游戏进程树绝对保护、跳过磁盘干扰系统操作，
                     # 非游戏进程持续积极清理为游戏腾出内存（游戏流畅只依赖 PID 保护与磁盘操作跳过）
-                    result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg, allow_layer3=False)
+                    result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg,
+                                                   allow_layer3=False, deadline=time.time() + 5)
                     agg = result.get("aggressiveness", agg)
                     l2_all.extend(result.get("layer2", []))
                     probe_all.extend(result.get("probe", []))
@@ -1202,24 +1302,34 @@ class MemWiseEngine:
                 # 本轮是否轻量不单独播报——回涨快慢由上面状态机统一播报，同一信号不两个时点各说一次
                 _lite = self.cleaner.is_lite_round(mode, getattr(self.judger, "_last_mem_pct", 100),
                                                    self._refill_hot)
-                harvest_future = self._harvest_executor.submit(
-                    self.cleaner.optimize, snaps, self.learner, mode,
-                    operations=ops, aggressiveness=agg, lite=_lite)
-                result = None
-                try:
-                    result = harvest_future.result(timeout=30)
-                except concurrent.futures.TimeoutError:
-                    self._pending_harvest = harvest_future  # 下轮开头收尾，避免任务叠加
+                _pending_busy = (self._pending_harvest is not None
+                                 and not self._pending_harvest.done())
+                if _pending_busy:
+                    # P25：上一轮 harvest 仍在跑 ⇒ 本轮不再排队（单线程池排队会连锁超时）
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
-                    self._cycle_log_groups.append(["⏱ harvest 超时(30s)·跳过本轮诊断"])
-                except Exception:
-                    self._pending_harvest = harvest_future
-                    result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
-                              "net_freed": 0, "_partial": True}
-                if result is None:
-                    result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
-                              "net_freed": 0, "_partial": True}
+                    self._cycle_log_groups.append(["⏱ 上轮 harvest 未完成 · 本轮跳过收割"])
+                else:
+                    self._pending_harvest = None
+                    harvest_future = self._harvest_executor.submit(
+                        self.cleaner.optimize, snaps, self.learner, mode,
+                        operations=ops, aggressiveness=agg, lite=_lite,
+                        deadline=time.time() + 25)
+                    result = None
+                    try:
+                        result = harvest_future.result(timeout=30)
+                    except concurrent.futures.TimeoutError:
+                        self._pending_harvest = harvest_future  # 下轮开头继续等，不叠加
+                        result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
+                                  "net_freed": 0, "_partial": True}
+                        self._cycle_log_groups.append(["⏱ harvest 超时(30s)·跳过本轮诊断"])
+                    except Exception:
+                        self._pending_harvest = harvest_future
+                        result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
+                                  "net_freed": 0, "_partial": True}
+                    if result is None:
+                        result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
+                                  "net_freed": 0, "_partial": True}
                 harvest_partial = result.get("_partial", False)
                 agg = result.get("aggressiveness", agg)
                 self.judger.aggressiveness = agg  # 同步入 judger，下一周期 agg_first 正确
@@ -1252,8 +1362,8 @@ class MemWiseEngine:
                             _pr = self.learner.get_profile(getattr(_t[0], "name", ""))
                             _g = float(getattr(_pr, "gain_ewma", 0) or 0)
                             if _g > 0:
-                                _det.append((float(_t[2]), _g))
-                    self._cycle_proc_mb = sum(f for f, _g in _det) / (1 << 20)   # 进程清理释放量（MB）
+                                _det.append(float(_t[2]))
+                    self._cycle_proc_mb = sum(_det) / (1 << 20)   # 进程清理释放量（MB）
                 except Exception:
                     pass
                 s = self.cleaner.summary()
@@ -1550,7 +1660,7 @@ class MemWiseEngine:
                 elapsed = time.time() - cycle_start
                 # 周期补偿：超时累积债务，下一轮 deadline 中扣除；提前完成则还债
                 if elapsed > interval:
-                    overtime_debt = min(30, overtime_debt + (elapsed - interval))
+                    overtime_debt = min(8.0, overtime_debt + (elapsed - interval))
                 else:
                     overtime_debt = max(0, overtime_debt - (interval - elapsed))
                 # 分段睡眠：停止守护即时生效（不阻塞最长一个周期）
@@ -1596,10 +1706,15 @@ class MemWiseEngine:
         for s in snaps:
             p = getattr(s, "path", None)
             if p:
-                by_path.setdefault(p.lower().replace("/", "\\"), []).append(s.pid)
+                by_path.setdefault(p.lower().replace("/", "\\"), []).append(
+                    (s.pid, getattr(s, "create", None)))
         self._ws_cap_tick = getattr(self, "_ws_cap_tick", 0) + 1
         game_pids = getattr(self.judger, "_game_pid_set", set()) or set()
         with self._ws_cap_lock:
+            # P11：规则被手改配置/CLI 删除时，必须在下一周期解除已施加的 cap——
+            # 否则进程仍被钉住，而判定层已解除 blocked ⇒ 既卡顿又允许清理（硬缺页自造抖动）
+            for _stale in [p for p in list(self._ws_cap_applied) if p not in rules]:
+                self.ws_cap_rule_removed(_stale)
             self.judger.set_capped_paths(rules.keys())
             for path, rule in rules.items():
                 pids = by_path.get(path) or []
@@ -1611,12 +1726,24 @@ class MemWiseEngine:
                 if fail >= 3 and self._ws_cap_tick % 10 != 0:
                     continue  # 重试风暴降频（v2.3）
                 applied = self._ws_cap_applied.setdefault(path, {})
-                for pid in pids:
-                    if pid in applied or pid in game_pids:
-                        continue  # 已施加 / 游戏 PID 树守卫
+                for pid, create in pids:
+                    if pid in game_pids:
+                        continue  # 游戏 PID 树守卫
+                    _rec = applied.get(pid)
+                    if _rec is not None and not isinstance(_rec, tuple):
+                        _rec = (None, _rec)   # 兼容旧内存簿记（测试/旧调用）
+                    if _rec is not None:
+                        # P11：PID 复用（create 变）⇒ 旧簿记不代表新实例，解除后重新施加
+                        if _rec[0] == create or _rec[0] is None:
+                            continue
+                        try:
+                            winapi.clear_ws_cap(pid, _rec[1])
+                        except Exception:
+                            pass
+                        applied.pop(pid, None)
                     ok, reason, orig_max = winapi.set_ws_cap(pid, int(rule.get("mb", 0)) << 20)
                     if ok:
-                        applied[pid] = orig_max
+                        applied[pid] = (create, orig_max)
                         self._ws_cap_fail.pop(path, None)
                         if path not in self._ws_cap_announced:
                             self._ws_cap_announced.add(path)
@@ -1631,21 +1758,28 @@ class MemWiseEngine:
                             self._cycle_log_groups.append(
                                 [f"⛨ 工作集硬上限设置失败（{reason}）：{_bname}"])
 
-    def ws_cap_rule_added(self, path, orig_max, pid=None):
-        """GUI 设置成功后的接线：判定快照与簿记刷新（锁内；配置由调用方先写好）。"""
+    def ws_cap_rule_added(self, path, orig_max, pid=None, create=None):
+        """GUI 设置成功后的接线：判定快照与簿记刷新（锁内；配置由调用方先写好）。
+        P11：簿记为 (create, orig_max)；create 未知时从进程时间取（取不到记 None）。"""
         with self._ws_cap_lock:
             self.judger.set_capped_paths((CFG.get("ws_caps") or {}).keys())
             if pid is not None and orig_max:
-                self._ws_cap_applied.setdefault(path, {})[pid] = orig_max
+                if create is None:
+                    try:
+                        _t = winapi.get_process_times(int(pid))
+                        create = _t.get("create") if _t else None
+                    except Exception:
+                        create = None
+                self._ws_cap_applied.setdefault(path, {})[pid] = (create, orig_max)
 
     def ws_cap_rule_removed(self, path):
         """GUI 删除规则：先对簿记内活 PID 解除（disable+还原 per-pid orig_max），
         再清簿记/失败计数/锚点/回弹（B5：cap 期间学到的假稳态不可留），最后刷新判定快照。"""
         with self._ws_cap_lock:
             applied = self._ws_cap_applied.pop(path, {})
-            for pid, orig in applied.items():
+            for pid, _rec in applied.items():
                 try:
-                    winapi.clear_ws_cap(pid, orig)
+                    winapi.clear_ws_cap(pid, _rec[1] if isinstance(_rec, tuple) else _rec)
                 except Exception:
                     pass
             self._ws_cap_fail.pop(path, None)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v5.0.012 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v5.1.037 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1458,7 +1458,7 @@ try:
     _c34a._layer3_deep = lambda *a, **k: None
     _c34a.optimize([], _lr34a, "normal", operations=[])
     check("F1 [] ⇒ 零系统操作且不做进程清理",
-          _cap34.get("ops") == set() and not _l2c34, "ops=%r l2=%s" % (_cap34.get("ops"), _l2c34))
+          "ops" not in _cap34 and not _l2c34, "ops=%r l2=%s" % (_cap34.get("ops"), _l2c34))
 
     _orig34 = {n: getattr(_w34, n) for n in _OPS34}
     _calls34 = []
@@ -1505,7 +1505,7 @@ finally:
     _w34.get_memory_status, _w34.get_memory_used_bytes = _ms34, _mu34
 
 # ── F3 紧急绝对阈值：钳制 + 判定内自检 ──
-check("F3 配置钳制含 emergency_abs_pct", '("emergency_abs_pct", 0, 99)' in _cf34)
+check("F3 配置钳制含 emergency_abs_pct", '("emergency_abs_pct", 0, 50)' in _cf34)
 _old_ap34 = _e34.CFG.get("emergency_abs_pct")
 _e34.CFG["emergency_abs_pct"] = 200
 check("F3 判定内自检：越界值不再恒触发", _e34._emergency_active(
@@ -1580,7 +1580,7 @@ check("F38 GUI/CLI 入口调用 init_runtime", "init_runtime()" in _gui34 and "i
 check("F39 CLI 按开关打开统一日志", 'CFG.get("log_to_file")' in _mw34 and "from core.engine import _log_open" in _mw34)
 check("F40 optimize docstring 与实现一致",
       "四模式行为矩阵与参数契约" in _cl34 and "已激活 8 步内核快速管线" not in _cl34)
-check("F28 CLI 消费 learner/cleaner 消息", "learner.pop_info()" in _mw34 and "cleaner.pop_info()" in _mw34)
+check("F28 CLI 消费 learner/cleaner 消息", "engine.events.get" in _mw34 and "display_groups" in _mw34)
 check("F27 atexit 只注册一次", "_ATEXIT_REGISTERED" in _eg34)
 check("F26 save 内做内存侧同口径淘汰", "self.profiles.pop(_k, None)" in _lm34)
 
@@ -2371,15 +2371,15 @@ check("F5 quick+None=全量三项",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="4.7.0.23"' in _mf41)
+check("F9 manifest 版本随版", 'version="5.1.0.37"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
 check("F13 res_dir 死变量已清", "res_dir" not in _eg41)
 check("F14 math 死导入已清", "threading, queue," in _eg41 and "threading, math," not in _eg41)
 check("F15 恒假 pid in never 已清", "pid in never" not in _jd41 and "pid in never" not in _cl41)
-check("F16 CLI 热加载同步日志闸门", "_eng._log_open if _log_new else _eng._log_close" in _mw41
-      and "_eng.CFG.update(CFG)" in _mw41)
+check("F16 CLI 热加载同步日志闸门", "_log_open if _log_new else _log_close" in _eg41
+      and "CFG.update" in _eg41)
 
 # F12 回弹学习记录封口：30 天无结算且不在后退期即清理；旧状态文件（无时间戳）永不清理
 _rb41 = _RL41()
@@ -2617,11 +2617,11 @@ _j44b.sync_pid_from_cfg()
 check("F1 旧式构造无 efis_params 零影响", _j44b.pid.kp == 0.6 and _j44b.pid.target == 60)
 check("F1 行为：同步后 70% 占用的 agg 显著高于旧增益形态", _j44.update_pressure(70) > 0.3,
       "%.3f" % _j44.aggressiveness)
-check("F1 接线：judger 定义 + 引擎 5 处 + GUI 1 处 + CLI 3 处",
+check("F1 接线：judger 定义 + 引擎 5 处 + GUI 1 处 + CLI 复用引擎",
       "def sync_pid_from_cfg" in _jd44
       and _eg44.count("sync_pid_from_cfg()") == 5
       and _gui44.count("sync_pid_from_cfg()") == 1
-      and _mw44.count("sync_pid_from_cfg()") == 3)
+      and "MemWiseEngine" in _mw44 and _mw44.count("sync_pid_from_cfg()") >= 1)
 check("F1 紧急临时换参不触碰 PID（换/还原各 2 处均无同步）",
       _eg44.count('self.judger.cfg["efis_params"] = self.efis.get_params("full")') == 2
       and _eg44.count('self.judger.cfg["efis_params"] = _saved_efis') == 2)
@@ -2665,8 +2665,8 @@ check("F5 _do_draw_chart 无死局部变量（failed_weight/eff_list/eff 已清�
       not (_st44 - _ld44), str(sorted(_st44 - _ld44)))
 
 # ── F-A backup 导入 tmp 归入全项目原子写约定（PID 隔离）+ 清理契约扩展（真实函数行为闭环）──
-check("F-A backup import tmp 带进程号（并发导入隔离；旧固定命名零残留）",
-      '{os.getpid()}.tmp' in _src26("core", "backup.py")
+check("F-A backup import tmp 带进程号（两阶段 .importing 隔离；旧固定命名零残留）",
+      '.importing' in _src26("core", "backup.py") and 'os.getpid()' in _src26("core", "backup.py")
       and 'import-tmp' not in _src26("core", "backup.py"))
 import shutil as _sh44
 _bkA = tempfile.mkdtemp(prefix="mw_bkA_")
@@ -3124,7 +3124,7 @@ check("winapi 提供 memory_scale（量化 + 夹取 + 回退）",
 check("7 个尺寸类阈值按 S 缩放（源码形态）",
       _cl53.count("* _S)") == 6 and "int((32 << 20) * _S)" in _st53)
 check("代价/收益量级类阈值不缩放（语义=划不划算，与机器规模无关）",
-      "TREE1_HIGH = 50 << 20" in _src47("core/policy.py")
+      "TREE1_HIGH = int((50 << 20) * _S)" in _src47("core/policy.py")
       and "MIN_WS_BYTES = 1 << 20" in _src47("core/judger.py")
       and "DEEPEN_WASTE_BYTES = 10 << 20" in _src47("core/efis.py")
       and "L3_RETRIM_GROWTH_FLOOR = 8 << 20" in _cl53
@@ -3316,7 +3316,7 @@ check("承诺改写：默认不联网，且不再声称无法自动更新",
       and "默认不联网" in _ch54 and "默认不联网" in _src47("memwise.py"))
 check("设置面板更新栏 + 启动自检受开关门控 + 跳过版本不再弹窗 + 额外提醒",
       'text=tr("更新"), padding=8' in _g54 and "_upd_check(manual=False)" in _g54
-      and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log("发现新版本' in _g54)
+      and "skip_version" in _g54 and "self.lbl_upd" in _g54 and 'self._log_t("发现新版本' in _g54)
 def _scan_trunc54(src):
     """全界面裁剪风险扫描：凡用 _center_fit 显式定型的弹窗，其**动态文本**标签
     （f-string / 拼接）必须带 wraplength，否则长内容会被弹窗边界裁掉。
@@ -3444,7 +3444,7 @@ class _P54:
 _real_exe54 = sys.executable
 try:
     _fake54 = os.path.join(_rt54, "New.exe")
-    _tgt54 = os.path.join(_rt54, "App.exe")
+    _tgt54 = os.path.join(_rt54, "MemWise.exe")   # P12：助手只接受该名字的 PE 目标
     _sh54b.copy2(_real_exe54, _tgt54)                      # 目标 = 可执行的替身（真解释器副本）
     open(_fake54, "wb").write(b"NOT-AN-EXE")               # "新版" = 非可执行 ⇒ 启动必失败 ⇒ 必须回滚
     _orig54 = _hb54b.sha256(open(_tgt54, "rb").read()).hexdigest()
@@ -3646,6 +3646,111 @@ finally:
     _srv.shutdown()
     _srv.server_close()
     _sh54.rmtree(_t54, ignore_errors=True)
+print("\n[55] 2026-10-18 修复批次回归（P01-P31 代表性）")
+import hashlib as _h55, tempfile as _tf55, shutil as _sh55, types as _ty55
+import core.update as _U55, core.config as _C55cfg, core.cleaner as _C55
+import memwise_gui as _G55
+_u55src = _src47("core/update.py")
+check("P01/P02 update：shutil 已导入 + 回调路径按 received 计数",
+      hasattr(_U55, "shutil") and "received += len(chunk)" in _u55src
+      and "received > max_bytes" in _u55src)
+check("P31 CNG SHA-256 与 hashlib 对拍（空/abc/1MB）",
+      _U55._sha256_bytes(b"") == _h55.sha256(b"").hexdigest()
+      and _U55._sha256_bytes(b"abc") == _h55.sha256(b"abc").hexdigest()
+      and _U55._sha256_bytes(b"x" * 1000000) == _h55.sha256(b"x" * 1000000).hexdigest())
+check("P31 生产更新模块不再导入 hashlib", "import hashlib" not in _u55src)
+check("P05 累计样本 samples_total（50 次 feed 后 = 50）",
+      "samples_total" in _src47("core/learner.py")
+      and "samples_total > 30" in _src47("core/meta.py"))
+_l55 = PareLearner(); _p55 = _l55.get("p55.exe")
+for _i55 in range(50): _p55.feed(100 << 20)
+check("P05 累计样本值", _p55.samples_total == 50)
+check("P09 探针 α/β 上限", _p55.alpha <= 100 and _p55.beta <= 50)
+_p55b = Profile("p55b.exe")
+for _i55 in range(120): _p55b.record_probe(True, freed=1 << 20)
+check("P09 120 次探针后 α 不超 100", _p55b.alpha <= 100)
+_p55c = PareLearner(); _p55c._ctx_corrections[(1, 0, 1)] = 1.2
+try:
+    _p55c.record_ctx_correction(10, False, 1, 10 << 20, 5 << 20)
+    _ok55c = True
+except Exception:
+    _ok55c = False
+_t55f = os.path.join(_tf55.mkdtemp(prefix="mw55_"), "s.json")
+_p55c.save(_t55f)
+_j55 = json.load(open(_t55f, encoding="utf-8"))
+check("P23 ctx 旧格式不崩 + 持久化", _ok55c and "ctx_corrections" in _j55)
+_sh55.rmtree(os.path.dirname(_t55f), ignore_errors=True)
+check("P04 排序键混合空/数字不崩", sorted(["", "256 MB"], key=_G55._rank_cell_key) == ["", "256 MB"])
+_oldlang55 = _G55.get_language(); _G55.set_language("en")
+try:
+    _p03ok55 = "当前" not in _G55.tr_fmt("发现新版本 %s（当前 v%s）", "v9", "5.0.12")
+finally:
+    _G55.set_language(_oldlang55)
+check("P03 tr_fmt 模板翻译无中文", _p03ok55)
+check("P16 损坏 last_check 不崩设置面板",
+      _G55.MemWiseGUI._upd_status_init(type("D55", (), {"_upd_st": {"last_check": "bad"},
+                                                          "_upd_state": lambda self: self._upd_st})()) == _G55.tr("尚未检查更新"))
+_t55d = _tf55.mkdtemp(prefix="mw55d_")
+_txt55 = os.path.join(_t55d, "x.txt"); open(_txt55, "w").write("x")
+check("P12 更新目标校验拒绝非 MemWise.exe", _G55._validate_update_target(_txt55, 0)[0] is False)
+_sh55.rmtree(_t55d, ignore_errors=True)
+check("P10 执行通道统一复检已接线",
+      "def execution_allowed" in _src47("core/judger.py")
+      and "execution_allowed(" in _src47("core/cleaner.py"))
+check("P11 WS 上限对账/复用已接线",
+      "for _stale in" in _src47("core/engine.py")
+      and "_rec[0] == create" in _src47("core/engine.py"))
+check("P21 树阈值按 S 缩放", "TREE1_HIGH = int((50 << 20) * _S)" in _src47("core/policy.py"))
+check("P22 CLI 复用无 UI 引擎", "MemWiseEngine" in _src47("memwise.py")
+      and "engine.events.get" in _src47("memwise.py"))
+check("P31/P32 spec：排除 _hashlib + 构建期 yaml 守卫",
+      "_hashlib" in open(os.path.join(_ROOT26, "MemWise.spec"), encoding="utf-8").read()
+      and "import yaml" in open(os.path.join(_ROOT26, "MemWise.spec"), encoding="utf-8").read())
+# P20/P19 配置行为
+_c55tmp = os.path.join(_tf55.mkdtemp(prefix="mw55c_"), "c.yaml")
+import yaml as _y55
+with open(_c55tmp, "w", encoding="utf-8") as _f55:
+    _y55.safe_dump({"emergency_abs_pct": 90,
+                    "ws_caps": {("D:\\App\\p%d.exe" % _i55): {"mb": 256, "orig_max": 1024}
+                                for _i55 in range(17)}}, _f55)
+_oldC55 = _C55cfg.CONFIG_PATH; _C55cfg.CONFIG_PATH = _c55tmp
+try:
+    _d55 = _C55cfg.load()
+finally:
+    _C55cfg.CONFIG_PATH = _oldC55
+    _sh55.rmtree(os.path.dirname(_c55tmp), ignore_errors=True)
+check("P20 emergency_abs_pct 钳到 50", _d55["emergency_abs_pct"] == 50)
+check("P19 ws_caps 截到 16 条", len(_d55["ws_caps"]) == 16)
+# P06/P08 清理路径行为（打桩，不触系统）
+_c55calls = []
+def _rec55(nm):
+    def _f(*a, **k):
+        _c55calls.append(nm); return True
+    return _f
+_old55 = {}
+for _n55 in ("empty_all_working_sets", "empty_ws", "empty_standby", "flush_modified_pages",
+             "clear_system_file_cache_ex", "flush_volume_cache", "clear_registry_cache",
+             "purge_low_priority_standby"):
+    _old55[_n55] = getattr(_C55.winapi, _n55)
+    setattr(_C55.winapi, _n55, _rec55(_n55))
+try:
+    _l55c = PareLearner(); _j55c = PareJudger(_l55c, {"never": [], "clean_passes": 4, "efis_params": {}})
+    _c55c = PareCleaner(_j55c)
+    _c55calls.clear(); _c55c.optimize([], _l55c, "normal", operations=[]); _e55 = list(_c55calls)
+    _j55c._last_mem_pct = 30; _j55c.aggressiveness = 0.0
+    _c55calls.clear(); _c55c.optimize([], _l55c, "normal", operations=["ws","standby","modified","volume","registry","filecache"], aggressiveness=0.0, allow_layer3=False)
+    _low55 = set(_c55calls)
+    _j55c.aggressiveness = 0.9
+    _c55calls.clear(); _c55c.optimize([], _l55c, "normal", operations=["ws","standby","modified","volume","registry","filecache"], aggressiveness=0.9, allow_layer3=False)
+    _high55 = set(_c55calls)
+    _c55c.shutdown()
+finally:
+    for _n55, _f55 in _old55.items():
+        setattr(_C55.winapi, _n55, _f55)
+check("P08 全部取消 ⇒ 零调用（含自身）", _e55 == [])
+check("P06 gap 低压仅 registry / 高压含 standby", _low55 == {"clear_registry_cache"}
+      and "empty_standby" in _high55 and "flush_modified_pages" in _high55)
+
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
 if errors:

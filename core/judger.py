@@ -118,6 +118,7 @@ class PareJudger:
         self.pf_before = {}
         self._post_clean_ws = {}  # 进程清理后的 WS 基线
         self._post_clean_time = {}  # 基线时间戳（判定窗口动态：默认 1200s、范围 120-3600，见 can_trim；整体 1 小时过期清理）
+        self._post_clean_create = {}  # P15：基线对应的进程 create 时间（同名重启/新实例不继承旧基线）
         self._probe_last_time = {}
         # ── P0-C 连续低活动确认：{name: (连续低活动轮数, 时间戳)} ──
         self._low_activity = {}
@@ -338,6 +339,11 @@ class PareJudger:
         # deep/full 跳过——极限模式不被"清后白清"保护拦阻（稳态豁免梯度，2026-08-14）
         baseline = self._post_clean_ws.get(name, 0)
         bl_time = self._post_clean_time.get(name, 0)
+        # P15：同名进程重启（create 变）⇒ 旧基线作废；否则新实例常被“WS未填满”压 1 小时
+        _bl_c = self._post_clean_create.get(name)
+        _cur_c = getattr(snap, "create", None)
+        if baseline > 0 and _bl_c is not None and _cur_c is not None and _bl_c != _cur_c:
+            baseline = 0
         if baseline > 0 and _guard not in ("deep", "full"):
             window = 1200
             p_win = self.learner.get_profile(name)
@@ -418,6 +424,53 @@ class PareJudger:
             return False, f"投票异常"
         return True, f"θ={theta:.2f}"
 
+    def execution_allowed(self, snap, guard=None, manual=None, check_io=True,
+                         check_activity=True, check_anchor=True, check_rebound=True):
+        """P10：执行通道的统一复检（决策门 → 真正动手之间可能已过数秒）。
+        与 can_trim 同语义：full 跳过全部；手动/高压跳过活动/锚点/回弹但保留 CPU/IO；
+        deep 跳过锚点/回弹（活动确认 1 轮）；normal 全部生效。
+        只读，不改变 suppress_cnt/随机探索的既有统计口径（锚点探索仍按 EXPLORE_RATE）。
+        返回 (ok, reason)。"""
+        if snap is None:
+            return True, ""
+        _g = guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal")
+        _mm = self._manual_mode if manual is None else bool(manual)
+        if _g == "full":
+            return True, ""
+        _hp = self._high_pressure()
+        if not (_mm or _hp):
+            if check_activity:
+                _need = 2 if _g == "normal" else 1
+                _la = self._low_activity.get(snap.pid)
+                if _la is None or _la[0] < _need:
+                    return False, "活动确认中"
+            _path = getattr(snap, "path", None)
+            if check_anchor and _g == "normal" and _path:
+                _margin = self.cfg.get("efis_params", {}).get("anchor_margin", 0.15)
+                if self.learner.stable_anchors.should_suppress(_path, snap.ws, _margin):
+                    if random.random() >= EXPLORE_RATE:
+                        return False, "稳态抑制"
+            if check_rebound and _g == "normal" and _path:
+                try:
+                    if self.learner.rebound.in_backoff(_path, time.time()):
+                        if random.random() >= EXPLORE_RATE:
+                            return False, "回弹后退"
+                except Exception:
+                    pass
+        # CPU / IO 实时门：full 之外的所有模式（含手动/高压）都保留
+        try:
+            if (getattr(snap, "cpu", 0) or 0) >= self._gate("cpu_gate", 8.0):
+                return False, "CPU活跃"
+        except Exception:
+            pass
+        if check_io:
+            try:
+                if self._io_active(snap.pid):
+                    return False, "IO活跃"
+            except Exception:
+                pass
+        return True, ""
+
     def can_probe(self, snap):
         """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""
         name = snap.name.lower()
@@ -468,18 +521,20 @@ class PareJudger:
 
     # ── 冷却管理 ──
 
-    def mark_trimmed(self, name, freed=0, ws_before=0, pf_delta=0, ws_after=0):
+    def mark_trimmed(self, name, freed=0, ws_before=0, pf_delta=0, ws_after=0, create=None):
         """记录 WS 基线 — 替代旧冷却。不设时间锁，下次 tick 靠数据判断是否值得再清。
-        ws_after=0 时（进程已退出）不记录基线"""
+        ws_after=0 时（进程已退出）不记录基线；create 用于区分同名新实例（P15）"""
         name = name.lower()
         now = time.time()
         # 清理后 WS 基线 + 时间戳
         if ws_after > 0:
             self._post_clean_ws[name] = ws_after
             self._post_clean_time[name] = now
+            self._post_clean_create[name] = create
         elif name in self._post_clean_ws:
             del self._post_clean_ws[name]
             self._post_clean_time.pop(name, None)
+            self._post_clean_create.pop(name, None)
         # 超时计数衰减：成功清理 1 次，timeout_count -1
         p = self.learner.get_profile(name)
         if p and hasattr(p, 'timeout_count') and p.timeout_count > 0:
@@ -557,6 +612,7 @@ class PareJudger:
             if now - self._post_clean_time.get(k, 0) > 3600:
                 self._post_clean_ws.pop(k, None)
                 self._post_clean_time.pop(k, None)
+                self._post_clean_create.pop(k, None)
         # 清理过期 PF 缓存
         for k in list(self.pf_before.keys()):
             _e = self.pf_before.get(k)

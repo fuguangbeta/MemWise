@@ -20,11 +20,14 @@ class MetaCognition:
         # 与 learner.pop_info / engine._compute_eris 同款防护）
         drifted = []
         for name, p in dict(self.learner.profiles).items():
-            if p.total_samples > 30:
+            # P05：total_samples 是 20 长滑动窗，永远到不了 30；改用累计 samples_total。
+            # 同一漂移只复位一次/小时，防每 tick 反复削 α/β（复位本身不改变 EWMA 比值）。
+            if p.samples_total > 30 and time.time() - p.last_drift_at > 3600:
                 fast = p.gain_ewma_fast
                 slow = p.gain_ewma_slow
                 if slow > 0 and (fast > slow * 4.0 or fast < slow * 0.2):
                     drifted.append(name)
+                    p.last_drift_at = time.time()
                     p.kalman.q = 2.0
                     p.alpha = max(2, p.alpha * 0.7)
                     p.beta = max(1, p.beta * 0.7)

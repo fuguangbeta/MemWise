@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "5.0.012"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "5.1.037"  # 版本同步面之一（manifest 记录用）
 PACKAGE_FILE_MAX = 64 * 1024 * 1024   # 单个状态文件上限（2026-09-11 加固：拒绝异常/恶意大包）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
@@ -66,7 +66,7 @@ def _now_stamp():
 
 
 def export_state(source="export", base=None):
-    """打包当前状态文件 → packages/ 下 ZIP 包，返回 (路径, 缺失未打包列表)。
+    """打包当前状态文件 → data/import_export/ 下 ZIP 包，返回 (路径, 缺失未打包列表)。
     路径为 None 表示无任何状态文件可打包。不存在的文件跳过，
     manifest.files 忠实记录实际内容（导入端按其完整复刻）。"""
     paths = _state_paths(base)
@@ -201,49 +201,141 @@ def validate_package(pkg_path):
     return manifest, errors
 
 
-def import_state(pkg_path, backup=True, base=None):
+def _journal_path(base=None):
+    """P18：导入事务日志（跨四文件）。存在 ⇒ 上次导入未完成。"""
+    return os.path.join(_data_root(base), "import.pending")
+
+
+def import_state(pkg_path, backup=True, base=None, _recover=False):
     """导入配置包 → (True, "") 或 (False, 错误串)。
     backup=True 先把当前状态打包为 Backup 包（可供再次导入恢复）。
     落位 = 按 manifest.files 写入 + 删除预期四文件中包内没有的
     （完整复刻导出方状态——导出方没有的文件，导入方也不保留）。
-    仅落盘不刷新内存态，重启后生效（调用方负责重启）。"""
+    仅落盘不刷新内存态，重启后生效（调用方负责重启）。
+
+    P18：两阶段 + 事务日志——先把全部内容写 .importing 临时文件，再逐个 replace；
+    任一失败立即从自动备份回滚并清理 journal；断电残留由 recover_pending 在启动时恢复。"""
     manifest, errors = validate_package(pkg_path)
     if errors:
         return False, "\n".join(errors)
+    bak = ""
     if backup:
-        create_backup(base=base)
-    with zipfile.ZipFile(pkg_path) as zf:
-        for name in manifest["files"]:
-            target = _state_paths(base).get(name)
-            if not target:
-                continue  # manifest 声明了当前程序不认识的文件名（format_version 已挡，防御）
-            data = zf.read(name)
-            # PID 后缀＝全项目原子写约定：跨进程并发导入各写各的 tmp（固定名会被
-            # 双进程交错写坏），残留由启动清理契约统一覆盖（含旧版命名的升级残留）
-            tmp = f"{target}.{os.getpid()}.tmp"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, target)
-    for name, target in _state_paths(base).items():
-        if name not in manifest["files"] and os.path.isfile(target):
-            os.remove(target)
-    return True, ""
+        try:
+            bak = create_backup(base=base) or ""   # 返回单一路径（P18：旧代码误按二元组解包，备份实际从未建立）
+        except Exception:
+            bak = ""
+    paths = _state_paths(base)
+    temps = {}
+    journal = _journal_path(base)
+    try:
+        with zipfile.ZipFile(pkg_path) as zf:
+            for name in manifest["files"]:
+                target = paths.get(name)
+                if not target:
+                    continue  # manifest 声明了当前程序不认识的文件名（format_version 已挡，防御）
+                data = zf.read(name)
+                tmp = "%s.%d.importing" % (target, os.getpid())
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                temps[name] = tmp
+        if bak:
+            try:
+                os.makedirs(os.path.dirname(journal), exist_ok=True)
+                with open(journal, "w", encoding="utf-8") as f:
+                    json.dump({"backup": bak, "ts": time.time()}, f)
+            except Exception:
+                pass
+        for name, tmp in temps.items():
+            os.replace(tmp, paths[name])
+        for name, target in paths.items():
+            if name not in manifest["files"] and os.path.isfile(target):
+                os.remove(target)
+        if bak:
+            try:
+                os.remove(journal)
+            except Exception:
+                pass
+        return True, ""
+    except Exception as e:
+        for tmp in temps.values():
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        _restored = False
+        if bak:
+            try:
+                _restored = bool(import_state(bak, backup=False, base=base, _recover=True)[0])
+            except Exception:
+                _restored = False
+        try:
+            if _restored:
+                os.remove(journal)
+            elif os.path.isfile(journal):
+                # 回滚失败：保留证据但不阻塞下次启动（避免每次启动都重复恢复尝试）
+                os.replace(journal, journal + ".failed")
+        except Exception:
+            pass
+        return False, tr_msg("导入失败：%s" % e)
+
+
+def recover_pending(base=None):
+    """P18：启动时恢复未完成导入（有 journal 且备份包仍在）。返回可展示的提示串。"""
+    journal = _journal_path(base)
+    if not os.path.isfile(journal):
+        return ""
+    try:
+        with open(journal, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    bak = d.get("backup") or ""
+    if bak and os.path.isfile(bak):
+        ok, _err = import_state(bak, backup=False, base=base)
+        if ok:
+            try:
+                os.remove(journal)
+            except Exception:
+                pass
+            return tr_msg("检测到未完成的导入，已从自动备份恢复")
+    try:
+        if os.path.isfile(journal):
+            os.replace(journal, journal + ".failed")
+    except Exception:
+        pass
+    return tr_msg("检测到未完成的导入，恢复失败；请手动导入最近的备份包")
 
 
 def reset_factory(backup=True, base=None):
     """恢复出厂：可选备份当前状态 → 删除四个状态文件（重启后全默认冷启动）。
     返回 (True, 备份包路径或 "")。仅落盘，调用方负责重启生效。"""
     bak = create_backup(base=base) if backup else None
+    errors = []
     for p in _state_paths(base).values():
         if os.path.isfile(p):
-            os.remove(p)
+            try:
+                os.remove(p)
+            except Exception as e:
+                errors.append("%s: %s" % (os.path.basename(p), e))
     # ② 自校准数据单独清除（不在 _STATE_NAMES 中，故此处显式处理）
     try:
         cp = os.path.join(_data_root(base), _CALIB_NAME)
         if os.path.isfile(cp):
             os.remove(cp)
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append("%s: %s" % (_CALIB_NAME, e))
+    if errors:
+        try:
+            from core.engine import _event_log
+            _event_log("恢复出厂：部分文件删除失败（%s）" % "; ".join(errors))
+        except Exception:
+            pass
+        return False, bak or ""
     return True, bak or ""
 
 
@@ -283,4 +375,8 @@ def restart_application(delay_seconds=3):
     # 工作目录显式指向程序位置（防继承旧实例的 _MEI 临时目录导致占用与清理竞争）
     cwd = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
         else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    subprocess.Popen(argv, creationflags=0x08000000, env=env, cwd=cwd)  # CREATE_NO_WINDOW
+    try:
+        subprocess.Popen(argv, creationflags=0x08000000, env=env, cwd=cwd)  # CREATE_NO_WINDOW
+        return True
+    except Exception:
+        return False

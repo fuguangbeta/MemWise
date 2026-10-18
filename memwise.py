@@ -1,10 +1,10 @@
 """
-MemWise v5.0.012 PARES —— 智能内存看护
+MemWise v5.1.037 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 不杀进程、不挂起、不注入；默认不联网（仅在你开启「检查更新」后访问官方发布渠道，不发送任何设备信息）；仅在按设置写入状态与日志文件。
 """
 
-import ctypes, json, os, sys, time
+import ctypes, json, os, queue, sys, time
 
 from core.learner import PareLearner as Learner
 from core.judger import PareJudger as Judger
@@ -14,6 +14,7 @@ from core import winapi
 from core.config import load as _load_cfg
 from core.config import get_state_path
 from core.i18n import tr, tr_msg, set_language  # 界面语言（跟随 GUI 设置）
+from core.i18n import tr_fmt
 import core.config as _config
 
 SEP = "─" * 50
@@ -32,8 +33,8 @@ def _mem_or_none():
 
 def _build_pipeline():
     learner = Learner.load(STATE_PATH)
-    jcfg = {"kp": CFG.get("kp", 0.6), "ki": CFG.get("ki", 0.15),
-            "kd": CFG.get("kd", 0.1), "target_usage": CFG.get("target_usage", 60),
+    jcfg = {"kp": CFG.get("kp", 1.0), "ki": CFG.get("ki", 0.15),
+            "kd": CFG.get("kd", 0.1), "target_usage": CFG.get("target_usage", 45),
             "never": CFG.get("never",[]),
             "game_processes": CFG.get("game_processes",[]),
             "clean_passes": CFG.get("clean_passes", 4),
@@ -164,16 +165,8 @@ def _service_action():
 
 
 def cmd_daemon(args):
-    # 命令行守护互斥（2026-09-06 审查 F3）：防 CLI 双开与 GUI 守护并发——双进程同时
-    # 写同一状态文件，进程内锁不跨进程会交错损坏画像唯一副本
-    from core.engine import DAEMON_MUTEX_NAME
-    _daemon_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, DAEMON_MUTEX_NAME)
-    if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
-        print(tr("命令行守护已在运行，本实例退出"))
-        return
-    # 任务自愈（2026-10-16）：若本任务由旧的命令行方式创建，会带「仅交流电启动 / 切电池即停 /
-    # 72 小时执行上限」三项 schema 默认值（表现：笔记本用电池时守护不启动、跑满 3 天被系统结束）。
-    # SYSTEM 身份允许改写自身任务 ⇒ 此处幂等重建一次，已安装的用户无需重装；失败静默、不影响守护。
+    # 任务自愈（2026-10-16）：旧命令行方式创建的任务带电池/时限 schema 默认值，SYSTEM 身份
+    # 允许改写自身任务 ⇒ 幂等重建一次；失败静默、不影响守护。
     try:
         if winapi.service_task_needs_fix(_SERVICE_TASK):
             winapi.set_service_task(_SERVICE_TASK, sys.executable, _service_action())
@@ -181,95 +174,93 @@ def cmd_daemon(args):
         pass
     print(tr("MemWise PARES 守护 (Ctrl+C 停止)"))
     learner, judger, cleaner = _build_pipeline()
-    sniffer = Sniffer()
-    # 持有 EFIS 实例（2026-08-16 模式参数组，审查 P8）：模式/配置热加载时按模式取参，
-    # 不依赖 _build_pipeline 的局部实例
     try:
         from core.efis import EfisController
         _efis = EfisController(STATE_PATH)
         _efis.set_mode(CFG.get("clean_mode", "normal"))
     except Exception:
         _efis = None
-    interval = CFG.get("interval", 60)  # 与 DEFAULT_CFG 一致（原 30 系历史默认值残留）
+    sniffer = Sniffer()
+    # P22：CLI 守护复用无 UI 引擎——EFIS/ERIS/紧急 full/ws_caps/gap/fast-track 与 GUI 完全同源，
+    # 不再维护第二套循环（旧循环缺 EFIS tick/ERIS/硬上限/紧急，长期漂移）。
+    from core.engine import MemWiseEngine
+    import core.engine as _eng
     mode = CFG.get("clean_mode", "normal")
     i = 0
     while i < len(args):
-        if args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
-        elif args[i] == "--minimized": pass  # 自启兼容参数（CLI 无窗口，忽略）
+        if args[i] == "--mode" and i + 1 < len(args):
+            mode = args[i + 1]; i += 1
+        elif args[i] == "--minimized":
+            pass  # 自启兼容参数（CLI 无窗口，忽略）
         i += 1
-    # --mode 显式覆盖（2026-08-30 审查）：命令行模式优先于配置文件——立即对齐 EFIS
-    # 参数组（原仅在配置热加载时对齐，且热加载会用 CFG 模式覆盖 --mode 显式意图）
     _cli_mode_override = mode != CFG.get("clean_mode", "normal")
-    if _efis is not None and _cli_mode_override:
-        _efis.set_mode(mode)
-        judger.cfg["efis_params"] = _efis.get_params()
-        judger.sync_pid_from_cfg()
-    tick = 0
+    if _cli_mode_override:
+        _eng.CFG["clean_mode"] = mode
+        if _efis is not None:
+            _efis.set_mode(mode)
+            judger.cfg["efis_params"] = _efis.get_params()
+            judger.sync_pid_from_cfg()
+    engine = MemWiseEngine(learner, judger, cleaner, _efis, sniffer, STATE_PATH)
+    if not engine.start_daemon():
+        print(tr("守护已在运行（或互斥被占用），本实例退出"))
+        engine.shutdown()
+        return
     try:
-        while True:
-            tick += 1
-            tick_start = time.time()
-            m = _mem_or_none()
-            if not m: time.sleep(interval); continue
-            snaps = sniffer.snapshot(); learner.feed(snaps)
-            agg = judger.update_pressure(m["pct"])
-            ops = CFG.get("clean_operations")
-            result = cleaner.optimize(snaps, learner, mode, operations=ops, aggressiveness=agg)
-            l2_results = result.get("layer2", [])
-            probe_results = result.get("probe", [])
-            agg = result.get("aggressiveness", agg)
-            # 配置热加载：每 2 tick 检查 config.yaml 是否变更
-            if tick % 2 == 0:
+        while engine.daemon_running:
+            # --mode 显式覆盖优先于配置热加载（引擎每周期从 CFG 取模式）
+            if _cli_mode_override:
+                _eng.CFG["clean_mode"] = mode
+                if _efis is not None:
+                    _efis.set_mode(mode)
+                    judger.cfg["efis_params"] = _efis.get_params()
+                    judger.sync_pid_from_cfg()
+            try:
+                action, data = engine.events.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if action == "log":
+                print(tr_msg(str(data)))
+            elif action == "log_batch":
+                for _m in data or []:
+                    print(tr_msg(str(_m)))
+            elif action == "display_groups":
+                for _g in data or []:
+                    for _m in _g:
+                        print(tr_msg(str(_m)))
+            elif action == "upd_ui":
                 try:
-                    mtime = os.path.getmtime(_config.CONFIG_PATH)
-                    if mtime != getattr(cmd_daemon, "_cfg_mtime", 0):
-                        cmd_daemon._cfg_mtime = mtime
-                        CFG.update(_load_cfg())
-                        # 统一日志闸门同步（2026-09-26 审查 F16）：_log_write 读的是 engine.CFG，
-                        # 只更新本地 CFG 时运行中改日志开关在 CLI 路径不生效；同步后按新旧值开关 fd
-                        import core.engine as _eng
-                        _log_new = bool(CFG.get("log_to_file"))
-                        if _log_new != bool(_eng.CFG.get("log_to_file")):
-                            (_eng._log_open if _log_new else _eng._log_close)()
-                        _eng.CFG.update(CFG)
-                        if not _cli_mode_override:
-                            mode = CFG.get("clean_mode", "normal")
-                        interval = CFG.get("interval", 60)
-                        # 同步 judger 运行配置（排除列表/游戏名单/清理深度即时生效）
-                        judger.cfg["never"] = CFG.get("never", [])
-                        judger.cfg["game_processes"] = CFG.get("game_processes", [])
-                        judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
-                        judger.cfg["emergency_threshold"] = CFG.get("emergency_threshold", 80)
-                        # EFIS 参数按当前模式取（状态文件权威，config 快照不回灌，审查 P3/P8）
-                        if _efis is not None:
-                            _efis.set_mode(mode)
-                            judger.cfg["efis_params"] = _efis.get_params()
-                            judger.sync_pid_from_cfg()
+                    _s, _m, _txt = data
+                    _status = tr_fmt("%s 内存 %d%% | 可用 %.1fGB | 释放 %.1fMB | 整理 %d",
+                                    tr_msg(str(_txt)), _m["pct"], _m["avail"] / (1 << 30),
+                                    _s["freed_mb"], _s["ws_trim"])
+                    print(_status)
                 except Exception:
                     pass
-            if tick % 10 == 0: judger.purge_expired(); learner.save(STATE_PATH); import gc; gc.collect()
-            # 消息缓冲消费（2026-09-11 审查 F28）：CLI 原先从不 pop_info，学习器的提示
-            # （泄漏疑似/游戏启停等）在内存里无界累积且完全不可见；现按周期输出并释放。
-            try:
-                for _msg in learner.pop_info():
-                    print("\n" + tr_msg(_msg))
-                for _msg in cleaner.pop_info():
-                    print("\n" + tr_msg(_msg))
-            except Exception:
-                pass
-            stats = cleaner.summary()
-            sys.stdout.write(tr_msg(f"\r内存 {m['pct']}% | 清理强度={agg:.2f} | 可用 {_gb(m['avail']):.1f}GB | "
-                             f"释放 {stats['freed_mb']}MB | SB={stats['standby']} MP={stats['modified']} "
-                             f"文件缓存={stats['filecache']} | "
-                             f"整理 {stats['ws_trim']} | {tick*interval}s"))
-            sys.stdout.flush()
-            elapsed = time.time() - tick_start
-            time.sleep(max(0.5, interval - elapsed))
+            elif action == "opt_done":
+                try:
+                    print(tr_msg("即时优化完成：释放 %.1f MB" % data.get("released", 0.0)))
+                except Exception:
+                    pass
+            elif action == "dae_stopped":
+                break
     except KeyboardInterrupt:
-        learner.save(STATE_PATH)
-        stats = cleaner.summary()
-        print(tr_msg(f"\n停止 | 累计释放 {stats['freed_mb']} MB | "
-              f"待机缓存={stats['standby']} | 整理={stats['ws_trim']}"))
+        pass
+    finally:
+        engine.stop_daemon()
+        try:
+            engine.join_daemon(5.0)
+        except Exception:
+            pass
+        try:
+            engine.save_state()
+        except Exception:
+            pass
+        try:
+            engine.shutdown()
+        except Exception:
+            pass
+        _s = cleaner.summary()
+        print(tr_msg("守护已停止 | 累计释放 %.1f MB | 整理 %d" % (_s["freed_mb"], _s["ws_trim"])))
 
 def cmd_reset(_):
     print(tr("恢复出厂设置..."))
@@ -285,6 +276,9 @@ def cmd_reset(_):
     ok, bak = _backup.reset_factory(backup=True)
     if bak:
         print(tr_msg(f"已备份: {os.path.basename(bak)}"))
+    if not ok:
+        print(tr("重置失败：部分文件无法删除（可能被占用），请关闭占用程序后重试"))
+        return
     print(tr("完成。下次启动使用默认配置。"))
     winapi.report_event("MemWise", tr_msg("已恢复出厂设置"))
 
@@ -392,6 +386,18 @@ def main():
             os.makedirs(os.path.dirname(_config.CONFIG_PATH), exist_ok=True)
         except Exception:
             pass
+    # P18：若 init_runtime 恢复了未完成的导入，config.yaml 可能已变——CLI 本地 CFG 同步
+    try:
+        CFG.clear()
+        CFG.update(_load_cfg())
+    except Exception:
+        pass
+    # 常驻崩溃现场（P35 顺序修正）：必须先于日志打开——日志开失败时异常原因只能走 crash 通道
+    try:
+        from core.engine import _install_crash_sink
+        _install_crash_sink()
+    except Exception:
+        pass
     # 统一日志（2026-09-11 审查 F39）：CLI 原先完全不写日志文件，使 log_to_file 在命令行
     # 路径下形同虚设；现与界面模式同口径按开关开启（写入内容由同一开关总控）
     if CFG.get("log_to_file"):
@@ -404,14 +410,8 @@ def main():
     # ws_all（系统级全清）静默失效；管理员下 SeProfileSingleProcessPrivilege 必须
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
     winapi.enable_reduct_privileges()
-    # 常驻崩溃现场（2026-08-30）：独立于日志开关，CLI 崩溃同样保留 memwise_crash.log
-    try:
-        from core.engine import _install_crash_sink
-        _install_crash_sink()
-    except Exception:
-        pass
     if len(sys.argv) < 2:
-        print(tr("MemWise v5.0.012 PARES —— 智能内存看护"))
+        print(tr("MemWise v5.1.037 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

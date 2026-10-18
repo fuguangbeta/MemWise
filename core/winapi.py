@@ -58,7 +58,9 @@ NtSetSystemInformation = ntdll.NtSetSystemInformation; NtSetSystemInformation.ar
 NtSetInformationProcess = ntdll.NtSetInformationProcess
 NtSetInformationProcess.argtypes = [w.HANDLE, w.INT, ctypes.c_void_p, w.ULONG]
 NtSetInformationProcess.restype = w.LONG
-psapi = ctypes.WinDLL("psapi", use_last_error=True)
+# P36：psapi 非 KnownDLL，绝对路径加载防便携目录 DLL 劫持
+_SYS32_W = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+psapi = ctypes.WinDLL(os.path.join(_SYS32_W, "psapi.dll"), use_last_error=True)
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 adv32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
@@ -560,6 +562,8 @@ def get_all_processes_memory():
                 kt = ctypes.c_ulonglong.from_buffer(buf, off + kernel_off).value
                 ut = ctypes.c_ulonglong.from_buffer(buf, off + user_off).value
                 ct = ctypes.c_ulonglong.from_buffer(buf, off + create_off).value
+                # pf 在批量布局中不读取（SYSTEM_PROCESS_INFORMATION 的 PF 字段未做跨版本校验）；
+                # 清理/试探执行层用 get_process_memory 实时读取，快照 pf 仅供占位兼容（P28）
                 result[pid] = {"ws": ws, "priv": priv, "pf": 0,
                                "kernel": kt, "user": ut, "create": ct}
             if ne == 0:
