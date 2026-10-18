@@ -44,13 +44,13 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 10.2 MB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 9.76 MB，9,994 KB），零外部依赖。
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持每个守护周期内（默认 60 秒，可在设置中调整 10-3600 秒）零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
-Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 10.2 MB.
+Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 9.76 MB (9,994 KB).
 
 MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization within each daemon cycle (60 s by default, adjustable from 10 to 3600 s). A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.
 
