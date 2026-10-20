@@ -151,7 +151,7 @@ _EN = {
     "日志自动轮转保留最近两份，无需手动清理": "Logs rotate automatically, keeping the latest two — no manual cleanup needed",
     "欲降低本程序性能占用建议 2~3": "Use 2–3 to reduce this app's overhead",
     "对于更彻底的优化需求可设 5~6": "Use 5–6 for a more thorough optimization",
-    "quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」不执行": "In quick mode, “Release idle process memory”, “System file cache” and “Volume cache flush” are not run",
+    "quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」「脏页写回」不执行": "In quick mode, “Release idle process memory”, “System file cache”, “Volume cache flush” and “Dirty page write-back” are not run",
     "欲降低本程序性能占用建议 15~20": "Use 15–20 to reduce this app's overhead",
     "对于更彻底的优化需求可设 8~10": "Use 8–10 for a more thorough optimization",
     "启用后将对游戏进程实施完全保护，": "Game processes get full protection,",
@@ -391,7 +391,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v5.1.037 启动· ": "MemWise v5.1.037 started · ",
+    "MemWise v5.2.005 启动· ": "MemWise v5.2.005 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -826,7 +826,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v5.1.037 PARES —— 智能内存看护": "MemWise v5.1.037 PARES — Intelligent Memory Custodian",
+    "MemWise v5.2.005 PARES —— 智能内存看护": "MemWise v5.2.005 PARES — Intelligent Memory Custodian",
     # ── 工作集硬上限（高级选项，设计 v2.4 文案规格）──
     "已设硬上限": "Hard-capped",
     "设置工作集硬上限…": "Set working-set hard cap…",

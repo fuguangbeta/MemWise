@@ -1,4 +1,4 @@
-# MemWise v5.1.037
+# MemWise v5.2.005
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -44,13 +44,13 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 9.76 MB，9,994 KB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 9.76 MB，9,996 KB），零外部依赖。
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持每个守护周期内（默认 60 秒，可在设置中调整 10-3600 秒）零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
-Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 9.76 MB (9,994 KB).
+Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 9.76 MB (9,996 KB).
 
 MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization within each daemon cycle (60 s by default, adjustable from 10 to 3600 s). A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.
 
@@ -62,9 +62,9 @@ An embedded watchdog subprocess restores daemon state within seconds of an unexp
 
 ### 1.1 一键优化 · *One-Click Optimization*
 
-点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 全局热键中自定义），程序按当前选择的清理模式执行一次完整优化（三轮深度执行），并输出累计释放量。四种模式按力度真实分层：quick 仅轻量系统操作（零进程清理）、normal 进程加系统标准力度、deep 等待减半并启用系统级全清（中高压启用）、full 不等待、立即全力清理（跳过活跃门槛，含每进程最大轮数与回弹二轮；内存宽裕且上轮回涨快时该轮自动转轻量，见 2.1 注），每轮完成即播报进度。完成后以结果卡整屏显示释放汇总（分别列出系统缓存与进程的释放量及合计）、可用内存变化与释放最多的进程明细（零结果时如实明示）。守护运行中点击优化按钮，则按当前模式立即执行一轮即时优化（游戏模式时跳过，避免影响流畅），点击即有启动确认与候选预览。
+点击主界面"优化"按钮（或按全局热键，默认 Ctrl+Shift+M，可在设置 → 全局热键中自定义），程序按当前选择的清理模式执行一次完整优化（三轮深度执行），并输出累计释放量。四种模式按力度真实分层：quick 仅轻量系统操作（零进程清理）、normal 进程加系统标准力度、deep 等待减半并启用系统级全清（中高压启用）、full 不等待、立即全力清理（跳过活跃门槛，含每进程最大轮数与回弹二轮），每轮完成即播报进度。完成后以结果卡整屏显示释放汇总（分别列出系统缓存与进程的释放量及合计）、可用内存变化与释放最多的进程明细（零结果时如实明示）。守护运行中点击优化按钮，则按当前模式立即执行一轮即时优化（游戏模式时跳过，避免影响流畅），点击即有启动确认与候选预览。
 
-Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Global Hotkeys). Runs a full optimization (three deep rounds) in the currently selected cleaning mode, with real intensity tiers: quick is system-only lightweight (no process trimming), normal adds process trimming at standard guard strictness, deep halves the waiting windows and enables the system-wide working-set flush at moderate-to-high usage, full skips waiting and activity gates entirely for maximum release (maximum rounds per process plus a rebound second pass; a round turns light automatically when memory is comfortable and the previous release refilled quickly — see the note under 2.1); each round reports its progress as it completes. A result card then summarizes freed memory — system cache and process releases listed separately with their total — the availability change, and the most-released processes (an empty run says so honestly). While Guard is running, the button triggers one immediate optimization round in the current mode (skipped in Game Mode to avoid impacting smoothness), with instant start confirmation and a candidate preview on click.
+Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, customizable in Settings → Global Hotkeys). Runs a full optimization (three deep rounds) in the currently selected cleaning mode, with real intensity tiers: quick is system-only lightweight (no process trimming), normal adds process trimming at standard guard strictness, deep halves the waiting windows and enables the system-wide working-set flush at moderate-to-high usage, full skips waiting and activity gates entirely for maximum release (maximum rounds per process plus a rebound second pass); each round reports its progress as it completes. A result card then summarizes freed memory — system cache and process releases listed separately with their total — the availability change, and the most-released processes (an empty run says so honestly). While Guard is running, the button triggers one immediate optimization round in the current mode (skipped in Game Mode to avoid impacting smoothness), with instant start confirmation and a candidate preview on click.
 
 ### 1.2 守护模式（推荐）· *Daemon Mode (Recommended)*
 
@@ -75,7 +75,7 @@ Triggered via the Optimize button or the global hotkey (default Ctrl+Shift+M, cu
 | 自适应 gap | 根据上一轮每个进程的平均释放量自动调整间隔（8-20 秒基准，自适应不超出 20 秒），释放多则缩短、释放少则延长 |
 | gap fill 轻量压制 | 高频阶段系统级轻量操作（零磁盘影响）：normal 仅注册表缓存；deep/full 追加待机缓存与脏页写回持续回收（零缺页成本，缓存重建后立即清空，可用内存保持高位）；文件缓存与卷冲刷等重操作仅在周期收割执行——缓存有累积时间，单次释放量更大 |
 | gap 循环优化 | 每轮 gap 结束执行一次进程修剪与系统级轻量操作（normal 语义，不含深度聚合），次数随自适应 gap 与周期长度变化（60 秒周期约 3-6 次，周期越长次数越多） |
-| 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含系统级全清：deep 中高压执行、full 无条件，内存宽裕且上轮回涨快时该轮自动转轻量）→ Layer3 深度聚合（normal 在接近紧急阈值前先做一轮，deep/full 强制；full 追加进程回弹二轮；内存充裕时回涨不足的进程不再被反复再清） |
+| 主 pass 全量收割 | 末次 optimize 使用用户选定模式，Layer2 先行释放 → Layer1 对应管线（按勾选操作组合，deep/full 含系统级全清：deep 中高压执行、full 无条件）→ Layer3 深度聚合（normal 在接近紧急阈值前先做一轮，deep/full 强制；full 追加进程回弹二轮；内存充裕时回涨不足的进程不再被反复再清） |
 
 守护模式启动后，窗口可关闭/最小化到托盘（根据设置自动选择或询问），程序在系统托盘区域显示实时内存占用图标，右键可调出菜单。守护状态、累计释放量、系统操作总次数、进程清理总次数等实时显示在主界面状态栏。日志区域输出算法诊断信息与优化量（周期末打包，游戏检测实时推送）。图表区域以柱状图显示每轮释放量，折线显示效率评分。超时进程通过递增冷却机制（×1–4）自动降频，成功恢复后自动衰减。内存占用达到紧急阈值（默认 80%）时，立即跳过等待执行一次极限模式（full）清理；另可配置可用内存绝对兜底（默认禁用），使用率未达阈值但剩余可用内存过低时同样触发。
 
@@ -90,7 +90,7 @@ Operates in daemon cycles (60 s by default, adjustable from 10 to 3600 s) as log
 | Adaptive gap | The interval adjusts automatically (8–20 s base; the adaptation stays within 20 s) based on the previous round's average release volume per process — shorter when releases are large, longer when they are small |
 | Gap-fill light suppression | Lightweight system operations run at high frequency (zero disk impact): registry only in normal; deep/full additionally sustain standby and dirty-page reclamation (zero page-fault cost — caches are emptied as soon as they rebuild, keeping available memory high); heavyweight operations such as file-cache and volume flush run only in periodic harvests — the cache accumulates before each purge, yielding larger per-pass releases |
 | Gap-cycle optimization | One process-trimming pass with lightweight system operations runs at the end of each gap (normal semantics, no deep aggregation); the count follows the adaptive gap (roughly 3–6 times per 60-second cycle; longer cycles mean more of them) |
-| Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the system-wide working-set flush — deep at moderate-to-high usage, full always, though a round runs light when memory is comfortable and the previous release was quickly refilled), then Layer 3 deep aggregation (normal runs one round as usage nears the emergency threshold, deep/full always; full adds a rebound second pass; processes whose refill falls below the floor are no longer re-trimmed repeatedly when memory is comfortable) |
+| Main full-harvest pass | The final optimize uses your selected mode: Layer 2 releases first, then the matching Layer 1 pipeline (per your toggles; deep/full include the system-wide working-set flush — deep at moderate-to-high usage, full always), then Layer 3 deep aggregation (normal runs one round as usage nears the emergency threshold, deep/full always; full adds a rebound second pass; processes whose refill falls below the floor are no longer re-trimmed repeatedly when memory is comfortable) |
 
 The window can be closed or minimized to the system tray. A real-time memory-usage icon appears in the notification area with a right-click context menu. The status bar displays daemon state, cumulative freed memory, system operation counters, and process trim counts. Algorithmic diagnostics and optimization metrics are buffered per cycle and flushed in batches, while game-detection messages appear immediately. The chart area renders per-cycle release bars overlaid with an ERIS efficiency line. Timed-out processes are throttled by an escalating cooldown (×1–4) that decays after successful recovery. When memory usage reaches the emergency threshold (default 80%), an immediate full-mode cleaning is triggered without waiting; an optional absolute fallback (default disabled) fires on the same logic when available memory is critically low even if the usage ratio has not reached the threshold.
 
@@ -110,7 +110,7 @@ A CLI is available via `memwise.py`, supporting status, optimize, daemon, profil
 
 ### 2.1 Layer1 — 系统级内核清理 · *System-Level Kernel Reclamation*
 
-系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），无固定等待（文件缓存钳制含最多 0.8 秒的驻留轮询）。全部取消勾选时不执行任何系统操作，也不做进程清理（勾选即授权，界面文案同此口径）；quick 模式仅执行待机缓存、脏页写回、注册表缓存三项，其余开关在该模式不适用。
+系统级清理通过调用 `NtSetSystemInformation` 等 Windows 内部 API 实现，涵盖 6 种操作的独立开关。全部操作码已对齐 PHNT 标准（MemoryEmptyWorkingSets=2、MemoryFlushModifiedList=3、MemoryPurgeStandbyList=4、MemoryPurgeLowPriorityStandbyList=5）。**开关优先**：设置面板中取消勾选的操作在任何模式下都不执行；勾选的操作映射为对应内核调用（`standby` 含低优先与全量两级、`filecache` 含双通道清空、`ws` 在 deep/full 下含系统级全清 WS），无固定等待（文件缓存钳制含最多 0.8 秒的驻留轮询）。全部取消勾选时不执行任何系统操作，也不做进程清理（勾选即授权，界面文案同此口径）；quick 模式仅执行低优先级待机与注册表缓存两项，其余开关在该模式不适用。
 
 | 操作 | 配置键 | 默认 | Win32 API | 说明 |
 |------|--------|:----:|-----------|------|
@@ -121,7 +121,7 @@ A CLI is available via `memwise.py`, supporting status, optimize, daemon, profil
 | 卷缓存刷新 | `volume` | 开 | `CreateFileW+FlushFileBuffers` | 卷级别缓存刷新 |
 | 注册表缓存 | `registry` | 开 | `NtSetSystemInformation(155)` | 清除注册表缓存页 |
 
-守护模式下的高频阶段仅执行注册表缓存、待机缓存与脏页写回等轻量操作（零磁盘影响），文件缓存与卷冲刷等重操作仅在 optimize 全量收割阶段执行——缓存有累积时间，单次释放量更大。
+守护模式下的高频阶段仅执行注册表缓存、待机缓存与脏页写回等轻量操作（quick 模式仅低优先级待机与注册表缓存；零磁盘影响），文件缓存与卷冲刷等重操作仅在 optimize 全量收割阶段执行——缓存有累积时间，单次释放量更大。
 
 四种清理模式的操作梯度由轻到重（操作数随勾选组合变化）：
 
@@ -132,10 +132,10 @@ A CLI is available via `memwise.py`, supporting status, optimize, daemon, profil
 | deep | ✅† | ✅ | ✅* | 始终 | 等待减半+稳态锁跳过+快速确认 | 重度使用后深度清扫 |
 | full | ✅† | ✅ | ✅* | 强制 | 不等+跳过活跃门槛+最大轮数 | 极限释放 |
 
-* 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；「进程闲置页释放」取消勾选时任何模式都不执行进程修剪。
-† 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行——但**内存宽裕（使用率<45%）且上一轮释放被快速回涨时，该轮自动转为轻量处理**（每进程只清一趟、跳过深度整理与二轮），占用回升或回涨放缓立即恢复全力。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
+* 「系统文件缓存」需在设置中勾选（勾选后按模式梯度执行，quick 模式不执行文件缓存操作）；quick 模式下「脏页写回」同样不执行；「进程闲置页释放」取消勾选时任何模式都不执行进程修剪。
+† 系统级 WS 全清：deep 模式在中高压（使用率≥33%）自动执行、低压不打扰，手动触发不受限；full 模式无条件执行。deep 模式等待窗口减半，full 模式跳过全部等待并跳过 CPU/IO 活跃门槛——极限释放不设活跃度限制。
 
-System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). No deliberate sleeps (the file-cache clamp includes a dwell-poll of up to 0.8 s). Deselecting every operation means no system operation and no process trimming at all (the toggles are the authorization); quick mode runs only the standby purge, the dirty-page flush, and the registry-cache clear, and the other toggles do not apply there.
+System-level operations use NtSetSystemInformation and related internal Windows APIs, with all operation codes aligned to the PHNT standard enumeration values. The six settings-panel toggles take precedence: an operation deselected in Settings is never executed in any mode; each selected toggle maps to its kernel calls (standby covers the low-priority and full purge tiers, filecache covers both clear channels, ws includes the system-wide working-set flush under deep/full). No deliberate sleeps (the file-cache clamp includes a dwell-poll of up to 0.8 s). Deselecting every operation means no system operation and no process trimming at all (the toggles are the authorization); quick mode runs only the low-priority standby purge and the registry-cache clear, and the other toggles do not apply there.
 
 | Operation | Key | Default | Win32 API | Description |
 |------|--------|:----:|-----------|------|
@@ -157,8 +157,8 @@ The four cleaning modes scale from light to aggressive (actual op count follows 
 | deep | ✅† | ✅ | ✅* | always | halved waiting + fast confirm | Deep cleaning after heavy use |
 | full | ✅† | ✅ | ✅* | forced | no waiting + max rounds | Maximum release |
 
-The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations); unchecking Process Idle Release skips process trimming in every mode.
-† *The system-wide WS flush runs in deep at moderate-to-high usage (≥33%) and never disturbs at low usage; manual triggers are unrestricted; full executes it unconditionally, except that when memory is comfortable (<45%) and the previous release was quickly refilled, that round runs light (single pass, no deep pass) and full strength returns as soon as usage rises or refill slows. Deep halves the waiting windows; full skips all waiting and the CPU/I/O activity gates — ultimate mode sets no activity limit.*
+The File Cache toggle in Settings enables that operation within the mode gradient (toggles take precedence; quick never runs file-cache operations or dirty-page write-back); unchecking Process Idle Release skips process trimming in every mode.
+† *The system-wide WS flush runs in deep at moderate-to-high usage (≥33%) and never disturbs at low usage; manual triggers are unrestricted; full executes it unconditionally. Deep halves the waiting windows; full skips all waiting and the CPU/I/O activity gates — ultimate mode sets no activity limit.*
 
 ### 2.2 Layer2 — 进程级闲置页释放 · *Per-Process Idle Page Reclamation*
 
@@ -456,7 +456,7 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **窗口与托盘**：关闭按钮行为（最小化到托盘（守护继续运行）、直接退出程序、每次询问（默认））、托盘左键行为（显示窗口（默认）/一键清理/无操作，仅窗口隐藏时生效）。
 
-**清理操作**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启；进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。全部取消勾选时不执行任何系统操作、也不做进程清理；quick 模式下 ws / filecache / volume 三项与「进程清理深度」不适用（设置面板中会置灰并说明）。此外，内存达到紧急阈值的 85% 时会先做一轮深度聚合；真正达到紧急阈值则放开锚点与冷却类拦截、按设计放行清理。
+**清理操作**：6 种操作独立开关：ws、standby、modified、filecache、volume、registry。除系统文件缓存默认关闭外，其余默认开启；进程清理深度（2-6 pass，默认 4；超大进程的 pass 数直接以此为准，其余档位不受影响）。全部取消勾选时不执行任何系统操作、也不做进程清理；quick 模式下 ws / modified / filecache / volume 四项与「进程清理深度」不适用（设置面板中会置灰并说明）。此外，内存达到紧急阈值的 85% 时会先做一轮深度聚合；真正达到紧急阈值则放开锚点与冷却类拦截、按设计放行清理。
 
 **游戏模式**：管理游戏进程名单（一体化窗口：列出/添加/删除，逗号分隔批量输入、重复项提示、删除带确认）。主界面设有独立开关按钮，也可通过 Ctrl+Shift+G 热键一键切换。
 
@@ -476,7 +476,7 @@ All changes are saved immediately. During daemon operation, the exclusion list, 
 - *Update check — off by default, and while it is off the program does not touch the network at all. When enabled, MemWise checks on every startup and offers a dialog when a new version appears (Update Now / Later / Skip This Version). "Download and replace automatically" is on by default: the package is verified with SHA-256, then the program is replaced and restarted automatically with settings and learning data kept intact. If the network is unavailable it degrades to a notice with the official release page address. The request reads only the version and package information, sends no device information (at the transport layer it is received by GitHub, which can see your IP).*
 - *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon; also starts on battery power on laptops), auto-enable daemon on launch, minimize to tray on auto-start*
 - *Window & Tray — close-button behavior (minimize to tray (daemon continues), exit immediately, or ask each time — default) and tray left-click action (show window (default) / one-click cleanup / no action; active only while the window is hidden)*
-- *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected; quick mode does not use it. Also, at 85% of the emergency threshold a deep-aggregation pass runs first; at the threshold itself, anchor and cooldown gates open by design)*
+- *Cleanup — six independent toggles: ws, standby, modified, filecache, volume, registry. All default on except the system file cache; plus the per-process cleaning depth (2–6 passes, default 4; the large-process ceiling directly follows this value, other tiers unaffected; quick mode does not use it and ignores ws, modified, filecache and volume. Also, at 85% of the emergency threshold a deep-aggregation pass runs first; at the threshold itself, anchor and cooldown gates open by design)*
 - *Game mode — manage the game-process list (add/remove in one window; comma-separated batch input, duplicate warnings, delete confirmation). A dedicated toggle button on the main UI and the Ctrl+Shift+G hotkey provide one-click switching*
 - *Guard — emergency threshold (50–99%, default 80%), in-cycle suppression interval (8–20 s, default 12), and daemon cycle (10–3600 s, default 60, which sets the full-harvest cadence)*
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*

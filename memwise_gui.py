@@ -1,5 +1,5 @@
 """
-MemWise v5.1.037 GUI —— 图形界面
+MemWise v5.2.005 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -994,7 +994,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v5.1.037", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v5.2.005", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -1021,7 +1021,7 @@ class MemWiseGUI:
         # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
         self.root.report_callback_exception = self._tk_exception_hook
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v5.1.037")
+        self.root.title("MemWise v5.2.005")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -1085,7 +1085,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v5.1.037 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v5.2.005 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1171,7 +1171,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.1.037")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.2.005")
                     if fw:
                         top = fw
                 except Exception:
@@ -1917,15 +1917,15 @@ class MemWiseGUI:
         self._add_tip(cb_rg, "「清空系统注册表的读写缓存」\n"
                       "1. 勾选后在守护模式下始终执行\n"
                       "⚠ 无磁盘读写操作，不中断正在运行的程序")
-        # quick 模式下三个开关不适用（2026-09-11 审查 F6 的界面半边）：置灰 + 说明，
-        # 避免用户"勾选了却没有执行"（quick 只执行待机缓存/脏页写回/注册表缓存三项）
+        # quick 模式：全量 WS/文件缓存/卷缓存/脏页写回均不执行（2026-10-20：quick
+        # 只保留低优先级待机 + 注册表，避免“勾选了却没有执行”）。
         if CFG.get("clean_mode", "normal") == "quick":
-            for _cb in (cb_ews, cb_fc, cb_vc):
+            for _cb in (cb_ews, cb_fc, cb_vc, cb_mp):
                 try:
                     _cb.state(["disabled"])
                 except Exception:
                     pass
-            ttk.Label(cf, text=tr("quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」不执行"),
+            ttk.Label(cf, text=tr("quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」「脏页写回」不执行"),
                       foreground="#888", wraplength=470, justify="left").pack(anchor="w")
         # ─── 清理深度（2026-08-16 归类整理：清理强度归"清理"栏，原在触发与日志栏）───
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))

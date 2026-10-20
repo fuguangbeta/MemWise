@@ -38,14 +38,16 @@ MP_WS_NORMAL = int((100 << 20) * _S)        # MemoryPriority/EcoQoS 门槛（nor
 MP_WS_FULL = int((50 << 20) * _S)           # 同上（full 放宽：θ≥0.3 且 WS≥此值）
 COMPOSITE_FREED_SCALE = int((200 << 20) * _S)   # 复合评分：预期释放量归一尺度
 COMPOSITE_WS_SCALE = int((500 << 20) * _S)      # 复合评分：WS 归一尺度（与「大进程 +0.15」共用）
-# F1 压力自适应（2026-09-26 用户定稿实施）：full 模式在"内存宽裕（< L3_RETRIM_PRESSURE_PCT）
-# + 上轮释放被快速吃回（回涨 > 上轮释放 60%，用引擎现成的回涨状态机）"时降级为轻量轮：
-# 每进程只清一趟、跳过 Layer3 深度整理与回弹二轮、候选按收益分排序只取前 K 项。
-# 依据（本机实测）：释放量高度集中——367 个画像里前 10%（18 个进程）占 85.2%、
-# 前 25%（46 个）占 96.7%；故取前 K 项丢约 3% 字节而省下约 3/4 的逐进程开销（中位单次释放
-# 仅 3.31MB，而 full 正常每进程一轮清 4 趟）。占用回到阈值或回涨放缓即自动恢复全强度；
-# 手动优化 / 紧急 full / quick·normal·deep 一律不降级（各自梯度已表达积极程度）。
+# F1 压力自适应（2026-09-26 定稿，2026-10-20 修订）：**full 默认永不降级**；
+# 旧规则（内存宽裕 <45% + 回涨快 → 轻量轮）会跳过 Layer3/回弹/final/combine，
+# 与 full“允许负面作用、尽最大能力”的初衷冲突。仅 `MEMWISE_FULL_LITE=1` 保留旧路径
+# 用于对照/排障：每进程一趟、跳 Layer3/回弹、候选前 K。quick/normal/deep 恒不降级。
 LITE_TOP_K = 48            # 轻量轮候选上限（实测前 25%≈46 个进程占 96.7% 释放量）
+
+# full + 全开专用收尾/页合并（不进入 normal/deep/gap/游戏）
+_ALL_CLEAN_OPS = frozenset({"ws", "standby", "modified", "filecache", "volume", "registry"})
+_COMBINE_MIN_INTERVAL = 900       # 15 分钟；手动 full 首次/间隔 ≥60s 可触发
+_COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 
 
 
@@ -74,12 +76,16 @@ class PareCleaner:
             "ws_all_rounds": 0,  # P07：系统级全清次数（不再伪装成 N 次进程清理）
             "deepen_cnt": 0, "deepen_extra": 0,
             "layer3_ran": 0, "layer3_extra": 0,
+            # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
+            "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
         }
         self._info_msgs = []
         self._last_mode = None   # 最近一次 optimize 的**真实模式**（ERIS 按模式分桶取真值）；None ⇒
                                  # 尚未清理，ERIS 回退取配置模式（固定 "normal" 会把 quick 轮次错记成
                                  # normal：模式标签不符、quick 的"有效维"规则也从未生效——日志实测）
         self._cycle_reasons = {}   # 本轮 can_trim 拦截原因计数（日志诊断用）
+        self._combine_last = 0.0
+        self._combine_backoff = _COMBINE_MIN_INTERVAL
 
     def pop_info(self):
         msgs = self._info_msgs[:]
@@ -214,6 +220,62 @@ class PareCleaner:
             use.add("registry")
         return use
 
+    @staticmethod
+    def _all_ops_selected(ops_filter):
+        """full 收尾与 combine 只在“六个区域全开”时启用；None 视为内部全量。"""
+        return ops_filter is None or _ALL_CLEAN_OPS.issubset(set(ops_filter))
+
+    def _combine_eligible(self):
+        """combine 只由 full+全开收尾调用；节流/退避，避免每周期全系统扫描。"""
+        if os.environ.get("MEMWISE_DISABLE_COMBINE") == "1":
+            return False
+        if self.game_mode or self._lite:
+            return False
+        now = time.time()
+        gap = now - self._combine_last
+        floor = 60 if self._manual_run else max(_COMBINE_MIN_INTERVAL, self._combine_backoff)
+        return gap >= floor
+
+    def _note_combine_result(self, ok, pages, elapsed_ms):
+        self._combine_last = time.time()
+        if ok and pages > 0:
+            self._combine_backoff = _COMBINE_MIN_INTERVAL
+        else:
+            self._combine_backoff = min(_COMBINE_MAX_BACKOFF,
+                                        max(1800, int(self._combine_backoff) * 2))
+        if elapsed_ms > 1000:
+            self._combine_backoff = min(_COMBINE_MAX_BACKOFF,
+                                        max(1800, int(self._combine_backoff) * 2))
+
+    def _final_consolidation(self, ops_filter, deadline=None):
+        """full + 六区全开的最后压实：清掉进程回填的 WS/待机，再合并页。
+
+        只在 full 分支、process 动作全部完成之后调用；normal/deep/gap/游戏不进入。
+        不新增 UI/播报；仅累加内部统计。
+        """
+        if self.game_mode or self._lite or not self._all_ops_selected(ops_filter):
+            return
+        if deadline is not None and time.time() > deadline - 2.0:
+            return
+        # full 的初衷允许负面作用：final 恒做 modified/standby，不再按压力降级。
+        use = {"ws_all"}
+        if ops_filter is None or "modified" in ops_filter:
+            use.add("modified")
+        if ops_filter is None or "standby" in ops_filter:
+            use.add("standby")
+            use.add("standby_low")
+        self._layer1_memreduct(full=True, ops=use, clean_self=False)
+        self._stats_inc("final_sweep")
+        if deadline is not None and time.time() > deadline - 1.0:
+            return
+        if self._combine_eligible():
+            ok, pages, ms, _status = winapi.combine_physical_memory()
+            self._stats_inc("combine_calls")
+            if pages > 0:
+                self._stats_inc("combine_pages", pages)
+            self._stats_inc("combine_ms", ms)
+            self._note_combine_result(ok, pages, ms)
+
     def _layer1_memreduct(self, full=True, total_procs=0, game_mode=False, ops=None, clean_self=True):
         """系统级内核清理 — 无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）
         
@@ -259,17 +321,19 @@ class PareCleaner:
                     self._stats_inc("filecache")
             # 统计按 API 真实成功计数（权限不足时不再虚增）
             # 游戏模式：跳过 standby/脏页写回等磁盘干扰操作（只留注册表缓存与自身工作集）
+            # 顺序：先卷冲刷，再清 modified/standby——避免 FlushFileBuffers 产生的
+            # 新脏页/待机页落在清扫之后（与 Mem Reduct 的系统级顺序对齐）。
+            if not game_mode and "volume" in use:
+                if _capture(winapi.flush_volume_cache):
+                    self._stats_inc("volume")
+                else:
+                    self._op_fail_note("volume")
             if not game_mode and "modified" in use and _capture(winapi.flush_modified_pages):
                 self._stats_inc("modified")
             if not game_mode and "standby" in use and _capture(winapi.empty_standby):
                 self._stats_inc("standby")
             if not game_mode and "standby_low" in use and _capture(winapi.purge_low_priority_standby):
                 self._stats_inc("standby")
-            if not game_mode and "volume" in use:
-                if _capture(winapi.flush_volume_cache):
-                    self._stats_inc("volume")
-                else:
-                    self._op_fail_note("volume")
             if "registry" in use:
                 if _capture(winapi.clear_registry_cache):
                     self._stats_inc("registry")
@@ -1037,9 +1101,14 @@ class PareCleaner:
 
     @staticmethod
     def is_lite_round(mode, mem_pct, refill_fast):
-        """F1 轻量轮判据（纯函数，供引擎调用与回归直测）：仅 full 模式 + 内存宽裕 + 上轮回涨快。
-        占用 ≥ L3_RETRIM_PRESSURE_PCT 或回涨放缓即返回 False（恢复全强度）；quick/normal/deep
-        恒 False（各自的低压梯度已表达积极程度）；非法入参按"不降级"处理（保守优先）。"""
+        """F1 轻量轮判据（纯函数，供引擎调用与回归直测）。
+
+        2026-10-20 起 **full 默认永不降级**：full 的初衷是允许一定负面作用、尽最大能力
+        持续压缩；旧的 `<45% + 回涨快 ⇒ 轻量轮` 会跳过 Layer3/回弹/final/combine，与初衷冲突。
+        仅保留 `MEMWISE_FULL_LITE=1` 作为排障/对比实验的显式回退；quick/normal/deep 恒 False。
+        """
+        if os.environ.get("MEMWISE_FULL_LITE") != "1":
+            return False
         try:
             return (mode == "full" and float(mem_pct) < L3_RETRIM_PRESSURE_PCT
                     and bool(refill_fast))
@@ -1053,19 +1122,19 @@ class PareCleaner:
         统一优化入口 —— 四模式行为矩阵与参数契约（2026-09-11 审查 F40 重写为与实现一致）
 
         mode 行为（各层按 operations 逐项授权执行；安全门全模式生效）：
-            quick  = 仅系统级轻量三项（待机缓存/脏页写回/注册表缓存 ∩ 勾选），零进程清理
+            quick  = 仅低优先级待机 + 注册表缓存（∩ 勾选），零进程清理/零全量待机/零脏页写回
             normal = 系统级（按勾选映射，无系统级全清）+ 进程清理 + 深度聚合（agg ≥ EFIS 门控）
             deep   = 同上 + 系统级全清 WS（使用率 ≥ DEEP_WSALL_PCT_GATE 时）+ 深度聚合恒触发
             full   = 同上 + 无条件全清 WS + agg 强制 ≥0.8 + 进程回弹二轮
-                     （内存宽裕 + 上轮回涨快时自动降级为轻量轮：单趟 + 跳过深度整理 + 候选前 K，
-                      见 LITE_TOP_K 与 is_lite_round；占用回升即恢复全强度）
+                     （2026-10-20 起默认永不轻量降级；仅 MEMWISE_FULL_LITE=1 保留旧
+                      LITE_TOP_K/is_lite_round 对比路径）
 
         operations: 用户清理操作集合（clean_operations 白名单键）
             None = 内部全量调用（保留融合快路径，供内部/测试使用）
             []   = 用户全部取消勾选 ⇒ 不执行任何系统操作、不做进程清理（勾选即授权）
         aggressiveness: 预计算的 PID 攻性（daemon 传入避免 PID 双重更新）
         allow_layer3: 高频路径（gap-fill）传 False —— 深度操作只在 harvest 执行
-        lite: F1 轻量轮（由引擎按 模式/占用/回涨 判定后传入；手动与紧急路径恒 False）
+        lite: F1 轻量轮（仅 MEMWISE_FULL_LITE=1 对比路径会传入 True；默认/手动/紧急恒 False）
         注: standby 开关同时覆盖低优先与全量两级待机页回收（与 _layer1_ops 映射同口径）
         """
         # 整轮互斥（RLock 可重入）：手动优化（_opt_worker 持锁期间设 _manual_run）与守护周期
@@ -1112,18 +1181,23 @@ class PareCleaner:
             return _mk_result([], [])
 
         if mode == "quick":
-            # 仅系统级轻量清理，不碰进程，零卡顿（用户勾选 ∩ 3 步轻量集；None=内部全量
-            # 契约与其他模式一致，2026-09-26 审查 F5——旧写法 ops_filter or set() 把 None 折成空）
-            use = {"standby", "modified", "registry"} & (
-                ops_filter if ops_filter is not None else {"standby", "modified", "registry"})
-            # P06：gap-fill（allow_layer3=False）只保留 registry；standby/modified 留给 harvest。
-            # quick 的高速守护路径不应反复清缓存/写回脏页（“几乎无感知”承诺）。
+            # 仅低优先级待机 + 注册表：不碰进程、不碰全量待机/脏页，兑现“几乎无感知”
+            # （2026-10-20：quick 原先清全量 standby + modified，与零卡顿承诺冲突；
+            #  standby 开关仍作为授权键，但实际只执行 standby_low）。
+            _qkeys = {"standby", "registry"}
+            if ops_filter is not None:
+                _qkeys &= set(ops_filter)
+            use = set()
+            if "standby" in _qkeys:
+                use.add("standby_low")
+            if "registry" in _qkeys:
+                use.add("registry")
+            # P06：gap-fill（allow_layer3=False）只保留 registry；quick 的高速守护路径
+            # 不应反复清缓存（“几乎无感知”承诺）。
             if not allow_layer3:
                 use = use & {"registry"}
             if use:
-                # game_mode 透传（2026-09-28 审查）：quick 分支此前漏传，游戏运行中每个压制
-                # 周期都会对待机/脏页做磁盘操作——游戏保护唯一漏网分支（normal/deep/full
-                # 分支与引擎直调路径均已透传，此处补齐同一契约；非游戏 game_mode=False 逐字等价）
+                # game_mode 透传：游戏中 quick 只保留 registry（standby_low 同样跳过）
                 self._layer1_memreduct(full=False, ops=use, game_mode=self.game_mode,
                                        clean_self=allow_layer3)   # gap-fill 不自清，harvest 才清
             return _mk_result([], [])
@@ -1229,6 +1303,12 @@ class PareCleaner:
                                         self.stats["freed_bytes"] += max(0, _pre["ws"] - _post["ws"])
                         except Exception:
                             pass
+            # full + 六区全开：所有 process 动作结束后再系统压实 + 可选 combine
+            if allow_layer3:
+                try:
+                    self._final_consolidation(ops_filter, deadline=deadline)
+                except Exception:
+                    pass  # 收尾失败不得中断已完成的清理/统计
             return _mk_result(l2_results, probe_results)
 
         else:

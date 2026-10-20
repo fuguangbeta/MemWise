@@ -482,7 +482,7 @@ def _log_open(announce=True):
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
         if announce:
-            _log_write("启动", f"MemWise v5.1.037 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+            _log_write("启动", f"MemWise v5.2.005 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
             try:
                 _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
                 _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "

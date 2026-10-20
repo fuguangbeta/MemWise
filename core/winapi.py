@@ -1,4 +1,5 @@
 import ctypes, ctypes.wintypes as w, os, time, math
+import sys
 
 TH32CS_SNAPPROCESS = 2
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -404,7 +405,7 @@ MOD_CONTROL = 0x0002
 MOD_NOREPEAT = 0x4000
 
 NIM_ADD = 0; NIM_MODIFY = 1; NIM_DELETE = 2
-NIF_MESSAGE = 1; NIF_ICON = 2; NIF_TIP = 4
+NIF_MESSAGE = 1; NIF_ICON = 2; NIF_TIP = 4; NIF_SHOWTIP = 0x00000080
 # 计算 NOTIFYICONDATA 真实大小（64位系统下 976字节）
 WM_TRAYICON = 0x8001
 
@@ -424,6 +425,7 @@ class NOTIFYICONDATA(ctypes.Structure):
         ("szInfoTitle", w.WCHAR * 64),
         ("dwInfoFlags", w.DWORD),
         ("guid", w.BYTE * 16),
+        ("hBalloonIcon", w.HANDLE),  # 真实 x64 结构 976B；缺此字段会只有 968B
     ]
 
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
@@ -718,17 +720,22 @@ SetSystemFileCacheSize = k32.SetSystemFileCacheSize
 SetSystemFileCacheSize.argtypes = [ctypes.c_size_t, ctypes.c_size_t, w.DWORD]
 SetSystemFileCacheSize.restype = w.BOOL
 
-_SFCI_CACHE_TARGET_PAGES = 4096   # 回收目标 4096 页 = 16 MB（实测回收 99.7%，且远离 0 更安全）
+_SFCI_CACHE_TARGET_PAGES = 4096   # 回收目标 4096 页 = 16 MB（历史实测回收 99.7%；部分 Win11 版本返回 ACCESS_DENIED，失败即 False）
 
 
 class _SFCI(ctypes.Structure):
+    # 真实布局（x64 64 字节；设置时仅 Min/Max/Flags 生效）。
+    # 旧版用 Unused*4 多出 8 字节（72 B），与内核结构不一致；修正为真实布局。
     _fields_ = [
         ("CurrentSize", ctypes.c_size_t),
         ("PeakSize", ctypes.c_size_t),
         ("PageFaultCount", ctypes.c_ulong),
         ("MinimumWorkingSet", ctypes.c_size_t),
         ("MaximumWorkingSet", ctypes.c_size_t),
-        ("Unused", ctypes.c_size_t * 4),
+        ("CurrentSizeIncludingTransitionInPages", ctypes.c_size_t),
+        ("PeakSizeIncludingTransitionInPages", ctypes.c_size_t),
+        ("TransitionRePurposeCount", ctypes.c_ulong),
+        ("Flags", ctypes.c_ulong),
     ]
 
 
@@ -738,6 +745,36 @@ def get_system_file_cache_limits():
     if GetSystemFileCacheSize(ctypes.byref(mn), ctypes.byref(mx), ctypes.byref(fl)):
         return (mn.value, mx.value)
     return None
+
+
+class _MEMORY_COMBINE_INFORMATION_EX(ctypes.Structure):
+    # SystemCombinePhysicalMemoryInformation = 130
+    # x64 = 24 字节；Handle=NULL/Flags=0 表示全系统页合并。
+    _fields_ = [
+        ("Handle", w.HANDLE),
+        ("PagesCombined", ctypes.c_size_t),
+        ("Flags", w.ULONG),
+    ]
+
+
+def combine_physical_memory():
+    """Win10+ 物理内存页合并（新增系统能力）。
+
+    返回 (ok, pages, elapsed_ms, status)。失败不抛异常；PagesCombined 由内核回写。
+    这是未文档化接口：仅由 full 模式的收尾压实按节流策略调用，默认不进入 normal/deep/gap。
+    """
+    _t0 = time.perf_counter()
+    try:
+        if sys.getwindowsversion().major < 10:
+            return False, 0, int((time.perf_counter() - _t0) * 1000), -1
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        _try_enable_privilege("SeProfileSingleProcessPrivilege")
+        info = _MEMORY_COMBINE_INFORMATION_EX()
+        status = NtSetSystemInformation(130, ctypes.byref(info), ctypes.sizeof(info))
+        elapsed = int((time.perf_counter() - _t0) * 1000)
+        return bool(status == 0), int(info.PagesCombined), elapsed, int(status)
+    except Exception:
+        return False, 0, int((time.perf_counter() - _t0) * 1000), -2
 
 
 def clear_system_file_cache_ex():
@@ -1094,7 +1131,7 @@ def tray_add(hwnd, uid, icon_handle, tip=""):
     nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd
     nid.uID = uid
-    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP
     nid.uCallbackMessage = WM_TRAYICON
     nid.hIcon = icon_handle
     nid.szTip = tip[:127]
@@ -1109,7 +1146,7 @@ def tray_modify(hwnd, uid, icon_handle, tip=""):
     nid.cbSize = ctypes.sizeof(NOTIFYICONDATA)
     nid.hWnd = hwnd
     nid.uID = uid
-    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP
     nid.uCallbackMessage = WM_TRAYICON
     nid.hIcon = icon_handle
     nid.szTip = tip[:127]

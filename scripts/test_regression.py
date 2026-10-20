@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v5.1.037 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v5.2.005 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -953,6 +953,11 @@ check("Nt 枚举值 15 已清除", "SetProcessInformation(h, 15," not in _wa26_s
 check("托盘 ADD 先于 SETVERSION",
       _wa26_src.index("Shell_NotifyIconW(NIM_ADD") < _wa26_src.index("0x00000004, ctypes.byref(nid))"))
 check("托盘消息 LOWORD 解析", "lp & 0xFFFF" in _gui26_src)
+check("托盘标准 tooltip 启用（NIF_SHOWTIP add/modify）",
+      _wa26_src.count("NIF_TIP | NIF_SHOWTIP") >= 2)
+from core import winapi as _wa26mod
+check("托盘 NOTIFYICONDATA 976B（含 hBalloonIcon）",
+      _wa26mod.ctypes.sizeof(_wa26mod.NOTIFYICONDATA) == 976)
 # ── learner 并发写锁 + 策略树权重持久化（含旧格式兼容）──
 from core import learner as _lm26
 check("learner.save 写锁", hasattr(_lm26, "_SAVE_LOCK") and hasattr(_lm26._SAVE_LOCK, "acquire"))
@@ -1474,8 +1479,8 @@ try:
         for _n34, _f34 in _orig34.items():
             setattr(_w34, _n34, _f34)
     check("F6 quick 只勾 ws/filecache/volume ⇒ 零系统调用", _q_inert == [], str(_q_inert))
-    check("F6 quick 勾 standby/modified/registry ⇒ 执行三项",
-          _q_act == ["clear_registry_cache", "empty_standby", "flush_modified_pages"], str(_q_act))
+    check("F6 quick 勾 standby/modified/registry ⇒ 低优先待机+注册表",
+          _q_act == ["clear_registry_cache", "purge_low_priority_standby"], str(_q_act))
 
     _orig34b = {n: getattr(_w34, n) for n in _OPS34}
     _calls34b = []
@@ -1684,7 +1689,8 @@ check("S5 使用率路径随用户阈值移动（阈值 90 ⇒ 77% 触发、70% 
       _run_l3_5(77, 90) is True and _run_l3_5(70, 90) is False)
 check("S5 使用率判据存在（结构性）", "_l3_usage" in _cl34 and "_em_l3 * 0.85" in _cl34)
 check("F6 quick 开关置灰 + 说明已接线", 'CFG.get("clean_mode", "normal") == "quick"' in _gui34
-      and '_cb.state(["disabled"])' in _gui34 and "quick 模式下「释放进程闲置内存」" in _i18n34)
+      and '_cb.state(["disabled"])' in _gui34 and "quick 模式下「释放进程闲置内存」" in _i18n34
+      and "cb_ews, cb_fc, cb_vc, cb_mp" in _gui34 and "脏页写回」不执行" in _i18n34)
 # ── F50 开关标题名不副实（2026-09-11 用户实测指出）──
 check("F50 开机自启开关标题不再歧义",
       '"以管理员权限开机自启动"' in _gui34 and "需搭配「以管理员权限开机自启动」" in _gui34
@@ -2191,16 +2197,21 @@ _sh38.rmtree(_t38b, ignore_errors=True)
 
 print("\n[39] F1 压力自适应 + 注册表系统类修正（2026-09-26 用户定稿）")
 # F1 判据真值表（纯函数，逐条覆盖"既定范围"）
-check("F1 判据:full+内存宽裕+回涨快 ⇒ 降级", PareCleaner.is_lite_round("full", 20, True) is True)
-check("F1 判据:占用回到阈值/更高 ⇒ 不降级",
-      PareCleaner.is_lite_round("full", 45, True) is False
-      and PareCleaner.is_lite_round("full", 60, True) is False)
-check("F1 判据:回涨放缓 ⇒ 不降级", PareCleaner.is_lite_round("full", 20, False) is False)
+check("F1 判据:full 默认永不降级", PareCleaner.is_lite_round("full", 20, True) is False)
 check("F1 判据:quick/normal/deep 恒不降级",
       all(PareCleaner.is_lite_round(m, 20, True) is False for m in ("quick", "normal", "deep")))
-check("F1 判据:非法入参保守不降级",
-      PareCleaner.is_lite_round("full", None, True) is False
-      and PareCleaner.is_lite_round("full", "x", True) is False)
+_oldlite39 = os.environ.get("MEMWISE_FULL_LITE")
+os.environ["MEMWISE_FULL_LITE"] = "1"
+try:
+    check("F1 判据:显式 MEMWISE_FULL_LITE=1 才保留旧轻量路径",
+          PareCleaner.is_lite_round("full", 20, True) is True
+          and PareCleaner.is_lite_round("full", 45, True) is False
+          and PareCleaner.is_lite_round("full", 20, False) is False)
+finally:
+    if _oldlite39 is None:
+        os.environ.pop("MEMWISE_FULL_LITE", None)
+    else:
+        os.environ["MEMWISE_FULL_LITE"] = _oldlite39
 # 实现接线（源码断言：四项降级齐备、引擎按判据传入、默认关闭不污染手动/紧急/CLI 路径）
 _cln39 = _src26("core", "cleaner.py")
 check("F1 降级四项齐备（单趟/跳 L3/跳二轮/前 K）",
@@ -2352,7 +2363,7 @@ check("F4 退化基线 p75==p90 不顶格", abs(_sc9(5.0, _b41b) - 85.0) < 1e-9
 # F5 quick + operations=None = 契约全量三项（与其他模式 None=内部全量一致）
 _lr41c = PareLearner(); _c41c = _PC41(PareJudger(_lr41c, dict(_J41)))
 _calls41 = []
-_ops41 = ("empty_standby", "flush_modified_pages", "clear_registry_cache")
+_ops41 = ("purge_low_priority_standby", "clear_registry_cache")
 _og41b = {n: getattr(_wa41, n) for n in _ops41}
 _om41 = _wa41.get_memory_used_bytes
 for _n in _ops41:
@@ -2364,14 +2375,14 @@ finally:
     for _n, _f in _og41b.items():
         setattr(_wa41, _n, _f)
     _wa41.get_memory_used_bytes = _om41
-check("F5 quick+None=全量三项",
-      sorted(_calls41) == ["clear_registry_cache", "empty_standby", "flush_modified_pages"], str(_calls41))
+check("F5 quick+None=低优先待机+注册表",
+      sorted(_calls41) == ["clear_registry_cache", "purge_low_priority_standby"], str(_calls41))
 
 # F6/F7/F9/F10/F11/F13/F14/F15/F16 静态接线与口径
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="5.1.0.37"' in _mf41)
+check("F9 manifest 版本随版", 'version="5.2.0.05"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -3750,6 +3761,89 @@ finally:
 check("P08 全部取消 ⇒ 零调用（含自身）", _e55 == [])
 check("P06 gap 低压仅 registry / 高压含 standby", _low55 == {"clear_registry_cache"}
       and "empty_standby" in _high55 and "flush_modified_pages" in _high55)
+
+print("\n[56] 2026-10-20 full 收尾/页合并（P0-P2）")
+import ctypes as _ct56, threading as _th56
+import core.winapi as _W56
+_ops56 = {"ws", "standby", "modified", "filecache", "volume", "registry"}
+check("P0 SYSTEM_FILECACHE_INFORMATION = 64B", _ct56.sizeof(_W56._SFCI) == 64)
+check("P1 MEMORY_COMBINE_INFORMATION_EX = 24B", _ct56.sizeof(_W56._MEMORY_COMBINE_INFORMATION_EX) == 24)
+check("P1 全开判定（六区）",
+      PareCleaner._all_ops_selected(_ops56) and PareCleaner._all_ops_selected(None)
+      and not PareCleaner._all_ops_selected({"ws", "standby"}))
+_real56 = _W56.NtSetSystemInformation
+_priv56 = _W56._try_enable_privilege
+def _fake56(cls, ptr, size):
+    if cls == 130:
+        _ct56.cast(ptr, _ct56.POINTER(_W56._MEMORY_COMBINE_INFORMATION_EX)).contents.PagesCombined = 11
+        return 0
+    return -1
+try:
+    _W56._try_enable_privilege = lambda n: True
+    _W56.NtSetSystemInformation = _fake56
+    _ok56, _pages56, _ms56, _st56 = _W56.combine_physical_memory()
+finally:
+    _W56.NtSetSystemInformation = _real56
+    _W56._try_enable_privilege = _priv56
+check("P1 combine 返回页数与成功状态", _ok56 and _pages56 == 11 and _st56 == 0)
+_calls56 = []
+class _J56:
+    def _high_pressure(self): return True
+_c56 = object.__new__(PareCleaner)
+_c56.game_mode = False; _c56._lite = False; _c56._manual_run = True
+_c56.judger = _J56()
+_c56.stats = {"final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0}
+_c56._lock = _th56.Lock(); _c56._combine_last = 0; _c56._combine_backoff = 900
+_c56._layer1_memreduct = lambda **kw: _calls56.append(("layer1", kw.get("ops")))
+_c56._combine_eligible = lambda: True
+_c56._stats_inc = lambda k, a=1: _c56.stats.__setitem__(k, _c56.stats.get(k, 0) + a)
+_c56._note_combine_result = lambda *a: None
+_real_c56 = _W56.combine_physical_memory
+_W56.combine_physical_memory = lambda: (True, 7, 12, 0)
+try:
+    _c56._final_consolidation(_ops56)
+    _all56 = list(_calls56)
+    _calls56.clear(); _c56._final_consolidation({"ws", "standby"})
+    _part56 = list(_calls56)
+    _calls56.clear(); _c56.game_mode = True; _c56._final_consolidation(_ops56)
+    _game56 = list(_calls56)
+finally:
+    _W56.combine_physical_memory = _real_c56
+check("P2 full 收尾顺序：ws_all + 高压 modified/standby + low → combine",
+      _all56 and _all56[0][1] == {"ws_all", "modified", "standby", "standby_low"}
+      and _c56.stats["combine_pages"] == 7)
+check("P2 非全开/游戏不进入 full 收尾", not _part56 and not _game56)
+_c56._manual_run = False; _c56.game_mode = False
+_c56.judger = type("J56b", (), {"_high_pressure": lambda self: False})()
+_calls56.clear(); _c56._final_consolidation(_ops56)
+check("P2 full final 不因低压降级（仍 modified/standby）",
+      _calls56 and _calls56[0][1] == {"ws_all", "modified", "standby", "standby_low"})
+check("P2 full 分支接入最终压实", "self._final_consolidation(ops_filter, deadline=deadline)" in _src47("core/cleaner.py"))
+_order56 = []
+_l56b = PareLearner(); _j56b = PareJudger(_l56b, {"never": [], "clean_passes": 4, "efis_params": {}})
+_c56b = PareCleaner(_j56b)
+_c56b._layer2_process = lambda *a, **k: ([], [])
+_c56b._layer1_memreduct = lambda **k: _order56.append("l1")
+_c56b._layer3_deep = lambda *a, **k: _order56.append("l3")
+_c56b._final_consolidation = lambda *a, **k: _order56.append("final")
+try:
+    _c56b.optimize([], _l56b, "full", operations=list(_ops56), allow_layer3=True, aggressiveness=0.9)
+finally:
+    _c56b.shutdown()
+check("P2 full 执行顺序：进程 → 系统 → Layer3 → 最终压实", _order56 == ["l1", "l3", "final"])
+_c56._combine_eligible = lambda: PareCleaner._combine_eligible(_c56)
+_c56._manual_run = False; _c56._lite = False; _c56.game_mode = False
+_c56._combine_last = time.time(); _c56._combine_backoff = 900
+check("P2 combine 节流：刚调用后不重复", not _c56._combine_eligible())
+_c56._combine_last = time.time() - 901
+check("P2 combine 到期可触发", _c56._combine_eligible())
+_oldenv56 = os.environ.get("MEMWISE_DISABLE_COMBINE")
+os.environ["MEMWISE_DISABLE_COMBINE"] = "1"
+try:
+    check("P2 combine 环境变量可禁用", not _c56._combine_eligible())
+finally:
+    if _oldenv56 is None: os.environ.pop("MEMWISE_DISABLE_COMBINE", None)
+    else: os.environ["MEMWISE_DISABLE_COMBINE"] = _oldenv56
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")
