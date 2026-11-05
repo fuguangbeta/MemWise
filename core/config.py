@@ -55,7 +55,7 @@ DEFAULT_CFG = {
     # auto_start（普通权限快捷方式自启）已于 2026-08-15 移除，仅保留管理员权限自启
     "auto_start_daemon": False,
     # 更新检查（2026-10-16）：**默认不联网**——update_check 关闭时一行网络代码都不执行；
-    # 开启后启动时自动检查（7 天节流），update_auto_apply 决定是否自动下载并替换重启，
+    # 开启后每次启动自动检查（无节流，2026-10-16 定稿），update_auto_apply 决定是否自动下载并替换重启，
     # update_proxy 留空 = 自动使用系统代理。
     "update_check": False,
     "update_auto_apply": True,
@@ -64,10 +64,12 @@ DEFAULT_CFG = {
     "gap_seconds": 12, "clean_passes": 4,
     "hotkey": "ctrl+shift+m", "game_hotkey": "ctrl+shift+g", "game_processes": [],
     "clean_operations": ["ws", "standby", "modified", "volume", "registry"],
+    "combine_enabled": True,
     "emergency_threshold": 80, "log_to_file": False,
     "close_action": "ask", "tray_left_action": "show",
     "emergency_abs_pct": 0,  # 紧急触发兜底：可用内存百分比阈值（0=禁用；使用率阈值调高时的保险）
     "language": "zh_CN",  # 界面语言（zh_CN=简体中文 / en=English）
+    "elevate_declined": False,  # 用户曾取消过 UAC 提权 ⇒ 不再自动请求（界面仍可手动重启）
     "ws_caps": {},  # 工作集硬上限规则（高级选项）：{规范化路径: {"mb":int, "orig_max":int}}
 }
 
@@ -77,7 +79,7 @@ CLEAN_OPS_WHITELIST = {"ws", "standby", "modified", "filecache", "volume", "regi
 
 # 工作集硬上限的界面/配置共用上限（P19：两处口径必须同一常量，防“界面能设、加载被截”）
 WS_CAP_MAX_MB = 65536
-WS_CAP_MAX_RULES = 16
+WS_CAP_MAX_RULES = 32
 
 
 def _norm_proc_name(raw):

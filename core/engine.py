@@ -240,7 +240,7 @@ if "--watchdog" in sys.argv:
                 # 看门狗子进程可能并发更新此文件，各写各的 tmp 防交错损坏
                 _wd_tmp = f"{wd_path}.{os.getpid()}.tmp"
                 with open(_wd_tmp, "w", encoding="utf-8") as f:
-                    json.dump({"pid": p.pid, "ts": now, "crash_count": len(crash_history),
+                    json.dump({"pid": p.pid, "wd_pid": os.getpid(), "ts": now, "crash_count": len(crash_history),
                                "daemon": d.get("daemon", False),
                                "minimized": bool(d.get("minimized", False))}, f)
                 os.replace(_wd_tmp, wd_path)
@@ -269,10 +269,21 @@ def _spawn_watchdog(daemon_flag=False):
             _cmd = [sys.executable, "--watchdog"]
         else:
             _cmd = [sys.executable, os.path.abspath(__file__), "--watchdog"]
-        subprocess.Popen(_cmd,
+        _proc = subprocess.Popen(_cmd,
             startupinfo=si, creationflags=0x08000000, env=_clean_env())  # CREATE_NO_WINDOW
+        # 记录看门狗自身 pid（2026-11-06）：旧实现只写主程序 pid，无法自检“看门狗到底活没活”。
+        # 写失败不影响看门狗运行，只是下次自检会再拉一个——为避免误判，这里失败也不抛。
+        try:
+            with open(_wd_tmp, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "wd_pid": _proc.pid, "ts": time.time(),
+                           "crash_count": 0, "daemon": daemon_flag,
+                           "minimized": "--minimized" in sys.argv}, f)
+            os.replace(_wd_tmp, wd_path)
+        except Exception:
+            pass
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _update_watchdog_daemon(flag):
@@ -330,7 +341,7 @@ from core.config import load as _load_cfg
 from core.config import get_state_path
 import core.config as _config
 from core.learner import _is_self_path
-from core.judger import PareJudger as _JudgerCls  # 仅用于静态守卫方法（_is_system_path）
+from core.judger import PareJudger as _JudgerCls  # 仅用于静态守卫方法（_is_cap_protected）
 
 # ── 统一运行日志：单一时间线、线程安全、2MB×2 轮转 ──
 # 记录运行期间全部有价值信息（生命周期/清理/决策/调参/配置/异常/系统/诊断）
@@ -482,7 +493,7 @@ def _log_open(announce=True):
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
         if announce:
-            _log_write("启动", f"MemWise v5.2.005 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+            _log_write("启动", f"MemWise v5.3.011 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
             try:
                 _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
                 _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -640,6 +651,35 @@ CFG = _load_cfg()
 set_language(CFG.get("language", "zh_CN"))  # 界面语言加载（设置面板可即时切换）
 _CFG_SNAPSHOT = dict(CFG)  # 配置变更日志基线（_save_cfg 输出 旧→新 diff）
 
+def _ops_with_combine(ops):
+    """把独立的 combine 授权并入 operations（combine 不是系统级六项之一）。
+
+    六项全空但 combine 开关仍开时，full 收尾仍会执行页合并——这是独立开关的授权语义
+    （2026-11-06 决策 A）；只有六项与 combine 全关才得到真正的 []（零动作）。"""
+    out = list(ops or [])
+    if CFG.get("combine_enabled", True) and "combine" not in out:
+        out.append("combine")
+    return out
+
+def _push_runtime_cfg(judger, cfg=None):
+    """把 CFG 的运行期副本同步进 judger.cfg（never / game_processes / clean_passes / emergency_threshold）。
+
+    为什么需要：GUI 只在两处直接写 judger.cfg（efis_params / game_processes），其余三键靠
+    守护线程每 5s 的热加载追平；**守护未运行时的手动优化没有热加载** ⇒ 改排除/改深度/改紧急
+    阈值后立即点优化，仍用旧值（2026-11-06 行为实验实证：CFG.never 含目标仍被清 2 次、
+    CFG=6 只跑 4 趟、CFG=70 而 judger 仍读 80）。
+    efis_params 不在此处：它是 EFIS 状态文件的投影，由调用点用 efis.get_params(mode) 单独同步。
+    """
+    cfg = CFG if cfg is None else cfg
+    try:
+        judger.cfg["never"] = list(cfg.get("never") or [])
+        judger.cfg["game_processes"] = list(cfg.get("game_processes") or [])
+        judger.cfg["clean_passes"] = cfg.get("clean_passes", 4)
+        judger.cfg["emergency_threshold"] = cfg.get("emergency_threshold", 80)
+    except Exception:
+        pass
+
+
 def _save_cfg():
     """保存配置并记录变更（[配置] 类别：逐键 旧→新；供只凭日志定位设置问题）"""
     global _CFG_SNAPSHOT
@@ -723,7 +763,7 @@ class MemWiseEngine:
     """守护循环 / ERIS / 轮次数据 / 事件队列——不依赖任何 UI 框架。
 
     事件队列 events（queue.Queue）：动作元组与原 GUI 消息队列格式一致——
-    ('log', msg) / ('display_groups', [组, …]) / ('log_batch', [lines]) / ('log_op', msg) /
+    ('log', msg) / ('display_groups', [组, …]) / ('log_batch', [lines]) /
     ('chart', None) / ('upd_ui', (s, m, txt)) / ('opt_done', result) / ('dae_stopped', None)
     ——展示层消费端零改动复用。
     """
@@ -760,7 +800,7 @@ class MemWiseEngine:
         self._eff_data = deque(maxlen=60)          # 效率折线数据
         self._eff_factors = deque(maxlen=60)       # 效率主导因子
         self._chart_lock = threading.Lock()
-        self._chart_cycle_meta = deque(maxlen=60)  # 每轮元数据(seq,trimmed,failed,mem_pct,failed_weight,partial)
+        self._chart_cycle_meta = deque(maxlen=60)  # 每轮收割是否未完成（与柱一一对应，供悬浮提示）
         self._chart_bar_seq = 0                    # 全局轮次序列号（守护递增）
 
         # ERIS 状态（分位数窗/平滑/趋势/防振荡）
@@ -787,7 +827,6 @@ class MemWiseEngine:
         # 周期基线/去重状态
         self._cycle_trimmed = 0
         self._cycle_failed = 0
-        self._failed_weight = 0.5
         self._last_sys_ops = 0
         self._last_l3_ran = 0
         self._last_l3_extra = 0
@@ -901,6 +940,46 @@ class MemWiseEngine:
             pass
         self._save_eris_state()
 
+    def ensure_watchdog(self, daemon_flag=False):
+        """看门狗存活自检/自愈（2026-11-06）。
+
+        背景：旧实现只在启动时 Popen 一次，既不记录看门狗自身 pid，也不验证它是否活着；
+        实测运行中的实例只剩 2 个进程、watchdog.json 仍指向已死的主程序 pid ⇒ 崩溃自动恢复
+        已静默失效而无人知晓。这里以 wd_pid + 进程存活判定做自检，缺失/死亡时补拉一次。
+        返回 "ok" / "restarted" / "failed"。
+        """
+        try:
+            import json
+            wd_pid = 0
+            _d = {}
+            p = _watchdog_path()
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        _d = json.load(f) or {}
+                    wd_pid = int(_d.get("wd_pid", 0) or 0)
+                except Exception:
+                    wd_pid = 0
+            if wd_pid and winapi.pid_alive(wd_pid):
+                return "ok"
+            # 旧版 watchdog.json（无 wd_pid 且 pid 就是本进程）：说明本次启动已 spawn 过，
+            # 只是旧格式没记录看门狗 pid——不要再拉第二个（升级用户首启的兼容保护）。
+            if not wd_pid and int(_d.get("pid", 0) or 0) == os.getpid():
+                return "ok"
+            if _spawn_watchdog(daemon_flag):
+                try:
+                    _event_log("看门狗自检：未运行（wd_pid=%s），已重新拉起" % (wd_pid,))
+                except Exception:
+                    pass
+                return "restarted"
+            try:
+                _event_log("看门狗自检：拉起失败（wd_pid=%s）" % (wd_pid,))
+            except Exception:
+                pass
+            return "failed"
+        except Exception:
+            return "failed"
+
     def shutdown(self):
         """停止守护并释放资源（退出流程用）"""
         self._running = False
@@ -937,7 +1016,9 @@ class MemWiseEngine:
 
     def _opt_worker(self, mode, ops):
         with self.cleaner._exec_lock:
+            ops = _ops_with_combine(ops)
             self.cleaner._manual_run = True  # 手动优化：跳过自动化保守门（前台冷却/连续确认/锚点抑制），保留实时安全门（CPU/IO 活跃）
+            _push_runtime_cfg(self.judger)   # 手动路径没有 5s 热加载：入口必推（never/深度/紧急阈值）
             # 按调用时模式取参（2026-08-16 模式参数组）：手动优化用该模式自己的参数，
             # 不受守护周期末同步的"当前模式"影响；策略树权重同步同一模式（审查 P6）
             self.judger.cfg["efis_params"] = self.efis.get_params(mode)
@@ -999,7 +1080,9 @@ class MemWiseEngine:
     def _opt_worker_once(self, mode, ops):
         """守护运行中即时优化的执行体：单轮快照+单轮 optimize（守护周期互斥见调用方注释）"""
         with self.cleaner._exec_lock:
+            ops = _ops_with_combine(ops)
             self.cleaner._manual_run = True
+            _push_runtime_cfg(self.judger)   # 手动路径没有 5s 热加载：入口必推（never/深度/紧急阈值）
             self.judger.cfg["efis_params"] = self.efis.get_params(mode)  # 按调用时模式取参
             self.judger.sync_pid_from_cfg()  # 手动优化按本次模式参数驱动 PID
             self.learner.policy.set_mode(mode)  # 树权重同模式（审查 P6）
@@ -1125,7 +1208,7 @@ class MemWiseEngine:
                 self.judger.cfg["efis_params"] = self.efis.get_params()
                 self.judger.sync_pid_from_cfg()  # 响应类参数随模式组切换即时进 PID
                 agg = self.judger.update_pressure(m['pct'])
-                ops = CFG.get("clean_operations")
+                ops = _ops_with_combine(CFG.get("clean_operations"))
                 # 连续优化循环：deadline + 多次 optimize + gap fill + blitz
                 m_emerg = winapi.get_memory_status()
                 if m_emerg and _emergency_active(m_emerg):
@@ -1173,9 +1256,13 @@ class MemWiseEngine:
                             if game_now:
                                 game_seen = True  # 本周期游戏曾开启（冻结判定）
                             if self.cleaner._game_mode_manual:
-                                # 手动模式：实时刷新 PID 保护集（含子进程树），不自动切换模式
+                                # 手动模式：实时刷新 PID 保护集（含子进程树），不自动切换模式；
+                                # 游戏退出同样清空失效 PID（与 _layer2_process 同口径防 PID 复用误
+                                # 保护——quick 模式守护不进 L2，此处是唯一清空点，2026-10-25 补）
                                 if game_now:
                                     self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
+                                elif self.cleaner.judger._game_pid_set:
+                                    self.cleaner.judger._game_pid_set.clear()
                             elif not self.cleaner.game_mode and game_now:
                                 self.cleaner.game_mode = True
                                 self.cleaner.judger.game_mode = True
@@ -1203,23 +1290,30 @@ class MemWiseEngine:
                             self.cleaner._layer1_memreduct(full=False, ops=ops_gap, clean_self=False)
                             if mode != "quick":
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；
-                                # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢
-                                for ft_pid in list(self.cleaner._fast_track)[:5]:
-                                    if ft_pid in self.cleaner.judger._game_pid_set:
-                                        self.cleaner._fast_track.pop(ft_pid, None)
-                                        continue
-                                    # 带回记录时的创建时间做身份复检（PID 复用防护，2026-09-11 审查 F12）
-                                    _ft_snap = next((s for s in snaps if s.pid == ft_pid), None)
-                                    if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid),
-                                                                    snap=_ft_snap):
-                                        self.cleaner._fast_track.pop(ft_pid, None)
-                                    else:
-                                        # 成功者移到队尾：下轮轮转后续成员，全池覆盖（2026-09-26 审查
-                                        # F3：dict 插入序稳定，恒成功的高回填进程原会永久占住前 5 位，
-                                        # 池尾成员整轮不被覆盖）；取局部引用防与手动优化每轮重建的重绑竞态
-                                        _ft_map = self.cleaner._fast_track
-                                        if ft_pid in _ft_map:
-                                            _ft_map[ft_pid] = _ft_map.pop(ft_pid)
+                                # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢。
+                                # ⛔ 执行域隔离（2026-10-25 原理审查）：手动优化持 exec_lock 期间
+                                # 本段不得执行——quick_retrim 与手动 trim 并发交错会令双方 pre/post
+                                # 测量互相污染（释放统计失真）。非阻塞获取，拿不到跳过本轮（下轮再试）
+                                if self.cleaner._exec_lock.acquire(blocking=False):
+                                    try:
+                                        for ft_pid in list(self.cleaner._fast_track)[:5]:
+                                            if ft_pid in self.cleaner.judger._game_pid_set:
+                                                self.cleaner._fast_track.pop(ft_pid, None)
+                                                continue
+                                            # 带回记录时的创建时间做身份复检（PID 复用防护，2026-09-11 审查 F12）
+                                            _ft_snap = next((s for s in snaps if s.pid == ft_pid), None)
+                                            if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid),
+                                                                            snap=_ft_snap):
+                                                self.cleaner._fast_track.pop(ft_pid, None)
+                                            else:
+                                                # 成功者移到队尾：下轮轮转后续成员，全池覆盖（2026-09-26 审查
+                                                # F3：dict 插入序稳定，恒成功的高回填进程原会永久占住前 5 位，
+                                                # 池尾成员整轮不被覆盖）；取局部引用防与手动优化每轮重建的重绑竞态
+                                                _ft_map = self.cleaner._fast_track
+                                                if ft_pid in _ft_map:
+                                                    _ft_map[ft_pid] = _ft_map.pop(ft_pid)
+                                    finally:
+                                        self.cleaner._exec_lock.release()
                         snap_skip -= 1
                         m2 = winapi.get_memory_status()
                         if m2:
@@ -1406,7 +1500,9 @@ class MemWiseEngine:
                             self.judger.sync_pid_from_cfg()
                     except Exception as e:
                         import sys; print(f"[MemWise] 配置加载异常: {e}", file=_ERR)
-                if now - last_save > 30:
+                # 落盘节流：30s → 120s（2026-11-06 实测 533KB/21.6ms，约 1.5GB/天）。
+                # 学习数据是统计量，崩溃最多丢 2 分钟；退出/停守护/手动优化收尾仍会立即写盘。
+                if now - last_save > 120:
                     last_save = now
                     # 学习状态摘要（2026-09-11）：画像/锚点/回退/抑制/探索 + 当前 EFIS 参数与分组
                     try:
@@ -1468,16 +1564,6 @@ class MemWiseEngine:
                     self._save_eris_state()  # ERIS 分位数窗随周期保存：运行中崩溃（watchdog 重启）不丢
                 trimmed = [(snap, ok, freed, reason) for snap, ok, freed, reason in l2_results if ok]
                 failed = [r for r in l2_results if not r[1]]
-                ratios = []
-                for r in failed:
-                    snap = r[0]
-                    p = self.learner.get_profile(snap.name)
-                    if p and hasattr(p.kalman, 'x_freed') and p.kalman.x_freed > 0:
-                        ratio = r[2] / max(p.kalman.x_freed, 1.0)  # 实际/预期
-                        ratios.append(min(ratio, 1.0))
-                    else:
-                        ratios.append(0.5)  # 无画像或预期为零，默认半值
-                self._failed_weight = sum(ratios) / len(ratios) if ratios else 0.5
                 probe_ok = sum(1 for _, ok, _ in probe_results if ok)
                 self._cycle_probe = (probe_ok, len(probe_results or []))
 
@@ -1492,7 +1578,7 @@ class MemWiseEngine:
                 self._cycle_freed_mb = chart_accum
                 pf_delta_cycle = _drain_pf_delta(self.judger)
                 self._cycle_pf = float(pf_delta_cycle or 0)
-                self._push_round(chart_accum, m["pct"], harvest_partial, game_seen)
+                self._push_round(chart_accum, harvest_partial, game_seen)
                 # Layer3 周期增量基线（累计口径会让诊断误判"持续触发"，导致 gate 持续爬升）
                 l3_ran_cur = s.get('layer3_ran', 0)
                 l3_extra_cur = s.get('layer3_extra', 0)
@@ -1720,7 +1806,7 @@ class MemWiseEngine:
                 pids = by_path.get(path) or []
                 if not pids:
                     continue
-                if _is_self_path(path) or _JudgerCls._is_system_path(path):
+                if _is_self_path(path) or _JudgerCls._is_cap_protected(path):
                     continue  # 自身/系统目录（B1 守卫；手改配置也拦在这里）
                 fail = self._ws_cap_fail.get(path, 0)
                 if fail >= 3 and self._ws_cap_tick % 10 != 0:
@@ -1791,7 +1877,7 @@ class MemWiseEngine:
                 _d.pop(path, None)
 
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
-    def _push_round(self, chart_accum, mem_pct, harvest_partial, game_seen=None):
+    def _push_round(self, chart_accum, harvest_partial, game_seen=None):
         self._chart_bar_seq += 1
         # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
@@ -1799,13 +1885,12 @@ class MemWiseEngine:
         _k = _E.k_value(self._eris_calib, _mode)   # 冻结基线 K（自标定期总分 p92，日志可见）
         with self._chart_lock:
             self._chart_data.append(chart_accum)
-            self._chart_cycle_meta.append((self._chart_bar_seq, self._cycle_trimmed,
-                self._cycle_failed, mem_pct, self._failed_weight, harvest_partial))
+            self._chart_cycle_meta.append(bool(harvest_partial))
         # ERIS：数据产生时逐点计算（原逻辑在图表渲染时按 seq 增量处理——等价：每轮一点一次计算）
         try:
             _pk, _pt = getattr(self, "_cycle_probe", (0, 0))
             result = self._compute_eris(list(self._chart_data), self._cycle_trimmed,
-                                        self._cycle_failed, mem_pct, self._failed_weight,
+                                        self._cycle_failed,
                                         probe_ok=_pk, probe_total=_pt, update_state=True,
                                         game_run=game_seen)
             self._eff_data.append(result["total"])
@@ -1827,7 +1912,9 @@ class MemWiseEngine:
             except Exception:
                 pass
         except Exception:
-            self._eff_data.append(80.0)
+            # 计算异常 ≠ 效率 80%：不再伪造中间值（2026-11-06）。记 None 让图表断口、
+            # 平均效率排除该轮、悬浮显示“未计算”；因子仍写“计算异常”，两边长度保持对齐。
+            self._eff_data.append(None)
             self._eff_factors.append(["计算异常"])
 
     # ── ERIS 当前口径 = v9（冻结基线 + 分位映射）；纯函数核心在 core/eris.py，状态由本文件持有 ──
@@ -1844,7 +1931,7 @@ class MemWiseEngine:
             self._eris_hist_by_mode[mode] = h
         return h
 
-    def _compute_eris(self, data, trimmed_cnt, failed_cnt, mem_pct, failed_weight=0.5,
+    def _compute_eris(self, data, trimmed_cnt, failed_cnt,
                       probe_ok=0, probe_total=0, update_state=True, game_run=None):
         """返回 {"total": 效率%, "factors": [...]}（接口与 v6 一致，展示层无需改动）。
         词条：效率升 → "本轮分数上升"的维中取最高分者报正面；降 → "本轮分数下降"的维中取最低分者报负面；
@@ -1901,9 +1988,10 @@ class MemWiseEngine:
                                                               update=update_state, skip=_skip_track,
                                                               mode=_mode, game=_game)
             _valid = E.valid_dims(_mode, _nodata)
-            _T = E.total_of(scores, valid=_valid, mode=_mode)          # 有效维均分折算值（0~700）
             _k = E.k_value(self._eris_calib, _mode)                    # 冻结基线 K（自标定期总分 p92）
-            eff = (_T / _k * 100.0) if _k > 0 else 0.0
+            # 公式单源走 E.efficiency（纯函数层）；K=0 时 efficiency 会回退种子而非 0.0，
+            # 外层判 _k>0 保持与原内联逐字一致
+            eff = E.efficiency(scores, K=_k, valid=_valid, mode=_mode) if _k > 0 else 0.0
             prev_scores, prev_eff = self._eris_prev_scores, self._eris_prev_eff
             _avoid = getattr(self, "_eris_last_word", None)   # 相邻抑制：上轮 (维度, 方向)
             trend_val = 0

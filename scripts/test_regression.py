@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v5.2.005 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v5.3.011 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,6 +22,17 @@ from core.efis import EfisController, PARAMS
 from core.policy import PolicyVoter
 from core.meta import MetaCognition
 from collections import deque
+
+# ── 测试临时目录自动清理（2026-11-06）：历史运行在 %TEMP% 留下 265 个 mw_* 目录 / 145MB ──
+import atexit as _atexit, shutil as _shutil, tempfile as _tf_mod
+_MKDTEMP_ORIG = _tf_mod.mkdtemp
+_TEST_TMP_DIRS = []
+def _mkdtemp_tracked(*a, **k):
+    _d = _MKDTEMP_ORIG(*a, **k)
+    _TEST_TMP_DIRS.append(_d)
+    return _d
+_tf_mod.mkdtemp = _mkdtemp_tracked
+_atexit.register(lambda: [_shutil.rmtree(_d, ignore_errors=True) for _d in _TEST_TMP_DIRS])
 
 errors = []
 def check(name, cond, detail=""):
@@ -170,6 +181,7 @@ check("慢回填冷却保持基准", cd_slow > 300)
 print("\n[8] Config")
 cfg=config_load(); check("has clean_passes", "clean_passes" in cfg); check("has gap_seconds", "gap_seconds" in cfg)
 check("interval 默认 60", DEFAULT_CFG["interval"] == 60)
+check("combine 默认开", DEFAULT_CFG["combine_enabled"] is True)
 # 深拷贝：消费方 append 不污染 DEFAULT_CFG（修复）
 c1 = config_load(); c1["clean_operations"].append("zzz_test")
 c2 = config_load()
@@ -1068,8 +1080,7 @@ set_language("zh_CN")
 check("退出表述键", "进程已退出·内存随之释放" in _cl26_src
       and "进程已退出·内存随之释放" in _i18n26_src)
 # ── 界面微修 ──
-check("托盘数字图标按档着色", "create_tray_percent_icon(pct, color=_color)" in _gui26_src)
-check("托盘百分比 100 如实显示", "min(100, int(percent))" in _wa26_src)
+# （托盘数字图标两条断言已随设计废弃移除——2026-10-25 用户裁定保持圆盘 M，数字只在悬停提示）
 check("全屏检测死代码已删（零消费方，2026-09-28 审查；防回退守卫）",
       "is_foreground_fullscreen" not in _wa26_src and "IGNORE_FULLSCREEN_CLASSES" not in _wa26_src
       and "MonitorFromWindow" not in _wa26_src)
@@ -1633,7 +1644,8 @@ check("F24 新增守护周期控件与更名后的标签",
 check("F32 标准权限显式提示", "当前为标准权限运行" in _gui34 and "当前为标准权限运行" in _i18n34)
 check("F32 运行时显式提权 + 防重启循环",
       "def _relaunch_elevated" in _gui34 and '"runas"' in _gui34 and "--elevated-retry" in _gui34)
-check("F32 提权重启路径的互斥接管重试", "--elevated-retry" in _gui34 and "for _ in range(20)" in _gui34)
+check("F32 提权重启路径的互斥接管重试（6s 窗口）",
+      "--elevated-retry" in _gui34 and "for _ in range(30)" in _gui34)
 check("F32 清单改为 asInvoker 且不再用 uac_admin",
       "asInvoker" in _io34.open(_os34.path.join(_ROOT34, "MemWise.manifest"), encoding="utf-8").read()
       and "\n    uac_admin=True," not in _io34.open(_os34.path.join(_ROOT34, "MemWise.spec"), encoding="utf-8").read()
@@ -1690,7 +1702,7 @@ check("S5 使用率路径随用户阈值移动（阈值 90 ⇒ 77% 触发、70% 
 check("S5 使用率判据存在（结构性）", "_l3_usage" in _cl34 and "_em_l3 * 0.85" in _cl34)
 check("F6 quick 开关置灰 + 说明已接线", 'CFG.get("clean_mode", "normal") == "quick"' in _gui34
       and '_cb.state(["disabled"])' in _gui34 and "quick 模式下「释放进程闲置内存」" in _i18n34
-      and "cb_ews, cb_fc, cb_vc, cb_mp" in _gui34 and "脏页写回」不执行" in _i18n34)
+      and "cb_ews, cb_fc, cb_vc, cb_mp, cb_cb" in _gui34 and "内存页合并」不执行" in _i18n34)
 # ── F50 开关标题名不副实（2026-09-11 用户实测指出）──
 check("F50 开机自启开关标题不再歧义",
       '"以管理员权限开机自启动"' in _gui34 and "需搭配「以管理员权限开机自启动」" in _gui34
@@ -1949,7 +1961,7 @@ import re
 import core.eris as _eris9
 from core.eris import (widen as _wd9, score_of as _sc9, DIM_WORDS as _W9,
                        total_of as _tt9, efficiency as _ef9, pick_factor as _pf9,
-                       smooth3_append as _sm9, SMOOTH_N as _SN9, new_state as _ns9,
+                       smooth3_append as _sm9, SMOOTH_N as _SN9,
                        MODE_VALID_DIMS as _MV9, valid_dims as _vd9, new_hist as _nh9,
                        CALIB_N as _CN9, CALIB_SKIP as _CS9, LONG_WIN as _LW9, LONG_TOL as _LT9, MIN_REL_SPAN as _MRS9,
                        SUPER_TH as _ST9, WARN_TH as _WT9, CALIB_STATE_V as _CSV9,
@@ -2029,7 +2041,7 @@ check("v9 漂移看护：连续跑出安全带 ⇒ 自动重标一次（机器/�
       _rc9(_cb9, "deep") >= 1 and _cal9(_cb9, "deep") is False)
 _eng9 = _eng32_src
 check("v9 引擎接线（新五维原始量 + 净留存率 + 冻结 K；旧接口零残留）",
-      all(k in _eng9 for k in ("_cycle_net_drop_mb", "_cycle_proc_mb", "E.k_value", "E.total_of",
+      all(k in _eng9 for k in ("_cycle_net_drop_mb", "_cycle_proc_mb", "E.k_value", "E.efficiency",
                                "E.pick_factor", "E.smooth3_append", "E.valid_dims"))
       and all(k not in _eng9 for k in ("E.k_update", "E.warmup_total", "_customary_sys",
                                        "_sys_rel_by_mode", "_cycle_refill_mb", "_gap_refill_mb")))
@@ -2095,7 +2107,7 @@ def _cyc37(mode):
     _E37.cleaner._last_mode = mode
     _E37._cycle_trimmed, _E37._cycle_failed = 3, 1
     _E37._cycle_pf, _E37._cycle_proc_mb = 1000.0, 500.0
-    return _E37._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4, update_state=True)
+    return _E37._compute_eris([1.0] * 5, 3, 1, probe_ok=2, probe_total=4, update_state=True)
 _c1 = _cyc37("normal"); _c2 = _cyc37("normal"); _c3 = _cyc37("normal")
 _used37 = lambda m: max(len(h) for h in _E37._eris_hist_by_mode.get(m, [[]]))
 check("同模式连续轮：只长该模式的桶（normal 3 样本，full 尚未创建）",
@@ -2136,7 +2148,8 @@ import shutil as _sh38
 _cl26 = _src26("core", "cleaner.py")
 check("收益闸：回涨再清带绝对量下限（充裕 8MB / 占用≥45% 不设限 ⇒ 高压行为与旧版逐字一致）",
       "L3_RETRIM_GROWTH_FLOOR = 8 << 20" in _cl26 and "L3_RETRIM_PRESSURE_PCT = 45" in _cl26
-      and "_l3_growth_floor" in _cl26 and "s.ws - bl) >= _l3_growth_floor" in _cl26)
+      and "_l3_growth_floor" in _cl26
+      and ("s.ws - bl) >= _l3_growth_floor" in _cl26 or "s.ws - bl) >= growth_floor" in _cl26))
 check("收益闸：被拦下的计入拦截原因（诊断看得到、不留盲区）",
       'self._cycle_reasons["回涨不足(收益闸)"]' in _cl26)
 check("试探结果分桶（合格 / 缺页超预算 / 未完成超时）",
@@ -2382,7 +2395,7 @@ check("F5 quick+None=低优先待机+注册表",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="5.2.0.05"' in _mf41)
+check("F9 manifest 版本随版", 'version="5.3.0.11"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2417,13 +2430,13 @@ _eng41u = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join
 _eng41u.cleaner._last_mode = "full"
 _eng41u._cycle_freed_mb = 500.0
 _eng41u._cycle_net_drop_mb = 250.0
-_r_eq = _eng41u._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, 2, 4, update_state=False)
+_r_eq = _eng41u._compute_eris([1.0] * 5, 3, 1, 2, 4, update_state=False)
 _eng41u.shutdown()
 _eng41v = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join(_d41u, "state41v.json"))
 _eng41v.cleaner._last_mode = "full"
 _eng41v._cycle_freed_mb = 500.0
 _eng41v._cycle_net_drop_mb = 50.0
-_r_ne = _eng41v._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, 2, 4, update_state=False)
+_r_ne = _eng41v._compute_eris([1.0] * 5, 3, 1, 2, 4, update_state=False)
 _eng41v.shutdown()
 _eng41w = MemWiseEngine(lr_x, _j_x2, c_x2, _efis_x, _FakeSniffer(), os.path.join(_d41u, "state41w.json"))
 _eng41w.cleaner._last_mode = "full"
@@ -2431,7 +2444,7 @@ _eng41w._cycle_freed_mb = 500.0
 _eng41w._cycle_net_drop_mb = 0.0
 _eng41w._cycle_proc_mb = 300.0
 _eng41w._cycle_pf = 1000.0
-_r_ze = _eng41w._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, 2, 4, update_state=False)
+_r_ze = _eng41w._compute_eris([1.0] * 5, 3, 1, 2, 4, update_state=False)
 _eng41w.shutdown()
 check("净下降 ≤ 0 记无数据（维度一退出、四维归一）",
       _r_ze["scores"][0] == 50.0 and _r_ze["valid"] == [1, 2, 3, 4],
@@ -2542,13 +2555,13 @@ _e42.cleaner._last_mode = "full"
 _e42._cycle_freed_mb = 500.0
 _e42._cycle_net_drop_mb = 250.0
 _n42a = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
-_r42a = _e42._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4,
+_r42a = _e42._compute_eris([1.0] * 5, 3, 1, probe_ok=2, probe_total=4,
                            update_state=True, game_run=True)
 _n42b = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
-_r42b = _e42._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4,
+_r42b = _e42._compute_eris([1.0] * 5, 3, 1, probe_ok=2, probe_total=4,
                            update_state=True, game_run=False)
 _n42c = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
-_r42c = _e42._compute_eris([1.0] * 5, 3, 1, 50.0, 0.5, probe_ok=2, probe_total=4, update_state=True)
+_r42c = _e42._compute_eris([1.0] * 5, 3, 1, probe_ok=2, probe_total=4, update_state=True)
 _n42d = _e42._eris_calib.get("modes", {}).get("full", {}).get("n", 0)
 check("G5 game_run=True 照常算分但不喂标定（n 不增）",
       isinstance(_r42a["total"], float) and _n42b == _n42a, "%s→%s" % (_n42a, _n42b))
@@ -2840,7 +2853,7 @@ _cfg26.CONFIG_PATH = _t45
 _d45c = _cfg26.load()
 _cfg26.CONFIG_PATH = _ocp45
 os.remove(_t45)
-check("W2 ws_caps 校验：规范化/下限剔除/上限 16 条",
+check("W2 ws_caps 校验：规范化/下限剔除/上限 32 条（本组 16 条不截断）",
       list(_d45c.get("ws_caps", {}).keys())[:1] == ["d:\\app\\good.exe"]
       and "d:\\app\\tiny.exe" not in _d45c["ws_caps"] and len(_d45c["ws_caps"]) == 16,
       str(list(_d45c.get("ws_caps", {}).keys())))
@@ -2979,7 +2992,9 @@ check("P2 行为：临时配置下 efis_params 键恒在且为 dict",
       "efis_params" in _d47 and isinstance(_d47["efis_params"], dict))
 # P3 进程退出归因
 check("P3 退出分支 freed 记 0（不再回填 ws_before）",
-      'return True, 0, 0, "进程已退出·内存随之释放"' in _cl47 and "ws_before, ws_before" not in _cl47)
+      ('return True, 0, 0, "进程已退出·内存随之释放"' in _cl47
+       or '(True, 0, 0, "进程已退出·内存随之释放")' in _cl47)
+      and "ws_before, ws_before" not in _cl47)
 # P4 可写性哨兵（行为：临时改 base 指向不可写盘；桩掉 _event_log 防写真实崩溃日志）
 import core.engine as _egm47
 _ev47 = _egm47._event_log; _base47 = _egm47.base
@@ -3053,8 +3068,10 @@ from core.judger import MIN_WS_BYTES as _MW47
 _clhead = [l.strip() for l in open(os.path.join(_ROOT34, "CHANGELOG.md"), encoding="utf-8").read().splitlines()
            if l.startswith("## v")]
 import core.backup as _bkver
+import re as _re_ver
 check("版本一致性：CHANGELOG 标题与 APP_VERSION 一致（且只有一个版本节）",
-      len(_clhead) == 1 and _clhead[0] == "## v%s (2026·10)" % _bkver.APP_VERSION,
+      len(_clhead) == 1 and bool(_re_ver.fullmatch(
+          r"## v" + _re_ver.escape(_bkver.APP_VERSION) + r" \(\d{4}·\d{2}\)", _clhead[0])),
       str(_clhead))
 check("版本一致性：README 标题与 APP_VERSION 一致",
       ("# MemWise v" + _bkver.APP_VERSION) in open(os.path.join(_ROOT34, "README.md"), encoding="utf-8").read())
@@ -3307,7 +3324,7 @@ _c54 = _src47("core/config.py"); _i54 = _src47("core/i18n.py")
 _r54 = _src47("README.md"); _ch54 = _src47("CHANGELOG.md")
 check("更新模块与关键能力齐备（WinHTTP/双通道/校验/节流）",
       all(k in _u54 for k in ("WinHttpOpen", "def parse_version(", "def is_newer(", "def check_latest(",
-                               "def download(", "def verify_file(", "sha256_mismatch", "POL_ALWAYS")))
+                               "def download(", "def verify_file(", "sha256_mismatch", "POL_DISALLOW_HTTPS_TO_HTTP")))
 check("零第三方依赖：不引入 ssl/http/urllib（与打包 excludes 一致）",
       "import urllib" not in _u54 and "import ssl" not in _u54 and "import http" not in _u54
       and "MEMWISE_UPDATE" not in _u54)
@@ -3723,7 +3740,7 @@ import yaml as _y55
 with open(_c55tmp, "w", encoding="utf-8") as _f55:
     _y55.safe_dump({"emergency_abs_pct": 90,
                     "ws_caps": {("D:\\App\\p%d.exe" % _i55): {"mb": 256, "orig_max": 1024}
-                                for _i55 in range(17)}}, _f55)
+                                for _i55 in range(40)}}, _f55)
 _oldC55 = _C55cfg.CONFIG_PATH; _C55cfg.CONFIG_PATH = _c55tmp
 try:
     _d55 = _C55cfg.load()
@@ -3731,7 +3748,7 @@ finally:
     _C55cfg.CONFIG_PATH = _oldC55
     _sh55.rmtree(os.path.dirname(_c55tmp), ignore_errors=True)
 check("P20 emergency_abs_pct 钳到 50", _d55["emergency_abs_pct"] == 50)
-check("P19 ws_caps 截到 16 条", len(_d55["ws_caps"]) == 16)
+check("P19 ws_caps 截到 32 条", len(_d55["ws_caps"]) == 32)
 # P06/P08 清理路径行为（打桩，不触系统）
 _c55calls = []
 def _rec55(nm):
@@ -3765,12 +3782,10 @@ check("P06 gap 低压仅 registry / 高压含 standby", _low55 == {"clear_regist
 print("\n[56] 2026-10-20 full 收尾/页合并（P0-P2）")
 import ctypes as _ct56, threading as _th56
 import core.winapi as _W56
-_ops56 = {"ws", "standby", "modified", "filecache", "volume", "registry"}
+_ops56 = {"ws", "standby", "modified", "filecache", "volume", "registry", "combine"}
 check("P0 SYSTEM_FILECACHE_INFORMATION = 64B", _ct56.sizeof(_W56._SFCI) == 64)
 check("P1 MEMORY_COMBINE_INFORMATION_EX = 24B", _ct56.sizeof(_W56._MEMORY_COMBINE_INFORMATION_EX) == 24)
-check("P1 全开判定（六区）",
-      PareCleaner._all_ops_selected(_ops56) and PareCleaner._all_ops_selected(None)
-      and not PareCleaner._all_ops_selected({"ws", "standby"}))
+check("P1 combine 已与六项全开解耦", not hasattr(PareCleaner, "_all_ops_selected"))
 _real56 = _W56.NtSetSystemInformation
 _priv56 = _W56._try_enable_privilege
 def _fake56(cls, ptr, size):
@@ -3803,16 +3818,29 @@ _W56.combine_physical_memory = lambda: (True, 7, 12, 0)
 try:
     _c56._final_consolidation(_ops56)
     _all56 = list(_calls56)
-    _calls56.clear(); _c56._final_consolidation({"ws", "standby"})
+    _pages_all56 = _c56.stats["combine_pages"]
+    _calls56.clear(); _c56._final_consolidation({"ws", "standby", "combine"})
     _part56 = list(_calls56)
+    _calls56.clear(); _c56._final_consolidation({"ws", "standby", "modified", "volume", "registry", "combine"})
+    _default56 = list(_calls56)
     _calls56.clear(); _c56.game_mode = True; _c56._final_consolidation(_ops56)
     _game56 = list(_calls56)
 finally:
     _W56.combine_physical_memory = _real_c56
 check("P2 full 收尾顺序：ws_all + 高压 modified/standby + low → combine",
       _all56 and _all56[0][1] == {"ws_all", "modified", "standby", "standby_low"}
-      and _c56.stats["combine_pages"] == 7)
-check("P2 非全开/游戏不进入 full 收尾", not _part56 and not _game56)
+      and _pages_all56 == 7)
+check("P2 部分勾选仍执行 final/combine",
+      _part56 and _part56[0][1] == {"ws_all", "standby", "standby_low"})
+check("P2 默认五项 + combine 也执行 final/combine",
+      _default56 and _default56[0][1] == {"ws_all", "modified", "standby", "standby_low"}
+      and _c56.stats["combine_pages"] == 21)
+_c56.game_mode = False
+_calls56.clear(); _c56._final_consolidation({"ws", "standby"})
+check("P2 未勾选 combine 时只做 final 不做合并",
+      _calls56 and _calls56[0][1] == {"ws_all", "standby", "standby_low"}
+      and _c56.stats["combine_pages"] == 21)
+check("P2 游戏不进入 full 收尾", not _game56)
 _c56._manual_run = False; _c56.game_mode = False
 _c56.judger = type("J56b", (), {"_high_pressure": lambda self: False})()
 _calls56.clear(); _c56._final_consolidation(_ops56)
@@ -3844,6 +3872,508 @@ try:
 finally:
     if _oldenv56 is None: os.environ.pop("MEMWISE_DISABLE_COMBINE", None)
     else: os.environ["MEMWISE_DISABLE_COMBINE"] = _oldenv56
+
+print("\n[57] 2026-10-25 修复批次（托盘形态裁定 / θ 缓存跨 tick / 排行悬浮竞态）")
+# ── T1 托盘形态（2026-10-25 用户裁定：保持四档彩色圆盘 M，不做百分比数字图标——
+#    数字图标设计整体废弃：winapi 绘制函数与 GUI 调用链全部移除，数字只在悬停提示。
+#    背景：该函数的 FillRect/DrawTextW 曾错挂 gdi32（v1.7 起恒 AttributeError 被吞、恒 None），
+#    即数字图标从未显示过；修复后发现设计与用户期望不符，经用户裁定直接废弃）──
+check("T1 托盘数字图标设计已整体移除（函数与调用链零残留）",
+      "create_tray_percent_icon" not in _src47("core/winapi.py")
+      and "create_tray_percent_icon" not in _src47("memwise_gui.py"))
+check("T1b 效率公式单源接线（engine 走 E.efficiency，total_of 内联已消除）",
+      "E.efficiency" in _src47("core/engine.py") and "_T / _k" not in _src47("core/engine.py"))
+# ── T2 θ 缓存跨 tick 失效 + 同 tick 复用（feed 置 dirty；生产时序 = 批量 feed 后决策）──
+import random as _r57
+_p57 = Profile("t57.exe")
+_sq57 = [0.0]
+def _beta57(a, b):
+    _sq57[0] += 0.1
+    return _sq57[0]
+_ob57 = _r57.betavariate
+_r57.betavariate = _beta57
+try:
+    _p57.feed(100 << 20)
+    _a57 = _p57.thompson_theta
+    _a57b = _p57.thompson_theta        # 同 tick：复用（betavariate 不被再次调用）
+    _p57.feed(100 << 20)
+    _b57 = _p57.thompson_theta         # 跨 tick：重采样（学习期 mix 爬坡恢复生效）
+finally:
+    _r57.betavariate = _ob57
+check("T2 θ 同 tick 复用（判定一致性保持）", _a57 == _a57b)
+check("T2 θ 跨 tick 失效重采样", _a57 != _b57, "%s vs %s" % (_a57, _b57))
+# ── T3 排行悬浮竞态：10s 刷新全删行后，<Motion> 对旧 item 调 tree.item 抛 TclError ──
+_gui57 = _src47("memwise_gui.py")
+check("T3 悬浮守卫源码形态（两处 exists 先查 + 刷新清空）",
+      _gui57.count("tree.exists(_cur_hover)") == 2
+      and "_cur_hover = None   # 行已全删重建" in _gui57)
+_root57 = _tk54s.Tk(); _root57.withdraw()
+_tree57 = _ttk54s.Treeview(_root57, columns=("a",), show="headings", height=3)
+_tree57.pack()
+_items57 = [_tree57.insert("", "end", values=(i,)) for i in range(3)]
+_root57.update_idletasks()
+_cur57 = _items57[1]
+for _it57 in _tree57.get_children():
+    _tree57.delete(_it57)
+_new57 = [_tree57.insert("", "end", values=(i,)) for i in range(3)]
+try:
+    _tree57.item(_cur57, tags=())
+    _t3_old_alive = True
+except Exception:
+    _t3_old_alive = False
+check("T3 旧行 id 已失效（复现条件成立）", not _t3_old_alive)
+_t3_guard_ok = True
+try:
+    if _tree57.exists(_cur57):
+        _tree57.item(_cur57, tags=())
+    _tree57.item(_new57[1], tags=("hover",))
+except Exception:
+    _t3_guard_ok = False
+check("T3 exists 守卫不抛且新行可高亮", _t3_guard_ok)
+_root57.destroy()
+check("T3 卫生死代码清理（get_process_ws_quota / eris.new_state 已删；CLI combine 同源）",
+      "def get_process_ws_quota" not in _src47("core/winapi.py")
+      and "def new_state" not in _src47("core/eris.py")
+      and "_ops_with_combine(CFG.get(\"clean_operations\"))" in _src47("memwise.py"))
+
+print("\n[58] 2026-10-25 原理审查批次（守护 gap 循环与手动/收割的执行域隔离）")
+_eg58 = _src47("core/engine.py"); _cl58 = _src47("core/cleaner.py")
+# ── D1 fast-track 重清与手动优化的并发域隔离（gap 循环侧非阻塞锁；quick_retrim 本体不拿锁——
+#    实证：exec_lock 被占时 quick_retrim 照常执行 EWS，与手动 trim 并发交错致双方测量互相污染）──
+check("D1 gap fast-track 段受 exec_lock 非阻塞保护（拿不到跳过本轮）",
+      "_exec_lock.acquire(blocking=False)" in _eg58
+      and _eg58.index("_exec_lock.acquire(blocking=False)") < _eg58.index("for ft_pid in list(self.cleaner._fast_track)")
+      and "_exec_lock.release()" in _eg58)
+# ── D2 手动口径泄漏闭合（_layer2_process 开头同步 _manual_mode，手动轮结束后无人复位——
+#    守护 fast_retrim 在下一轮 optimize 前以手动口径放行；optimize 壳 finally 收尾归位）──
+_l58 = PareLearner(); _j58 = PareJudger(_l58, {"never": [], "efis_params": {}})
+_c58 = PareCleaner(_j58)
+class _S58:
+    pass
+_s58 = _S58(); _s58.pid = 35001; _s58.name = "d2.exe"; _s58.ws = 200 << 20; _s58.path = r"d:\d2.exe"
+_s58.fg = False; _s58.cpu = 0.0; _s58.create = 1; _s58.parent = 0; _s58.has_visible = False
+_ol258 = PareCleaner._layer2_process
+PareCleaner._layer2_process = lambda self, snaps, learner, deadline=None: (
+    setattr(self.judger, "_manual_mode", self._manual_run), ([], []))[1]
+try:
+    _c58._manual_run = True
+    _c58.optimize([_s58], _l58, "normal", operations=["ws"])
+finally:
+    _c58._manual_run = False   # _opt_worker 的收尾语义（生产中手动标志由 worker finally 复位）
+    PareCleaner._layer2_process = _ol258
+check("D2 行为：手动优化整轮后 judger._manual_mode 复位 False（不再泄漏到守护路径）",
+      _j58._manual_mode is False)
+check("D2 源码：optimize 壳 finally 收尾复位", "self.judger._manual_mode = False" in _cl58)
+# ── D3 gap 手动游戏分支补退出清空（quick 模式守护不进 L2，该分支是唯一清空点；
+#    与 _layer2_process 同口径防 PID 复用误保护）──
+check("D3 gap 手动游戏分支含退出清空（与 _layer2_process 同口径）",
+      "elif self.cleaner.judger._game_pid_set:" in _eg58
+      and _eg58.index("elif self.cleaner.judger._game_pid_set:") > _eg58.index("_game_mode_manual:"))
+
+
+print("\n[59] 2026-11-06 复核修复批次（配置即时推送/长路径/权限/看门狗/提权/导出脱敏/死代码）")
+_eng59 = _src47("core/engine.py"); _cl59 = _src47("core/cleaner.py")
+_wa59 = _src47("core/winapi.py"); _bk59 = _src47("core/backup.py")
+_lm59 = _src47("core/learner.py"); _up59 = _src47("core/update.py")
+_gui59 = _src47("memwise_gui.py"); _cf59 = _src47("core/config.py")
+# ── 配置即时推送（行为：改 CFG 后 judger 立即一致）──
+import zipfile
+import core.winapi as _wa59m
+import core.engine as _EG59
+import core.backup as _BK59
+_l59 = PareLearner()
+_j59 = PareJudger(_l59, {"never": [], "efis_params": {}, "clean_passes": 4, "emergency_threshold": 80})
+_keep59 = {k: _EG59.CFG.get(k) for k in ("never", "clean_passes", "emergency_threshold")}
+try:
+    _EG59.CFG["never"] = ["j59.exe"]
+    _EG59.CFG["clean_passes"] = 6
+    _EG59.CFG["emergency_threshold"] = 70
+    _EG59._push_runtime_cfg(_j59)
+    check("J1 配置即时推送（never/深度/紧急阈值）",
+          _j59.cfg.get("never") == ["j59.exe"] and _j59.cfg.get("clean_passes") == 6
+          and _j59._emergency_pct() == 70, str(_j59.cfg.get("never")))
+finally:
+    for _k59, _v59 in _keep59.items():
+        if _v59 is None:
+            _EG59.CFG.pop(_k59, None)
+        else:
+            _EG59.CFG[_k59] = _v59
+    _EG59._push_runtime_cfg(_j59)
+check("J1b 手动入口与设置项接线", _eng59.count("_push_runtime_cfg(self.judger)") == 2
+      and _gui59.count("_push_runtime_cfg(self.judger)") >= 4)
+# ── 长路径 / 权限助手 / 提权判定 ──
+check("J2 长路径缓冲（32768 优先 + 260 回退）", "for _cap in (32768, 260):" in _wa59)
+check("J3 权限助手使用 ctypes.get_last_error（旧写法假成功已修）",
+      "ctypes.get_last_error() == 0" in _wa59 and "err = ctypes.windll.kernel32.GetLastError()" not in _wa59)
+check("J4 管理员组判定（TokenGroups 枚举，含仅拒绝组）+ GUI 接线",
+      "def is_admin_group(" in _wa59 and "EqualSid" in _wa59 and "TokenGroups" in _wa59
+      and "winapi.is_admin_group()" in _gui59 and "winapi.is_admin() and \"--restored\"" not in _gui59
+      and isinstance(_wa59m.is_admin_group(), bool))
+check("J4b 取消提权记忆键", "elevate_declined" in _cf59 and "elevate_declined" in _gui59)
+# ── 看门狗自检 ──
+check("J5 看门狗自检（wd_pid 记录 + ensure_watchdog + GUI 定时）",
+      '"wd_pid"' in _eng59 and "def ensure_watchdog(" in _eng59
+      and "_check_watchdog" in _gui59 and "after(600000, self._check_watchdog)" in _gui59)
+import core.winapi as _wa59m
+check("J5b pid_alive 行为（自身活 / 不存在为假）",
+      _wa59m.pid_alive(os.getpid()) is True and _wa59m.pid_alive(999999) is False)
+# ── 更新重定向策略 ──
+check("J6 更新重定向禁止 HTTPS→HTTP 降级",
+      "POL_DISALLOW_HTTPS_TO_HTTP = 1" in _up59 and "POL_ALWAYS" not in _up59)
+# ── 导出脱敏 + 导入还原（行为往返）──
+import shutil as _sh59
+_b59 = tempfile.mkdtemp(prefix="mw_r59_")
+try:
+    _dA = os.path.join(_b59, "A", "data"); os.makedirs(_dA)
+    _cA = os.path.join(os.path.dirname(_dA), "config"); os.makedirs(_cA)
+    _prof59 = os.environ.get("USERPROFILE", r"C:\Users\A")
+    _app59 = os.path.join(_prof59, "app59.exe")
+    open(os.path.join(_cA, "config.yaml"), "w", encoding="utf-8").write(
+        "update_proxy: 'http://u:p@127.0.0.1:1'\nws_caps:\n  '%s': {mb: 512}\n" % _app59)
+    json.dump({"version": 4, "profiles": {}, "stable_anchors": {_app59: {"kalman": {}}}, "rebound": {}},
+              open(os.path.join(_dA, "memwise_state.json"), "w", encoding="utf-8"))
+    _pkg59, _ = _BK59.export_state("export", base=_dA)
+    with zipfile.ZipFile(_pkg59) as _z59:
+        _cfg59 = _z59.read("config.yaml").decode("utf-8")
+        _st59 = _z59.read("memwise_state.json").decode("utf-8")
+    check("J7 导出脱敏（代理清空 + 用户名令牌化）",
+          "u:p@" not in _cfg59 and "%USERPROFILE%" in _cfg59 and "%USERPROFILE%" in _st59
+          and _prof59 not in _st59)
+    _dB = os.path.join(_b59, "B", "data"); os.makedirs(_dB)
+    _cB = os.path.join(os.path.dirname(_dB), "config"); os.makedirs(_cB)
+    open(os.path.join(_cB, "config.yaml"), "w", encoding="utf-8").write("update_proxy: 'http://local:2'\n")
+    _ok59, _e59 = _BK59.import_state(_pkg59, backup=False, base=_dB)
+    _cfgB59 = open(os.path.join(_cB, "config.yaml"), encoding="utf-8").read()
+    _stB59 = json.load(open(os.path.join(_dB, "memwise_state.json"), encoding="utf-8"))
+    check("J8 导入还原（本机代理保留 + 路径展开）",
+          _ok59 and "http://local:2" in _cfgB59 and _app59 in _stB59.get("stable_anchors", {}),
+          _cfgB59[:40])
+finally:
+    _sh59.rmtree(_b59, ignore_errors=True)
+# ── 死代码清除（反向断言，防回潮）──
+check("J9 死参数/死字段已清除",
+      "score_fn" not in _cl59 and "total_procs" not in _cl59 and "_recover" not in _bk59
+      and "cost_ewma_fast" not in _lm59 and "cost_ewma_slow" not in _lm59 and "last_ok" not in _lm59)
+check("J9b 死事件/死计算已删（log_op 分支 / _failed_weight / ERIS 死参数）",
+      "action == 'log_op'" not in _gui59 and "('log_op'" not in _eng59
+      and "_failed_weight" not in _eng59
+      and "def _compute_eris(self, data, trimmed_cnt, failed_cnt," in _eng59
+      and "mem_pct, self._failed_weight" not in _eng59)
+check("J9c 硬上限边界与清理判定解耦（Program Files 可设 / System32 仍禁）",
+      "def _is_cap_protected(" in _src47("core/judger.py")
+      and PareJudger._is_cap_protected(r"C:\Program Files\App\a.exe") is False
+      and PareJudger._is_cap_protected(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "x.exe")) is True
+      and PareJudger._is_system_path(r"C:\Program Files\App\a.exe") is True)
+check("J9d 同轮系统操作留痕（P1-8 去重数据来源）",
+      "_round_ops" in _cl59 and 'self._round_ops = {}' in _cl59 and "full 系统操作: " in _cl59)
+check("J10 轻量轮默认值兜底（新建 cleaner 不再 AttributeError）",
+      "self._lite = False" in _cl59 and "self._trim_partial = False" in _cl59)
+# ── 兼容性：旧状态文件带已删字段仍可加载 ──
+_pold59 = Profile.from_dict({"name": "old59.exe", "cost_ewma_fast": 3.0, "cost_ewma_slow": 9.0,
+                             "last_ok": False, "alpha": 4})
+check("J11 旧状态兼容（已删字段静默忽略）", _pold59.alpha == 4)
+# ── 效率计算异常：断口而非伪造成 80% ──
+import memwise_gui as _MG60
+from core.cleaner import PareCleaner as _PC60
+check("J12 效率断点切分（None 处断开，不跨点连线）",
+      _MG60._eff_runs([None, 10.0, 11.0, None, 30.0]) == [[(1, 10.0), (2, 11.0)], [(4, 30.0)]]
+      and _MG60._eff_runs([]) == [] and _MG60._eff_runs([None]) == []
+      and _MG60._eff_runs([1.0, 2.0]) == [[(0, 1.0), (1, 2.0)]])
+class _F60:
+    def snapshot(self):
+        return []
+_l60 = PareLearner()
+_j60 = PareJudger(_l60, {"never": [], "efis_params": {}})
+_c60 = _PC60(_j60)
+_eng60 = _EG59.MemWiseEngine(_l60, _j60, _c60, EfisController(state_path=None), _F60(),
+                             os.path.join(tempfile.mkdtemp(), "s60.json"))
+try:
+    _eng60._compute_eris = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom60"))
+    _eng60._push_round(1.0, False)
+    check("J12b 计算异常记 None（不再伪造 80%）且因子对齐",
+          _eng60._eff_data[-1] is None and _eng60._eff_factors[-1] == ["计算异常"],
+          repr(_eng60._eff_data[-1]))
+finally:
+    _eng60.shutdown()
+check("J12c 源码无 80% 兜底残留", "append(80.0)" not in _eng59 and "_eff_data.append(None)" in _eng59)
+# ── 真实 Tk 渲染：含 None 的效率序列不崩、断口可见、悬浮/均值如实 ──
+import tkinter as _tk60
+class _E60:
+    def chart_snapshot(self):
+        return ([10.0, 20.0, 30.0, 40.0], [False] * 4,
+                [10.0, None, 30.0, 31.0], [["a"], ["计算异常"], ["b"], ["c"]])
+class _S60:
+    pass
+_s60 = _S60()
+_s60.BAR_W = _MG60.MemWiseGUI.BAR_W
+_s60.BAR_GAP = _MG60.MemWiseGUI.BAR_GAP
+_r60 = _tk60.Tk(); _r60.withdraw()
+_cv60 = _tk60.Canvas(_r60, width=800, height=200); _cv60.pack(); _r60.update()
+_s60.chart_canvas = _cv60
+_s60.engine = _E60()
+_s60._chart_on_motion = lambda e: None
+_s60._chart_hide_tip = lambda e: None
+try:
+    _MG60.MemWiseGUI._do_draw_chart(_s60)
+    _s60._chart_motion_factors = [["a"], ["计算异常"], ["b"], ["c"]]
+    _s60._chart_motion_partial = [False] * 4
+    _MG60.MemWiseGUI._chart_show_tip(_s60, 100, 10.0, None, 1)
+    _tips = _cv60.find_withtag("chart_tip_text")
+    _tip_txt = _cv60.itemcget(_tips[0], "text") if _tips else ""
+    _metrics = [_cv60.itemcget(i, "text") for i in _cv60.find_all() if _cv60.type(i) == "text"]
+    check("J14 真实 Tk 渲染：None 断口 + 悬浮未计算 + 均值排除",
+          len(_cv60.find_withtag("eff_line")) == 1
+          and len(_cv60.find_withtag("eff_dot")) == 3
+          and "未计算" in _tip_txt
+          and any("平均效率 24%" in str(t) for t in _metrics),
+          "line=%d dot=%d tip=%r" % (len(_cv60.find_withtag("eff_line")),
+                                     len(_cv60.find_withtag("eff_dot")), _tip_txt[:40]))
+finally:
+    _r60.destroy()
+# ── C5/C6/C7：配置包上限、复合分实例隔离、权限助手返回值 ──
+check("J15 配置包单文件上限收紧（8MB，仍远大于实际）",
+      1 << 20 <= _BK59.PACKAGE_FILE_MAX <= (8 << 20))
+_j61 = PareJudger(PareLearner(), {"never": [], "efis_params": {}})
+_c61 = _PC60(_j61)
+_l61 = _j61.learner
+_l61.thompson_score = lambda *a, **k: 0.5
+_j61._post_clean_ws["dup61.exe"] = 10 << 20
+_j61._post_clean_create["dup61.exe"] = 111
+def _mk61(create):
+    s = type("s61", (), {})()
+    s.name = "dup61.exe"; s.pid = 1; s.ws = 50 << 20; s.path = r"d:\dup61.exe"; s.create = create
+    s.fg = False; s.cpu = 0.0; s.pf = 0; s.priv = 0; s.parent = 0; s.has_visible = False
+    return s
+check("J16 复合分不继承他实例的清后基线（create 校验）",
+      _c61._composite_score_v2(_mk61(111), _l61) > _c61._composite_score_v2(_mk61(222), _l61))
+check("J17 权限助手返回布尔真值（不再恒 True）",
+      isinstance(_wa59m.enable_reduct_privileges(), bool))
+# ── C2：预烘焙图标（与动态渲染逐字节一致，GUI 接线且带回退）──
+import ctypes as _ct62
+import core.icon_baked as _IB62
+from core.icon_flat import decode_png as _dp62
+_COMBOS62 = [("tray_idle", 32, (70, 130, 180), False, 0.12),
+             ("tray_low", 32, (60, 160, 60), False, 0.12),
+             ("tray_mid", 32, (200, 180, 40), False, 0.12),
+             ("tray_mid2", 32, (220, 140, 0), False, 0.12),
+             ("tray_high", 32, (200, 60, 60), False, 0.12),
+             ("win32", 32, (45, 45, 50), True, 0.47),
+             ("win16", 16, (45, 45, 50), True, 0.47)]
+_bad62 = []
+for _nm62, _sz62, _cl62, _sh62, _gr62 in _COMBOS62:
+    _png62 = _IB62.png_for(_nm62)
+    if not _png62:
+        _bad62.append(_nm62)
+        continue
+    _w62, _h62, _bgra62 = _dp62(_png62)
+    _buf62 = (_ct62.c_ubyte * (_sz62 * _sz62 * 4))()
+    _wa59m._draw_memwise_pixels_hq(_sz62, _buf62, _cl62, off_mult=0.75,
+                                   shadow=_sh62, gradient=_gr62)
+    if (_w62, _h62) != (_sz62, _sz62) or _bgra62 != bytes(_buf62):
+        _bad62.append(_nm62)
+check("J18 预烘焙图标与动态渲染逐字节一致（改图标须重跑 _icon_bake.py）",
+      not _bad62, str(_bad62[:3]))
+check("J20 C8 兜底阈值 UI 接线（Spinbox 0-50，写回 CFG 即时生效）",
+      'CFG["emergency_abs_pct"] = _v' in _gui59
+      and 'ttk.Spinbox(ap_row, from_=0, to=50, increment=5' in _gui59
+      and "可用内存兜底: " in _gui59)
+check("J21 C9 硬上限规则数上限为 32", _cfg26.WS_CAP_MAX_RULES == 32)
+from core.i18n import _EN as _EN62
+check("J22 C10 深度 tooltip 英文键同步（含 30 秒预算）",
+      any("30 s budget" in str(_v) for _k, _v in _EN62.items() if "30 秒预算" in _k))
+check("J23 C11a Layer1/Layer3 共用 _capture_sys_op（定义 1 次、调用 2 次）",
+      _src47("core/cleaner.py").count("def _capture_sys_op") == 1
+      and _src47("core/cleaner.py").count("self._capture_sys_op(") == 2)
+# ── C12 表征：optimize 四模式的调用顺序（重构前后必须逐项一致）──
+def _mk62(mode, agg):
+    _l62 = PareLearner()
+    _j62 = PareJudger(_l62, {"never": [], "efis_params": {}})
+    _c62 = _PC60(_j62)
+    _calls62 = []
+    _c62._layer1_memreduct = lambda full=True, game_mode=False, ops=None, clean_self=True: _calls62.append(
+        ("l1", bool(full), tuple(sorted(ops or ())), bool(clean_self)))
+    _c62._layer2_process = lambda *a, **k: (_calls62.append(("l2",)), ([], []))[1]
+    _c62._layer3_deep = lambda *a, **k: _calls62.append(("l3",))
+    _c62._final_consolidation = lambda *a, **k: _calls62.append(("final",))
+    _c62._layer1_ops = lambda _ops: {"ws", "ws_all", "registry"}
+    _r62 = _c62.optimize([], _l62, mode=mode, aggressiveness=agg, deadline=None)
+    return _calls62, _r62
+_cq62, _rq62 = _mk62("quick", 0.5)
+check("J24a quick 表征：仅 standby_low+registry，无进程/深度",
+      _cq62 == [("l1", False, ("registry", "standby_low"), True)] and _rq62["layer2"] == [], str(_cq62))
+_cn62, _rn62 = _mk62("normal", 0.9)
+check("J24b normal 表征：layer2 → layer1(full=False) → layer3",
+      _cn62 == [("l2",), ("l1", False, ("registry", "ws", "ws_all"), True), ("l3",)], str(_cn62))
+_cd62, _rd62 = _mk62("deep", 0.5)
+check("J24c deep 表征：layer2 → layer1(full=True) → layer3",
+      _cd62 == [("l2",), ("l1", True, ("registry", "ws", "ws_all"), True), ("l3",)], str(_cd62))
+_cf62, _rf62 = _mk62("full", 0.5)
+check("J24d full 表征：layer2 → layer1(full=True) → layer3 → final，agg 强制 0.8",
+      _cf62 == [("l2",), ("l1", True, ("registry", "ws", "ws_all"), True), ("l3",), ("final",)]
+      and abs(_rf62["aggressiveness"] - 0.8) < 1e-9, str(_cf62))
+# ── C12 表征：_trim_process 四场景（拆分前后逐项一致）──
+import time as _t62
+import core.cleaner as _cm62
+_w62 = _cm62.winapi
+_orig62 = {k: getattr(_w62, k) for k in ("empty_ws", "get_process_memory")}
+_orig_sleep62 = _t62.sleep
+def _trim62(seq, empty=True, feedback=(True, 10 << 20, 20)):
+    _l62b = PareLearner(); _l62b.thompson_score = lambda *a, **k: 0.5
+    _j62b = PareJudger(_l62b, {"never": [], "efis_params": {}})
+    _j62b.aggressiveness = 0.5
+    _j62b._io_active = lambda pid: False
+    _j62b._low_activity = {4242: (5, 0.0)}   # 活动确认已满足（否则执行前复检拦截）
+    _c62b = _PC60(_j62b)
+    _c62b._trim_interval = lambda *a: 0.4
+    _snap62 = type("s62b", (), {})()
+    _snap62.pid = 4242; _snap62.name = "t62b.exe"; _snap62.ws = 100 << 20
+    _snap62.path = r"d:\t62b.exe"; _snap62.create = 1; _snap62.fg = False
+    _snap62.cpu = 0.0; _snap62.pf = 0
+    _it62 = iter(seq) if seq is not None else None
+    _w62.empty_ws = lambda pid: empty
+    _w62.get_process_memory = ((lambda pid: {"ws": 95 << 20, "pf": 100}) if _it62 is None
+                               else (lambda pid: next(_it62, None)))
+    _c62b.judger.check_feedback = lambda *a: feedback
+    _t62.sleep = lambda s: None
+    try:
+        return _c62b._trim_process(_snap62, _l62b), _c62b
+    finally:
+        _w62.empty_ws = _orig62["empty_ws"]
+        _w62.get_process_memory = _orig62["get_process_memory"]
+        _t62.sleep = _orig_sleep62
+_r62a, _c62a = _trim62([], empty=False)
+check("J25a trim 表征：API 失败 → 明确原因 + 跳过计数",
+      _r62a == (False, 0, 0, "API失败") and _c62a.stats.get("skipped") == 1, str(_r62a))
+_base = {"ws": 100 << 20, "pf": 100}
+_r62b, _c62b = _trim62([_base] + [None] * 10)
+check("J25b trim 表征：进程退出 → 释放记 0 + 如实原因",
+      _r62b == (True, 0, 0, "进程已退出·内存随之释放") and _c62b.stats.get("ws_trim") == 1, str(_r62b))
+_r62c, _c62c = _trim62(None)
+check("J25c trim 表征：成功 → freed/pf 透传 + 释放计入统计",
+      _r62c == (True, 10 << 20, 20, "完成") and _c62c.stats.get("freed_bytes") == (10 << 20), str(_r62c))
+_r62d, _c62d = _trim62(None, feedback=(False, 5 << 20, 800))
+check("J25d trim 表征：PF 超标 → 保留释放量 + 负面计数",
+      _r62d == (False, 5 << 20, 800, "PF超标") and _c62d.stats.get("failed_feedback") == 1, str(_r62d))
+# ── C12 表征：_layer3_deep（系统操作顺序 / 候选过滤 / 截断标记）──
+def _l3snap(pid, name, ws=100 << 20, path=None, fg=False, create=1):
+    s = type("s63", (), {})()
+    s.pid = pid; s.name = name; s.ws = ws
+    s.path = path if path is not None else ("d:\\" + name); s.create = create
+    s.fg = fg; s.cpu = 0.0; s.pf = 0
+    return s
+_l63 = PareLearner(); _l63.thompson_score = lambda *a, **k: 0.5
+_j63 = PareJudger(_l63, {"never": ["never.exe"], "efis_params": {}})
+_j63._mode_guard = "full"; _j63._manual_mode = False; _j63.aggressiveness = 0.9
+_j63._game_pid_set = {7777}
+_j63.ws_cap_blocked = lambda path: bool(path and "blocked" in path)
+_j63.execution_allowed = lambda *a, **k: (True, "")
+_c63 = _PC60(_j63)
+_c63.game_mode = False
+_c63alls = []
+_c63._capture_sys_op = lambda fn, kind=None: (
+    _c63alls.append(getattr(fn, "__name__", str(fn)) + ((":" + kind) if kind else "")), (True, 1 << 20))[1]
+_c63._layer3_deep([], _l63, ops_filter={"standby"})
+check("J26a L3 系统操作顺序（standby：预处理→阶段 C，不碰 volume/filecache）",
+      _c63alls == ["empty_standby", "purge_low_priority_standby"], str(_c63alls))
+_c63.game_mode = True
+_ok1 = _l3snap(101, "ok1.exe"); _ok2 = _l3snap(102, "ok2.exe")
+_trimmed = _l3snap(103, "trimmed.exe")
+_blocked = _l3snap(104, "blocked.exe", path=r"d:\blocked\b.exe")
+_never = _l3snap(105, "never.exe")
+_core = _l3snap(106, "csrss.exe")
+_game = _l3snap(7777, "game.exe")
+_c63._last_layer2_results = [(_trimmed, True)]
+_sub63 = []
+def _bs63(executor, fn, items, **kw):
+    _sub63.extend(items)
+    return [(s, (True, 0, 0, "完成")) for s in items]
+_c63._bounded_submit = _bs63
+_c63._trim_partial = False
+_c63._layer3_deep([_ok1, _ok2, _trimmed, _blocked, _never, _core, _game], _l63, ops_filter=None)
+check("J26b L3 候选过滤（自身/已清/游戏/核心/黑名单/硬上限 全部排除）",
+      [s.name for s in _sub63] == ["ok1.exe", "ok2.exe"], str([s.name for s in _sub63]))
+_sub63.clear()
+_c63._bounded_submit = lambda executor, fn, items, **kw: [(items[0], (True, 0, 0, "完成"))]
+_c63._trim_partial = False
+_c63._layer3_deep([_ok1, _ok2], _l63, ops_filter=None)
+check("J26c L3 提交不足 → 标记本轮未完成", _c63._trim_partial is True)
+# ── C12 表征：_layer2_process（分类 / 试探超时 / 清理超时 / 排序）──
+def _l2snap(pid, name, ws=10 << 20):
+    s = type("s64", (), {})()
+    s.pid = pid; s.name = name; s.ws = ws; s.path = "d:\\" + name
+    s.create = 1; s.fg = False; s.cpu = 0.0; s.pf = 0; s.parent = 0
+    return s
+def _l2env():
+    _l64 = PareLearner(); _j64 = PareJudger(_l64, {"never": [], "efis_params": {}})
+    _c64 = _PC60(_j64)
+    _c64._manual_run = False; _c64._lite = False
+    _j64.update_activity = lambda snaps: None
+    _j64.update_anchors = lambda snaps: None
+    _c64._is_user_game_running = lambda snaps: False
+    _c64._get_user_game_procs = lambda: set()
+    _c64._build_game_pid_set = lambda snaps: set()
+    return _c64, _j64, _l64
+_c64, _j64, _l64 = _l2env()
+_j64.can_trim = lambda s: (s.name.startswith("ok"), "不清理")
+_j64.can_probe = lambda s: s.name.startswith("probe")
+_sub64 = []
+def _bs64(ex, fn, items, **kw):
+    _sub64.append([s.name for s in items])
+    if items and items[0].name.startswith("probe"):
+        return [(s, (True, 0, 0)) for s in items]
+    return [(s, (True, 1 << 20, 0, "完成")) for s in items]
+_c64._bounded_submit = _bs64
+_snaps64 = [_l2snap(1, "ok1.exe"), _l2snap(2, "probe1.exe"), _l2snap(3, "no1.exe"), _l2snap(4, "ok2.exe")]
+_r64, _p64 = _c64._layer2_process(_snaps64, _l64)
+check("J27a L2 分类：ok→清理、probe→试探、其余→跳过计数",
+      sorted(x[0].name for x in _r64) == ["ok1.exe", "ok2.exe"]
+      and [x[0].name for x in _p64] == ["probe1.exe"]
+      and _c64.stats.get("skipped", 0) >= 2, str(_sub64))
+_c64b, _j64b, _l64b = _l2env()
+_j64b.can_trim = lambda s: (False, "不清理")
+_j64b.can_probe = lambda s: True
+def _bs64b(ex, fn, items, **kw):
+    return [(s, None) for s in items]
+_c64b._bounded_submit = _bs64b
+_r64b, _p64b = _c64b._layer2_process([_l2snap(1, "p.exe")], _l64b)
+check("J27b L2 试探超时：probe_incomplete+skipped，结果记失败",
+      _p64b and _p64b[0][1] is False and _c64b.stats.get("probe_incomplete") == 1
+      and _c64b.stats.get("skipped", 0) >= 2, str(_p64b))
+_c64c, _j64c, _l64c = _l2env()
+_j64c.can_trim = lambda s: (True, "")
+_j64c.can_probe = lambda s: False
+def _bs64c(ex, fn, items, **kw):
+    return [(s, None) for s in items]
+_c64c._bounded_submit = _bs64c
+_fail64 = []
+_j64c.mark_failed = lambda name, fail_count=1: _fail64.append((name, fail_count))
+_r64c, _p64c = _c64c._layer2_process([_l2snap(1, "ok.exe")], _l64c)
+check("J27c L2 清理超时：reason=超时、timeout_count=1、冷却",
+      _r64c and _r64c[0][3] == "超时" and _c64c.stats.get("skipped", 0) >= 1
+      and _fail64 and _fail64[0][0] == "ok.exe" and _fail64[0][1] >= 1, str((_r64c, _fail64)))
+_c64d, _j64d, _l64d = _l2env()
+_j64d.can_trim = lambda s: (True, "")
+_j64d.can_probe = lambda s: False
+_c64d._composite_score_v2 = lambda s, l: {"ok1.exe": 0.1, "ok2.exe": 0.9}.get(s.name, 0.0)
+_order64 = []
+def _bs64d(ex, fn, items, **kw):
+    _order64.extend(s.name for s in items)
+    return [(s, (True, 0, 0, "完成")) for s in items]
+_c64d._bounded_submit = _bs64d
+_c64d._layer2_process([_l2snap(1, "ok1.exe"), _l2snap(2, "ok2.exe")], _l64d)
+check("J27d L2 排序：按复合分降序提交", _order64 == ["ok2.exe", "ok1.exe"], str(_order64))
+_ae64 = _gui59.split("def _relaunch_elevated_and_exit")[1].split("def _ask_elevate_again")[0]
+check("J28 提权重启交接：副本跳过窗口激活 + 旧实例先释放互斥",
+      '"--elevated-retry" not in sys.argv and _activate_existing_instance()' in _gui59
+      and "CloseHandle(self._mutex)" in _ae64 and "self._do_exit()" in _ae64)
+check("J29 记住拒绝后仍有显式提权入口（托盘 + 共用交接）",
+      "ID_RELAUNCH" in _gui59 and "以管理员权限重启" in _gui59
+      and "_relaunch_elevated_and_exit" in _gui59 and "以管理员权限重启" in _i18n34)
+check("J19 GUI 图标接线：三处优先预烘焙、失败回退动态渲染",
+      "from core.icon_baked import" in _gui59 and _gui59.count("_baked_hicon") >= 4
+      and 'self._baked_hicon("win16") or winapi.create_memwise_icon(16)' in _gui59
+      and 'self._baked_hicon("win32") or winapi.create_memwise_icon(32)' in _gui59
+      and "self._baked_hicon(name)\n                                      or winapi.create_memwise_icon" in _gui59)
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

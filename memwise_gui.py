@@ -1,5 +1,5 @@
 """
-MemWise v5.2.005 GUI —— 图形界面
+MemWise v5.3.011 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -13,7 +13,7 @@ import ctypes.wintypes as w
 from core.engine import (
     base, CFG, STATE_FILE, _save_cfg,
     _log_write, _log_open, _log_close, _diag_log, _ERR,
-    fmt_label, fmt_count, MemWiseEngine,
+    fmt_label, fmt_count, MemWiseEngine, _push_runtime_cfg,
     _watchdog_path, _spawn_watchdog, _update_watchdog_daemon,
     read_watchdog_daemon, remove_watchdog, _install_crash_sink, _event_log,
     init_runtime,
@@ -29,6 +29,7 @@ from core.cleaner import PareCleaner as Cleaner
 from core.efis import EfisController
 from core.sniffer import Sniffer
 from core.icon_flat import FLAT_48_PNG, decode_png  # 任务栏扁平图标（内嵌 PNG，冷启动 exe 兼容）
+from core.icon_baked import png_for as _baked_png  # 预烘焙图标（2026-11-06：启动省 ~300ms）
 from core.i18n import tr, tr_msg, tr_fmt, set_language, LANGUAGES, get_language  # 界面语言
 from core import backup  # 配置包：导出/导入/自动备份/恢复出厂（任务3，2026-09-06）
 from core import config as _config_mod  # 配置读写组件可用性自检（2026-10-15）
@@ -600,6 +601,27 @@ def _tree_measure_columns(cols, rows, pad=26, p90_cols=(), floor=0):
     return out
 
 
+def _eff_runs(points):
+    """把效率点序列切成“连续有效”的段：[[(local_idx, value), …], …]。
+
+    计算异常轮在 _eff_data 里记 None（不再伪造 80%）——折线在这些位置断开，
+    绝不跨异常点连一条假线。纯函数，便于回归直接断言。
+    """
+    runs, cur = [], []
+    for i, v in enumerate(points):
+        if isinstance(v, (int, float)) and v == v:
+            if cur and i != cur[-1][0] + 1:
+                runs.append(cur)
+                cur = []
+            cur.append((i, v))
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    return runs
+
+
 def _rank_cell_key(v):
     """进程排行单元格排序键（P04）：数字与空值/文本分离为不同类型标签，避免 str/float 比较崩溃。
     空单元格（未设上限）排在数字之后（降序时最后），文本列按小写比较。"""
@@ -966,7 +988,10 @@ class MemWiseGUI:
         # 旧版本 mutex 名带版本号（Global\MemWise_vX.Y.Z_...），固定名 mutex 检测不到
         # 旧版实例——仅靠 mutex 无法阻止"旧版运行中启动新版"，补窗口存在性检查后
         # 跨版本全互斥（找到即激活旧窗口并退出）
-        if _activate_existing_instance():
+        # 自我提权副本（--elevated-retry）是同一轮启动的延续：旧实例正在退出，
+        # 其窗口尚未销毁。若照常“激活已有窗口”，副本会激活旧窗口后自己退出
+        # ⇒ 表现为“点确认后程序消失、没有重启”（2026-11-06 真机修复）。
+        if "--elevated-retry" not in sys.argv and _activate_existing_instance():
             self._mutex = None
             sys.exit(0)
         # 单实例检测 — 已有实例运行则激活后退出
@@ -978,7 +1003,7 @@ class MemWiseGUI:
         if _mutex_err in (0xB7, 5) and "--elevated-retry" in sys.argv:
             # 自我提权重启的竞态（2026-09-11 审查 F32）：旧实例正在退出，短暂重试接管互斥
             # （仅限本程序自身的提权重启路径，最多 4 秒；普通双开仍走下方即时退出分支）
-            for _ in range(20):
+            for _ in range(30):
                 time.sleep(0.2)
                 self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
                 _mutex_err = ctypes.windll.kernel32.GetLastError()
@@ -994,7 +1019,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v5.2.005", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v5.3.011", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -1003,7 +1028,13 @@ class MemWiseGUI:
         # 优先以管理员权限启动（2026-09-11 审查 F32）：管理员账户未提权时显式请求提权，
         # 成功则让位退出（提权实例接管）；用户取消或标准账户 ⇒ 以受限模式继续并给提示。
         # --restored（崩溃自动恢复）不请求，避免恢复过程弹 UAC 打断用户。
-        if (not winapi.is_elevated()) and winapi.is_admin() and "--restored" not in sys.argv:
+        # ⛔ 判定必须用 is_admin_group()：UAC 过滤令牌里 Administrators 是“仅拒绝”，
+        # is_admin() 恒 False，旧条件永不成立 ⇒ 双击 exe 从不弹 UAC、系统缓存类清理静默失效
+        # （2026-11-06 实测 is_admin=False / is_elevated=False / 组为 deny-only）。
+        self._elev_declined_now = False
+        if ((not winapi.is_elevated()) and winapi.is_admin_group()
+                and "--restored" not in sys.argv
+                and not CFG.get("elevate_declined", False)):
             if _relaunch_elevated():
                 try:
                     ctypes.windll.kernel32.CloseHandle(self._mutex)
@@ -1011,6 +1042,13 @@ class MemWiseGUI:
                     pass
                 self._mutex = None
                 sys.exit(0)
+            # 用户取消 UAC：记住选择（下次不再自动弹），本次以受限模式继续
+            CFG["elevate_declined"] = True
+            self._elev_declined_now = True
+            try:
+                _save_cfg()
+            except Exception:
+                pass
         
         # 崩溃恢复检测
         self._restored = "--restored" in sys.argv
@@ -1021,7 +1059,7 @@ class MemWiseGUI:
         # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
         self.root.report_callback_exception = self._tk_exception_hook
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v5.2.005")
+        self.root.title("MemWise v5.3.011")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -1085,7 +1123,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v5.2.005 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v5.3.011 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1098,12 +1136,15 @@ class MemWiseGUI:
             self.root.after(1200, lambda: self._dark_message(
                 tr("程序所在目录不可写"),
                 tr("程序所在目录不可写，配置与学习数据都无法保存。请把程序移动到有写入权限的位置（例如用户目录）后重新启动。")))
+        if self._elev_declined_now:
+            self.root.after(1400, self._ask_elevate_again)
         if getattr(_config_mod, "yaml", None) is None:
             self._log("⚠ 缺少配置读写组件，设置与学习数据将无法保存")
             self.root.after(1600, lambda: self._dark_message(
                 tr("缺少配置读写组件"),
                 tr("程序缺少配置读写组件，设置与学习数据都无法保存。请重新下载或重新安装程序。")))
-        # 看门狗：spawn 子进程监控崩溃
+        # 看门狗：spawn 子进程监控崩溃 + 存活自检（2026-11-06：旧实现只 spawn 一次，
+        # 子进程死掉/拉起失败时“崩溃自动恢复”会静默失效；这里 5s 后自检一次，此后每 10 分钟一次）
         if not self._restored:
             _spawn_watchdog(self.engine.daemon_running)
         else:
@@ -1113,6 +1154,8 @@ class MemWiseGUI:
             # 恢复守护模式（仅当崩溃前守护运行中；否则保持空闲，尊重用户意图）
             # 延迟触发，让窗口完全初始化后再启动
             self.root.after(800, self._maybe_restore_daemon)
+        # 看门狗存活自检：启动 5s 后一次 + 每 10 分钟一次（_check_watchdog 自续）
+        self.root.after(5000, self._check_watchdog)
         if winapi.is_elevated():
             winapi.enable_reduct_privileges()
         # 升级迁移（2026-08-15）：普通自启功能已移除，启动文件夹旧快捷方式
@@ -1159,7 +1202,7 @@ class MemWiseGUI:
                 if not self._icon_big_h:
                     _diag_log("扁平图标加载失败，回退动态渲染")
                     self._icon_big_h = winapi.create_memwise_icon(48, (88, 88, 100), force_large=True, sharpen=True)
-                self._icon_sml_h = winapi.create_memwise_icon(16)
+                self._icon_sml_h = self._baked_hicon("win16") or winapi.create_memwise_icon(16)
             big_h = self._icon_big_h
             sml_h = self._icon_sml_h
             if not big_h or not sml_h:
@@ -1171,7 +1214,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.2.005")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.3.011")
                     if fw:
                         top = fw
                 except Exception:
@@ -1194,10 +1237,26 @@ class MemWiseGUI:
 
     # ---- 窗口过程 + 热键 + 托盘 ----
 
+    def _baked_hicon(self, name):
+        """预烘焙 PNG → HICON（实测约 0.7ms，动态渲染 32px 约 42ms）。
+
+        未知名称或解码失败返回 None，调用方回退到动态渲染——烘焙数据损坏不会导致无图标。
+        """
+        try:
+            png = _baked_png(name)
+            if not png:
+                return None
+            w, h, rgba = decode_png(png)
+            return winapi.create_hicon_from_rgba(w, h, rgba)
+        except Exception as exc:
+            _diag_log(f"预烘焙图标解码失败({name}): {exc!r}")
+            return None
+
     def _get_colored_icon(self, name, color):
-        """缓存获取或创建指定颜色的 HICON"""
+        """缓存获取或创建指定颜色的 HICON（预烘焙优先，失败回退动态渲染）"""
         if name not in self._icon_cache:
-            self._icon_cache[name] = winapi.create_memwise_icon(32, color, shadow=False, gradient=0.12)
+            self._icon_cache[name] = (self._baked_hicon(name)
+                                      or winapi.create_memwise_icon(32, color, shadow=False, gradient=0.12))
         return self._icon_cache[name]
 
     def _setup_hotkey_and_tray(self):
@@ -1253,8 +1312,8 @@ class MemWiseGUI:
             pass
 
     def _update_tray_status(self, pct):
-        """根据内存使用率和守护状态更新托盘图标颜色（4档匹配内存条；
-        百分比数字图标同样按档位着色——2026-08-30 审查：原恒绿色与四档承诺不符）"""
+        """根据内存使用率更新托盘图标颜色（4 档与内存条同口径；圆盘 M 形态——
+        2026-10-25 用户裁定不做百分比数字图标，数字只在悬停提示里）"""
         if self.engine.daemon_running:
             if pct >= 90:
                 _fb, _color, tip = "high", ICO_HIGH, tr_msg(f"🔴 守护中 {pct}% — 内存紧张")
@@ -1273,26 +1332,9 @@ class MemWiseGUI:
                 _fb, _color, tip = "idle_mid", ICO_MID, tr_msg(f"内存 {pct}% — 偏高")
             else:
                 _fb, _color, tip = "idle", ICO_IDLE, tr_msg(f"内存 {pct}%")
-        # P27：图标只在颜色档变化（或首次/创建失败）时重建；百分比文字通过 tray_modify 更新 tip。
-        # 原实现每 5s 新建并销毁一个 HICON，长期空转是持续 GDI/CPU 抖动。
-        _prev = getattr(self, '_prev_pct_icon', None)
-        if _fb != getattr(self, '_tray_fb', None) or not _prev:
-            pct_icon_handle = winapi.create_tray_percent_icon(pct, color=_color)
-            try:
-                if pct_icon_handle:
-                    if _prev:
-                        ctypes.windll.user32.DestroyIcon(_prev)
-                    self._prev_pct_icon = pct_icon_handle
-                    _prev = pct_icon_handle
-                elif _prev:
-                    # 创建失败：旧百分数图标已不再复用，销毁防 GDI 泄漏
-                    ctypes.windll.user32.DestroyIcon(_prev)
-                    self._prev_pct_icon = None
-                    _prev = None
-            except Exception:
-                pass
-            self._tray_fb = _fb
-        icon = _prev or self._get_colored_icon(_fb, _color)
+        # 托盘图标 = 四档彩色圆盘 M（2026-10-25 用户裁定：不做百分比数字图标，保持既有形态；
+        # 数字只在悬停提示里）。_get_colored_icon 自带 (档位名→HICON) 缓存，零重复创建。
+        icon = self._get_colored_icon(_fb, _color)
         self._tray_icon_handle = icon
         winapi.tray_modify(self.root.winfo_id(), TRAY_UID, icon, f"MemWise — {tip}")
 
@@ -1321,7 +1363,11 @@ class MemWiseGUI:
             hmenu = um.CreatePopupMenu()
             ID_SHOW = 1001
             ID_EXIT = 1002
+            ID_RELAUNCH = 1003
             um.AppendMenuW(hmenu, 0x00000000, ID_SHOW, tr("显示窗口"))
+            # 记住拒绝后仍要有显式入口（2026-11-06）：标准权限 + 管理员组时才显示
+            if (not winapi.is_elevated()) and winapi.is_admin_group():
+                um.AppendMenuW(hmenu, 0x00000000, ID_RELAUNCH, tr("以管理员权限重启"))
             um.AppendMenuW(hmenu, 0x00000800, 0, None)  # MF_SEPARATOR
             um.AppendMenuW(hmenu, 0x00000000, ID_EXIT, tr("退出"))
             # 获取鼠标位置
@@ -1343,6 +1389,8 @@ class MemWiseGUI:
             # 执行操作
             if cmd == ID_SHOW:
                 self._show_window()
+            elif cmd == ID_RELAUNCH:
+                self.root.after(50, self._relaunch_elevated_and_exit)
             elif cmd == ID_EXIT:
                 self.root.after(50, self._do_exit)
         except Exception:
@@ -1672,8 +1720,8 @@ class MemWiseGUI:
         try:
             wid = int(win.winfo_id())
             if not hasattr(self, '_dlg_icon_sml'):
-                self._dlg_icon_sml = winapi.create_memwise_icon(16)
-                self._dlg_icon_big = winapi.create_memwise_icon(32)
+                self._dlg_icon_sml = self._baked_hicon("win16") or winapi.create_memwise_icon(16)
+                self._dlg_icon_big = self._baked_hicon("win32") or winapi.create_memwise_icon(32)
             sml_h = self._dlg_icon_sml
             big_h = self._dlg_icon_big
             if not sml_h and not big_h:
@@ -1874,6 +1922,11 @@ class MemWiseGUI:
         fc_var = tk.BooleanVar(value="filecache" in ops)
         vl_var = tk.BooleanVar(value="volume" in ops)
         rg_var = tk.BooleanVar(value="registry" in ops)
+        cb_var = tk.BooleanVar(value=CFG.get("combine_enabled", True))
+
+        def toggle_combine():
+            CFG["combine_enabled"] = bool(cb_var.get())
+            _save_cfg()
 
         ops_frame = ttk.Frame(cf); ops_frame.pack(fill="x")
         cb_ews = ttk.Checkbutton(ops_frame, text=tr("释放进程闲置内存"), variable=ws_var,
@@ -1917,15 +1970,22 @@ class MemWiseGUI:
         self._add_tip(cb_rg, "「清空系统注册表的读写缓存」\n"
                       "1. 勾选后在守护模式下始终执行\n"
                       "⚠ 无磁盘读写操作，不中断正在运行的程序")
+        cb_cb = ttk.Checkbutton(ops_frame, text=tr("内存页合并"), variable=cb_var,
+                                command=toggle_combine)
+        cb_cb.pack(anchor="w")
+        self._add_tip(cb_cb, "「合并系统中内容相同的内存页」\n"
+                      "1. 仅在极限模式的全量收尾阶段执行\n"
+                      "2. 可减少重复物理页占用，释放量由系统内容决定\n"
+                      "⚠ 需要管理员权限，执行期间可能短暂占用 CPU")
         # quick 模式：全量 WS/文件缓存/卷缓存/脏页写回均不执行（2026-10-20：quick
         # 只保留低优先级待机 + 注册表，避免“勾选了却没有执行”）。
         if CFG.get("clean_mode", "normal") == "quick":
-            for _cb in (cb_ews, cb_fc, cb_vc, cb_mp):
+            for _cb in (cb_ews, cb_fc, cb_vc, cb_mp, cb_cb):
                 try:
                     _cb.state(["disabled"])
                 except Exception:
                     pass
-            ttk.Label(cf, text=tr("quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」「脏页写回」不执行"),
+            ttk.Label(cf, text=tr("quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」「脏页写回」「内存页合并」不执行"),
                       foreground="#888", wraplength=470, justify="left").pack(anchor="w")
         # ─── 清理深度（2026-08-16 归类整理：清理强度归"清理"栏，原在触发与日志栏）───
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
@@ -1933,9 +1993,10 @@ class MemWiseGUI:
             global CFG
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
+            _push_runtime_cfg(self.judger)
         ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
-        self._add_tip(ps_lbl, "「每个进程反复清理的轮数」\n1. 可设置为 2~6 轮，默认 4 轮\n2. 越高持续释放能力越高，但耗时更长\n⚠ 欲降低本程序性能占用建议 2~3\n⚠ 对于更彻底的优化需求可设 5~6\n⚠ 程序会在进程已无更多可释放内存时自动提前结束")
+        self._add_tip(ps_lbl, "「每个进程反复清理的轮数」\n1. 可设置为 2~6 轮，默认 4 轮\n2. 越高持续释放能力越高，但耗时更长\n⚠ 欲降低本程序性能占用建议 2~3\n⚠ 对于更彻底的优化需求可设 5~6\n⚠ 程序会在进程已无更多可释放内存时提前结束；单轮收割另有 30 秒预算，深度设高时可能被截断")
         ps_sl = ttk.Scale(cf, from_=2, to=6, variable=passes_val, orient="horizontal",
                          command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
         ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
@@ -1974,6 +2035,7 @@ class MemWiseGUI:
             global CFG
             CFG["emergency_threshold"] = int(float(v))
             _save_cfg()
+            _push_runtime_cfg(self.judger)
         em_val = tk.IntVar(value=CFG.get("emergency_threshold", 80))
         em_lbl = ttk.Label(gf, text=tr("紧急触发阈值: ") + f"{em_val.get()}%", foreground="#555")
         self._add_tip(em_lbl, "「紧急清理阈值设定」\n1. 内存使用率达到此百分比时，跳过等待立即执行全量优化\n2. 范围 50-99%，默认 80%\n3. 降低可更及时响应，提高阈值可减少清理频率")
@@ -1982,6 +2044,28 @@ class MemWiseGUI:
                          command=lambda v: em_lbl.config(text=tr("紧急触发阈值: ") + f"{int(float(v))}%"))
         em_sl.bind("<ButtonRelease-1>", lambda e: set_emerg(em_val.get()))  # 拖动仅更新显示，松开才保存（防高频写盘）
         em_sl.pack(fill="x", pady=(0,6))
+        # 可用内存兜底（C8，2026-11-06）：使用率阈值调高后的保险，默认 0=关闭
+        ap_row = ttk.Frame(gf)
+        ap_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(ap_row, text=tr("可用内存兜底: "), foreground="#555").pack(side="left")
+        ap_val = tk.IntVar(value=max(0, min(50, int(CFG.get("emergency_abs_pct", 0) or 0))))
+        def set_ap(_e=None):
+            global CFG
+            try:
+                _v = int(float(ap_val.get()))
+            except Exception:
+                _v = 0
+            _v = max(0, min(50, _v))
+            ap_val.set(_v)
+            CFG["emergency_abs_pct"] = _v
+            _save_cfg()
+        ap_sp = ttk.Spinbox(ap_row, from_=0, to=50, increment=5, width=4,
+                            textvariable=ap_val, command=set_ap)
+        ap_sp.pack(side="left")
+        ap_sp.bind("<FocusOut>", set_ap)
+        ap_sp.bind("<Return>", set_ap)
+        ttk.Label(ap_row, text="%").pack(side="left")
+        self._add_tip_row(ap_row, "「可用内存兜底触发」\n1. 可用内存低于此百分比时也触发紧急清理\n2. 可设置 0-50%，默认 0 表示关闭\n⚠ 作为使用率阈值调高时的保险，一般保持关闭")
         gap_val = tk.IntVar(value=CFG.get("gap_seconds", 12))
         def set_gap(v):
             global CFG
@@ -2533,6 +2617,7 @@ class MemWiseGUI:
                 never.append(nm)
                 CFG["never"] = list(never)
                 _save_cfg()
+                _push_runtime_cfg(self.judger)
         def remove_excl():
             sel = lb.curselection()
             if sel:
@@ -2550,6 +2635,7 @@ class MemWiseGUI:
         def close_excl():
             CFG["never"] = list(never)
             _save_cfg()
+            _push_runtime_cfg(self.judger)
             win.destroy()
         ttk.Button(win, text=tr("关闭"), command=close_excl).pack(pady=8)
         win.deiconify()  # 全部控件就绪，居中后一次显示
@@ -2804,7 +2890,7 @@ class MemWiseGUI:
             nonlocal _cur_hover
             item = tree.identify_row(event.y)
             if item != _cur_hover:
-                if _cur_hover:
+                if _cur_hover and tree.exists(_cur_hover):   # 10s 刷新可能已删旧行（防 TclError: Item not found）
                     tree.item(_cur_hover, tags=())
                 if item:
                     tree.item(item, tags=("hover",))
@@ -2812,9 +2898,9 @@ class MemWiseGUI:
 
         def _on_leave(event):
             nonlocal _cur_hover
-            if _cur_hover:
+            if _cur_hover and tree.exists(_cur_hover):       # 同款守卫：行可能已被刷新删除
                 tree.item(_cur_hover, tags=())
-                _cur_hover = None
+            _cur_hover = None
 
         tree.bind("<Motion>", _on_motion)
         tree.bind("<Leave>", _on_leave)
@@ -2836,7 +2922,7 @@ class MemWiseGUI:
         # 在 withdraw 期跳过首帧（_refresh 先于 deiconify 调用），打开白屏且要等下个周期才有数据）
 
         def _refresh():
-            nonlocal _first_refresh
+            nonlocal _first_refresh, _cur_hover
             if not win.winfo_exists():
                 return
             # 窗口最小化/隐藏时暂停采集（仅续期定时器）——首帧除外（打开时需立即显示数据）
@@ -2856,6 +2942,7 @@ class MemWiseGUI:
                 return
             for item in tree.get_children():
                 tree.delete(item)
+            _cur_hover = None   # 行已全删重建：旧 item id 失效（_on_motion 守卫外的第二道防线）
             try:
                 caps = CFG.get("ws_caps") or {}
                 applied = getattr(self.engine, "_ws_cap_applied", {}) or {}
@@ -2933,7 +3020,7 @@ class MemWiseGUI:
         if _is_self_path(path_now) or _is_system_core(base):
             self._dark_message(tr("工作集硬上限"), tr("不能对本程序或系统核心进程设置"), kind="warning")
             return
-        if self.judger._is_system_path(path_now):
+        if self.judger._is_cap_protected(path_now):
             self._dark_message(tr("工作集硬上限"), tr("系统目录下的进程不可设置"), kind="warning")
             return
         if base in (_normalize_proc_name(g) for g in (CFG.get("game_processes") or [])):
@@ -3682,7 +3769,6 @@ class MemWiseGUI:
                     # 清屏判定——大整体对外遵循组间规则（现有行数+总行数>7 → 清屏），
                     # 大整体内部零刷新、全部行完整输出；否则同周期内前几个组会被后组清掉
                     self._write_group([m for g in args for m in g], to_file=False)  # 仅显示：内容已有 [清理]/[调参] 直写落盘
-                elif action == 'log_op': self._log_op(args)
                 elif action == 'chart':
                     self._drawing_chart = False  # 异常恢复：防止标志永锁
                     if self._chart_redraw_id is not None:
@@ -3847,77 +3933,53 @@ class MemWiseGUI:
                 c.create_rectangle(x0, py1 - 1, x1, py1, fill="#555", outline="", width=0)
 
         # ── 效率折线（钢蓝色，叠加在柱状图上方）──
+        # 计算异常轮在 _eff_data 里是 None（不再伪造 80%）：只连接相邻的有效点，
+        # 异常处自然断开；折点、平均效率、悬浮提示同样只认有效值（2026-11-06）。
         eff_data = list(eff_data_view)
         eff_pts = []
         if eff_data:
             eff_visible = eff_data[-len(visible):] if len(eff_data) > len(visible) else eff_data
             step2 = self.BAR_W + self.BAR_GAP
-            # 补齐较短的情况
             n_pts = min(len(eff_visible), len(visible))
             eff_pts = eff_visible[-n_pts:]
             # 全局索引：前3个数据点永久虚线
             eff_start_idx = len(eff_data) - n_pts
-            # 折线：全局前3个数据点(索引0,1,2)间线段虚线，其余实线
-            if n_pts >= 2:
-                # early_end_local = 全局索引2在可见窗口中的局部位置
-                early_end_local = 2 - eff_start_idx
-                if early_end_local >= 1:
-                    # 虚线: 从点0到点early_end_local（最多到点2）
-                    dash_end = min(early_end_local, n_pts - 1)
-                    dash_coords = []
-                    for i in range(dash_end + 1):
-                        cx = px0 + i * step2 + self.BAR_W // 2
-                        cy = py1 - (min(eff_pts[i], 100.0) / 100.0) * ph
-                        dash_coords.extend([cx, cy])
-                    if len(dash_coords) >= 4:
-                        c.create_line(*dash_coords, fill="#4488CC", width=2,
-                                      smooth=False, dash=(4, 3), tags="eff_line")
-                    # 实线: 从dash_end开始，与虚线终点重叠保证连续
-                    solid_start = dash_end
-                    if n_pts > solid_start + 1:
-                        solid_coords = []
-                        for i in range(solid_start, n_pts):
-                            cx = px0 + i * step2 + self.BAR_W // 2
-                            cy = py1 - (min(eff_pts[i], 100.0) / 100.0) * ph
-                            solid_coords.extend([cx, cy])
-                        if len(solid_coords) >= 4:
-                            c.create_line(*solid_coords, fill="#4488CC", width=2,
-                                          smooth=False, tags="eff_line")
-                else:
-                    # 早期点已全部滚出屏幕，全部实线
-                    solid_coords = []
-                    for i in range(n_pts):
-                        cx = px0 + i * step2 + self.BAR_W // 2
-                        cy = py1 - (min(eff_pts[i], 100.0) / 100.0) * ph
-                        solid_coords.extend([cx, cy])
-                    if len(solid_coords) >= 4:
-                        c.create_line(*solid_coords, fill="#4488CC", width=2,
-                                      smooth=False, tags="eff_line")
-            # 再画折点
-            for i, e_val in enumerate(eff_pts):
-                cx = px0 + i * step2 + self.BAR_W // 2
-                r_eff = round(e_val)  # 与显示(.0f)一致的整数判定：99.6 显示"100%"→金色、60.4 显示"60%"→珊瑚红
-                over_100 = round(r_eff) >= 100          # 与显示值一致（四舍五入）
-                cy = py1 - (min(e_val, 100.0) / 100.0) * ph
-                r = 4
-                if over_100:
-                    dot_fill = "#D4A017"
-                elif round(r_eff) <= 50:                 # 与显示值一致（消除'珊瑚点却无警告'）
-                    dot_fill = "#FF6B6B"
-                else:
-                    dot_fill = "#4488CC"
-                orig_idx = eff_start_idx + i
-                is_early = orig_idx < 3
-                if is_early:
-                    c.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                  outline="", fill=dot_fill, tags="eff_dot")
-                    for seg_start in range(0, 360, 60):
-                        c.create_arc(cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1,
-                                     start=seg_start, extent=45, style="arc",
-                                     outline="#FFF8E0", width=1, dash=(3, 3), tags="eff_dot")
-                else:
-                    c.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                  outline="#FFF8E0", width=1, fill=dot_fill, tags="eff_dot")
+            for run in _eff_runs(eff_pts):
+                # 线段：相邻两点成段；全局下标 ≤2 的段用虚线（沿用"前 3 点虚线"语义）
+                for k in range(len(run) - 1):
+                    (i1, v1), (i2, v2) = run[k], run[k + 1]
+                    x1 = px0 + i1 * step2 + self.BAR_W // 2
+                    y1 = py1 - (min(v1, 100.0) / 100.0) * ph
+                    x2 = px0 + i2 * step2 + self.BAR_W // 2
+                    y2 = py1 - (min(v2, 100.0) / 100.0) * ph
+                    _kw = {"fill": "#4488CC", "width": 2, "smooth": False, "tags": "eff_line"}
+                    if (eff_start_idx + i2) <= 2:
+                        _kw["dash"] = (4, 3)
+                    c.create_line(x1, y1, x2, y2, **_kw)
+                # 折点：只画有效点；异常轮不落点（断口可见）
+                for i, e_val in run:
+                    cx = px0 + i * step2 + self.BAR_W // 2
+                    r_eff = round(e_val)  # 与显示(.0f)一致的整数判定
+                    over_100 = round(r_eff) >= 100
+                    cy = py1 - (min(e_val, 100.0) / 100.0) * ph
+                    r = 4
+                    if over_100:
+                        dot_fill = "#D4A017"
+                    elif round(r_eff) <= 50:                 # 与显示值一致（消除'珊瑚点却无警告'）
+                        dot_fill = "#FF6B6B"
+                    else:
+                        dot_fill = "#4488CC"
+                    orig_idx = eff_start_idx + i
+                    if orig_idx < 3:
+                        c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                      outline="", fill=dot_fill, tags="eff_dot")
+                        for seg_start in range(0, 360, 60):
+                            c.create_arc(cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1,
+                                         start=seg_start, extent=45, style="arc",
+                                         outline="#FFF8E0", width=1, dash=(3, 3), tags="eff_dot")
+                    else:
+                        c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                      outline="#FFF8E0", width=1, fill=dot_fill, tags="eff_dot")
 
         # ── 鼠标悬浮提示（单一 Motion 命中，无需逐柱命中区对象）──
 
@@ -3930,7 +3992,7 @@ class MemWiseGUI:
         n_f = min(len(f_visible), len(visible))
         self._chart_motion_factors = f_visible[-n_f:] if n_f else []
         # 收割标记也对齐到可见柱（与 visible 等长，供悬浮提示如实标注）
-        partial_all = [m[5] if len(m) > 5 else False for m in meta_list]
+        partial_all = [bool(m) for m in meta_list]
         p_all = partial_all[-len(visible):] if len(partial_all) > len(visible) else partial_all
         self._chart_motion_partial = list(p_all)
         self._chart_motion_px0 = px0
@@ -3944,8 +4006,8 @@ class MemWiseGUI:
                       anchor="center", fill="#ccc", font=("微软雅黑", 9))
         # 底部三指标
         metrics_y = ch - 6
-        avg_eff = sum(eff_data) / len(eff_data) if eff_data else 50
-        avg_eff_text = f"{avg_eff:.0f}%"
+        _eff_vals = [v for v in eff_data if isinstance(v, (int, float)) and v == v]
+        avg_eff_text = f"{sum(_eff_vals) / len(_eff_vals):.0f}%" if _eff_vals else "--"
         c.create_text(px0 + pw//2, metrics_y,
                       text=tr("平均 ") + fmt_label(avg_val) + tr("    最高 ") + fmt_label(peak_val) + tr("    平均效率 ") + avg_eff_text,
                       anchor="s", fill="#aaa", font=("Consolas", 8))
@@ -3975,7 +4037,10 @@ class MemWiseGUI:
         if idx < len(partials) and partials[idx]:
             partial_note = "\n本轮收割未完成"
         # 先画文字获取包围盒
-        text_full = tr_msg(f"释放 {fmt_label(freed_mb)}\n效率 {eff_pct:.0f}%{factor_str}{partial_note}")
+        if isinstance(eff_pct, (int, float)):
+            text_full = tr_msg(f"释放 {fmt_label(freed_mb)}\n效率 {eff_pct:.0f}%{factor_str}{partial_note}")
+        else:
+            text_full = tr_msg(f"释放 {fmt_label(freed_mb)}") + "\n" + tr("效率 未计算（计算异常）") + factor_str + partial_note
         tid = c.create_text(x, tip_y0 + 20,
                       text=text_full,
                       fill="#eee", font=("Consolas", 8),
@@ -4009,7 +4074,7 @@ class MemWiseGUI:
         if 0 <= col < len(visible):
             self._last_hover_col = col
             eff_data = getattr(self, '_chart_motion_eff', [])
-            eff_val = eff_data[col] if col < len(eff_data) else 50
+            eff_val = eff_data[col] if col < len(eff_data) else None
             # 计算柱条中心 x，tooltip 固定居中于此
             cx = px0 + int(col * step + getattr(self, '_chart_motion_bar_w', 8) // 2)
             self._chart_show_tip(cx, visible[col], eff_val, col)
@@ -4168,6 +4233,47 @@ class MemWiseGUI:
             self.root.withdraw()
         else:
             self._do_exit()
+
+    def _relaunch_elevated_and_exit(self):
+        """显式提权重启：拉起副本 → 释放互斥 → 退出；失败留在原地并提示（托盘/启动提示共用）。"""
+        try:
+            if not _relaunch_elevated():
+                self._log("⚠ 提权未完成（可能取消了 UAC 提示）")
+                return
+            try:
+                ctypes.windll.kernel32.CloseHandle(self._mutex)
+            except Exception:
+                pass
+            self._mutex = None
+            self._do_exit()   # 先释放互斥，副本才能接管（与启动期提权同款）
+        except Exception:
+            pass
+
+    def _ask_elevate_again(self):
+        """用户刚取消过 UAC：说明受限模式的后果，并给一次"以管理员重启"的入口。"""
+        try:
+            if self._confirm_dialog(
+                    tr("以管理员权限运行"),
+                    tr("程序当前以标准权限运行，待机缓存、脏页写回、卷缓存、注册表缓存与文件缓存类清理不可用。\n\n是否以管理员权限重新启动？")):
+                self._relaunch_elevated_and_exit()
+        except Exception:
+            pass
+
+    def _check_watchdog(self):
+        """看门狗存活自检（每 10 分钟）：缺失/死亡时补拉一次并如实播报。"""
+        try:
+            _st = self.engine.ensure_watchdog(self.engine.daemon_running)
+            if _st == "restarted":
+                self._log("🛡 崩溃保护未在运行，已自动重新启用")
+            elif _st == "failed" and not getattr(self, "_wd_warned", False):
+                self._wd_warned = True
+                self._log("⚠ 崩溃保护启用失败；若程序意外退出，需要手动重新打开")
+        except Exception:
+            pass
+        try:
+            self.root.after(600000, self._check_watchdog)
+        except Exception:
+            pass
 
     def _maybe_restore_daemon(self):
         """崩溃恢复：仅当 watchdog.json 记录崩溃前守护运行中才自动续守护。

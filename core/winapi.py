@@ -163,7 +163,6 @@ def memory_scale():
         return max(0.5, min(4.0, round(s * 4) / 4.0))
     except Exception:
         return 1.0
-    return None
 
 # ── GetPerformanceInfo（SystemCache 精确测量文件缓存，filecache 释放量统计用）──
 class PERFORMANCE_INFORMATION(ctypes.Structure):
@@ -346,7 +345,6 @@ def probe_k32_channels():
     不能被试探消耗）。K32 失效的机器上两通道运行期走 Nt 兜底（MemoryPriority 一次性、
     EcoQoS 不可撤），回收行为语义不同 ⇒ 该结果是跨机器归因的字段。
     仅在日志开启时被 engine._log_open 调用（关日志用户零开销）。"""
-    import os
 
     def _probe(cls_id, info, restore):
         h = OpenProcess(PROCESS_SET_INFORMATION, False, os.getpid())
@@ -389,8 +387,11 @@ def _try_enable_privilege(name):
         ok = AdjustTokenPrivileges(h_token, False, ctypes.byref(tp), ctypes.sizeof(tp), None, None)
         if not ok:
             return False
-        err = ctypes.windll.kernel32.GetLastError()
-        return err == 0
+        # ⛔ 必须用 ctypes.get_last_error()：AdjustTokenPrivileges 在“权限不在令牌中”时仍返回
+        # TRUE，只把 last-error 置为 1300(ERROR_NOT_ALL_ASSIGNED)。经
+        # ctypes.windll.kernel32.GetLastError() 读取会拿到被 ctypes 调用链清零的值 ⇒ 假成功
+        # （2026-11-06 实测：本机过滤令牌无 SeIncreaseQuota，旧实现却返回 True）。
+        return ctypes.get_last_error() == 0
     finally:
         CloseHandle(h_token)
 
@@ -443,7 +444,6 @@ LoadImageW = u32.LoadImageW
 LoadImageW.argtypes = [w.HANDLE, w.LPCWSTR, w.UINT, w.INT, w.INT, w.UINT]
 LoadImageW.restype = w.HANDLE
 
-# 模块级缓存 NtSetSystemInformation 方法检测结果
 def empty_standby():
     """清空 Standby 列表 — MemoryPurgeStandbyList = 4 (PHNT standard)"""
     try:
@@ -600,6 +600,75 @@ def get_os_build():
     return 0
 
 
+def is_admin_group():
+    """当前进程令牌是否属于 Administrators 组（**含仅拒绝的组**）。
+
+    为什么不能用 is_admin()：UAC 过滤令牌里 Administrators 是“仅拒绝”，
+    IsUserAnAdmin() 返回 False ⇒ 旧启动条件 (not elevated) and is_admin() 永不成立，
+    管理员用户双击 exe 不会请求提权，系统缓存类清理全部静默失效。
+
+    实现：直接枚举令牌组（TokenGroups）并 EqualSid 比对——不受“仅拒绝”属性影响。
+    （原打算用 CheckTokenMembershipEx+CTMF_INCLUDE_DENY_ONLY_SIDS，但本机 advapi32
+    未导出该符号，取到 None ⇒ 退回 is_admin() 仍然 False，实测无效。）
+    """
+    try:
+        adv = ctypes.WinDLL("advapi32", use_last_error=True)
+        adv.ConvertStringSidToSidW.argtypes = [w.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+        adv.ConvertStringSidToSidW.restype = w.BOOL
+        adv.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
+                                            ctypes.POINTER(w.DWORD)]
+        adv.GetTokenInformation.restype = w.BOOL
+        adv.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        adv.EqualSid.restype = w.BOOL
+        psid = ctypes.c_void_p()
+        if not adv.ConvertStringSidToSidW("S-1-5-32-544", ctypes.byref(psid)):
+            return is_admin()
+        try:
+            h = w.HANDLE()
+            if not OpenProcessToken(GetCurrentProcess(), 0x0008, ctypes.byref(h)):
+                return is_admin()
+            try:
+                size = w.DWORD(0)
+                adv.GetTokenInformation(h, 2, None, 0, ctypes.byref(size))   # TokenGroups
+                if size.value <= 0:
+                    size = w.DWORD(4096)
+                buf = (ctypes.c_ubyte * size.value)()
+                if not adv.GetTokenInformation(h, 2, buf, size.value, ctypes.byref(size)):
+                    return is_admin()
+                cnt = ctypes.c_uint32.from_buffer(buf, 0).value
+                off = 8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 4   # TOKEN_GROUPS 对齐
+                step = 16 if ctypes.sizeof(ctypes.c_void_p) == 8 else 12
+                for i in range(min(int(cnt), 256)):
+                    sid = ctypes.c_void_p.from_buffer(buf, off + i * step).value
+                    if sid and adv.EqualSid(sid, psid):
+                        return True
+                return False
+            finally:
+                CloseHandle(h)
+        finally:
+            try:
+                k32.LocalFree(psid)
+            except Exception:
+                pass
+    except Exception:
+        return is_admin()
+
+
+def pid_alive(pid):
+    """进程是否存活（看门狗自检用）。OpenProcess 失败 = 进程对象已销毁。"""
+    try:
+        # 需 SYNCHRONIZE 才能 WaitForSingleObject（仅 QUERY_INFORMATION 会 WAIT_FAILED）
+        h = OpenProcess(PROCESS_QUERY_INFORMATION | 0x00100000, False, int(pid))
+        if not h:
+            return False
+        try:
+            return WaitForSingleObject(h, 0) == 0x102   # WAIT_TIMEOUT
+        finally:
+            CloseHandle(h)
+    except Exception:
+        return False
+
+
 def is_elevated():
     try:
         h_token = w.HANDLE()
@@ -631,11 +700,15 @@ def get_process_path(pid):
     if not h:
         return None
     try:
-        buf = ctypes.create_unicode_buffer(260)
-        size = w.DWORD(260)
-        ok = k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
-        if ok:
-            return buf.value
+        # 长路径（>259 字符）在 260 缓冲下 QueryFullProcessImageNameW 会失败返回 None，
+        # 使自身排除/锚点/回弹/硬上限第八道门对长路径进程全部失效（2026-11-06 实测：
+        # 329 字符路径的进程 260 缓冲 -> None、32768 缓冲 -> 完整 329 字符）。优先给足缓冲，
+        # 失败再回退 260（兼容异常环境）。
+        for _cap in (32768, 260):
+            buf = ctypes.create_unicode_buffer(_cap)
+            size = w.DWORD(_cap)
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return buf.value
         return None
     except AttributeError:
         return None
@@ -835,63 +908,13 @@ def clear_system_file_cache_ex():
 # 托盘百分比图标
 # ============================================================
 
-def create_tray_percent_icon(percent, color=(0, 200, 0)):
-    """在 16x16 内存 DC 上绘制百分比数字图标"""
-    import ctypes.wintypes as wt
-    gm = ctypes.windll.gdi32
-    um = ctypes.windll.user32
-    hdc_screen = hdc = hbm = hbm_mask = hicon = None
-    try:
-        hdc_screen = um.GetDC(None)
-        if not hdc_screen:
-            return None
-        hdc = gm.CreateCompatibleDC(hdc_screen)
-        hbm = gm.CreateCompatibleBitmap(hdc_screen, 16, 16)
-        hbm_mask = gm.CreateBitmap(16, 16, 1, 1, None)
-        if not hdc or not hbm or not hbm_mask:
-            # 失败路径逐个释放已创建对象（2026-08-15 审查：原 `all` 判断直接返回泄漏 DC/位图）
-            if hbm_mask: gm.DeleteObject(hbm_mask)
-            if hbm: gm.DeleteObject(hbm)
-            if hdc: gm.DeleteDC(hdc)
-            return None
-        prev_bm = gm.SelectObject(hdc, hbm)
-        prev_font = gm.SelectObject(hdc, gm.GetStockObject(17))  # DEFAULT_GUI_FONT
-        # Draw background
-        r, g, b = color
-        bg_color = r | (g << 8) | (b << 16)
-        brush = gm.CreateSolidBrush(bg_color)
-        rect = wt.RECT(0, 0, 16, 16)
-        gm.FillRect(hdc, ctypes.byref(rect), brush)
-        gm.DeleteObject(brush)
-        # Draw text（0-100 如实显示——原 min(99) 使 100% 显示 99，2026-08-30 修正）
-        text = str(max(0, min(100, int(percent))))
-        gm.SetBkMode(hdc, 1)  # TRANSPARENT
-        gm.SetTextColor(hdc, 0xFFFFFF)  # white text
-        gm.DrawTextW(hdc, text, -1, ctypes.byref(rect), 0x25)  # DT_CENTER|DT_VCENTER|DT_SINGLELINE
-        gm.SelectObject(hdc, prev_font)
-        gm.SelectObject(hdc, prev_bm)
-        gm.DeleteDC(hdc); hdc = None
-        # Create icon
-        class ICONINFO(ctypes.Structure):
-            _fields_ = [("fIcon", wt.BOOL), ("xHotspot", wt.DWORD), ("yHotspot", wt.DWORD),
-                        ("hbmMask", wt.HBITMAP), ("hbmColor", wt.HBITMAP)]
-        ii2 = ICONINFO(True, 0, 0, hbm_mask, hbm)
-        hicon = ctypes.windll.user32.CreateIconIndirect(ctypes.byref(ii2))
-        return hicon
-    except Exception:
-        return None
-    finally:
-        if hbm_mask: gm.DeleteObject(hbm_mask)
-        if hbm: gm.DeleteObject(hbm)
-        if hdc: gm.DeleteDC(hdc)
-        if hdc_screen: um.ReleaseDC(None, hdc_screen)
-
 def enable_reduct_privileges():
     """启用清理所需权限（SE_PROF_SINGLE_PROCESS + SE_INCREASE_QUOTA）"""
     try:
+        ok = True
         for priv in ("SeIncreaseQuotaPrivilege", "SeProfileSingleProcessPrivilege"):
-            _try_enable_privilege(priv)
-        return True
+            ok = _try_enable_privilege(priv) and ok
+        return bool(ok)   # 2026-11-06：返回真实结果（调用方本就忽略，但契约应为布尔真值）
     except Exception:
         return False
 
@@ -951,7 +974,7 @@ def flush_volume_cache():
     返回真实执行结果：无任何卷成功打开时返回 False（2026-08-30 审查：原恒 True 使统计虚增）"""
     try:
         _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        import string, os
+        import string
         flushed = False
         for letter in string.ascii_uppercase:
             vol = f"{letter}:\\"
@@ -1066,7 +1089,6 @@ def set_auto_start(name, target_path, arguments="", work_dir=""):
             return False
         _COM_INITIALIZED = True
     try:
-        import os
         startup = os.path.join(os.environ['APPDATA'],
             'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
         os.makedirs(startup, exist_ok=True)
@@ -1707,20 +1729,6 @@ GetProcessWorkingSetSize.restype = w.BOOL
 SetProcessWorkingSetSizeEx = k32.SetProcessWorkingSetSizeEx
 SetProcessWorkingSetSizeEx.argtypes = [w.HANDLE, ctypes.c_size_t, ctypes.c_size_t, w.DWORD]
 SetProcessWorkingSetSizeEx.restype = w.BOOL
-
-
-def get_process_ws_quota(pid):
-    """进程当前工作集配额 (min, max) 字节——UI 实况与 orig_max 采集用；失败 None"""
-    h = OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
-    if not h:
-        return None
-    try:
-        mn, mx = ctypes.c_size_t(), ctypes.c_size_t()
-        if GetProcessWorkingSetSize(h, ctypes.byref(mn), ctypes.byref(mx)):
-            return mn.value, mx.value
-        return None
-    finally:
-        CloseHandle(h)
 
 
 def set_ws_cap(pid, max_bytes):

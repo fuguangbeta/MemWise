@@ -1,0 +1,110 @@
+# -*- coding: utf-8 -*-
+"""预烘焙图标（自动生成，勿手改）——2026-11-06
+
+为什么：_draw_memwise_pixels_hq 是纯 Python 逐像素渲染（32px 约 42ms/个），
+启动时窗口小图标 + 托盘 5 种状态色最多渲染 7 次（约 300ms，全在 Tk 线程）。
+这里把同一渲染结果预编码成 PNG，运行时只做 decode_png + create_hicon_from_rgba
+（实测 0.68ms/个，约 60 倍快）；解码失败时 GUI 自动回退动态渲染。
+
+重新生成：python scripts/_icon_bake.py（改了图标设计/渲染参数后必须重跑）
+"""
+import base64
+
+BAKED = {
+    "tray_idle": (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADDElEQVR42tWXX0hTYRjGtS0dhMygzKSiECqMQRdd2EUtKSIjGl10"
+        "48XIiy6kWH+uimqQUBLBWHqZGyFkQkwpbVFtXWRUGjnzQkXE0ChLnOg0N5fH0/PCjuycne87Z1sKHnjuznmf33fO+d7n/XJy1uq1"
+        "cafFAOVDJshoNG1YWUNTYdG6PZXnt5XX1J84XttxDWqEfFAb1ATVHrriObvvzOXdAMrL2MhqtRY7nU47roOSMYpaYHAH6oEi0BIk"
+        "qigKDUEPD1TXHaG3k6hZiprnUNPCNbfZbGWCIMxAIsnb8uxBxfWWqyg4CAkMUzUR4Djkvni7oQa1YomagsvlsjMBfD5fg2Quqblz"
+        "aDENY5luPelejMX/yuqFw+E+JkAwGGxSAiQgMjEXleYJjaYNkC4ExzxzAL0QGuZ8gHb/q2YegBaEDnMx8if2g7nPX/eOfdICYEHo"
+        "MSf9mpqLl+w/WpgCQE0GAKPKB8an5jQhWObRhbg4OTOvBBDRzA6nAFCHA8Cssoi9PsiF4JnfeNwlhkYmUgAAfTOldVN7BcCSshCt"
+        "kAfBM6dnGQCtUpdcDhbq7QAQ1QC0IFjmHIDu0oqqTckA+RQsPAA9EEpzDsAAALYnA5go1bQAeBBq5hyAQQDsSAYwUqTqAVCDYJlz"
+        "AEIA2LIMQH8k5bleAFKVOyC2dY2I9Mwlz3vmfQyAl5v3lsu3AQ0TKBbVC6BXDID7aHy5MgCaZADwczUAsNjTajNeHgB6VwFAwPff"
+        "qpoHz9+8e7rSAOHI/AT+uVxWHDcm37yALpctwOfh38ofe5gZxw6HozL55rd937MGcLd/lQFg7LvHHUwxvZ70d37xeQL9Y6fu+rMG"
+        "INW19oQ7PvQHvV7vBbPZbNAczekbIR2tePhjmtOwmr5hsq4uKN61Pq3zATUnbM0yFHgETWdgHIMCWMgx7HlDxgcVdKwCalIo9gKa"
+        "5BxKJM3Sm8OqHdhuJf/taEZjFE0yNExQnlOkUqolDi0haq/U4ajJ0D5nbrVsL/o0lJ6U5xSplGoULNTbU9rrWrj+AeX6MWzvO7qD"
+        "AAAAAElFTkSuQmCC"
+    ),
+    "tray_low": (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADBElEQVR42tWXX0hTYRjGtZmTRpwQsT/UQMIIYSDhhcFoIV1UFy2E"
+        "3XQhBYFGsIsQ8SIGCl1kMoogLxojFnTROqWiFuaILqIWIy2IpIQwckFu0FTYXB5PzwubbOec7zvnbCl4xnN3zvv8vp3zvc/7VVRs"
+        "10s4KlggK1QDVVl2WTbX0Fpn3dFwoeFgc3/zaecDZy8UgEToGRSC+lsGWzyNlxuPAKi6ZCOXy7XP5/N14DqeN0ZRBwxuQB+gJWgd"
+        "kjWUhr5C9x29jpP07+RqHkbNi6jp4Jq73e4mSZJSkEwKiIE7rfdar6HgLCQxTLVEgL+g212DXVdQK5OrKfn9/g4mgCiKd/PmeYU+"
+        "htZMGBepZ6pnLZPNFNVLJpOfmACRSCSkBMhBlGIuK81zmjcNYBaCY146gFEIHXM+wOiL0Uc8AD0IA+ZyKp1aYO7ziW8T7/QAWBBG"
+        "zEnxpXi23lm/RwVATQYA8xoP6EKwzNPZtLy4sqiqh2Z2QgVAHQ4Ay8oiniceLgTPvPtltxxbiKkAAH1d1bqpvQJgXVmIVsiD4JnT"
+        "swyAp/kuuREs1NsBIGsB6EGwzDkA7+3n7XWFAFYKFh6AEQilOQfgCwAOFQLUUKrpAfAgtMw5ALMAsBcCVFGkGgHQgmCZcwCmAbB3"
+        "A4C+SMpzowCk9sftcvhzWKZnOsc7mfcxAJ7XHqu1Fe0CGiZQLG0UwKgYALfQ+CqLAGiSAUB8KwCw2HNaM141AGa2AEDC+9+vmQfD"
+        "r4bDmw2QWEn8xjdXyYrjQOHNq39XywaI/owqP+w5Zhx7vd4zhTdPzk2WDTDwZqAIAGPfTe5giun17Fh0TByKDf1oe9hWNgCp73Vf"
+        "cmRmJBIMBq8KgqB/gKB3hHR04eG3JqdhLX3HZH3JZrftNHU+oOaErdmEAvT7U4JxBprCQk5hz5d+bELH2k1NCsXGoQTnUJLXMv1z"
+        "WLUX2+3Afzua0RhFkwwNE5TnFKmUarlDyzS1V+pw1GRonzO3WrkXvRpKT8pzilRKNQoW6u2q9rodrn+GrZ58M52XnwAAAABJRU5E"
+        "rkJggg=="
+    ),
+    "tray_mid": (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADCklEQVR42tWXX0hTYRjG1amTNNaFWIuSQowQRtBV3TghL/oD7SqI"
+        "LiShogiGRBdd5C6CiIhGJYSUjVgQUZyWZEXlbvqDf6BZEk5MizkzNlpZxjbdjqfnjU22c873nbMtBQ88d+e8z+8753zv835FRSv1"
+        "2m5ZZYCMUAVUWlVZsrSG5pqykrajNRvc1zbt7u/ZegbqggTIA7mhc55bdQfa28xbAFSet5HVal3ncDhacO1MG6OoBQbnIR/0G1qA"
+        "JBXFoDHo5vULtU30dlI161DzMGpauOY2m61BFMVfkETq6e68+vJe/SkUHIVEhqmaCPAbdOVGR+sJ1IqnaopOp7OFCSAIQkfaPK3g"
+        "WGcyB+Ms+QePJxOJWFa9SCQyzATwer1uOUAKIh9zSW6eUiBngFwhOOb5A+iF0DDnA7x43n2XB6AFocNcmovPfGXu89Ckp18LgAWh"
+        "x5wU/TM1v2+XaY0CgJoMAALKB4KaECzzxHxMikdDcgAJzaxRAUAdDgCz8iI+bzMXgmfuHzgm/Qz3KQAAfVbRuqm9AmBBXohWyIPg"
+        "mdOzDICH6S65GCzU2wEgqQFoQbDMOQCDRw5VV2cCGClYeAB6IOTmHAA/ADZmAlRQqmkB8CDUzDkAowCozQQopUjVA6AGwTLnAAwB"
+        "YO0iAP2RlOd6Af5B9DZJ05/vSPTMxzcHmfcxAJ417qiqzNoFNEygWEwvgF4xAC6h8RVnAdAkA4Dp5QDAYverzXjlAHi/DAAivr9Z"
+        "NQ/evhIeLDVAPBoO458rZsVxV+bNycRcwQA/Qq/lP/Y4M47tdvuezJvDwccFA0x8cGQBYOy7yB1MMb3uHX73SAiMXJ4ceLqtYADS"
+        "J9/pyPjIfa/L5TppMpkMmqM5fSOkoxUP9+U4DavpCybr1vrNxrKczgfUnLA1G1DgNjSTh3Ec6sVCmrHnDXkfVNCxVlOTQrEn0HfO"
+        "oSStWXpzWLUd2239fzua0RhFkwwNE5TnFKmUaqlDyxC1V+pw1GRonzO3WqEXfRpKT8pzilRKNQoW6u2K9roSrr/HwmwheE2gKwAA"
+        "AABJRU5ErkJggg=="
+    ),
+    "tray_mid2": (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADAElEQVR42tWXX0hTYRjGP5vpIGQFQWYWhBBkeBeEN60LiYxwIEQX"
+        "gdRNIMGgrqRiF8UupFhpN1EybKBCcRSiMMlBXYQipJFgEtbUmCNrOV3MuXY8PS9ssvPn+87ZloIHnrtz3uf3nXO+93k/xrbrdaKG"
+        "2aByyA6VVtg32fDAHrbjZhOrfnGNnZm5x9qgLkiCBqAAdPvtDXa+/QI7AqCygo2cTmelx+NpwVWfNUbROhh4oXFoBVqHFAOtQl+g"
+        "Jz2t7BS9nUzNGtS8hJp1QnOXy1Ury/IypJBeP+vsGL/DrqPgNCRzTI1EgBHoQcDb3IpayUxN2efztXABJEl6mDXPKjriTedhrFK4"
+        "/1w6nUqo60Wjn7gAwWAwoAXIQBRirmjNM5rLGyBfCIF54QBWIUzMxQBvBgd6RQBmEBbMlb+J32HuPo9Ndo+aAfAgrJiT1mKhVPNx"
+        "tlsHQE0GAHO6B5ZCphA88/RaQkmtLGgBFDSzkzoA6nAAiGuLzD4+LIQQmYelRuXPbFAHAOhbutZN7RUA69pCtEIRhMicnuUA9Ge7"
+        "5EawUG8HgGIEYAbBMxcAjLlPs725AOUULCIAKxBacwHAZwAczAWwU6qZAYggjMwFANMAOJQLUEqRagXACIJnLgCYAMC+DQD6IynP"
+        "rQKQQo+qlaUPnUps8qnyvaeeex8HYLDhGNul2gU0TABg1SqAVXEA7qLxlagAaJIBwMJWAGCxTUYzXhkAPm4BgIzvv98wD0aH+55v"
+        "NkAqHlnEP1fCi+MudZdLFg/wbUj7Y89w49jtdjfm3rw81Vs0wI+hKyoAjH3twsEU0+vZqfd90s93bfNf79uLBiBFXl6Mzo/5g36/"
+        "/6rD4bCZjub0jZCOTjw8kuc0bKQQJuvLR6vYzrzOB9ScsDVrUaAbihVgnISGsZAG7HlbwQcVdKwKalIo9gr6JTiUZBWnN4dVu7Hd"
+        "qv7b0YzGKJpkaJigPKdIpVTLHFomqL1Sh6MmQ/ucu9WKvejTUHpSnlOkUqpRsFBv17XX7XD9A+dRE/+lqZjsAAAAAElFTkSuQmCC"
+    ),
+    "tray_high": (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADAklEQVR42tWXX0hTYRjGtZkTViwkLKMGEutCGEh4YSAupIv+QANh"
+        "t1IQaAQjQqSLGhh0kcEogoQaI3bRzTj5h2Ww2mXkQjQkmJQRK1qkW7WEdpY7np43NtnOOd93zrYUPPDcnfM+v++c873P+9XVbdfr"
+        "qNVqgsxQE9Swy2TaXMNWs3nH5ba2g8GOjpMz3d1XIT8kQONQELox3tnpvm63HwFQY9VGTqdzv9fr7cd1rGiMog4Y3ITmoF/QOiRr"
+        "KAu9gx7edziO09sp1DyMmudQ08E1d7lc7ZIkZSCZFPb77z7v6rqCgouQxDDVEgF+he48GBy8iFpioabk8/n6mQCCINwrmhf1ORjM"
+        "V2BcpvjwcH5NFMvqpdPpBSZANBoNKgEKENWYy0rzghIVA1QKwTGvHsAohI45HyAyNfWYB6AHYcBczmUyX5j7/Nv09IweAAvCiDnp"
+        "dzL550xLyx4VADUZACQ0HtCFYJmvZbOyuLKiqodm1qMCoA4HgFVlkTm3mwvBM48PDck/ZmdVAIC+pmrd1F4BsK4sRCvkQfDM6VkG"
+        "wJNil9wIFurtAJC1APQgWOYcgNcXbLa9pQBmChYegBEIpTkHIA6AQ6UATZRqegA8CC1zDsAiAGylAA0UqUYAtCBY5hyAeQDs2wCg"
+        "P5Ly3CjAP4i+PjkZCsn0zNuBAeZ9DIBnPc3NlrJdQMMEimWNAhgVA+A2Gl99GQBNMgBIbgUAFntWa8ZrBMCbLQCQ8P1bNfPg5cRE"
+        "aLMBxFRqGf9cPSuO/aU353O5mgG+x2LKH3uJGccej+dU6c3LkUjNAB9GR8sAMPbd4g6mmF5PL4TDQmJs7FOst7dmANL7kZH00uRk"
+        "NBAIXLKi7euO5vSNkI5OPPyqwmlYSx8xWZ+3Wyw7KzofUHPC1mxHgUfQzyqMRegFFnICe776YxM61m5qUij2FEpxDiVFrdKbw6o9"
+        "2G4H/tvRjMYommRomKA8p0ilVCscWuapvVKHoyZD+5y51Wq96NNQelKeU6RSqlGwUG9XtdftcP0FnpPZD7pxWXkAAAAASUVORK5C"
+        "YII="
+    ),
+    "win32": (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADAklEQVR42tWXP2gTYRjG27RJI9EmiFQjUSlWK5E4SJcuxiFDKmIm"
+        "t1JqcQnWCC4tVAIVHURI/TPV1CCF6mCTEiV0MWPVdrDiYhFBKo1CYsDYIRfp9fN5ISnJ5b7vLokt9ODZ7t7n993d9z7v19S0Wy+L"
+        "ZW8L1AaZoVaDoWV7DY1Gk8Fudzi6uk55Xa6zo9AUFIXmoGnodnf36csOx7GTADLVbeR2uw8Fg8EBXL0lYxR1weAu9AH6A21CTEV5"
+        "6AsU7uw8cZ7eTrHmcdQcRE2X0Nzn8zllWc5BjDQ5+eSh03nmJgquQDLHVE0E+BN6MDR01Y9aUrGmHAqFBrgA0Wj0ccm8pHD46UYN"
+        "xhUaHr6xIUlSRb1sNvuJC5BMJqeVAEWIesyZ0ryo1ZoBaoUQmNcPoBdCw1wMEI+/ei4C0ILQYc5yuVyKu88B8F4LgAehx5yUSqX+"
+        "2mz7bVUA1GQAsKp8YG0tpQnBM8/n8yydTisBGJrZuSoA6nAAWFcW8XovCiFE5n7/dba4uFQFAOhbVa2b2isANpWFaIUiCJE5PcsB"
+        "iJW65FawUG8HAFMD0ILgmQsAljo67AfKAdooWEQAeiCU5gKAzwA4Ug5gplTTAhBBqJkLAFYAcLQcoJUiVQ+AGgTPXACwDICDWwD0"
+        "R1Ke6wUgeTx9bGbmBYvHX7P+/kHufRyA+fZ2q6ViF9AwAYC8XgC94gDcR+NrrgCgSQYAP3YCAIu9pDbjmQDwcQcAZHx/u2oexGJz"
+        "L7cbIJPJpPHPNfPieKr85kKh0DDAwsJb5Y/9lRvHgUCgr/zmRGK+YYDx8TsVABj77gkHU0yvF/AvRCcmHn3v6eltGIA0MjKWnZ2N"
+        "JSORyDWr1ap9gKBvhHR04+F3NU7DavqGyfqK2bzHWNP5gJoTtqYTBZ5Bv+swlqA3WIgHe77+YxM61j5qUiiWgH4JDiUlrdObw6oD"
+        "2G6H/9vRjMYommRomKA8p0ilVCseWpapvVKHoyZD+5y71Rq96NNQelKeU6RSqlGwUG+vaq+74foHh7DQyhKINo8AAAAASUVORK5C"
+        "YII="
+    ),
+    "win16": (
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABOklEQVR42mNgoBaQl5fn4+fnZ4PxmZiYGbi5ediAmJ2VlY0RWa2+"
+        "vr4IA5qA/N+/fz+9ffv2kbm5hYacnJKprq5RDRCvAOI1QNytoqLhJisrL3r27Nk9QLX/8/LyguEG2AMBSBCEnz179tnLy+8RUNNf"
+        "IP4Pw6amlm+PHz/xHKaurq6uHqsBUEP+Aw1B1vwfqPk/shqcBnz//h3FEHTNMHmcBmRm5qIYgqx5xoxZ/0+ePIXfAJCTkQ1B1gyS"
+        "I8oAdENgmkkyAIRDQiL+Z2fnoYiRZAA2TIwBf/AY8A9owB8MA4DJmP/u3bsHt23bvh6oaBEQf8Wi+TcQH2hqapkCTLGX/f39jbHm"
+        "CQEBIUEtLb0EoOINQHwZiK8B8V4gLpeUlFEgOnPx8fFziYlJSgOxLNBQfmDmYmSgBQAAc5WOnfIksYAAAAAASUVORK5CYII="
+    ),
+}
+
+
+def png_for(name):
+    """取预烘焙 PNG 字节；未知名称返回 None（调用方回退动态渲染）。"""
+    raw = BAKED.get(name)
+    return base64.b64decode(raw) if raw else None

@@ -132,11 +132,6 @@ def new_hist():
     return [deque(maxlen=SMOOTH_N) for _ in DIM_WORDS]
 
 
-def new_state():
-    """ERIS 运行状态容器（每维滚动窗 + 上轮五维分 + 上轮效率 + 趋势方向序列）。"""
-    return {"hist": new_hist(), "prev_scores": None, "prev_eff": None, "trend": []}
-
-
 def widen(base, scale=0.0):
     """围绕中位展宽五点基线：把跨度拉到 ≥ max(MIN_REL_SPAN, scale)×|中位|（保持单调与形状）。
 

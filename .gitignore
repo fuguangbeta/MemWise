@@ -11,10 +11,11 @@ scripts/release_*.py
 
 # Build artifacts
 build/
+build_*/
 dist/
+dist_test/
 /MemWise.exe
 nul
-.mcp.json
 
 # Python
 __pycache__/

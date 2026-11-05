@@ -45,7 +45,10 @@ _wh.WinHttpCloseHandle.argtypes = [_H]
 ACCESS_DEFAULT_PROXY, ACCESS_NAMED_PROXY, ACCESS_AUTOMATIC_PROXY = 0, 3, 4
 FLAG_SECURE = 0x00800000
 OPT_REDIRECT_POLICY, OPT_URL = 88, 34
-POL_ALWAYS = 2
+# ⛔ 重定向策略 = WinHTTP 默认的“禁止 HTTPS→HTTP 降级”（1）。旧实现用 2(ALWAYS) 主动放宽，
+# 允许 https→http 明文下载 exe——违背“哈希锚定发布时刻 + HTTPS 只保证链路”的威胁模型。
+# GitHub 的重定向均为 https→https，收紧不影响功能（2026-11-06 审查）。
+POL_DISALLOW_HTTPS_TO_HTTP = 1
 Q_STATUS, Q_NUM, Q_CONTENT_LENGTH = 19, 0x20000000, 5
 CHUNK = 64 * 1024
 
@@ -108,7 +111,7 @@ def _request(url, method="GET", proxy=None, want_body=False, on_chunk=None, canc
         req = _wh.WinHttpOpenRequest(conn, method, path, None, None, None, flags)
         if not req:
             return False, 0, b"", "", "request_failed"
-        pol = w.DWORD(POL_ALWAYS)
+        pol = w.DWORD(POL_DISALLOW_HTTPS_TO_HTTP)
         _wh.WinHttpSetOption(req, OPT_REDIRECT_POLICY, ctypes.byref(pol), 4)
         # 头参数是 LPCWSTR（宽字符）⇒ 传 str，长度按 UTF-16 字节数（2026-10-17 修：此前传 ASCII 字节，
         # 导致 Range 头实际未发出、分段下载静默退化为单连接）

@@ -1,5 +1,5 @@
 """
-MemWise v5.2.005 PARES —— 智能内存看护
+MemWise v5.3.011 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 不杀进程、不挂起、不注入；默认不联网（仅在你开启「检查更新」后访问官方发布渠道，不发送任何设备信息）；仅在按设置写入状态与日志文件。
 """
@@ -132,7 +132,9 @@ def cmd_optimize(args):
     cleaner._manual_run = True  # 手动优化：跳过自动化保守门，保留实时安全门（CPU/IO 活跃）
     try:
         freed0 = cleaner.summary()['freed_mb']  # 释放量基线（标量总和口径）
-        result = cleaner.optimize(snaps, learner, mode, operations=CFG.get("clean_operations"))
+        from core.engine import _ops_with_combine   # combine 授权拼装与 GUI/引擎同源（防两处漂移）
+        _ops = _ops_with_combine(CFG.get("clean_operations"))
+        result = cleaner.optimize(snaps, learner, mode, operations=_ops)
     finally:
         cleaner._manual_run = False
     stats = cleaner.summary()
@@ -411,7 +413,7 @@ def main():
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
     winapi.enable_reduct_privileges()
     if len(sys.argv) < 2:
-        print(tr("MemWise v5.2.005 PARES —— 智能内存看护"))
+        print(tr("MemWise v5.3.011 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

@@ -383,6 +383,12 @@ class PareJudger:
         # ── WS 回弹覆盖 ──
         ws_override = False
         bl = self._post_clean_ws.get(snap.name.lower(), 0)
+        # 实例身份校验（2026-11-06）：基线按进程名键，同名不同实例（PID/创建时间不同）不得继承；
+        # 下方基线门有同款判定，这里漏了 ⇒ 另一实例会被 ws_override 抬成 θ=1.0 并绕过投票。
+        _bl_c = self._post_clean_create.get(snap.name.lower())
+        _cur_c = getattr(snap, "create", None)
+        if _bl_c is not None and _cur_c is not None and _bl_c != _cur_c:
+            bl = 0
         if bl > 0 and snap.ws >= bl * 2.0:
             ws_override = True
             theta = 1.0
@@ -696,6 +702,19 @@ class PareJudger:
         exclude = {n for n, t in list(self._post_clean_time.items()) if now - t < 120}
         self.learner.stable_anchors.feed(snaps, now, exclude)
         self.learner.rebound.observe(snaps, now)
+
+    @staticmethod
+    def _is_cap_protected(path):
+        """工作集硬上限的保护边界：只禁 %SystemRoot%（系统组件）。
+        Program Files 属普通应用，允许用户显式设置（2026-11-06 用户拍板）——
+        与 _is_system_path 分离：后者还服务于“系统目录进程需高 θ”的清理判定，语义不同。"""
+        if not path:
+            return False
+        try:
+            root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+            return path.lower().startswith(root.lower() + "\\")
+        except Exception:
+            return False
 
     @staticmethod
     def _is_system_path(path):

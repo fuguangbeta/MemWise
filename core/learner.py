@@ -77,9 +77,8 @@ class Profile:
     __slots__ = ("name", "alpha", "beta", "_theta_cache", "_theta_dirty", "ws_deque",
                  "gain_ewma", "cost_ewma",
                  "gain_ewma_fast", "gain_ewma_slow",
-                 "cost_ewma_fast", "cost_ewma_slow",
                  "ws_ewma_mu", "ws_ewma_sigma",
-                 "last_ok", "ok_cnt", "fail_cnt",
+                 "ok_cnt", "fail_cnt",
                  "last_seen", "last_ws",
                  "probe_ok", "probe_fail", "probe_zero",
                  "leak_suspect", "leak_tick_count",
@@ -103,13 +102,10 @@ class Profile:
         # 双 EWMA：快速(λ=0.6)追踪短期变化，慢速(λ=0.1)追踪长期趋势
         self.gain_ewma_fast = 0.0
         self.gain_ewma_slow = 0.0
-        self.cost_ewma_fast = 0.0
-        self.cost_ewma_slow = 0.0
         # Z-score 基线
         self.ws_ewma_mu = 0.0
         self.ws_ewma_sigma = 0.0
         # 反馈
-        self.last_ok = True
         self.ok_cnt = 0
         self.fail_cnt = 0
         self.last_seen = 0.0
@@ -184,6 +180,10 @@ class Profile:
 
         # Beta 衰减已移至 record_clean 做时间感知遗忘（不再每feed衰减）
         # 不再在此处衰减alpha/beta
+        # 观察样本改变 mix 混合权重（total_samples 爬坡）⇒ θ 缓存须跨 tick 失效；
+        # 同 tick 内仍复用（生产时序 = 批量 feed 全部快照后再决策，见 engine._snap → optimize；
+        # 曾缺此行致学习期进程 θ 冻结在首次抽样，2026-10-25 修正）
+        self._theta_dirty = True
 
     def _calc_slope(self):
         """最小二乘法计算 WS 趋势斜率 (最近 TREND_SAMPLES 个点)"""
@@ -215,7 +215,7 @@ class Profile:
         # 混合: 样本越多越依赖 Kalman
         mix = min(1.0, self.total_samples / 20.0)
         base = (1 - mix) * beta_sample + mix * kalman_base
-        # 上下文修正
+        # 缓存并钳制到 [0.01, 0.99]（上下文修正在 PareLearner.thompson_score 层）
         self._theta_cache = max(0.01, min(0.99, base))
         self._theta_dirty = False
         return self._theta_cache
@@ -232,7 +232,6 @@ class Profile:
 
     def record_clean(self, ok, freed=0, pf_delta=0, lr=None):
         """连续反馈记录清理结果 — 考虑释放质量和PF代价"""
-        self.last_ok = ok
         prev_feedback = self.last_feedback_time
         self.last_feedback_time = time.time()
         
@@ -256,8 +255,6 @@ class Profile:
             self.gain_ewma_slow = 0.1 * freed + 0.9 * self.gain_ewma_slow
         if pf_delta >= 0:
             self.cost_ewma = lam * pf_delta + (1 - lam) * self.cost_ewma
-            self.cost_ewma_fast = 0.6 * pf_delta + 0.4 * self.cost_ewma_fast
-            self.cost_ewma_slow = 0.1 * pf_delta + 0.9 * self.cost_ewma_slow
         # 更新 Kalman (仅在有实际释放量时更新，防止零值把估计拉到0)
         if freed > 0:
             self.kalman.update(freed, max(0, pf_delta))
@@ -359,9 +356,7 @@ class Profile:
             "last_drift_at": self.last_drift_at,
             "gain_ewma": self.gain_ewma, "cost_ewma": self.cost_ewma,
             "gain_ewma_fast": self.gain_ewma_fast, "gain_ewma_slow": self.gain_ewma_slow,
-            "cost_ewma_fast": self.cost_ewma_fast, "cost_ewma_slow": self.cost_ewma_slow,
             "ws_ewma_mu": self.ws_ewma_mu, "ws_ewma_sigma": self.ws_ewma_sigma,
-            "last_ok": self.last_ok,
             "ok_cnt": self.ok_cnt, "fail_cnt": self.fail_cnt,
             "last_seen": self.last_seen,
             "last_feedback_time": self.last_feedback_time,
@@ -402,11 +397,8 @@ class Profile:
         p.cost_ewma = max(0.0, _num(d.get("cost_ewma", 0.0)))
         p.gain_ewma_fast = max(0.0, _num(d.get("gain_ewma_fast", 0.0)))
         p.gain_ewma_slow = max(0.0, _num(d.get("gain_ewma_slow", 0.0)))
-        p.cost_ewma_fast = max(0.0, _num(d.get("cost_ewma_fast", 0.0)))
-        p.cost_ewma_slow = max(0.0, _num(d.get("cost_ewma_slow", 0.0)))
         p.ws_ewma_mu = _num(d.get("ws_ewma_mu", 0.0))
         p.ws_ewma_sigma = max(0.0, _num(d.get("ws_ewma_sigma", 0.0)))
-        p.last_ok = bool(d.get("last_ok", True))
         p.ok_cnt = max(0, int(_num(d.get("ok_cnt", 0))))
         p.fail_cnt = max(0, int(_num(d.get("fail_cnt", 0))))
         p.last_seen = _num(d.get("last_seen", 0.0))

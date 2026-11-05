@@ -20,8 +20,9 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "5.2.005"  # 版本同步面之一（manifest 记录用）
-PACKAGE_FILE_MAX = 64 * 1024 * 1024   # 单个状态文件上限（2026-09-11 加固：拒绝异常/恶意大包）
+APP_VERSION = "5.3.011"  # 版本同步面之一（manifest 记录用）
+PACKAGE_FILE_MAX = 8 * 1024 * 1024    # 单个状态文件上限（2026-09-11 加固；2026-11-06 由 64MB 收紧：
+                                       # 实际四文件约 1MB，64MB 只会让校验期多占 4×64MB 内存）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
                 "memwise_efis_state.json", "memwise_eris_ewma.json")
@@ -65,6 +66,107 @@ def _now_stamp():
     return time.strftime("%Y%m%d-%H%M%S") + ("%03d" % (int(time.time() * 1000) % 1000))
 
 
+_PA_TOKEN = "%USERPROFILE%"
+
+
+def _path_tokenize(p):
+    """把当前用户的 profile 前缀替换为 %USERPROFILE%（导出用）。
+    只替换用户名片段 ⇒ 换用户导入仍能落位到本机 profile；比整体哈希更保功能
+    （哈希会让稳定锚点/硬上限规则在导入后永远匹配不上真实路径，等于丢功能）。"""
+    try:
+        up = os.environ.get("USERPROFILE") or ""
+        s = str(p)
+        if up and s.lower().startswith(up.lower() + "\\"):
+            return _PA_TOKEN + s[len(up):]
+    except Exception:
+        pass
+    return p
+
+
+def _path_expand(p):
+    """导入时还原 %USERPROFILE%（当前用户的 profile）。"""
+    try:
+        s = str(p)
+        if s.lower().startswith(_PA_TOKEN.lower()):
+            return (os.environ.get("USERPROFILE") or "") + s[len(_PA_TOKEN):]
+    except Exception:
+        pass
+    return p
+
+
+def _map_keys(d, fn):
+    try:
+        return {fn(k): v for k, v in d.items()} if isinstance(d, dict) else d
+    except Exception:
+        return d
+
+
+def _pack_bytes(name, p):
+    """导出前脱敏：移除代理地址（机器/账号私有）、路径中的用户名替换为令牌。
+    解析失败时退回原文（宁可功能可用，也不能产出损坏包）。"""
+    try:
+        raw = open(p, "rb").read().decode("utf-8")
+    except Exception:
+        try:
+            return open(p, "rb").read()
+        except Exception:
+            return b""
+    try:
+        if name == "config.yaml" and yaml is not None:
+            d = yaml.safe_load(raw) or {}
+            if isinstance(d, dict):
+                if "update_proxy" in d:
+                    d["update_proxy"] = ""      # 凭据不随包外流（导入端保留本机值）
+                if isinstance(d.get("ws_caps"), dict):
+                    d["ws_caps"] = _map_keys(d["ws_caps"], _path_tokenize)
+                return yaml.safe_dump(d, allow_unicode=True, sort_keys=False).encode("utf-8")
+        elif name == "memwise_state.json":
+            d = json.loads(raw)
+            if isinstance(d, dict):
+                if isinstance(d.get("stable_anchors"), dict):
+                    d["stable_anchors"] = _map_keys(d["stable_anchors"], _path_tokenize)
+                rb = d.get("rebound")
+                if isinstance(rb, dict):
+                    for k in ("ewma", "count", "backoff_until", "last_record"):
+                        if isinstance(rb.get(k), dict):
+                            rb[k] = _map_keys(rb[k], _path_tokenize)
+            return json.dumps(d, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        pass
+    return raw.encode("utf-8")
+
+
+def _unpack_bytes(name, data, local_proxy=""):
+    """导入前还原令牌；config.yaml 的代理地址保持本机原值（代理是机器私有配置）。"""
+    try:
+        raw = data.decode("utf-8")
+    except Exception:
+        return data
+    try:
+        if name == "config.yaml" and yaml is not None:
+            d = yaml.safe_load(raw) or {}
+            if isinstance(d, dict):
+                if isinstance(d.get("ws_caps"), dict):
+                    d["ws_caps"] = _map_keys(d["ws_caps"], _path_expand)
+                if "update_proxy" in d:
+                    d["update_proxy"] = local_proxy   # 代理是机器私有配置：保留本机值
+                return yaml.safe_dump(d, allow_unicode=True, sort_keys=False).encode("utf-8")
+        elif name == "memwise_state.json":
+            d = json.loads(raw)
+            if isinstance(d, dict):
+                if isinstance(d.get("stable_anchors"), dict):
+                    d["stable_anchors"] = _map_keys(d["stable_anchors"], _path_expand)
+                rb = d.get("rebound")
+                if isinstance(rb, dict):
+                    for k in ("ewma", "count", "backoff_until", "last_record"):
+                        if isinstance(rb.get(k), dict):
+                            rb[k] = _map_keys(rb[k], _path_expand)
+            return json.dumps(d, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        pass
+    return data
+
+
 def export_state(source="export", base=None):
     """打包当前状态文件 → data/import_export/ 下 ZIP 包，返回 (路径, 缺失未打包列表)。
     路径为 None 表示无任何状态文件可打包。不存在的文件跳过，
@@ -97,7 +199,8 @@ def export_state(source="export", base=None):
     }
     with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, p in sorted(files.items()):
-            zf.write(p, arcname=name)
+            # 脱敏打包：config 去代理、路径去用户名（详见 _pack_bytes）
+            zf.writestr(name, _pack_bytes(name, p))
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return pkg_path, sorted(set(paths.keys()) - set(files.keys()))
 
@@ -206,7 +309,7 @@ def _journal_path(base=None):
     return os.path.join(_data_root(base), "import.pending")
 
 
-def import_state(pkg_path, backup=True, base=None, _recover=False):
+def import_state(pkg_path, backup=True, base=None):
     """导入配置包 → (True, "") 或 (False, 错误串)。
     backup=True 先把当前状态打包为 Backup 包（可供再次导入恢复）。
     落位 = 按 manifest.files 写入 + 删除预期四文件中包内没有的
@@ -225,6 +328,15 @@ def import_state(pkg_path, backup=True, base=None, _recover=False):
         except Exception:
             bak = ""
     paths = _state_paths(base)
+    # 导入保持本机代理地址（代理属于机器私有配置，不随包迁移）；同时还原路径令牌
+    _local_proxy = ""
+    try:
+        _cp = paths.get("config.yaml")
+        if yaml is not None and _cp and os.path.isfile(_cp):
+            _cd = yaml.safe_load(open(_cp, "r", encoding="utf-8").read()) or {}
+            _local_proxy = _cd.get("update_proxy", "")
+    except Exception:
+        _local_proxy = ""
     temps = {}
     journal = _journal_path(base)
     try:
@@ -233,7 +345,7 @@ def import_state(pkg_path, backup=True, base=None, _recover=False):
                 target = paths.get(name)
                 if not target:
                     continue  # manifest 声明了当前程序不认识的文件名（format_version 已挡，防御）
-                data = zf.read(name)
+                data = _unpack_bytes(name, zf.read(name), _local_proxy)
                 tmp = "%s.%d.importing" % (target, os.getpid())
                 with open(tmp, "wb") as f:
                     f.write(data)
@@ -270,7 +382,7 @@ def import_state(pkg_path, backup=True, base=None, _recover=False):
         _restored = False
         if bak:
             try:
-                _restored = bool(import_state(bak, backup=False, base=base, _recover=True)[0])
+                _restored = bool(import_state(bak, backup=False, base=base)[0])
             except Exception:
                 _restored = False
         try:
