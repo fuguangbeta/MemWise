@@ -49,3 +49,5 @@ config/.write_test*
 
 # DSH 工作区本地配置（含记忆库目录联接）
 .dsh/
+# 挂载清单插件交接（本机）
+.dsh-mounts/
