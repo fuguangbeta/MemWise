@@ -19,51 +19,24 @@ TREE5_ADV_MID_MB = max(1, int(round(20 * _S)))      # 树5：> 此 MB → +1
 class PolicyVoter:
     """五树投票框架：收益/代价/时机/紧迫/反事实（**实际启用 3 棵树**）
 
-    - should_trim：树 1(收益)/2(压力)/5(反事实) 计分，并经 _apply_weights 应用在线学习权重
-      （权重由 update_weights_per_trim 学习；阈值按模式梯度 normal 0 / deep -1 / full -2）。
-    - should_probe：信息价值/记忆空缺/资源约束/因果好奇四路计分，**不参与在线权重学习**
-      （2026-10-15 AST 复核：函数体不引用 _weights/_apply_weights，权重变化不影响 probe 结论）。
-    - 树 3(时机)/树 4(紧迫)：**预留**——scores[2]/scores[3] 从不赋值（恒 0），其权重保持 1.0
-      但不影响任何决策。命名与注释按此口径，勿再宣称「五树全部生效」。
+    - should_trim：树 1(收益)/2(压力)/5(反事实) 计分，**等权求和**后与模式阈值比较
+      （normal 0 / deep -1 / full -2）。
+    - should_probe：信息价值/记忆空缺/资源约束/因果好奇四路计分。
+    - 树 3(时机)/树 4(紧迫)：**预留**——scores[2]/scores[3] 从不赋值（恒 0），不影响决策。
+      命名与注释按此口径，勿再宣称「五树全部生效」。
+    - **2026-11-10 移除在线权重学习**：417 画像实测，学习后 normal 通过率 0%、full 92% 但
+      只覆盖 26% 预测释放（高收益进程被负权重否决，低收益通过）；等权下 normal 通过 29%、
+      覆盖 93% 预测释放。权重学习从未产生正收益，反而把投票学成反向选择，故整体弃用。
     """
     
     def __init__(self):
-        self._tree_weights = [1.0] * 5  # 五棵树初始等权重（normal 组，兼容旧引用）
-        self._mode_weights = {"normal": [1.0] * 5}  # 模式隔离权重组（2026-08-16 用户定稿：
-        # 树权重=各决策树预测可靠度，与模式力度强相关——deep/full 激进时压力树权重变化大，
-        # 跨模式共享会使 A 模式的权重学习污染 B 模式决策；场景维度与树权重弱相关，4 组即可）
         self.current_mode = "normal"
 
     def set_mode(self, mode):
-        """切换当前模式（权重组懒创建，模式间零污染）"""
+        """切换当前模式（仅影响日志与阈值语义，无权重状态）"""
         if mode not in ("quick", "normal", "deep", "full"):
             mode = "normal"
         self.current_mode = mode
-        self._mode_weights.setdefault(mode, [1.0] * 5)
-
-    def _weights(self):
-        return self._mode_weights.setdefault(self.current_mode, [1.0] * 5)
-
-    def _apply_weights(self, scores):
-        """将权重应用于各树得分（加权求和，保持总分范围不变）"""
-        total_w = sum(abs(w) for w in self._weights())
-        if total_w == 0:
-            return scores
-        norm = 5.0 / total_w  # 归一化到 [0, 5]
-        return [s * self._weights()[i] * norm for i, s in enumerate(scores)]
-
-    def update_weights_per_trim(self, scores, success):
-        """每进程粒度的在线权重学习——直接调节当前模式的各树权重（有界 ±2，慢速 0.05 收敛）。
-        正贡献+成功 / 负贡献+失败 → 该树权重上升（预测可靠）；
-        正贡献+失败 / 负贡献+成功 → 该树权重下降（预测被证伪）。
-        权重可为负：负权重树的贡献在总分中反向计入，使学习真正影响决策。"""
-        direction = 1.0 if success else -1.0
-        w = self._weights()
-        for i, contrib in enumerate(scores):
-            if contrib == 0:
-                continue
-            delta = direction * (1.0 if contrib > 0 else -1.0) * 0.05
-            w[i] = max(-2.0, min(2.0, w[i] + delta))
 
     @staticmethod
     def _emergency_of(state):
@@ -83,16 +56,11 @@ class PolicyVoter:
         reasons = []
         k_freed = 0.0
 
-        # 树1: 预期收益 (Kalman，含上下文修正)
+        # 树1: 预期收益（Kalman 原始预测；ctx 修正层 2026-11-08 移除——实测 MAE 负收益）
         p = learner.profiles.get(name.lower())
         if p:
             k_freed, k_cost = p.kalman.predict()
-            if hasattr(learner, 'ctx_correction'):
-                f_corr, c_corr = learner.ctx_correction(
-                    state.get("mem_pct", 50), is_fg=state.get("is_fg", False),
-                    hour=time.localtime().tm_hour)
-                k_freed = k_freed * max(0.3, min(3.0, f_corr))
-                k_cost  = k_cost  * max(0.3, min(3.0, c_corr))
+            k_freed = p.effective_freed   # 2026-11-11：树1 用可靠性加权值（连续失败即折扣）
             if k_freed > TREE1_HIGH:
                 scores[0] += 2
                 reasons.append("收益高")
@@ -122,8 +90,8 @@ class PolicyVoter:
         # list() 快照迭代（2026-09-06 审查 F2）：can_trim 在守护线程调用，手动优化线程可
         # 并发增键——有投票段 try 兜底但会误拒该进程，快照根除
         if p and k_freed > 0:
-            peers = [q.kalman.x_freed for q in list(learner.profiles.values())
-                     if q is not p and q.kalman.x_freed > 0]
+            peers = [q.effective_freed for q in list(learner.profiles.values())
+                     if q is not p and q.effective_freed > 0]
             if peers:
                 adv_mb = (k_freed - sum(peers) / len(peers)) / (1 << 20)
                 if adv_mb > TREE5_ADV_HIGH_MB:
@@ -132,10 +100,9 @@ class PolicyVoter:
                 elif adv_mb > TREE5_ADV_MID_MB:
                     scores[4] += 1
 
-        # 加权求和决策：权重由 update_weights_per_trim 在线学习（可为负），使学习真正影响投票；
+        # 等权求和（2026-11-10）：三棵启用树直接相加，与旧「全 1 权重」逐位一致；
         # threshold 由模式梯度传入（normal 0 / deep -1 / full -2）
-        weighted = self._apply_weights(scores)
-        return sum(weighted) >= threshold, "; ".join(reasons[:3]) if reasons else "", list(scores)
+        return sum(scores) >= threshold, "; ".join(reasons[:3]) if reasons else "", list(scores)
 
     def should_probe(self, name, ws, state, learner):
         """是否试探此进程 → (True/False, 理由)"""

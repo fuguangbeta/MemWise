@@ -1,5 +1,5 @@
 """
-MemWise v5.3.011 GUI —— 图形界面
+MemWise v5.4.013 GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
@@ -319,8 +319,20 @@ def _upd_log(base, msg):
         import datetime
         d = os.path.join(base, "data")
         os.makedirs(d, exist_ok=True)
+        # 尊重目标目录的日志开关（2026-11-11）：关闭时改写崩溃通道。
+        # 更新是用户显式操作、现场必须留痕，但不能违背"关日志 = 不写 memwise.log"的承诺。
+        _on = True
+        try:
+            with open(os.path.join(base, "config", "config.yaml"), "r", encoding="utf-8") as _cf:
+                for _ln in _cf:
+                    if _ln.strip().startswith("log_to_file:"):
+                        _on = _ln.split(":", 1)[1].strip().lower() in ("true", "1", "yes")
+                        break
+        except Exception:
+            _on = True      # 读不到配置（首次运行/损坏）⇒ 按"记录"处理，更新场景优先可诊断
+        _name = "memwise.log" if _on else "memwise_crash.log"
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        with open(os.path.join(d, "memwise.log"), "a", encoding="utf-8") as f:
+        with open(os.path.join(d, _name), "a", encoding="utf-8") as f:
             f.write("[%s][更新] %s\n" % (ts, msg))
     except Exception:
         pass
@@ -388,6 +400,9 @@ def _apply_update(argv):
       → ⑥ 失败则用 .old 还原并重启旧版（最坏结果：还是旧版在跑，不会更坏）
     日志写入目标目录 data/memwise.log；返回 0=成功（供测试断言）。"""
     _swapped = False    # 真实性加固（真机测试发现）：替换成功之后任何异常都必须尝试回滚
+    # 先占位：异常可能发生在 _rollback 定义之前（如 pid 非法、等待超时分支），
+    # 直接调用会 NameError 并吞掉"无法回滚"的关键日志（2026-11-08 复核）。
+    _rollback = None
     try:
         rest = [a for a in argv[1:] if a != "--apply-update"]
         minimized = "--minimized" in rest
@@ -480,7 +495,8 @@ def _apply_update(argv):
             if _swapped:
                 _upd_log(os.path.dirname(os.path.abspath(argv[2])) if len(argv) > 2 else ".",
                          "异常发生在替换之后，尝试回滚")
-                _rollback()
+                if _rollback is not None:
+                    _rollback()
                 _launch_app(os.path.abspath(argv[2]), "--minimized" in argv)
         except Exception:
             pass
@@ -1019,7 +1035,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v5.3.011", 0x00000040)  # MB_ICONINFORMATION
+                        "MemWise v5.4.013", 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -1059,7 +1075,7 @@ class MemWiseGUI:
         # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
         self.root.report_callback_exception = self._tk_exception_hook
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v5.3.011")
+        self.root.title("MemWise v5.4.013")
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -1074,6 +1090,7 @@ class MemWiseGUI:
         # ── 主界面初始化（原错挂在 _set_main_window_icon 的 after 回调内，移回 __init__ 保证确定性）──
         self._custom_hicon = None
         self._icon_cache = {}  # name -> HICON
+        self._dlgs = {}  # 单例对话框注册表（key -> Toplevel；防重复打开，2026-11-08）
         self._optimizing = False  # 防止并发优化
         self._once_optimizing = False  # 守护运行中即时优化防重入（2026-08-15 审查）
 
@@ -1123,7 +1140,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v5.3.011 启动· 当前是否管理员权限:{adm}")
+        self._log(f"MemWise v5.4.013 启动· 当前是否管理员权限:{adm}")
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1214,7 +1231,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.3.011")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.4.013")
                     if fw:
                         top = fw
                 except Exception:
@@ -1252,10 +1269,17 @@ class MemWiseGUI:
             _diag_log(f"预烘焙图标解码失败({name}): {exc!r}")
             return None
 
+    # 托盘档位名 → 预烘焙键（2026-11-08 修复）：GUI 使用 8 个状态名，烘焙表按 5 档色存
+    # （tray_*）。缺此映射时 _baked_hicon 对 8 个名字全部落空 ⇒ 每次 42ms 动态渲染，
+    # 且 icon_baked 的 5 个 tray_* 常量成为死数据（实测 png_for("idle")=None）。
+    _BAKED_ICON = {"idle": "tray_idle", "low": "tray_low", "mid": "tray_mid",
+                   "mid2": "tray_mid2", "high": "tray_high",
+                   "idle_mid": "tray_mid", "idle_mid2": "tray_mid2", "idle_high": "tray_high"}
+
     def _get_colored_icon(self, name, color):
         """缓存获取或创建指定颜色的 HICON（预烘焙优先，失败回退动态渲染）"""
         if name not in self._icon_cache:
-            self._icon_cache[name] = (self._baked_hicon(name)
+            self._icon_cache[name] = (self._baked_hicon(self._BAKED_ICON.get(name, name))
                                       or winapi.create_memwise_icon(32, color, shadow=False, gradient=0.12))
         return self._icon_cache[name]
 
@@ -1739,8 +1763,27 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    def _focus_dialog(self, key):
+        """单例对话框守卫（2026-11-08）：该 key 的窗口仍存活则前置并返回 True。
+        重复打开会让同一份 CFG 出现两套控件；排行/学习日志窗口还会叠加各自的刷新链。"""
+        w = getattr(self, "_dlgs", {}).get(key)
+        try:
+            if w is not None and w.winfo_exists():
+                w.deiconify(); w.lift(); w.focus_set()
+                return True
+        except Exception:
+            pass
+        try:
+            self._dlgs.pop(key, None)
+        except Exception:
+            pass
+        return False
+
     def _open_settings(self):
+        if self._focus_dialog("settings"):
+            return
         win = tk.Toplevel(self.root)
+        self._dlgs["settings"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("MemWise 设置"))
@@ -2205,7 +2248,8 @@ class MemWiseGUI:
         self._add_tip(export_btn,
             "「将当前配置导出」\n"
             "1. 将当前全部配置、学习数据与调参结果打包导出到数据目录\n"
-            "2. 导出文件可用于本机恢复，也可分享给其他用户导入")
+            "2. 导出文件可用于本机恢复，也可分享给其他用户导入\n"
+            "3. 排除与游戏名单以占位符替换，导入时用本机设置")
         import_btn = ttk.Button(xfer_btns, text=tr("导入配置"), command=self._on_import_config)
         import_btn.pack(side="left")
         self._add_tip(import_btn,
@@ -2263,7 +2307,7 @@ class MemWiseGUI:
                 try: child.destroy()
                 except Exception: pass
             self._build_ui()
-            self._refresh_mem()          # 重启 2s 刷新链（新控件树）
+            self._refresh_mem()          # 重启 5s 刷新链（新控件树）
             self._upd_stats()
             self._rerender_log()         # 历史日志按新语言重渲染（原文缓存）
             self._draw_chart()           # 图表标题/底部指标/悬浮因子随新语言重绘
@@ -2590,7 +2634,10 @@ class MemWiseGUI:
         self._restart_with_new_config()
 
     def _edit_exclusion_list(self):
+        if self._focus_dialog("excl"):
+            return
         win = tk.Toplevel(self.root)
+        self._dlgs["excl"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("进程排除列表"))
@@ -2641,6 +2688,8 @@ class MemWiseGUI:
         win.deiconify()  # 全部控件就绪，居中后一次显示
 
     def _show_learn_log(self):
+        if self._focus_dialog("learn"):
+            return
         info_data = []
         # dict() 拷贝在 GIL 下原子完成：守护线程可能随时增键，直接迭代 items() 会 RuntimeError
         for name, p in sorted(dict(self.learner.profiles).items()):
@@ -2662,6 +2711,7 @@ class MemWiseGUI:
                     r[9], r[10], r[11])
 
         win = tk.Toplevel(self.root)
+        self._dlgs["learn"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr_msg(f"学习日志 — {len(info_data)} 个进程"))
@@ -2715,7 +2765,10 @@ class MemWiseGUI:
 
     def _manage_game_procs(self):
         """一体化游戏进程管理：列出/添加/删除游戏进程条目"""
+        if self._focus_dialog("game"):
+            return
         win = tk.Toplevel(self.root)
+        self._dlgs["game"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("游戏进程管理"))
@@ -2805,7 +2858,10 @@ class MemWiseGUI:
 
     def _show_process_rank(self):
         """弹出进程内存占用排行榜"""
+        if self._focus_dialog("rank"):
+            return
         win = tk.Toplevel(self.root)
+        self._dlgs["rank"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("进程内存排行"))
@@ -3108,7 +3164,10 @@ class MemWiseGUI:
 
     def _manage_ws_caps(self):
         """规则管理窗口：列出/删除（添加入口=进程排行右键，设计 v2.4）。"""
+        if self._focus_dialog("caps"):
+            return
         win = tk.Toplevel(self.root)
+        self._dlgs["caps"] = win
         win.withdraw()
         self._apply_icon(win)
         win.title(tr("工作集硬上限规则"))
@@ -3280,6 +3339,8 @@ class MemWiseGUI:
         ⚠ 血泪约束：**ttk.Frame / ttk.LabelFrame 不支持 `background=`**（`TclError: unknown option`）——
         2026-10-16 发布后事故：本栏原先给 ttk.Frame 传了 background，导致 `_open_settings` 一构建即抛异常，
         **设置按钮直接打不开**。回归只做静态断言所以漏掉了；现已改为"真实构建一次"的烟测（见 test_regression）。"""
+        # 每次打开设置面板都重读运行态：检查完成后缓存不刷新会让「上次检查」永远停在旧值
+        self._upd_st = None
         upf = ttk.LabelFrame(parent, text=tr("更新"), padding=8)
         upf.pack(fill="x", padx=12, pady=4)
         upd_var = tk.BooleanVar(value=CFG.get("update_check", False))
@@ -3828,11 +3889,17 @@ class MemWiseGUI:
                     self.root.after_cancel(self._refresh_mem_id)
             except Exception:
                 pass
-            self._refresh_mem_id = self.root.after(2000, self._refresh_mem)
+            self._refresh_mem_id = self.root.after(5000, self._refresh_mem)   # 2026-11-11：2s→5s，只驱动内存条/托盘，慢一拍无感
+
+    @staticmethod
+    def _sys_ops_count(s):
+        """系统级操作累计次数（统计栏口径；_upd_stats 与 _upd_dae_ui 共用，防两处表达式漂移）"""
+        return (s.get("standby", 0) + s.get("modified", 0) + s.get("filecache", 0)
+                + s.get("registry", 0) + s.get("volume", 0))
 
     def _upd_stats(self):
         s = self.cleaner.summary()
-        self.lbl_sb["text"] = tr("系统杂项: ") + fmt_count(s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('registry',0) + s.get('volume',0))
+        self.lbl_sb["text"] = tr("系统杂项: ") + fmt_count(self._sys_ops_count(s))
         self.lbl_tr["text"] = tr("进程: ") + fmt_count(s['ws_trim'])
         fm = s['freed_mb']
         self.lbl_fr["text"] = tr("释放: ") + (f"{fm/1024.0:.1f}GB" if fm >= 1000 else f"{fm:.1f}MB")
@@ -4016,6 +4083,9 @@ class MemWiseGUI:
         c.tag_unbind("all", "<Leave>")
         c.bind("<Motion>", self._chart_on_motion)
         c.bind("<Leave>", self._chart_hide_tip)
+        # 重绘已 delete("all") 清掉提示：悬停列缓存必须同步复位，否则鼠标停在同一列
+        # 不再触发 _chart_on_motion 的重绘分支，提示消失后无法恢复（2026-11-08 复核）。
+        self._last_hover_col = -1
 
     def _chart_show_tip(self, x, freed_mb, eff_pct, idx):
         c = self.chart_canvas
@@ -4161,7 +4231,7 @@ class MemWiseGUI:
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
-        self.lbl_sb["text"] = tr("系统杂项: ") + fmt_count(s['standby'] + s.get('modified',0) + s.get('filecache',0) + s.get('registry',0) + s.get('volume',0))
+        self.lbl_sb["text"] = tr("系统杂项: ") + fmt_count(self._sys_ops_count(s))
         self.lbl_tr["text"] = tr("进程: ") + fmt_count(s['ws_trim'])
         fm = s['freed_mb']
         self.lbl_fr["text"] = tr("释放: ") + (f"{fm/1024.0:.1f}GB" if fm >= 1000 else f"{fm:.1f}MB")

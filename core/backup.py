@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "5.3.011"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "5.4.013"  # 版本同步面之一（manifest 记录用）
 PACKAGE_FILE_MAX = 8 * 1024 * 1024    # 单个状态文件上限（2026-09-11 加固；2026-11-06 由 64MB 收紧：
                                        # 实际四文件约 1MB，64MB 只会让校验期多占 4×64MB 内存）
 
@@ -67,6 +67,10 @@ def _now_stamp():
 
 
 _PA_TOKEN = "%USERPROFILE%"
+# 2026-11-11：导出包的"个人画像"哨兵。never/game_processes = 用户装了哪些软件、玩什么游戏，
+# 比路径更可识别；导出包会被分享，故用哨兵替换、导入端保留本机原值（与 update_proxy 同策略，
+# 功能不丢：导入后排除名单/游戏名单仍是本机那份）。backup 包（本机回滚用）不脱敏。
+_REDACT_SENTINEL = "__memwise_redacted__"
 
 
 def _path_tokenize(p):
@@ -101,8 +105,10 @@ def _map_keys(d, fn):
         return d
 
 
-def _pack_bytes(name, p):
-    """导出前脱敏：移除代理地址（机器/账号私有）、路径中的用户名替换为令牌。
+def _pack_bytes(name, p, redact_pii=True):
+    """导出前脱敏：移除代理地址（机器/账号私有）、路径中的用户名替换为令牌、
+    用户软件清单（never/game_processes）替换为哨兵。
+    redact_pii=False 时只做代理与路径脱敏（backup 包用于本机回滚，清单必须原样）。
     解析失败时退回原文（宁可功能可用，也不能产出损坏包）。"""
     try:
         raw = open(p, "rb").read().decode("utf-8")
@@ -117,6 +123,10 @@ def _pack_bytes(name, p):
             if isinstance(d, dict):
                 if "update_proxy" in d:
                     d["update_proxy"] = ""      # 凭据不随包外流（导入端保留本机值）
+                if redact_pii:
+                    for _k in ("never", "game_processes"):
+                        if isinstance(d.get(_k), list) and d[_k]:
+                            d[_k] = [_REDACT_SENTINEL]
                 if isinstance(d.get("ws_caps"), dict):
                     d["ws_caps"] = _map_keys(d["ws_caps"], _path_tokenize)
                 return yaml.safe_dump(d, allow_unicode=True, sort_keys=False).encode("utf-8")
@@ -136,8 +146,9 @@ def _pack_bytes(name, p):
     return raw.encode("utf-8")
 
 
-def _unpack_bytes(name, data, local_proxy=""):
-    """导入前还原令牌；config.yaml 的代理地址保持本机原值（代理是机器私有配置）。"""
+def _unpack_bytes(name, data, local_proxy="", local_lists=None):
+    """导入前还原令牌；config.yaml 的代理地址保持本机原值（代理是机器私有配置）。
+    local_lists: 本机 never/game_processes —— 遇到脱敏哨兵时用它回填，导入后功能不丢。"""
     try:
         raw = data.decode("utf-8")
     except Exception:
@@ -150,6 +161,9 @@ def _unpack_bytes(name, data, local_proxy=""):
                     d["ws_caps"] = _map_keys(d["ws_caps"], _path_expand)
                 if "update_proxy" in d:
                     d["update_proxy"] = local_proxy   # 代理是机器私有配置：保留本机值
+                for _k in ("never", "game_processes"):
+                    if d.get(_k) == [_REDACT_SENTINEL]:
+                        d[_k] = list((local_lists or {}).get(_k) or [])
                 return yaml.safe_dump(d, allow_unicode=True, sort_keys=False).encode("utf-8")
         elif name == "memwise_state.json":
             d = json.loads(raw)
@@ -200,7 +214,7 @@ def export_state(source="export", base=None):
     with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, p in sorted(files.items()):
             # 脱敏打包：config 去代理、路径去用户名（详见 _pack_bytes）
-            zf.writestr(name, _pack_bytes(name, p))
+            zf.writestr(name, _pack_bytes(name, p, redact_pii=(source == "export")))
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return pkg_path, sorted(set(paths.keys()) - set(files.keys()))
 
@@ -330,13 +344,17 @@ def import_state(pkg_path, backup=True, base=None):
     paths = _state_paths(base)
     # 导入保持本机代理地址（代理属于机器私有配置，不随包迁移）；同时还原路径令牌
     _local_proxy = ""
+    _local_lists = {}
     try:
         _cp = paths.get("config.yaml")
         if yaml is not None and _cp and os.path.isfile(_cp):
             _cd = yaml.safe_load(open(_cp, "r", encoding="utf-8").read()) or {}
             _local_proxy = _cd.get("update_proxy", "")
+            # 本机软件清单：供脱敏哨兵回填（2026-11-11）
+            _local_lists = {k: list(_cd.get(k) or []) for k in ("never", "game_processes")}
     except Exception:
         _local_proxy = ""
+        _local_lists = {}
     temps = {}
     journal = _journal_path(base)
     try:
@@ -345,7 +363,7 @@ def import_state(pkg_path, backup=True, base=None):
                 target = paths.get(name)
                 if not target:
                     continue  # manifest 声明了当前程序不认识的文件名（format_version 已挡，防御）
-                data = _unpack_bytes(name, zf.read(name), _local_proxy)
+                data = _unpack_bytes(name, zf.read(name), _local_proxy, _local_lists)
                 tmp = "%s.%d.importing" % (target, os.getpid())
                 with open(tmp, "wb") as f:
                     f.write(data)
@@ -441,6 +459,14 @@ def reset_factory(backup=True, base=None):
             os.remove(cp)
     except Exception as e:
         errors.append("%s: %s" % (_CALIB_NAME, e))
+    # ③ 更新运行态（last_check / skip_version）也必须清：否则"恢复默认"后仍会跳过某版本。
+    # 不能并入 _STATE_NAMES——那是配置包内容，跨机迁移 skip 状态与语义相反。
+    try:
+        up = os.path.join(_data_root(base), "memwise_update.json")
+        if os.path.isfile(up):
+            os.remove(up)
+    except Exception as e:
+        errors.append("memwise_update.json: %s" % e)
     if errors:
         try:
             from core.engine import _event_log

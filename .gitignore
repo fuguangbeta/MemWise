@@ -8,6 +8,10 @@ config/config.yaml
 .mcp.json
 .codegraph/
 scripts/release_*.py
+scripts/gh_query.py
+scripts/version_audit.py
+scripts/dev_rebuild.py
+scripts/diag_replay.py
 
 # Build artifacts
 build/

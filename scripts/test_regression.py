@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v5.3.011 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise v5.4.013 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -156,7 +156,7 @@ ok2,_=j.can_trim(s2); check("notepad allowed", ok2)
 j.mark_failed("test.exe",1); check("cooldown recorded", "test.exe" in j.cooldown)
 # 非首轮（已有基线）：策略投票必须真实生效，不得抛异常全拒
 j3 = PareJudger(l2, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]})
-j3._post_clean_ws["other.exe"] = 10 << 20
+j3.bl_set("other.exe", None, 10 << 20, time.time())
 s3=Snap(); s3.name="vote.exe"; s3.ws=300<<20; s3.path="d:\\app\\vote.exe"; s3.pid=9999; s3.pf=0; s3.priv=0; s3.fg=False
 j3._low_activity[9999] = (2, time.time(), None)
 ok3, reason3 = j3.can_trim(s3)
@@ -434,15 +434,13 @@ def _mk_lock_snap(ws=60 << 20):
 # a. WS 基线：清后未回填（ws<基线）→ normal 拦 / deep·full 放行
 for mode, expect_ok in (("normal", False), ("deep", True), ("full", True)):
     j = _mk_lock_j(mode)
-    j.mark_trimmed("lock.exe", freed=0, ws_before=100 << 20, pf_delta=0, ws_after=80 << 20)
-    j._post_clean_time["lock.exe"] = time.time() - 100
+    j.bl_set("lock.exe", None, 80 << 20, time.time() - 100)
     ok, reason = j.can_trim(_mk_lock_snap(60 << 20))
     check(f"WS基线 {mode}={'放行' if expect_ok else '拦截'}", ok == expect_ok, f"{mode} {reason}")
 # b. 稳态锚点：低于自然稳态 → normal 拦 / deep·full 放行（ws>基线 隔离 WS 基线检查）
 for mode, expect_ok in (("normal", False), ("deep", True), ("full", True)):
     j = _mk_lock_j(mode)
-    j.mark_trimmed("lock.exe", freed=0, ws_before=100 << 20, pf_delta=0, ws_after=50 << 20)
-    j._post_clean_time["lock.exe"] = time.time() - 100
+    j.bl_set("lock.exe", None, 50 << 20, time.time() - 100)
     j.learner.stable_anchors.anchors["d:\\app\\lock.exe"] = type("A", (), {
         "confirmed": True, "should_suppress": lambda self, ws, m=0.15: True})()
     ok, reason = j.can_trim(_mk_lock_snap(100 << 20))
@@ -468,7 +466,7 @@ def _mk_vote_j(mode):
     j.aggressiveness = 0.3
     if mode != "full":
         j._low_activity[9300] = (2, time.time(), None)
-    j._post_clean_ws["vote.exe"] = 150 << 20  # 有基线且 ws<2×基线 → 走投票分支（非 ws_override）
+    j.bl_set("vote.exe", None, 150 << 20, time.time())  # 有基线且 ws<2×基线 → 走投票分支（非 ws_override）
     return j
 _captured = {}
 for mode, expect in (("normal", 0), ("deep", -1), ("full", -2)):
@@ -891,17 +889,11 @@ check("场景维度已删除:控制器不再持有场景属性",
       not hasattr(_efm26b, "current_scene") and not hasattr(_efm26b, "_scene_stable")
       and not hasattr(_efm26b, "_last_scene"))
 os.remove(_tmp25e); os.remove(_tmp26e)
-# ── Policy 树权重 4 组隔离 ──
+# ── 在线权重学习已移除（2026-11-10，实测把投票学成反向选择）──
 _pv25 = PolicyVoter()
-_pv25.set_mode("normal")
-_pv25.update_weights_per_trim([2, 0, 0, 0, 0], True)
-_w_norm = _pv25._mode_weights["normal"][0]
-check("normal 组权重上升", _w_norm > 1.0, f"w={_w_norm}")
-_pv25.set_mode("full")
-check("full 组权重初始 1.0", _pv25._mode_weights["full"][0] == 1.0)
-_pv25.update_weights_per_trim([2, 0, 0, 0, 0], False)
-check("full 组权重独立下降", _pv25._mode_weights["full"][0] < 1.0)
-check("normal 组权重不受 full 学习影响", abs(_pv25._mode_weights["normal"][0] - _w_norm) < 1e-9)
+check("权重学习已移除：PolicyVoter 无权重状态/方法",
+      not hasattr(_pv25, "_mode_weights") and not hasattr(_pv25, "_apply_weights")
+      and not hasattr(_pv25, "update_weights_per_trim"))
 
 # ── 守护运行中手动即时优化：exec_lock 互斥 + optimize 壳转发 + _manual_run 生命周期 ──
 import threading as _th
@@ -970,19 +962,18 @@ check("托盘标准 tooltip 启用（NIF_SHOWTIP add/modify）",
 from core import winapi as _wa26mod
 check("托盘 NOTIFYICONDATA 976B（含 hBalloonIcon）",
       _wa26mod.ctypes.sizeof(_wa26mod.NOTIFYICONDATA) == 976)
-# ── learner 并发写锁 + 策略树权重持久化（含旧格式兼容）──
+# ── learner 并发写锁 + 状态不再持久化 policy（旧字段忽略）──
 from core import learner as _lm26
 check("learner.save 写锁", hasattr(_lm26, "_SAVE_LOCK") and hasattr(_lm26._SAVE_LOCK, "acquire"))
 _lr26 = PareLearner()
-_lr26.policy.set_mode("deep"); _lr26.policy.update_weights_per_trim([1, 0, 0, 0, 0], True)
 _t26 = os.path.join(tempfile.mkdtemp(), "state.json")
-check("save ok(含 policy)", _lr26.save(_t26))
-_lr26b = PareLearner.load(_t26)
-check("树权重持久化往返", _lr26b.policy._mode_weights.get("deep", [0] * 5)[0] > 1.0)
-_d26 = json.load(open(_t26, encoding="utf-8")); _d26.pop("policy", None)
+check("save ok", _lr26.save(_t26))
+_d26 = json.load(open(_t26, encoding="utf-8"))
+check("状态不再写 policy 字段", "policy" not in _d26)
+_d26["policy"] = {"deep": [2.0] * 5}
 json.dump(_d26, open(_t26, "w", encoding="utf-8"))
-_lr26c = PareLearner.load(_t26)
-check("旧格式无 policy 键兼容", _lr26c.policy._mode_weights.get("deep", [1.0] * 5)[0] == 1.0)
+_lr26b = PareLearner.load(_t26)
+check("旧 policy 键被忽略且不崩", _lr26b is not None)
 os.remove(_t26)
 # ── config 数值键钳制（手改越界值不再穿透门槛）──
 import core.config as _cfg26
@@ -1065,7 +1056,10 @@ check("崩溃现场安装函数", "_install_crash_sink" in _eng26_src
       and "_install_crash_sink()" in _gui26_src and "_install_crash_sink()" in _mw26_src)
 check("崩溃现场独立于日志开关", "memwise_crash.log" in _eng26_src and "MEMWISE_LOG_DIR" in _eng26_src)
 # ── 字典快照迭代（守护线程防 RuntimeError）──
-check("θ 统计快照迭代", _eng26_src.count("dict(learner.profiles).values()") == 2)
+check("θ 统计快照迭代（2026-11-08 合并为一次遍历）",
+      _eng26_src.count("dict(learner.profiles).values()") >= 1
+      and "def _prof_theta_stats" in _eng26_src
+      and "_prof_theta_mean" not in _eng26_src)
 check("pop_info 快照迭代", "dict(self.profiles)" in _lm26_src)
 check("meta.tick 快照迭代", "dict(self.learner.profiles)" in _meta26_src)
 # ── i18n 零重复键 + 新键 + 退出表述 ──
@@ -2067,8 +2061,9 @@ check("日志：周期明细含系统操作计数/释放前三/判定拦截原�
       all(k in _eng_log for k in ("明细: %s · 释放前三", "拦截[%s]", "内存 %d%%(可用")))
 check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff）",
       all(k in _eng_log for k in ("生效设置: 模式 %s", "_CFG_SNAPSHOT", '"配置"')))
-check("日志：学习状态周期摘要（画像/锚点/回退/抑制/策略权重/当前参数）",
-      all(k in _eng_log for k in ("学习状态: 画像 %d", "策略权重[%s]", "当前参数 %s")))
+check("日志：学习状态周期摘要（画像/锚点/回退/抑制/当前参数，无策略权重）",
+      all(k in _eng_log for k in ("学习状态: 画像 %d", "当前参数 %s"))
+      and "策略权重" not in _eng_log)
 check("日志：游戏启停入文件（[界面] 通道单写，无 [决策] 双写）+ 模式仅切换时标注（措辞「后续模式」）",
       "for msg in self.cleaner.pop_game_msgs():" in _eng_log and " · 后续模式：%s→%s" in _eng_log
       and "模式 {CFG.get('clean_mode'" not in _eng_log
@@ -2395,7 +2390,7 @@ check("F5 quick+None=低优先待机+注册表",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="5.3.0.11"' in _mf41)
+check("F9 manifest 版本随版", 'version="5.4.0.13"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -2500,17 +2495,18 @@ check("G2b purge 防御式取值删除（KeyError 类别根除）",
       and "del self._post_clean_ws[k]" not in _jd42 and "del self.pf_before[k]" not in _jd42
       and "del self.cooldown[k]" not in _jd42
       and "_low_activity.get(k)" in _jd42 and "_io_cache.get(k)" in _jd42)
-check("G2c update_anchors 快照迭代", "list(self._post_clean_time.items())" in _jd42)
+check("G2c update_anchors 快照迭代", "list(self._post_clean_ws.items())" in _jd42)
 _j42 = PareJudger(PareLearner(), dict(_J41))
 _n42 = time.time()
 _j42.cooldown["old"] = _n42 - 1; _j42.cooldown["new"] = _n42 + 999
-_j42._post_clean_time["old"] = _n42 - 3700; _j42._post_clean_ws["old"] = 1
-_j42._post_clean_time["new"] = _n42 - 10; _j42._post_clean_ws["new"] = 1
+_j42.bl_set("old", None, 1, _n42 - 3700)
+_j42.bl_set("new", None, 1, _n42 - 10)
 _j42.pf_before[1] = (1, _n42 - 100); _j42.pf_before[2] = (1, _n42 - 1)
 _j42._low_activity[3] = (2, _n42 - 2000, None); _j42._low_activity[4] = (2, _n42 - 10, None)
 _j42.purge_expired()
 check("G2d purge 清理语义逐字不变（过期删/未过期留）", _j42.cooldown == {"new": _n42 + 999}
-      and _j42._post_clean_ws == {"new": 1} and 1 not in _j42.pf_before and 2 in _j42.pf_before
+      and set(_j42._post_clean_ws) == {"new"} and _j42.bl_get("new", None)[0] == 1
+      and 1 not in _j42.pf_before and 2 in _j42.pf_before
       and 3 not in _j42._low_activity and 4 in _j42._low_activity)
 
 # G3 游戏消息单写（[决策] 直写已删——周期末 [界面] 兜底循环承担文件侧，消除同条双行）
@@ -3056,7 +3052,7 @@ check("P11 图标脚本产物改到 %TEMP%",
 check("P12 watchdog.json 原子写", "_wd_tmp" in _eg47 and "os.replace(_wd_tmp, wd_path)" in _eg47)
 check("P13 文档口径订正（EFIS 头/CLI 头/五树注释）",
       "E.F.I.S. v3" not in _ef47 and "不写文件" not in _mw47
-      and "实际启用 3 棵树" in _pl47 and "不参与在线权重学习" in _pl47)
+      and "实际启用 3 棵树" in _pl47 and "等权求和" in _pl47)
 check("P14 死导入/死字段/死函数清理",
       "import time" not in _src47("core/rebound.py") and "import time" not in _src47("core/stable.py")
       and "import math" not in _pl47 and "import os" not in _src47("core/i18n.py")
@@ -3697,16 +3693,17 @@ check("P09 探针 α/β 上限", _p55.alpha <= 100 and _p55.beta <= 50)
 _p55b = Profile("p55b.exe")
 for _i55 in range(120): _p55b.record_probe(True, freed=1 << 20)
 check("P09 120 次探针后 α 不超 100", _p55b.alpha <= 100)
-_p55c = PareLearner(); _p55c._ctx_corrections[(1, 0, 1)] = 1.2
-try:
-    _p55c.record_ctx_correction(10, False, 1, 10 << 20, 5 << 20)
-    _ok55c = True
-except Exception:
-    _ok55c = False
+# P23 已于 2026-11-08 弃用 ctx 修正层（实测 MAE 负收益）：旧状态字段必须被忽略、且不再写回
+_p55c = PareLearner()
 _t55f = os.path.join(_tf55.mkdtemp(prefix="mw55_"), "s.json")
+with open(_t55f, "w", encoding="utf-8") as _fh55:
+    json.dump({"version": 4, "profiles": {}, "policy": {},
+               "ctx_corrections": [{"k": [1, 0, 1], "v": [1.2, 1.0]}]}, _fh55)
+_l55d = PareLearner.load(_t55f)
 _p55c.save(_t55f)
 _j55 = json.load(open(_t55f, encoding="utf-8"))
-check("P23 ctx 旧格式不崩 + 持久化", _ok55c and "ctx_corrections" in _j55)
+check("P23 ctx 修正层已弃用：旧字段加载不崩、且不再写回",
+      _l55d is not None and "ctx_corrections" not in _j55)
 _sh55.rmtree(os.path.dirname(_t55f), ignore_errors=True)
 check("P04 排序键混合空/数字不崩", sorted(["", "256 MB"], key=_G55._rank_cell_key) == ["", "256 MB"])
 _oldlang55 = _G55.get_language(); _G55.set_language("en")
@@ -4137,8 +4134,7 @@ _j61 = PareJudger(PareLearner(), {"never": [], "efis_params": {}})
 _c61 = _PC60(_j61)
 _l61 = _j61.learner
 _l61.thompson_score = lambda *a, **k: 0.5
-_j61._post_clean_ws["dup61.exe"] = 10 << 20
-_j61._post_clean_create["dup61.exe"] = 111
+_j61.bl_set("dup61.exe", 111, 10 << 20, time.time())
 def _mk61(create):
     s = type("s61", (), {})()
     s.name = "dup61.exe"; s.pid = 1; s.ws = 50 << 20; s.path = r"d:\dup61.exe"; s.create = create
@@ -4196,7 +4192,16 @@ def _mk62(mode, agg):
     _c62._layer3_deep = lambda *a, **k: _calls62.append(("l3",))
     _c62._final_consolidation = lambda *a, **k: _calls62.append(("final",))
     _c62._layer1_ops = lambda _ops: {"ws", "ws_all", "registry"}
-    _r62 = _c62.optimize([], _l62, mode=mode, aggressiveness=agg, deadline=None)
+    # 环境无关（2026-11-08）：deep 的 ws_all 使用率门控（<33% 移除）依赖**真实**内存使用率，
+    # 低负载机器上 pct 在 32~34 抖动会让 J24c 随机失败（实测 pct=34 仍偶发）。固定 pct=50。
+    import core.cleaner as _cm62x
+    _orig_ms62 = _cm62x.winapi.get_memory_status
+    _cm62x.winapi.get_memory_status = lambda: {"pct": 50, "total": 16 << 30,
+                                               "avail": 8 << 30, "used": 8 << 30}
+    try:
+        _r62 = _c62.optimize([], _l62, mode=mode, aggressiveness=agg, deadline=None)
+    finally:
+        _cm62x.winapi.get_memory_status = _orig_ms62
     return _calls62, _r62
 _cq62, _rq62 = _mk62("quick", 0.5)
 check("J24a quick 表征：仅 standby_low+registry，无进程/深度",
@@ -4373,7 +4378,341 @@ check("J19 GUI 图标接线：三处优先预烘焙、失败回退动态渲染",
       "from core.icon_baked import" in _gui59 and _gui59.count("_baked_hicon") >= 4
       and 'self._baked_hicon("win16") or winapi.create_memwise_icon(16)' in _gui59
       and 'self._baked_hicon("win32") or winapi.create_memwise_icon(32)' in _gui59
-      and "self._baked_hicon(name)\n                                      or winapi.create_memwise_icon" in _gui59)
+      and "self._baked_hicon(self._BAKED_ICON.get(name, name))" in _gui59)
+check("J19b 托盘 8 个状态名全部映射到预烘焙键（tray_*）",
+      all(('"%s": "tray_%s"' % (a, b)) in _gui59 for a, b in (
+          ("idle", "idle"), ("low", "low"), ("mid", "mid"), ("mid2", "mid2"),
+          ("high", "high"), ("idle_mid", "mid"), ("idle_mid2", "mid2"), ("idle_high", "high")))
+      and _IB62.png_for("tray_idle") is not None)
+
+
+# ── 英文界面静态 tr 字面量零中文残留（2026-11-08：CLI 守护/重置/服务安装/用法 + 备份恢复
+#    提示共 6 处曾半中半英）。f-string 片段（含 "{"）跳过——由 [19]/[24] 的场景断言覆盖。──
+def _cjk_static_tr_scan():
+    import re as _rx
+    _paths = [os.path.join(_ROOT34, "memwise.py"), os.path.join(_ROOT34, "memwise_gui.py")]
+    _core = os.path.join(_ROOT34, "core")
+    _paths += [os.path.join(_core, n) for n in os.listdir(_core) if n.endswith(".py")]
+    _pat = _rx.compile(r'tr(?:_msg)?\(\s*"((?:[^"\\]|\\.){2,200})"\s*\)')
+    _CJK = _rx.compile(r"[\u4e00-\u9fff]")
+    _bad = []
+    _old = get_language()
+    set_language("en")
+    try:
+        for _p in _paths:
+            try:
+                _txt = open(_p, encoding="utf-8").read()
+            except Exception:
+                continue
+            for _m in _pat.finditer(_txt):
+                _lit = _m.group(1)
+                if "{" in _lit:
+                    continue
+                try:
+                    _s = (_lit.encode().decode("unicode_escape")
+                          if ("\\n" in _lit or "\\u" in _lit) else _lit)
+                except Exception:
+                    _s = _lit
+                if _CJK.search(tr(_s)):
+                    _bad.append("%s:%s" % (os.path.basename(_p), _s[:24]))
+    finally:
+        set_language(_old)
+    return _bad
+
+print("\n[60] 2026-11-08 复核修复批次（保护梯度/游戏树/单例/归一化/卫生）")
+_ju60 = open(os.path.join(_ROOT34, "core", "judger.py"), encoding="utf-8").read()
+_cl60 = open(os.path.join(_ROOT34, "core", "cleaner.py"), encoding="utf-8").read()
+_upd60 = open(os.path.join(_ROOT34, "core", "update.py"), encoding="utf-8").read()
+
+# N1 系统目录 θ 底线：L2/L3 同源
+_l60 = PareLearner(); _l60.thompson_score = lambda *a, **k: 0.2
+_j60 = PareJudger(_l60, {"never": [], "efis_params": {}})
+_j60._mode_guard = "normal"; _j60.aggressiveness = 0.5
+
+def _sn60(pid, name, path, parent=0, create=1):
+    s = type("s60", (), {})()
+    s.pid = pid; s.name = name; s.ws = 200 << 20; s.path = path; s.create = create
+    s.parent = parent; s.fg = False; s.cpu = 0.0; s.pf = 0
+    return s
+
+_s60 = _sn60(6001, "sysapp.exe", r"C:\Program Files\App\sysapp.exe")
+_c60 = _PC60(_j60)
+check("N1 系统目录低 θ：L2 can_trim 拒绝", _j60.can_trim(_s60)[0] is False)
+check("N1b 系统目录低 θ：L3 候选同源拒绝", _c60._l3_collect([_s60], _l60, 0) == [])
+
+# N2 冷却中的进程不做试探
+_j60.mark_failed("cooldown.exe", 1)
+check("N2 失败冷却中的进程不做试探",
+      _j60.can_probe(_sn60(6002, "cooldown.exe", r"d:\cooldown.exe")) is False)
+
+# N3 L3 入口判据覆盖 volume/filecache
+_calls60 = []
+_c60._l3_system_ops = lambda ops, mem: _calls60.append(tuple(sorted(ops or ())))
+_c60._l3_collect = lambda *a: []
+_c60.game_mode = False
+_c60._layer3_deep([], _l60, {"volume", "filecache"})
+check("N3 只勾 volume/filecache 仍进入 L3 系统操作",
+      _calls60 == [("filecache", "volume")], str(_calls60))
+
+# N4 path 缺失时按名兜底
+check("N4 path 缺失时按进程名兜底拦截系统核心",
+      _c60._trim_precheck(_sn60(6003, "svchost.exe", None))[0] is False)
+
+# N5 游戏树两轮记忆
+_l60g = PareLearner()
+_j60g = PareJudger(_l60g, {"never": [], "efis_params": {}, "game_processes": ["launcher.exe"]})
+_c60g = _PC60(_j60g)
+_c60g._build_game_pid_set([_sn60(100, "launcher.exe", r"d:\launcher.exe"),
+                           _sn60(200, "game.exe", r"d:\game.exe", 100)])
+check("N5 launcher 退出当轮子进程仍受保护",
+      200 in _c60g._build_game_pid_set([_sn60(200, "game.exe", r"d:\game.exe", 100)]))
+check("N5b 连续两轮未再命中后淘汰",
+      200 not in _c60g._build_game_pid_set([_sn60(200, "game.exe", r"d:\game.exe", 100)]))
+
+# N6 恢复出厂清除更新运行态
+import tempfile as _tf60, shutil as _sh60
+from core import backup as _bkmod60
+_b60 = _tf60.mkdtemp(prefix="mw_n6_")
+try:
+    _d60 = os.path.join(_b60, "data"); _cd60 = os.path.join(_b60, "config")
+    os.makedirs(_d60); os.makedirs(_cd60)
+    for _p60 in (os.path.join(_cd60, "config.yaml"), os.path.join(_d60, "memwise_state.json"),
+                 os.path.join(_d60, "memwise_update.json")):
+        open(_p60, "w", encoding="utf-8").write("{}")
+    _ok60, _ = _bkmod60.reset_factory(backup=False, base=_d60)
+    check("N6 恢复出厂同时清除更新运行态（skip_version）",
+          bool(_ok60) and not os.path.isfile(os.path.join(_d60, "memwise_update.json")))
+finally:
+    _sh60.rmtree(_b60, ignore_errors=True)
+
+# N7~N12 静态/行为守卫
+check("N7 六个对话框均有单例守卫（防重复打开）",
+      "_focus_dialog" in _gui59 and all(('_focus_dialog("%s")' % _k60) in _gui59
+                                        for _k60 in ("settings", "excl", "learn", "game", "rank", "caps")))
+check("N8 _layer1_memreduct 默认集合无死键 filecache",
+      '"standby_low","volume","registry"}' in _cl60 and '"registry","filecache"}' not in _cl60)
+check("N9 update 运行态落盘使用 PID 后缀 tmp", 'tmp = p + ".%d.tmp" % os.getpid()' in _upd60)
+check("N10 图表重绘后重置悬停列缓存", _gui59.count("self._last_hover_col = -1") >= 2)
+check("N11 更新助手 _rollback 先占位再定义", "_rollback = None" in _gui59
+      and "if _rollback is not None:" in _gui59)
+check("N12 系统目录 θ 底线抽为常量并用于统一判定",
+      "SYS_DIR_MIN_THETA = 0.3" in _ju60 and "is_system_dir_low_theta" in _ju60)
+
+# N13 分类器
+check("N13 分类器：browser_child 不再被 browser 遮蔽",
+      HierarchicalPrior.classify("chrome_child.exe") == "browser_child"
+      and HierarchicalPrior.classify("msedge_child.exe") == "browser_child")
+check("N13b 分类器：短名不误伤且历史命中不变",
+      HierarchicalPrior.classify("codec.exe") is None
+      and HierarchicalPrior.classify("chrome.exe") == "browser"
+      and HierarchicalPrior.classify("Code.exe") == "ide"
+      and HierarchicalPrior.classify("msteams.exe") == "chat"
+      and HierarchicalPrior.classify("steam.exe") == "game"
+      and HierarchicalPrior.classify("msedgewebview2.exe") == "browser")
+
+# N14 θ 统计一次遍历
+from core.engine import _prof_theta_stats as _pts60
+_l60t = PareLearner()
+for _i60 in range(3):
+    _p60 = _l60t.get("a%d.exe" % _i60)
+    _p60.ws_deque.extend([100 << 20] * 20)
+_m60, _a60 = _pts60(_l60t)
+check("N14 θ 统计一次遍历同时给出均值与占比", 0.0 <= _m60 <= 1.0 and 0.0 <= _a60 <= 1.0)
+
+# ── 投票等权求和（2026-11-10 移除权重归一化）──
+_pol_text63 = open(os.path.join(_ROOT34, "core", "policy.py"), encoding="utf-8").read()
+check("K 投票等权求和（无 _apply_weights/权重学习残留）",
+      "sum(scores) >= threshold" in _pol_text63
+      and "_apply_weights" not in _pol_text63
+      and "update_weights_per_trim" not in _pol_text63
+      and "_mode_weights" not in _pol_text63)
+
+print("\n[61] 2026-11-08 D1–D6 只读诊断埋点（不改变任何判定）")
+_cl61 = open(os.path.join(_ROOT34, "core", "cleaner.py"), encoding="utf-8").read()
+_eg61 = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read()
+check("D 埋点·cleaner 统计容器与快照方法齐备",
+      all(k in _cl61 for k in ("_diag_cpu_hist", "_diag_tree",
+                               "_diag_vote", "_diag_supp", "def diag_snapshot")))
+check("D 埋点·engine 输出方法与五行前缀齐备（D3 并入学习状态行）",
+      "def _log_diag_round" in _eg61
+      and all(k in _eg61 for k in ("D1 CPU门", "D4 采样", "D5 投票", "D6 抑制回涨"))
+      and "调参dwell跳过" in _eg61)
+check("D 埋点·仅走 _log_write（受 log_to_file 门控）且每行带模式标签",
+      '_log_write("诊断", "模式 %s%s · D1' in _eg61
+      and '_log_write("诊断", "模式 %s%s · D6' in _eg61)
+
+_l61 = PareLearner(); _j61 = PareJudger(_l61, {"never": [], "efis_params": {}})
+_c61 = _PC60(_j61)
+_c61._diag_cpu_hist[3] = 7
+_c61._diag_tree[0][4] = 3
+_c61._diag_vote = [5, 5, 4]
+_c61._diag_supp = {"稳态抑制": [10, 7]}
+_d61 = _c61.diag_snapshot(reset=False)
+check("D 埋点·快照结构完整", _d61["cpu_hist"][3] == 7
+      and _d61["tree"][0][4] == 3 and _d61["vote"] == [5, 5, 4]
+      and _d61["supp"]["稳态抑制"] == [10, 7], str(_d61))
+_c61.diag_snapshot(reset=True)
+_d61b = _c61.diag_snapshot(reset=False)
+check("D 埋点·reset 后本轮计数归零",
+      sum(_d61b["cpu_hist"]) == 0
+      and _d61b["vote"] == [0, 0, 0] and _d61b["supp"] == {})
+
+_s61 = type("s61", (), {})()
+_s61.pid = 6101; _s61.name = "diag.exe"; _s61.ws = 200 << 20
+_s61.path = r"d:\diag.exe"; _s61.create = 1; _s61.fg = False; _s61.cpu = 0.0; _s61.pf = 0
+_s61.parent = 0
+_j61._mode_guard = "normal"; _j61.aggressiveness = 0.5
+_r1_61 = _j61.can_trim(_s61); _r2_61 = _j61.can_trim(_s61)
+check("D 埋点·不影响 can_trim 判定（两次一致）", _r1_61 == _r2_61, str((_r1_61, _r2_61)))
+
+import re as _re61
+_ok61 = all(_re61.search(_p61, _line61) for _p61, _line61 in (
+    (r"D1 CPU门: 候选 \d+ · 拒 \d+ · 桶\[<3:\d+",
+     "D1 CPU门: 候选 228 · 拒 3 · 桶[<3:0 3-6:1 6-8:0 8-12:2 12-16:0 16-25:0 >=25:0]"),
+    (r"D4 采样: 快照 \d+ 次/周期 · dt 中位 [\d.]+s",
+     "D4 采样: 快照 12 次/周期 · dt 中位 3.0s 最大 3.4s · 进程 214"),
+    (r"D5 投票: 样本 \d+ · 树1\[\+2:\d+",
+     "D5 投票: 样本 9 · 树1[+2:1 +1:2 0:3 -1:2 -2:1] 树2[+2:0 +1:0 0:9 -1:0 -2:0] 树5[+2:0 +1:0 0:9 -1:0 -2:0] · 实际通过 9 · 全1权重通过 8 · 阈值 0"),
+    (r"D6 抑制回涨: 稳态 \d+/\d+\(\d+%\)",
+     "D6 抑制回涨: 稳态 7/10(70%) · 回弹 3/5(60%) · WS未满 0/2(0%)"),
+))
+check("D 埋点·四行日志可被回放脚本解析", _ok61)
+check("D 埋点·D4 每轮清空快照间隔（防 deque 跨轮累计失真）", "self._snap_dts.clear()" in _eg61)
+check("游戏模式·保留低优先待机（quick 同级低感知），仅跳磁盘类",
+      'if "standby_low" in use and _capture(winapi.purge_low_priority_standby)' in _cl61
+      and 'not game_mode and "standby_low"' not in _cl61)
+check("游戏轮播报解释系统级暂缓 + 明细改本轮增量口径",
+      "🎮 系统级暂缓" in _eg61 and "_prev_sys_detail" in _eg61)
+check("试探统计口径：累计=成功+失败+超时，合格=成功数",
+      "_pt + _pf + _pi, _pt, _pf, _pi" in _eg61)
+check("试探 PF 允许量扣自身速率（与 trim 同口径）",
+      "record_pf_before(pid, pf_before)" in _cl61
+      and "self.judger._pf_rate.get(pid, 0.0) * max(0.5" in _cl61)
+check("在线权重学习整体移除（cleaner 无 _trim_success/update_weights）",
+      "_trim_success" not in _cl61 and "update_weights_per_trim" not in _cl61)
+check("卡顿排查埋点：系统操作耗时 + 前台进程清理计数",
+      "_round_time" in _cl61 and "fg_trimmed" in _cl61
+      and "耗时%.2fs" in _cl61)
+
+check("D 埋点·D1 记录全体候选 cpu（不依赖是否被 CPU 门拦）",
+      "_diag_note_candidate" in _cl61 and "_diag_cpu_rej" in _cl61
+      and '"cpu_rej"' in _cl61)
+check("D5 否决算入：否决者也计入样本（真实通过率可见）",
+      "_diag_note_vote_scores" in _cl61 and "投票样本(通过+否决)" in _cl61
+      and "样本 %d · %s · 通过 %d" in _eg61)
+
+print("\n[62] 2026-11-11 决策面与执行域修复（θ 折扣 / 冷却收口 / 预算语义 / 多实例基线 / 预览口径 / 导出脱敏 / 更新日志开关 / 刷新链）")
+
+# ── K1 θ 失败折扣：健康恒等、连续失败衰减、连续成功回弹 ──
+_pf62 = Profile("k1.exe")
+for _ in range(20): _pf62.feed(100 << 20)
+for _ in range(3): _pf62.record_clean(True, 10 << 20, 5)
+check("K1 健康进程折扣=1 且 effective_freed 逐位等于 kalman.x_freed",
+      _pf62.theta_discount == 1.0 and _pf62.effective_freed == _pf62.kalman.x_freed)
+for _ in range(6): _pf62.record_clean(False, 0, 5)
+check("K1b 连续 6 次失败 ⇒ 折扣触底 0.16", abs(_pf62.theta_discount - 0.16) < 1e-9, "%.3f" % _pf62.theta_discount)
+_pf62.record_clean(True, 10 << 20, 5)
+check("K1c 一次成功 ⇒ 折扣部分回弹 0.533", abs(_pf62.theta_discount - 0.533) < 1e-3, "%.3f" % _pf62.theta_discount)
+for _ in range(2): _pf62.record_clean(True, 10 << 20, 5)
+check("K1d 连续 3 次成功 ⇒ 折扣完全解除", _pf62.theta_discount == 1.0)
+_lrn62 = PareLearner(); _pr62 = _lrn62.get("k2.exe")
+for _ in range(20): _pr62.feed(100 << 20)
+for _ in range(3): _pr62.record_clean(True, 10 << 20, 5)
+_th62a = _lrn62.thompson_score("k2.exe")
+for _ in range(6): _pr62.record_clean(False, 0, 5)
+_th62b = _lrn62.thompson_score("k2.exe")
+check("K1e 样本满 20 后失败仍能压低 θ（旧实现分毫不动）",
+      _th62b < _th62a * 0.5, "%.3f -> %.3f" % (_th62a, _th62b))
+
+# ── K2 冷却收口到执行域（L3 / fast-track / 回弹二轮不再绕行）──
+_lrn62b = PareLearner(); _jd62 = PareJudger(_lrn62b, {"never": [], "efis_params": {}})
+_jd62._mode_guard = "full"; _jd62.aggressiveness = 0.9
+_jd62.mark_failed("cool62.exe", 1)
+_sn62 = Snap(); _sn62.name = "cool62.exe"; _sn62.pid = 6262; _sn62.ws = 200 << 20
+_sn62.path = "d:\\cool62.exe"; _sn62.create = 1; _sn62.fg = False; _sn62.cpu = 0.0; _sn62.pf = 0
+_jd62._low_activity[6262] = (5, time.time(), 1)
+check("K2 execution_allowed 拦冷却进程（full 也不例外）", _jd62.execution_allowed(_sn62)[0] is False)
+check("K2b 试探通道显式豁免（保留探索语义）",
+      _jd62.execution_allowed(_sn62, check_activity=False, check_anchor=False,
+                              check_rebound=False, check_cooldown=False)[0] is True)
+_cl62 = PareCleaner(_jd62)
+check("K2c L3 阶段 D 不再收冷却进程", _cl62._l3_collect([_sn62], _lrn62b, 0) == [])
+check("K2d 执行前复检同样拦截", _cl62._trim_precheck(_sn62)[0] is False)
+
+# ── K3 预算截断不再伪装成"执行超时" ──
+import concurrent.futures as _cf62
+_exq62 = _cf62.ThreadPoolExecutor(max_workers=1)
+_outq62 = PareCleaner._bounded_submit(_exq62, lambda x: x, [1, 2],
+                                      max_inflight=1, per_task_timeout=1,
+                                      deadline=time.time() - 1)
+_exq62.shutdown(wait=False)
+check("K3 deadline 已过 ⇒ 不产出任何结果（未提交项不算超时失败）", _outq62 == [], str(_outq62))
+
+# ── K4 清后基线按实例隔离 ──
+_lrn62c = PareLearner(); _jd62b = PareJudger(_lrn62c, {"never": [], "efis_params": {}})
+_jd62b.bl_set("multi62.exe", 100, 100 << 20, time.time())
+_jd62b.bl_set("multi62.exe", 200, 60 << 20, time.time())
+check("K4 两实例各自持基线", _jd62b.bl_get("multi62.exe", 100)[0] == 100 << 20
+      and _jd62b.bl_get("multi62.exe", 200)[0] == 60 << 20)
+check("K4b 未知实例无基线", _jd62b.bl_get("multi62.exe", 300)[0] == 0)
+_jd62b.bl_drop("multi62.exe", 100)
+check("K4c 按实例删除不影响另一实例",
+      _jd62b.bl_get("multi62.exe", 100)[0] == 0 and _jd62b.bl_get("multi62.exe", 200)[0] == 60 << 20)
+_jd62b.bl_drop("multi62.exe")
+check("K4d 整名删除", _jd62b.bl_get("multi62.exe", 200)[0] == 0)
+
+# ── K5 预览口径与实际执行同源（full 的 agg 强制）──
+_lrn62d = PareLearner(); _jd62c = PareJudger(_lrn62d, {"never": [], "efis_params": {}})
+_jd62c._mode_guard = "normal"; _jd62c.aggressiveness = 0.1
+_sn62c = Snap(); _sn62c.name = "fg62.exe"; _sn62c.pid = 6363; _sn62c.ws = 200 << 20
+_sn62c.path = "d:\\fg62.exe"; _sn62c.create = 1; _sn62c.fg = True; _sn62c.cpu = 0.0; _sn62c.pf = 0
+_jd62c._low_activity[6363] = (5, time.time(), 1)
+check("K5 normal 下前台被拦", _jd62c.can_trim(_sn62c)[0] is False)
+check("K5b 预览按本次模式评估：full 放行（与实际执行一致）",
+      _jd62c.can_trim(_sn62c, manual=True, guard="full")[0] is True)
+check("K5c deep 不强制 agg，仍拦", _jd62c.can_trim(_sn62c, manual=True, guard="deep")[0] is False)
+
+# ── K6 导出包脱敏哨兵 / 导入回填本机值 ──
+import zipfile as _zf62, yaml as _y62, tempfile as _tf62
+_dir62 = _tf62.mkdtemp(prefix="mw_k6_")
+try:
+    def _mkbase62(tag, never, games):
+        _b = os.path.join(_dir62, tag, "data"); os.makedirs(_b)
+        _c = os.path.join(_dir62, tag, "config"); os.makedirs(_c)
+        _y62.safe_dump({"never": never, "game_processes": games,
+                        "update_proxy": "http://u:p@1.1.1.1:8080"},
+                       open(os.path.join(_c, "config.yaml"), "w", encoding="utf-8"))
+        open(os.path.join(_b, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4}')
+        return _b
+    _ba62 = _mkbase62("A", ["secret-tool.exe"], ["secret-game.exe"])
+    _bb62 = _mkbase62("B", ["local-only.exe"], ["local-game.exe"])
+    _pe62, _ = _bk33.export_state("export", base=_ba62)
+    _pk62, _ = _bk33.export_state("backup", base=_ba62)
+    _eCfg62 = _y62.safe_load(_zf62.ZipFile(_pe62).read("config.yaml").decode("utf-8"))
+    _kCfg62 = _y62.safe_load(_zf62.ZipFile(_pk62).read("config.yaml").decode("utf-8"))
+    check("K6 导出包用哨兵替换软件清单", _eCfg62.get("never") == [_bk33._REDACT_SENTINEL]
+          and _eCfg62.get("game_processes") == [_bk33._REDACT_SENTINEL])
+    check("K6b backup 包不脱敏（本机回滚需原样）", _kCfg62.get("never") == ["secret-tool.exe"])
+    _ok62, _ = _bk33.import_state(_pe62, backup=False, base=_bb62)
+    _bCfg62 = _y62.safe_load(open(os.path.join(_dir62, "B", "config", "config.yaml"), encoding="utf-8").read())
+    check("K6c 导入脱敏包 ⇒ 保留本机清单（功能不丢）", _ok62
+          and _bCfg62.get("never") == ["local-only.exe"]
+          and _bCfg62.get("game_processes") == ["local-game.exe"])
+finally:
+    _sh54.rmtree(_dir62, ignore_errors=True)
+
+# ── K7 更新助手日志尊重开关 ──
+_gsrc62 = _src47("memwise_gui.py")
+check("K7 _upd_log 读 log_to_file 并分流到崩溃通道",
+      'startswith("log_to_file:")' in _gsrc62
+      and '_name = "memwise.log" if _on else "memwise_crash.log"' in _gsrc62)
+
+# ── K8 空闲刷新链降到 5s（省电点）──
+check("K8 内存条/托盘刷新链 5s（原 2s）", "self.root.after(5000, self._refresh_mem)" in _gsrc62
+      and "after(2000, self._refresh_mem)" not in _gsrc62)
+
+_bad_tr = _cjk_static_tr_scan()
+check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

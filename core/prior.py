@@ -21,10 +21,33 @@ class HierarchicalPrior:
     
     @classmethod
     def classify(cls, name):
-        name = name.lower()
-        for cat, members in cls.CATEGORIES.items():
-            if any(m in name for m in members):
-                return cat
+        """按进程基名匹配（2026-11-08 修订）。
+        旧实现「整名子串 + 固定类目顺序」有两处失效：
+        ① browser_child 被 browser 永久遮蔽（"chrome" 先命中 chrome_child）；
+        ② 短名误伤（"code" 命中 "codec"/"codeblocks"）。
+        现取基名、按成员名长度降序：长名（≥5 字符）允许子串，短名只允许精确或下划线前缀。
+        结果：chrome_child→browser_child、codec→None；msedgewebview2→browser、
+        msteams→chat、Code.exe→ide 等历史命中保持不变。"""
+        n = str(name or "").strip().lower()
+        if n.endswith(".exe"):
+            n = n[:-4]
+        if not n:
+            return None
+        items = [(cat, m.lower()) for cat, ms in cls.CATEGORIES.items() for m in ms]
+        for cat, m in sorted(items, key=lambda x: -len(x[1])):
+            if len(m) >= 6:
+                # 长名允许子串（msedgewebview2 → browser）
+                if m in n:
+                    return cat
+            elif len(m) == 5:
+                # 5 字符名只认"完整词"：精确 / 下划线前缀 / 结尾（msteams → chat，
+                # 而不再被 "steam" 子串误判成 game；excel/opera/brave 等精确命中不变）
+                if n == m or n.startswith(m + "_") or n.endswith(m) or n.endswith("_" + m):
+                    return cat
+            else:
+                # ≤4 字符短名只认精确/下划线前缀（codec 不再被 "code" 误判成 ide）
+                if n == m or n.startswith(m + "_"):
+                    return cat
         return None
     
     @classmethod

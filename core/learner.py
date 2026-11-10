@@ -322,6 +322,35 @@ class Profile:
         return (gain / (1 << 20)) / cost if cost > 0 else 0.0
 
     @property
+    def theta_discount(self):
+        """失败折扣因子 ∈ [0.15, 1.0]（2026-11-11，决策面单一真源）。
+
+        背景（实测）：样本满 20 后 thompson_theta 退化为 kalman_base，而 kalman 仅在
+        freed>0 时更新 ⇒ "曾释放过、此后清不动"的进程预期释放与 θ 永不下降
+        （60 次连续失败 θ 分毫不动）。
+
+        ⚠ fail_cnt 的语义是「累计失败 − 成功次数」（record_clean 成功时 -1），**不等于**
+        "当前清不动"。因此必须叠加连续成功回弹：ok_cnt 是连续成功数（失败即清零），
+        连续成功 3 次即完全解除折扣 —— 只惩罚"最近仍在失败"的进程。
+        实测 417 画像：fail_cnt>0 占 41%，若只看 fail_cnt 会把 17% 的进程长期压在 0.15×，
+        其中包含刚成功过的（误伤）。加入回弹后仅惩罚真·近期失败者。
+        """
+        if self.fail_cnt <= 0:
+            return 1.0
+        k = float(min(self.fail_cnt, 6))
+        if self.ok_cnt > 0:                       # 最近有成功 ⇒ 按连续成功数线性回弹
+            k *= max(0.0, 1.0 - self.ok_cnt / 3.0)
+        if k <= 0:
+            return 1.0
+        return max(0.15, 1.0 - 0.14 * k)
+
+    @property
+    def effective_freed(self):
+        """预期释放量的可靠性加权值 = kalman.x_freed × theta_discount。
+        theta_discount==1.0 时**逐位等于 kalman.x_freed**（新/健康进程零变化）。"""
+        return self.kalman.x_freed * self.theta_discount
+
+    @property
     def z_score(self):
         """当前 WS 的 Z-score"""
         if self.ws_ewma_sigma <= 0 or not self.ws_deque:
@@ -437,40 +466,12 @@ class PareLearner:
         self.meta = MetaCognition(self)    # 元认知监控
         self._ctx = {}                     # 当前系统上下文
         self._info_msgs = []
-        # 上下文修正查找表: 30桶 × 1 float，在线学习条件偏差
-        self._ctx_corrections = {}         # {bucket_key: correction_ewma}
         # 稳态锚点存储（P1-D）：按可执行路径学习"应用自然稳态"，低于稳态抑制清理
         self.stable_anchors = StableAnchorStore()
         # 回弹学习（B 方案）：清后回填率 EWMA → 自动后退期（回弹高的应用不再重复白清）
         self.rebound = ReboundLearner()
     
-    @staticmethod
-    def _ctx_bucket(mem_pct, is_fg, hour):
-        """三维上下文 → 桶键 (5×2×3=30)"""
-        mb = 0 if mem_pct < 30 else (1 if mem_pct < 50 else (2 if mem_pct < 70 else (3 if mem_pct < 85 else 4)))
-        fb = 1 if is_fg else 0
-        hb = 0 if hour < 6 else (1 if hour < 22 else 2)  # 深夜/活跃/普通
-        return (mb, fb, hb)
-    
-    def ctx_correction(self, mem_pct, is_fg=False, hour=12):
-        """获取当前上下文下的 Kalman 预测修正因子（freed, cost）"""
-        v = self._ctx_corrections.get(self._ctx_bucket(mem_pct, is_fg, hour), (1.0, 1.0))
-        return v if isinstance(v, tuple) else (v, 1.0)  # 兼容旧单值格式
-    
-    def record_ctx_correction(self, mem_pct, is_fg, hour, actual_freed, kalman_freed, actual_pf=0, kalman_cost=0):
-        """每次 trim 后更新上下文修正 EWMA（freed + cost 双值）"""
-        if kalman_freed <= 0:
-            return
-        key = self._ctx_bucket(mem_pct, is_fg, hour)
-        fr = max(0.1, min(5.0, actual_freed / kalman_freed))
-        cr = max(0.1, min(5.0, actual_pf / max(kalman_cost, 1))) if kalman_cost > 0 and actual_pf > 0 else 1.0
-        # P23：先取值再判类型——旧单值格式直接解包会 TypeError（实测）
-        _val = self._ctx_corrections.get(key, (1.0, 1.0))
-        if isinstance(_val, (tuple, list)) and len(_val) == 2:
-            old_f, old_c = float(_val[0]), float(_val[1])
-        else:
-            old_f, old_c = float(_val), 1.0
-        self._ctx_corrections[key] = (0.85 * old_f + 0.15 * fr, 0.85 * old_c + 0.15 * cr)
+
 
  
     def pop_info(self):
@@ -507,13 +508,11 @@ class PareLearner:
         if not p or p.total_samples < 2:
             return self.prior.initial_theta(key, self.profiles)
         base = p.thompson_theta
+        base *= p.theta_discount   # 失败折扣（2026-11-11，单一真源；健康进程恒为 1.0）
         if mem_pct is None:
             mem_pct = self._ctx.get("mem_pct", 50)
         if is_fg is None:
             is_fg = self._ctx.get("is_fg", False)
-        if hasattr(p, 'kalman') and p.kalman.x_freed > 0:
-            f_corr, _ = self.ctx_correction(mem_pct, is_fg=is_fg, hour=time.localtime().tm_hour)
-            base = max(0.01, min(0.99, base * max(0.3, min(3.0, f_corr))))
         uncertainty = max(0, 0.12 - p.confidence * 0.12)
         result = min(0.99, base + uncertainty)
         result = max(0.01, min(0.99, result))
@@ -554,15 +553,6 @@ class PareLearner:
                     "profiles": {k: v.to_dict() for k, v in filtered.items()},
                     "stable_anchors": self.stable_anchors.to_dict(),
                     "rebound": self.rebound.to_dict(),
-                    # 策略树权重按模式持久化（2026-08-30）：在线学习成果随画像保存，
-                    # 重启后沿用；旧格式无此键 → 加载端回退默认等权（完全向后兼容）
-                    "policy": {m: list(w) for m, w in self.policy._mode_weights.items()},
-                    # P23：上下文修正表（30 桶 × 2 float）随画像持久化；旧版无此键 → 空表
-                    "ctx_corrections": [
-                        {"k": list(k),
-                         "v": ([float(v[0]), float(v[1])]
-                               if isinstance(v, (tuple, list)) and len(v) == 2 else [float(v), 1.0])}
-                        for k, v in dict(self._ctx_corrections).items()],
                 }
                 # tmp 附加进程号（2026-09-06 审查 F3）：进程内锁不跨进程——CLI daemon 与
                 # GUI 并发保存时各写各的 tmp，os.replace 原子替换，退化为"最后写者胜"
@@ -598,28 +588,8 @@ class PareLearner:
                 continue  # 坏条目跳过，保留其余画像
         learner.stable_anchors = StableAnchorStore.from_dict(data.get("stable_anchors"))
         learner.rebound = ReboundLearner.from_dict(data.get("rebound"))
-        # 策略树权重恢复（2026-08-30）：逐模式校验（四模式/五维/有限数值，夹取 ±2）；
-        # 旧格式无此键 → 保持默认等权，完全向后兼容
-        pw = data.get("policy")
-        if isinstance(pw, dict):
-            for mode, weights in pw.items():
-                if (mode in ("quick", "normal", "deep", "full") and isinstance(weights, list)
-                        and len(weights) == 5
-                        and all(isinstance(x, (int, float)) and math.isfinite(x) for x in weights)):
-                    learner.policy._mode_weights[mode] = [max(-2.0, min(2.0, float(x))) for x in weights]
-        # P23：恢复上下文修正（有限性/范围校验；坏条目跳过）
-        _cc = data.get("ctx_corrections")
-        if isinstance(_cc, list):
-            for _it in _cc:
-                try:
-                    _k = tuple(_it.get("k"))
-                    _v = _it.get("v")
-                    if (len(_k) == 3 and isinstance(_v, (list, tuple)) and len(_v) == 2
-                            and all(isinstance(x, (int, float)) and math.isfinite(x) for x in _v)):
-                        learner._ctx_corrections[_k] = (max(0.1, min(5.0, float(_v[0]))),
-                                                       max(0.1, min(5.0, float(_v[1]))))
-                except Exception:
-                    continue
+        # 旧状态里的 ctx_corrections / policy 字段（2026-11-08 / 2026-11-10 弃用）
+        # 直接忽略——不报错、不写回
         return learner
 
     # ── 反饋 ──

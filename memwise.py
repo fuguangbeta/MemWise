@@ -1,5 +1,5 @@
 """
-MemWise v5.3.011 PARES —— 智能内存看护
+MemWise v5.4.013 PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 不杀进程、不挂起、不注入；默认不联网（仅在你开启「检查更新」后访问官方发布渠道，不发送任何设备信息）；仅在按设置写入状态与日志文件。
 """
@@ -83,7 +83,7 @@ def cmd_learn(args):
     try:
         for i in range(minutes * 12):
             snaps = sniffer.snapshot(); learner.feed(snaps)
-            sampled = sum(p.total_samples for p in learner.profiles.values())
+            sampled = sum(getattr(p, "samples_total", p.total_samples) for p in learner.profiles.values())
             sys.stdout.write(tr_msg(f"\r⏳ {i*5}s | 进程 {len(snaps)} | 画像 {len(learner.profiles)} | 样本 {sampled}"))
             sys.stdout.flush(); time.sleep(5)
     except KeyboardInterrupt: print("\n" + tr("中断"))
@@ -93,7 +93,7 @@ def cmd_learn(args):
     print(SEP)
     for name, roi, theta, p in learner.top(25):
         ws = _mb(p.ws_deque[-1]) if p.ws_deque else 0
-        print(f"{name:<24} {theta:>4.2f} {ws:>6.0f}MB {p.total_samples:>5} {roi:>6.1f}")
+        print(f"{name:<24} {theta:>4.2f} {ws:>6.0f}MB {getattr(p, 'samples_total', p.total_samples):>5} {roi:>6.1f}")
 
 def cmd_optimize(args):
     mode = CFG.get("clean_mode", "normal")
@@ -413,7 +413,7 @@ def main():
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
     winapi.enable_reduct_privileges()
     if len(sys.argv) < 2:
-        print(tr("MemWise v5.3.011 PARES —— 智能内存看护"))
+        print(tr("MemWise v5.4.013 PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))

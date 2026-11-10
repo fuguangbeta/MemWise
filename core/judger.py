@@ -26,6 +26,10 @@ TARGET_USAGE = 30.0  # 目标内存使用率 (%) — PidController 签名默认�
 # （约 32 次/周期）；原「游戏模式 0.5MB」覆盖项从未生效（决策层放行、执行层仍按 1MB 拒绝）
 # 已删除，三处（can_trim / can_probe / cleaner._trim_process）统一引用本常量。
 MIN_WS_BYTES = 1 << 20
+# 系统目录进程（%SystemRoot% / Program Files*）的额外 θ 底线：无论清理模式（含 full）
+# 都要求高置信度才动——系统组件/常见应用的冷页回收收益低、误清代价高。
+# 与模式价值底线（deep 0.12 / full 0.06）**叠加**：先过本门，再过模式底线。
+SYS_DIR_MIN_THETA = 0.3
 
 def _system_path_prefixes():
     """系统目录前缀（动态获取，非硬编码 C 盘——换机器/系统盘非 C 盘时依然有效）"""
@@ -116,9 +120,11 @@ class PareJudger:
         self._last_mem_pct = 50
         self.cooldown = {}
         self.pf_before = {}
-        self._post_clean_ws = {}  # 进程清理后的 WS 基线
-        self._post_clean_time = {}  # 基线时间戳（判定窗口动态：默认 1200s、范围 120-3600，见 can_trim；整体 1 小时过期清理）
-        self._post_clean_create = {}  # P15：基线对应的进程 create 时间（同名重启/新实例不继承旧基线）
+        # 清后 WS 基线：{name: {create: (ws, ts)}}（2026-11-11 两级键）。
+        # 旧实现把实例身份存成单值 _post_clean_create，同名多实例下后写覆盖前写 ⇒ 除最后
+        # 清理的那个实例外，其余实例 create 永不匹配、基线被当 0 放行（实测：实例 A 清理后，
+        # 实例 B 的 "WS未填满" 门恒失效）。两级键让每个实例各自持基线，时间戳并入元组。
+        self._post_clean_ws = {}
         self._probe_last_time = {}
         # ── P0-C 连续低活动确认：{name: (连续低活动轮数, 时间戳)} ──
         self._low_activity = {}
@@ -146,6 +152,37 @@ class PareJudger:
         # ── 工作集硬上限生效中的规范化路径（frozenset 快照，判定门无锁 O(1) 读；
         #    由引擎周期起点与 GUI 规则变更后经 set_capped_paths 重建——设计 v2.1）──
         self._capped_paths = frozenset()
+
+    # ── 清后基线（按 进程名 × 实例 create 两级）──
+    @staticmethod
+    def _bl_key(create):
+        """实例键；create 读取失败（权限/长路径）时为 None ⇒ 归入"未知实例"组。"""
+        return create if create is not None else None
+
+    def bl_get(self, name, create):
+        """取该实例的清后基线 (ws, ts)；无记录或结构异常返回 (0, 0.0)。"""
+        m = self._post_clean_ws.get(str(name or "").lower())
+        if not isinstance(m, dict):
+            return 0, 0.0
+        rec = m.get(self._bl_key(create))
+        if not isinstance(rec, (tuple, list)) or len(rec) < 2:
+            return 0, 0.0
+        return rec[0], rec[1]
+
+    def bl_set(self, name, create, ws, ts):
+        self._post_clean_ws.setdefault(str(name or "").lower(), {})[self._bl_key(create)] = (ws, ts)
+
+    def bl_drop(self, name, create=None):
+        """删实例基线；create 省略表示删该进程名的全部实例。"""
+        k = str(name or "").lower()
+        if create is None:
+            self._post_clean_ws.pop(k, None)
+            return
+        m = self._post_clean_ws.get(k)
+        if isinstance(m, dict):
+            m.pop(self._bl_key(create), None)
+            if not m:
+                self._post_clean_ws.pop(k, None)
 
     def set_capped_paths(self, paths):
         """重建硬上限判定快照（frozenset；调用方持 engine._ws_cap_lock）。"""
@@ -287,9 +324,12 @@ class PareJudger:
         is_fg = getattr(snap, "fg", False)
 
         fg_gate = 0.35  # 前台非游戏程序保持保护（游戏全屏时前台即游戏，已被 PID 保护）
-        
+        # 2026-11-11：预览口径必须与实际执行同源。full 的执行语义是 agg 强制 ≥0.8
+        # （cleaner._run_full 在进 Layer2 之前设置）；预览时 judger.aggressiveness 仍是旧值，
+        # 只看它会让候选预览漏掉前台进程、与实际清理名单不符（F53 同族遗漏面）。
+        _eff_agg = 0.8 if _guard == "full" else self.aggressiveness
         if is_fg:
-            if self.aggressiveness < fg_gate:
+            if _eff_agg < fg_gate:
                 return False, "前台窗口"
 
         if snap.ws < MIN_WS_BYTES:
@@ -337,13 +377,8 @@ class PareJudger:
         # 判定窗口按回填速率动态化：慢回填拉长重评间隔（避免低效重复清），快回填保持灵敏；
         # 默认 1200s，范围 [120, 3600]；ws 已超基线时直接放行（不受窗口影响）
         # deep/full 跳过——极限模式不被"清后白清"保护拦阻（稳态豁免梯度，2026-08-14）
-        baseline = self._post_clean_ws.get(name, 0)
-        bl_time = self._post_clean_time.get(name, 0)
-        # P15：同名进程重启（create 变）⇒ 旧基线作废；否则新实例常被“WS未填满”压 1 小时
-        _bl_c = self._post_clean_create.get(name)
-        _cur_c = getattr(snap, "create", None)
-        if baseline > 0 and _bl_c is not None and _cur_c is not None and _bl_c != _cur_c:
-            baseline = 0
+        # 按实例取基线（2026-11-11）：create 不同即不同实例，天然不继承，无需再作废
+        baseline, bl_time = self.bl_get(name, getattr(snap, "create", None))
         if baseline > 0 and _guard not in ("deep", "full"):
             window = 1200
             p_win = self.learner.get_profile(name)
@@ -382,22 +417,17 @@ class PareJudger:
 
         # ── WS 回弹覆盖 ──
         ws_override = False
-        bl = self._post_clean_ws.get(snap.name.lower(), 0)
-        # 实例身份校验（2026-11-06）：基线按进程名键，同名不同实例（PID/创建时间不同）不得继承；
-        # 下方基线门有同款判定，这里漏了 ⇒ 另一实例会被 ws_override 抬成 θ=1.0 并绕过投票。
-        _bl_c = self._post_clean_create.get(snap.name.lower())
-        _cur_c = getattr(snap, "create", None)
-        if _bl_c is not None and _cur_c is not None and _bl_c != _cur_c:
-            bl = 0
+        bl, _blt = self.bl_get(snap.name.lower(), getattr(snap, "create", None))
         if bl > 0 and snap.ws >= bl * 2.0:
             ws_override = True
             theta = 1.0
         else:
             theta = self.learner.thompson_score(name, mem_pct=getattr(self, '_last_mem_pct', 50), is_fg=is_fg)
 
-        # ── 系统目录进程: 需要高 θ 值 ──
+        # ── 系统目录进程: 需要高 θ 值（L3 走同一判定，防梯度不一致）──
         path = getattr(snap, "path", None)
-        if path and self._is_system_path(path) and theta < 0.3:return False, "系统目录进程(概率不足)"
+        if self.is_system_dir_low_theta(path, theta):
+            return False, "系统目录进程(概率不足)"
 
         # ── 模式价值底线（MuseRAM MinIdleScore 同构，独立于投票的干净梯度）：
         #    deep 0.12 / full 0.06 / normal 无——极限模式也保留极低价值底线，
@@ -431,16 +461,27 @@ class PareJudger:
         return True, f"θ={theta:.2f}"
 
     def execution_allowed(self, snap, guard=None, manual=None, check_io=True,
-                         check_activity=True, check_anchor=True, check_rebound=True):
+                         check_activity=True, check_anchor=True, check_rebound=True,
+                         check_cooldown=True):
         """P10：执行通道的统一复检（决策门 → 真正动手之间可能已过数秒）。
-        与 can_trim 同语义：full 跳过全部；手动/高压跳过活动/锚点/回弹但保留 CPU/IO；
-        deep 跳过锚点/回弹（活动确认 1 轮）；normal 全部生效。
+        与 can_trim 同语义：full 跳过**时间等待类**守卫（冷却除外）；手动/高压跳过活动/锚点/
+        回弹但保留 CPU/IO；deep 跳过锚点/回弹（活动确认 1 轮）；normal 全部生效。
+        check_cooldown（2026-11-11）：失败冷却是"刚失败别急着重试"，不是时间等待类守卫，
+        故 full 同样尊重。此前冷却只在 can_trim 一处生效，导致 L3 阶段 D / gap fast-track /
+        full 回弹二轮全部绕行、同轮重复清理刚失败的进程（实证：mark_failed 后 _trim_precheck
+        与 _l3_collect 均放行）。试探通道传 False（can_probe 已有独立冷却门，保留探索语义）。
         只读，不改变 suppress_cnt/随机探索的既有统计口径（锚点探索仍按 EXPLORE_RATE）。
         返回 (ok, reason)。"""
         if snap is None:
             return True, ""
         _g = guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal")
         _mm = self._manual_mode if manual is None else bool(manual)
+        if check_cooldown:
+            # 与 can_trim 的冷却门**同源无条件**（那里也不因手动而跳过）：冷却语义是
+            # "刚失败过，别急着重试"，手动清理同样受用——否则手动轮会把守护轮刚判失败的
+            # 进程立刻再清一遍。试探通道由调用方传 check_cooldown=False 保留探索语义。
+            if time.time() < self.cooldown.get(str(getattr(snap, "name", "") or "").lower(), 0):
+                return False, "失败冷却中"
         if _g == "full":
             return True, ""
         _hp = self._high_pressure()
@@ -493,6 +534,10 @@ class PareJudger:
         # 硬上限生效中：不试探（与 can_trim 第八道门同口径，设计 v2.2；统一走 ws_cap_blocked）
         if self.ws_cap_blocked(getattr(snap, "path", None)):
             return False
+        # 失败冷却中的进程不试探（2026-11-08）：冷却语义是"别反复动它"，而试探同样是
+        # EWS 执行通道，绕过会让冷却形同虚设。锚点/回弹保持放行——探针正是她们的探索通道。
+        if time.time() < self.cooldown.get(name, 0):
+            return False
         # WS 下限（2026-09-11 审查 F48 恢复）：与 _trim_process 的"WS太小"门槛同为 1 MB。
         # 低于此值的进程即便清到极限也只释放几百 KB，却要为每次试探付出 0.2 s 等待 + PF 抖动；
         # 实测 373 个画像累计试探 207.6 万次、53 个"WS<20MB 却试探>5000 次"的画像即源于此。
@@ -532,15 +577,11 @@ class PareJudger:
         ws_after=0 时（进程已退出）不记录基线；create 用于区分同名新实例（P15）"""
         name = name.lower()
         now = time.time()
-        # 清理后 WS 基线 + 时间戳
+        # 清理后 WS 基线 + 时间戳（按实例存：同名多实例各自独立）
         if ws_after > 0:
-            self._post_clean_ws[name] = ws_after
-            self._post_clean_time[name] = now
-            self._post_clean_create[name] = create
-        elif name in self._post_clean_ws:
-            del self._post_clean_ws[name]
-            self._post_clean_time.pop(name, None)
-            self._post_clean_create.pop(name, None)
+            self.bl_set(name, create, ws_after, now)
+        else:
+            self.bl_drop(name)
         # 超时计数衰减：成功清理 1 次，timeout_count -1
         p = self.learner.get_profile(name)
         if p and hasattr(p, 'timeout_count') and p.timeout_count > 0:
@@ -613,12 +654,16 @@ class PareJudger:
         for k in list(self.cooldown.keys()):
             if self.cooldown.get(k, 0) < now:
                 self.cooldown.pop(k, None)
-        # 清理过期 WS 基线（>1小时）
-        for k in list(self._post_clean_time.keys()):
-            if now - self._post_clean_time.get(k, 0) > 3600:
+        # 清理过期 WS 基线（>1小时，按实例判定；外层空了连名一起删）
+        for k in list(self._post_clean_ws.keys()):
+            m = self._post_clean_ws.get(k)
+            if not isinstance(m, dict):
                 self._post_clean_ws.pop(k, None)
-                self._post_clean_time.pop(k, None)
-                self._post_clean_create.pop(k, None)
+                continue
+            for c in [c for c, rec in m.items() if not rec or now - rec[1] > 3600]:
+                m.pop(c, None)
+            if not m:
+                self._post_clean_ws.pop(k, None)
         # 清理过期 PF 缓存
         for k in list(self.pf_before.keys()):
             _e = self.pf_before.get(k)
@@ -699,7 +744,8 @@ class PareJudger:
         now = now or time.time()
         # list() 快照迭代（2026-09-28 审查）：mark_trimmed（trim 线程）可能并发写本字典，
         # 直接迭代 .items() 会 RuntimeError 击落调用线程（与 purge/pop_info 同款防护）
-        exclude = {n for n, t in list(self._post_clean_time.items()) if now - t < 120}
+        exclude = {n for n, m in list(self._post_clean_ws.items())
+                   if isinstance(m, dict) and any(rec and now - rec[1] < 120 for rec in m.values())}
         self.learner.stable_anchors.feed(snaps, now, exclude)
         self.learner.rebound.observe(snaps, now)
 
@@ -715,6 +761,12 @@ class PareJudger:
             return path.lower().startswith(root.lower() + "\\")
         except Exception:
             return False
+
+    def is_system_dir_low_theta(self, path, theta):
+        """系统目录进程的额外 θ 底线（L2/L3 同源，2026-11-08）。
+        系统组件/常见应用的冷页回收收益低、误清代价高——任何模式（含 full）都要求
+        θ≥SYS_DIR_MIN_THETA。path 缺失（权限/读取失败）时不拦截，与历史行为一致。"""
+        return bool(path) and self._is_system_path(path) and theta < SYS_DIR_MIN_THETA
 
     @staticmethod
     def _is_system_path(path):

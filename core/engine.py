@@ -493,7 +493,7 @@ def _log_open(announce=True):
             atexit.register(_log_close)
             _ATEXIT_REGISTERED = True
         if announce:
-            _log_write("启动", f"MemWise v5.3.011 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
+            _log_write("启动", f"MemWise v5.4.013 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
             try:
                 _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
                 _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
@@ -719,17 +719,15 @@ def fmt_count(n):
 
 
 # ── ERIS/守护辅助（纯函数，逐字对齐原 GUI 实现）──
-def _prof_theta_mean(learner):
-    """画像 Thompson θ 均值（≥2 样本才参与）。dict() 快照迭代：手动优化线程可并发
-    增键，直接迭代会 RuntimeError 击落守护线程（2026-08-30，与 _compute_eris 同款防护）"""
+def _prof_theta_stats(learner):
+    """画像 θ 的 (均值, >0.6 占比)，一次遍历同时给出（2026-11-08 合并原两趟遍历：
+    EFIS 每轮都要这两个字段，两次独立遍历会重复采样 θ —— θ 含 betavariate）。
+    快照迭代防并发增键（2026-08-30 同款防护）。无样本时返回 (0.3, 0.0) 与旧行为一致。"""
     ps = [p for p in dict(learner.profiles).values() if p.total_samples >= 2]
-    return sum(p.thompson_theta for p in ps) / len(ps) if ps else 0.3
-
-
-def _prof_theta_above(learner):
-    """θ>0.6 画像占比（快照迭代同上）"""
-    ps = [p for p in dict(learner.profiles).values() if p.total_samples >= 2]
-    return sum(1 for p in ps if p.thompson_theta > 0.6) / len(ps) if ps else 0.0
+    if not ps:
+        return 0.3, 0.0
+    vals = [p.thompson_theta for p in ps]
+    return sum(vals) / len(vals), sum(1 for v in vals if v > 0.6) / len(vals)
 
 
 def _drain_pf_delta(judger):
@@ -794,6 +792,10 @@ class MemWiseEngine:
 
         # 柱图状态
         self._chart_data = deque(maxlen=60)
+        # ── D1–D6 只读诊断（2026-11-08）：仅统计与日志，不参与任何判定 ──
+        self._snap_dts = deque(maxlen=200)   # D4 快照间隔（秒）
+        self._last_snap_t = 0.0
+        self._snap_n = 0
         self._chart_last_freed = 0.0
         self._prev_trim_count = 0
         self._prev_fail_count = 0
@@ -927,7 +929,17 @@ class MemWiseEngine:
     def _snap(self):
         """快照 + 喂学习器 + 缓存共享快照（守护/手动路径统一入口；
         进程排行窗口守护运行中直接读 _last_snaps，零额外采集）"""
+        # D4 只读诊断：记录快照间隔（不改变采集与喂料逻辑）
+        try:
+            _now = time.time()
+            _dt = _now - getattr(self, "_last_snap_t", 0.0)
+            if 0 < _dt < 600:
+                self._snap_dts.append(_dt)
+            self._last_snap_t = _now
+        except Exception:
+            pass
         snaps = self.sniffer.snapshot()
+        self._snap_n = len(snaps)
         self.learner.feed(snaps)
         self._last_snaps = snaps
         return snaps
@@ -1263,6 +1275,7 @@ class MemWiseEngine:
                                     self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
                                 elif self.cleaner.judger._game_pid_set:
                                     self.cleaner.judger._game_pid_set.clear()
+                                    self.cleaner._game_tree_mem = {}
                             elif not self.cleaner.game_mode and game_now:
                                 self.cleaner.game_mode = True
                                 self.cleaner.judger.game_mode = True
@@ -1275,6 +1288,7 @@ class MemWiseEngine:
                                 self.cleaner.game_mode = False
                                 self.cleaner.judger.game_mode = False
                                 self.cleaner.judger._game_pid_set.clear()
+                                self.cleaner._game_tree_mem = {}
                                 self._cycle_log_groups.append(["🎮 游戏已退出 · 恢复正常模式"])
                             # 高频压制梯度：registry 零磁盘干扰，游戏模式同样执行（游戏流畅只禁磁盘类操作）；
                             # deep/full 追加系统级持续清（standby/脏页零 PF 成本——缓存重建后立即回收，
@@ -1512,11 +1526,6 @@ class MemWiseEngine:
                         _back = len(getattr(_lr.rebound, "ewma", {}) or {})
                         _sup = getattr(self.judger, "suppress_cnt", 0)
                         _lb = getattr(self.judger, "learner", None)
-                        _pw = []
-                        try:
-                            _pw = ["%.2f" % w for w in _lr.policy._weights()]
-                        except Exception:
-                            pass
                         _ep = {}
                         try:
                             _ep = self.efis.get_params(CFG.get("clean_mode", "normal")) or {}
@@ -1543,18 +1552,22 @@ class MemWiseEngine:
                         except Exception:
                             _eb = "?"
                         _log_write("诊断", "学习状态: 画像 %d · 锚点 %d · 回退 %d · 稳态抑制计数 %d · "
-                                           "策略权重[%s] · 当前参数 %s · 模式 %s · 效率基线 %s"
-                                   % (_prof, _anch, _back, _sup, " ".join(_pw), _ps,
-                                      CFG.get("clean_mode", "normal"), _eb))
+                                           "当前参数 %s · 模式 %s · 效率基线 %s · 调参dwell跳过 %d"
+                                   % (_prof, _anch, _back, _sup, _ps,
+                                      CFG.get("clean_mode", "normal"), _eb,
+                                      getattr(self.efis, "_dwell_skipped", 0)))
                         # 试探结果构成（2026-09-26 实测缺口：日志侧成功率与画像侧口径不同，
                         # 分不清"缺页超预算"与"未完成/超时"）⇒ 分桶累计，便于据此定策
                         try:
                             _st = getattr(self.cleaner, "stats", {}) or {}
+                            # 口径修正（2026-11-10）：stats["probe"] 只在成功时 +1（见 _probe_process），
+                            # 旧实现把它当"尝试总数"再减失败数 ⇒ 恒为 0/负数，日志显示"合格 0"造成
+                            # "试探全废"的误判。实际：累计 = 成功 + 缺页超预算 + 未完成，合格 = 成功。
                             _pt = int(_st.get("probe", 0) or 0)
                             _pf = int(_st.get("probe_pf_fail", 0) or 0)
                             _pi = int(_st.get("probe_incomplete", 0) or 0)
                             _log_write("诊断", "试探统计: 累计 %d · 合格 %d · 缺页超预算 %d · 未完成/超时 %d"
-                                       % (_pt, max(0, _pt - _pf - _pi), _pf, _pi))
+                                       % (_pt + _pf + _pi, _pt, _pf, _pi))
                         except Exception:
                             pass
                     except Exception:
@@ -1595,6 +1608,8 @@ class MemWiseEngine:
                 self._prev_deepen_cnt = _dp_cnt_cur
                 self._prev_deepen_extra = _dp_extra_cur
                 if not harvest_partial:
+                    # θ 统计一次遍历取两个字段（2026-11-08：原为两次独立遍历，重复采样 θ）
+                    self._cycle_theta_mean, self._cycle_theta_above = _prof_theta_stats(self.learner)
                     stats = {
                         'mem_pct': m['pct'],
                         'mode': mode,
@@ -1604,8 +1619,8 @@ class MemWiseEngine:
                         'total_attempts': self._cycle_trimmed + self._cycle_failed,
                         'cycle_freed': cycle_freed,
                         # ── EFIS 诊断输入全量补齐（11 字段，调参分支获得真实数据）──
-                        'theta_mean': _prof_theta_mean(self.learner),
-                        'theta_above_06': _prof_theta_above(self.learner),
+                        'theta_mean': self._cycle_theta_mean,
+                        'theta_above_06': self._cycle_theta_above,
                         'agg': agg,
                         'pf_delta': pf_delta_cycle,
                         'cycle_duration': max(1.0, time.time() - cycle_start),
@@ -1619,6 +1634,7 @@ class MemWiseEngine:
                         'repeat_fail': len(failed),
                         'suppress_cnt': self.judger.suppress_cnt,  # 锚点抑制拦截数（EFIS 自平衡诊断；每轮由 update_activity 重置）
                     }
+                    self._log_diag_round(game_seen)   # D1–D6 只读诊断（2026-11-08；不参与判定；游戏轮单独标记）
                     try:
                         efis_msg = self.efis.tick(stats)
                     except Exception as e:
@@ -1705,14 +1721,25 @@ class MemWiseEngine:
                 if getattr(self, "_last_logged_mode", None) not in (None, _cur_mode):
                     summary_line += " · 后续模式：%s→%s" % (self._last_logged_mode, _cur_mode)
                 self._last_logged_mode = _cur_mode
+                # 游戏轮解释（2026-11-09）：系统级磁盘类操作按设计暂缓，清理量天然低于普通轮——
+                # 行内标注，避免被误读为"游戏模式坏了/保护过度"。
+                if game_seen:
+                    summary_line += " · 🎮 系统级暂缓"
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
                     # 明细行（2026-09-11 用户要求"日志要能定位问题"）：系统操作计数 + 释放前三 +
                     # 本轮判定拦截原因统计（为什么某些进程没被清理）
                     try:
+                        # 明细口径修正（2026-11-09）：旧实现取 cleaner.summary() 的**累计**值，
+                        # 与同一行的"本轮优化/系统杂项"（本轮增量）口径不一致，会被误读为"本轮清了这么多"。
+                        _keys = ("standby", "modified", "filecache", "volume", "registry")
+                        _prev = getattr(self, "_prev_sys_detail", None) or {}
+                        _det = ({k: max(0, int(s.get(k, 0)) - int(_prev.get(k, 0))) for k in _keys}
+                                if _prev else {k: int(s.get(k, 0)) for k in _keys})
+                        self._prev_sys_detail = {k: int(s.get(k, 0)) for k in _keys}
                         _ops = "待机 %s · 修改页 %s · 文件缓存 %s · 卷 %s · 注册表 %s" % (
-                            s.get("standby", 0), s.get("modified", 0), s.get("filecache", 0),
-                            s.get("volume", 0), s.get("registry", 0))
+                            _det["standby"], _det["modified"], _det["filecache"],
+                            _det["volume"], _det["registry"])
                         _top = sorted([t for t in (l2_results or []) if len(t) >= 3 and t[1]],
                                       key=lambda t: -t[2])[:3]
                         _top_s = ", ".join("%s %.0fMB" % (getattr(t[0], "name", "?"), t[2] / (1 << 20))
@@ -1877,6 +1904,67 @@ class MemWiseEngine:
                 _d.pop(path, None)
 
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
+    # ── D1–D6 只读诊断（2026-11-08）：只统计与落日志，不参与任何判定 ──
+
+    def _log_diag_round(self, game=False):
+        """周期末输出 D1/D4/D5/D6 诊断行（受 log_to_file 门控；单行失败不影响其他行）。
+        harvest 超时轮跳过输出，其计数顺延到下一完整轮（日志行数值为"自上次输出以来"）。
+        每行带「模式 X」：D5 阈值随模式变化、D1 只在 normal/deep 有样本，混合模式数据不可比。"""
+        _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
+        # 游戏轮单独标记：游戏模式跳过磁盘类系统操作、对游戏 PID 树绝对保护，
+        # 其 D5/D6/D2 样本与普通轮不可合并；回放按「deep·游戏」单独分组。
+        _tag = "·游戏" if game else ""
+        try:
+            d = self.cleaner.diag_snapshot()
+        except Exception:
+            d = {}
+        try:
+            h = d.get("cpu_hist") or [0] * 7
+            _tot = sum(h) if isinstance(h, list) else 0
+            if _tot:
+                _log_write("诊断", "模式 %s%s · D1 CPU门: 候选 %d · 拒 %d · 桶[<3:%d 3-6:%d 6-8:%d 8-12:%d 12-16:%d 16-25:%d >=25:%d]"
+                           % (_mode, _tag, _tot, d.get("cpu_rej", 0), h[0], h[1], h[2], h[3], h[4], h[5], h[6]))
+        except Exception:
+            pass
+        try:
+            _dts = list(self._snap_dts)
+            if _dts:
+                _s = sorted(_dts)
+                _log_write("诊断", "模式 %s%s · D4 采样: 快照 %d 次/周期 · dt 中位 %.1fs 最大 %.1fs · 进程 %d"
+                           % (_mode, _tag, len(_dts), _s[len(_s) // 2], _s[-1], getattr(self, "_snap_n", 0)))
+                self._snap_dts.clear()   # 每轮清空：deque 是跨轮累计的，不清会让"快照次数"恒为 maxlen(200)
+        except Exception:
+            pass
+        try:
+            _tr = d.get("tree") or []
+            _v = d.get("vote") or [0, 0, 0]
+            if _v and _v[0]:
+                _parts = []
+                _lab = ("树1", "树2", "树5")   # 启用树编号（树 3/4 为预留、scores 恒 0，不输出）
+                for _k, _i in enumerate((0, 1, 4)):
+                    _row = _tr[_i] if _i < len(_tr) else [0] * 5
+                    _parts.append("%s[+2:%d +1:%d 0:%d -1:%d -2:%d]"
+                                  % (_lab[_k], _row[4], _row[3], _row[2], _row[1], _row[0]))
+                _log_write("诊断", "模式 %s%s · D5 投票: 样本 %d · %s · 通过 %d (%.0f%%) · 阈值 %d"
+                           % (_mode, _tag, _v[0], " ".join(_parts), _v[1],
+                              (100.0 * _v[1] / _v[0]) if _v[0] else 0.0,
+                              {"deep": -1, "full": -2}.get(getattr(self.judger, "_mode_guard", "normal"), 0)))
+        except Exception:
+            pass
+        try:
+            _sp = d.get("supp") or {}
+            if _sp:
+                _names = {"稳态抑制": "稳态", "回弹后退": "回弹", "WS未填满": "WS未满"}
+                _txt = []
+                for _k in ("稳态抑制", "回弹后退", "WS未填满"):
+                    _n2, _r2 = _sp.get(_k, [0, 0])
+                    if _n2:   # 首轮无对照样本（n=0）不输出，避免日志噪声
+                        _txt.append("%s %d/%d(%.0f%%)" % (_names[_k], _r2, _n2, 100.0 * _r2 / _n2))
+                if _txt:
+                    _log_write("诊断", "模式 %s%s · D6 抑制回涨: " % (_mode, _tag) + " · ".join(_txt))
+        except Exception:
+            pass
+
     def _push_round(self, chart_accum, harvest_partial, game_seen=None):
         self._chart_bar_seq += 1
         # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取

@@ -5,6 +5,7 @@ Layer 2: 进程级 (EmptyWorkingSet with Thompson/ROI/Probe)
 Layer 3: 深度聚合 (高压力时重复执行)
 """
 import time, concurrent.futures, threading, os, functools
+from collections import deque
 from . import winapi
 from .learner import _is_system_core, _is_self_process, _is_self_path
 from .rebound import _key as _norm_ws_path
@@ -62,6 +63,7 @@ class PareCleaner:
         self._mem_pri_set = set()  # 已设 MemoryPriority 的 PID（Nt 42 一次性特性：防重复无效调用）
         self._pri_refresh_counter = 0
         self._fast_track = {}  # {pid: create} 高回填率进程，gap-fill 期间快速重清（create 供身份复检）
+        self._game_tree_mem = {}  # {pid: (create, miss)} 游戏树两轮记忆（2026-11-08）
         self._lock = threading.Lock()
         self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
         self._max_workers = min(os.cpu_count() or 2, 8)
@@ -83,10 +85,18 @@ class PareCleaner:
                                  # 尚未清理，ERIS 回退取配置模式（固定 "normal" 会把 quick 轮次错记成
                                  # normal：模式标签不符、quick 的"有效维"规则也从未生效——日志实测）
         self._round_ops = {}        # 本轮各系统操作累计调用次数/释放量（P1-8 去重决策的数据来源）
+        self._round_time = {}       # 本轮各系统操作累计耗时（秒，2026-11-10 卡顿排查埋点）
         self._lite = False          # F1 轻量轮（仅 _optimize_locked 内按本轮赋真；默认值兜底，
                                     # 防 _combine_eligible/_final_consolidation 在首轮前被调用时 AttributeError）
         self._trim_partial = False  # P25 预算截断标记（同上，默认值兜底）
         self._cycle_reasons = {}   # 本轮 can_trim 拦截原因计数（日志诊断用）
+        # ── D1–D6 只读诊断（2026-11-08）：只统计、不参与任何判定；输出受 log_to_file 门控 ──
+        self._diag_cpu_hist = [0] * 7          # D1 **全体候选**的 cpu 桶（<3/3-6/6-8/8-12/12-16/16-25/≥25%）
+        self._diag_cpu_rej = 0                  # D1 其中被 CPU 门拒绝的个数
+        self._diag_tree = [[0] * 5 for _ in range(5)]   # D5 各树 -2..+2 计数
+        self._diag_vote = [0, 0, 0]             # D5 [投票样本(通过+否决), 通过, 保留]
+        self._diag_supp_prev = {}               # D6 上一轮 name -> ws
+        self._diag_supp = {}                    # D6 原因 -> [n, refill]
         self._combine_last = 0.0
         self._combine_backoff = _COMBINE_MIN_INTERVAL
 
@@ -283,11 +293,12 @@ class PareCleaner:
         
         full=True  : 全量（含系统级 WS 全清）
         full=False : 轻量（跳过 WS 全清）
-        ops        : 启用的操作集合，None=全部。可用键: ws_all, filecache_ex, modified,
-                     standby, standby_low, volume, registry, filecache
+        ops        : 启用的操作集合，None=全部。内核键: ws_all, filecache_ex, modified,
+                     standby, standby_low, volume, registry（"filecache" 是用户键，
+                     由 _layer1_ops 映射为 filecache_ex，本函数不直接消费）
         game_mode  : 游戏模式时跳过 WS全清+文件缓存+卷冲刷
         """
-        use = ops if ops is not None else {"ws_all","filecache_ex","modified","standby","standby_low","volume","registry","filecache"}
+        use = ops if ops is not None else {"ws_all","filecache_ex","modified","standby","standby_low","volume","registry"}
         # 逐操作测量释放量：每个系统操作前后各读一次，标量累加（>0 计入）——
         # filecache 用 SystemCache 字节差（直接反映文件缓存缩减，不受其他进程分配干扰）；
         # 其余操作无分项公开 API，沿用 avail 差（物理可用提升口径）
@@ -310,7 +321,9 @@ class PareCleaner:
                 if _capture(winapi.clear_system_file_cache_ex, "filecache"):
                     self._stats_inc("filecache")
             # 统计按 API 真实成功计数（权限不足时不再虚增）
-            # 游戏模式：跳过 standby/脏页写回等磁盘干扰操作（只留注册表缓存与自身工作集）
+            # 游戏模式：只跳"会写盘/迫使重读盘"的操作（全量待机/脏页写回/文件缓存/卷冲刷/WS 全清），
+            # 保留低优先待机（standby_low）与注册表——quick 模式已证明 standby_low 属低感知操作，
+            # 游戏时清它只回收后台进程的低优先页，不会让游戏重新读盘（2026-11-09 复核）。
             # 顺序：先卷冲刷，再清 modified/standby——避免 FlushFileBuffers 产生的
             # 新脏页/待机页落在清扫之后（与 Mem Reduct 的系统级顺序对齐）。
             if not game_mode and "volume" in use:
@@ -322,7 +335,7 @@ class PareCleaner:
                 self._stats_inc("modified")
             if not game_mode and "standby" in use and _capture(winapi.empty_standby):
                 self._stats_inc("standby")
-            if not game_mode and "standby_low" in use and _capture(winapi.purge_low_priority_standby):
+            if "standby_low" in use and _capture(winapi.purge_low_priority_standby):
                 self._stats_inc("standby")
             if "registry" in use:
                 if _capture(winapi.clear_registry_cache):
@@ -350,7 +363,8 @@ class PareCleaner:
             return False, 0, 0
         # P10：试探同样是 EWS 执行通道；补 CPU/IO 实时门（活动/锚点/回弹不拦，保探索）
         _okx, _whyx = self.judger.execution_allowed(
-            snap, check_activity=False, check_anchor=False, check_rebound=False)
+            snap, check_activity=False, check_anchor=False, check_rebound=False,
+            check_cooldown=False)   # 试探保留探索语义：can_probe 已有独立冷却门
         if not _okx:
             return False, 0, 0
         pid, name = snap.pid, snap.name
@@ -359,6 +373,12 @@ class PareCleaner:
         mem_before = winapi.get_process_memory(pid)
         ws_before = mem_before["ws"] if mem_before else snap.ws
         pf_before = mem_before["pf"] if mem_before else None
+        _t0 = time.time()
+        # 试探同样要维护"自身 PF 速率"基线（2026-11-10 复核）：旧实现只有 trim 走
+        # record_pf_before，probe 的 own 恒 0 ⇒ 活跃进程的 PF 全算成试探副作用，
+        # 实测 811 次仅 26.7% 合格。与 check_feedback 同口径记录后，own 才有值。
+        if pf_before is not None:
+            self.judger.record_pf_before(pid, pf_before)
         if not winapi.empty_ws(pid):
             return False, 0, 0
         # 单次清理后等待 PF 稳定（游戏模式减半加速）
@@ -374,9 +394,10 @@ class PareCleaner:
         pf_after = mem["pf"]
         pf_delta = max(0, pf_after - pf_before) if pf_before is not None else 0
         freed = max(0, ws_before - ws_after)
-        # 允许的 PF：至少 120（EmptyWorkingSet 自身开销 ~30-50 PF），或每释放 1MB 允许 10 个 PF（同 trim 逻辑）
-        # freed=0 时也视作有效观测（进程无可释放页本身就是信息）
-        allowed_pf = max(120, int(freed / (1 << 20) * 10))
+        # 允许的 PF：至少 120（EmptyWorkingSet 自身开销 ~30-50 PF），或每释放 1MB 允许 10 个 PF，
+        # 再加"进程自身 PF 速率 × 观测时长"（与 check_feedback 的 F47 同口径，2026-11-10 补齐）。
+        allowed_pf = max(120, int(freed / (1 << 20) * 10)) + int(
+            self.judger._pf_rate.get(pid, 0.0) * max(0.5, time.time() - _t0))
         ok = True if pf_before is None else pf_delta <= allowed_pf
         with self._lock:
             learner.record_probe_result(name, ok, self._efis_lr(), freed)
@@ -452,6 +473,16 @@ class PareCleaner:
                     return False, "系统核心进程"
                 if _rt_name in self.judger.cfg.get("never", []):
                     return False, "用户黑名单"
+            else:
+                # path 读取失败（权限/长路径）时按快照名兜底：系统核心/黑名单/自身仍必须拦，
+                # 防执行层在"决策→执行"间隔内失去全部纵深（2026-11-08 复核）。
+                _nm = str(getattr(snap, "name", "") or "").lower()
+                if _nm and _is_system_core(_nm):
+                    return False, "系统核心进程"
+                if _nm and _nm in self.judger.cfg.get("never", []):
+                    return False, "用户黑名单"
+                if pid == os.getpid():
+                    return False, "程序自身"
             if self.judger.aggressiveness < 0.35 and winapi.get_foreground_pid() == pid:
                 return False, "执行前转前台"
             if self.game_mode and pid in self.judger._game_pid_set:
@@ -531,6 +562,8 @@ class PareCleaner:
                                         create=getattr(snap, "create", None))
             if ok:
                 self.stats["ws_trim"] += 1
+                if getattr(snap, "fg", False):
+                    self.stats["fg_trimmed"] = self.stats.get("fg_trimmed", 0) + 1
                 if passes >= 2:
                     self.stats["deepen_cnt"] += 1
                     self.stats["deepen_extra"] += freed
@@ -542,22 +575,9 @@ class PareCleaner:
                 self.judger.mark_failed(name, p.fail_cnt if p else 1)
                 self.stats["failed_feedback"] += 1
         if ok:
-            # 在线权重学习：用本次 trim 的实际释放评价树
-            if hasattr(snap, '_tree_scores') and hasattr(learner, 'policy'):
-                learner.policy.update_weights_per_trim(snap._tree_scores, freed > 50 << 20)
-            # 上下文修正学习：在线更新查找表
-            if hasattr(learner, 'record_ctx_correction'):
-                mem_pct = getattr(self.judger, '_last_mem_pct', 50)
-                p = learner.get_profile(name)
-                k_cost = p.kalman.x_cost if p and hasattr(p, 'kalman') else 0
-                learner.record_ctx_correction(mem_pct, getattr(snap, 'fg', False),
-                    time.localtime().tm_hour, freed, p.kalman.x_freed if p and hasattr(p, 'kalman') else ws_before,
-                    pf_delta, k_cost)
             return True, freed, pf_delta, "完成"
-        else:
-            if hasattr(snap, '_tree_scores') and hasattr(learner, 'policy'):
-                learner.policy.update_weights_per_trim(snap._tree_scores, False)
-            return False, freed, pf_delta, "PF超标"
+        return False, freed, pf_delta, "PF超标"
+
 
 
     def _efis_lr(self):
@@ -579,13 +599,19 @@ class PareCleaner:
         return GAME_PROCESSES | extra
 
     def _build_game_pid_set(self, snaps):
-        """游戏 PID 集 = 名单匹配进程 ∪ 其全部子进程树（BFS）。
-        反作弊/更新器/渲染子进程等一并绝对保护——游戏流畅性保护以进程树为单位"""
+        """游戏 PID 集 = 名单匹配进程 ∪ 其全部子进程树（BFS）∪ 上一轮已验证的树成员。
+        反作弊/更新器/渲染子进程等一并绝对保护——游戏流畅性保护以进程树为单位。
+
+        2026-11-08：旧实现只从"本轮仍能追到已命中祖先"出发，launcher（Steam/EA 等）
+        退出后其子进程（游戏本体）立刻失去保护。这里加**两轮记忆**：上轮命中、本轮仍存活
+        且 create 一致的 PID 继续受保护；连续 2 轮未再命中才淘汰（防 PID 复用误保护）。"""
         all_games = self._get_user_game_procs()
         children_of = {}
         direct = set()
+        alive = {}
         for s in snaps:
             children_of.setdefault(s.parent, set()).add(s.pid)
+            alive[s.pid] = getattr(s, "create", None)
             if s.name.lower() in all_games:
                 direct.add(s.pid)
         result = set(direct)
@@ -596,6 +622,24 @@ class PareCleaner:
                 if child not in result:
                     result.add(child)
                     stack.append(child)
+        mem = getattr(self, "_game_tree_mem", None) or {}
+        new_mem = {pid: (alive.get(pid), 0) for pid in result}
+        for pid, rec in mem.items():
+            if pid in new_mem:
+                continue
+            try:
+                create, miss = rec
+            except Exception:
+                create, miss = rec, 0
+            cur = alive.get(pid, "gone")
+            if cur == "gone":
+                continue                      # 进程已退出：直接遗忘
+            if create is not None and cur is not None and cur != create:
+                continue                      # PID 复用：不继承保护
+            if miss < 1:
+                result.add(pid)
+                new_mem[pid] = (create, miss + 1)
+        self._game_tree_mem = new_mem
         return result
 
     def _is_user_game_running(self, snaps):
@@ -623,21 +667,11 @@ class PareCleaner:
         name = s.name.lower()
         theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
         p = learner.get_profile(name)
-        x_freed = p.kalman.x_freed if p and hasattr(p.kalman, 'x_freed') else 0
+        x_freed = (p.effective_freed if p and hasattr(p, 'effective_freed') else 0)   # 2026-11-11 可靠性加权
         x_cost = p.kalman.x_cost if p and hasattr(p.kalman, 'x_cost') else 0
-        # 上下文修正：与 thompson_score 保持一致
-        if x_freed > 0 and hasattr(learner, 'ctx_correction'):
-            f_corr, _ = learner.ctx_correction(
-                getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False),
-                hour=time.localtime().tm_hour)
-            x_freed = x_freed * max(0.3, min(3.0, f_corr))
+        # ctx 修正层 2026-11-08 移除（实测负收益）：直接用 Kalman 原始预测，与 thompson_score 一致
         ws = s.ws
-        bl = self.judger._post_clean_ws.get(name, 0)
-        # 同名不同实例不继承别人的清后基线（与 can_trim/ws_override 同口径，2026-11-06）
-        _bl_c = self.judger._post_clean_create.get(name)
-        _cur_c = getattr(s, "create", None)
-        if _bl_c is not None and _cur_c is not None and _bl_c != _cur_c:
-            bl = 0
+        bl, _blt = self.judger.bl_get(name, getattr(s, "create", None))   # 2026-11-11 按实例取基线
         regrowth = ws / max(bl, 1) if bl > 0 else 1.0
         kw = self.judger.cfg.get("efis_params", {}).get("composite_kalman_w", 0.3)
         tw = 0.6 - kw
@@ -668,15 +702,12 @@ class PareCleaner:
             # P25：总预算到点后停止提交新项（已提交任务自然跑完，结果丢弃）；
             # 正常负载不会触达，只防大机器上的 harvest 链式超时。
             if deadline is not None and idx < n and time.time() >= deadline:
-                out.extend((item, None) for item in items[idx:])
-                idx = n
-                inflight.clear()
+                # 未提交项**不产出结果**（2026-11-11）。旧实现把它们标 None，调用方把 None
+                # 当"执行超时"⇒ timeout_count+1 + mark_failed，一次没跑过的进程白吃冷却。
+                # 现由调用方按 len(out) < len(items) 判 partial（_l2_probe/_l2_trim/_l3_submit 均已如此）。
                 break
             if time.time() - last_progress > idle_timeout:
-                # 无进展超时（池卡死）：剩余未提交项标记超时，已提交任务交给线程池自然完成（不阻塞调用方）
-                out.extend((item, None) for item in items[idx:])
-                idx = n
-                inflight.clear()
+                # 无进展超时（池卡死）：剩余未提交项同样不产出结果（同 2026-11-11 口径）
                 break
             while idx < n and len(inflight) < max_inflight:
                 item = items[idx]; idx += 1
@@ -740,6 +771,7 @@ class PareCleaner:
             elif not game_on and self.game_mode:
                 # 游戏已退出：清空失效 PID 保护集（防 PID 复用误保护），模式保持手动开启
                 self.judger._game_pid_set.clear()
+                self._game_tree_mem = {}
         elif game_on and not self.game_mode:
             self._info_msgs.append("🎮 检测到游戏运行 · 启用 游戏模式")
             self.game_mode = True
@@ -751,6 +783,7 @@ class PareCleaner:
             self.game_mode = False
             self.judger.game_mode = False
             self.judger._game_pid_set.clear()
+            self._game_tree_mem = {}
         else:
             self.game_mode = game_on
             self.judger.game_mode = game_on
@@ -770,6 +803,10 @@ class PareCleaner:
             if s.pid == SELF_PID or _is_self_process(s):
                 continue
             # Trim 优先：能整理的不需要试探
+            try:
+                self._diag_note_candidate(s)   # D1：先记全体候选 cpu（不依赖是否被拦）
+            except Exception:
+                pass
             ok, reason = self.judger.can_trim(s)
             if not ok:
                 try:
@@ -778,12 +815,99 @@ class PareCleaner:
                     pass
             if ok:
                 candidates.append(s)
+                try:
+                    self._diag_note_pass(s)     # D5 只读
+                except Exception:
+                    pass
             else:
+                try:
+                    self._diag_note_reject(s, reason)   # D1/D6 只读
+                except Exception:
+                    pass
                 if self.judger.can_probe(s):
                     probe_list.append(s)
                 self._stats_inc("skipped")  # 锁内统计（与池线程同口径，防竞态丢计数）
 
+        self._diag_finish_round(snaps)   # D6：保存本轮 ws 供下一轮对比
         return candidates, probe_list
+
+    # ── D1–D6 只读诊断（2026-11-08）：只统计，不改变任何判定结果 ──
+
+    def _diag_note_candidate(self, s):
+        """D1：记录**所有**进入决策的候选 cpu 分布（2026-11-08 修订）。
+        旧口径只统计"被 CPU 门拒绝"的进程——实测 77 轮仅 6 个样本（cpu_gate 已被 EFIS
+        调到 3%，多数进程低于它），永远凑不满判定所需样本。改为记录全体候选后，
+        可算"门限提到 X 会多放行多少"，且每轮数十个样本。"""
+        cpu = float(getattr(s, "cpu", 0.0) or 0.0)
+        j = 0
+        for edge in (3.0, 6.0, 8.0, 12.0, 16.0, 25.0):
+            if cpu < edge:
+                break
+            j += 1
+        self._diag_cpu_hist[min(j, 6)] += 1
+
+    def _diag_note_reject(self, s, reason):
+        """D1：CPU 门拒绝的 cpu 分布；D6：三类抑制的下一轮回涨率样本。"""
+        if reason.startswith("CPU活跃"):
+            self._diag_cpu_rej += 1   # 桶已在候选阶段记录（见 _diag_note_candidate）
+        # D5（2026-11-10）：投票分支的**否决者也计入样本**——旧口径只统计通过者，
+        # 通过率恒 100%，真实否决率不可见（曾据此误判"投票恒真"）。
+        _sc = getattr(s, "_tree_scores", None)
+        if _sc and len(_sc) == 5:
+            self._diag_note_vote_scores(_sc)
+            self._diag_vote[0] += 1
+        base = reason.split("(")[0]
+        if base in ("稳态抑制", "回弹后退", "WS未填满"):
+            slot = self._diag_supp.setdefault(base, [0, 0])
+            prev = self._diag_supp_prev.get(s.name.lower())
+            if prev and prev > 0:
+                slot[0] += 1
+                if (float(s.ws) - float(prev)) / float(prev) >= 0.6:
+                    slot[1] += 1
+
+    def _diag_note_vote_scores(self, scores):
+        """D5：树贡献直方图（通过/否决共用；[0] 是样本，[1] 是通过）。"""
+        for i, v in enumerate(scores):
+            try:
+                k = max(0, min(4, int(v) + 2))
+            except Exception:
+                continue
+            self._diag_tree[i][k] += 1
+
+    def _diag_note_pass(self, s):
+        """D5：投票通过者（样本由 pass + reject 共同累加，真实通过率=通过/样本）。"""
+        scores = getattr(s, "_tree_scores", None)
+        if not scores or len(scores) != 5:
+            return
+        self._diag_note_vote_scores(scores)
+        self._diag_vote[0] += 1
+        self._diag_vote[1] += 1
+
+    def _diag_finish_round(self, snaps):
+        cur = {}
+        for s in snaps:
+            try:
+                cur[s.name.lower()] = s.ws
+            except Exception:
+                continue
+        self._diag_supp_prev = cur
+
+    def diag_snapshot(self, reset=True):
+        """D1–D6 只读诊断快照（engine 周期末取用；reset=True 清空本轮计数，日志行自带数值）。"""
+        out = {
+            "cpu_hist": list(self._diag_cpu_hist),
+            "cpu_rej": self._diag_cpu_rej,
+            "tree": [list(x) for x in self._diag_tree],
+            "vote": list(self._diag_vote),
+            "supp": {k: list(v) for k, v in self._diag_supp.items()},
+        }
+        if reset:
+            self._diag_cpu_hist = [0] * 7
+            self._diag_cpu_rej = 0
+            self._diag_tree = [[0] * 5 for _ in range(5)]
+            self._diag_vote = [0, 0, 0]
+            self._diag_supp = {}
+        return out
 
     def _l2_priority(self, snaps, learner):
         """全局内存优先级 + EcoQoS（含游戏/前台恢复、30 tick 重评、退出 PID 清理）。"""
@@ -988,7 +1112,10 @@ class PareCleaner:
     # ── Layer 3: 深度聚合 ──
 
     def _layer3_deep(self, snaps, learner, ops_filter=None, deadline=None):
-        if ops_filter is not None and not ({"ws", "standby", "modified"} & set(ops_filter)):
+        # 入口判据必须覆盖 L3 实际会执行的全部系统操作（volume/filecache 在阶段 C 也会执行），
+        # 否则"只勾文件缓存/卷缓存"的用户在 L3 的额外一次被静默取消（2026-11-08 复核）。
+        # registry 不进 L3（L3 不实现 registry，由 L1/gap 负责）。
+        if ops_filter is not None and not ({"ws", "standby", "modified", "volume", "filecache"} & set(ops_filter)):
             return
         
         mem_before_layer3 = winapi.get_memory_status()
@@ -1074,6 +1201,17 @@ class PareCleaner:
                 continue
             if name_lower in never:
                 continue
+            # 系统目录进程额外 θ 底线（与 can_trim 同源，2026-11-08）：此前 L3 只查模式门槛，
+            # 使 Program Files 应用在 L3 比 L2 更容易被清——梯度不一致，现统一走同一判定。
+            _sysdir_path = getattr(s, "path", None)
+            if _sysdir_path and self.judger._is_system_path(_sysdir_path):
+                _theta_sys = learner.thompson_score(
+                    name_lower, mem_pct=getattr(self.judger, '_last_mem_pct', 50),
+                    is_fg=getattr(s, 'fg', False))
+                if self.judger.is_system_dir_low_theta(_sysdir_path, _theta_sys):
+                    self._cycle_reasons["系统目录进程(概率不足)"] = \
+                        self._cycle_reasons.get("系统目录进程(概率不足)", 0) + 1
+                    continue
             # 第八道门（绕行通道补齐 v2.2）：硬上限生效中的进程不再叠加清理——
             # 被 cap 的页回填即硬缺页，EWS 只会自造抖动（2026-10-15 改为统一判定方法）
             if self.judger.ws_cap_blocked(getattr(s, "path", None)):
@@ -1104,11 +1242,7 @@ class PareCleaner:
             # 回涨 131~393%），毫厘之利的进程被"清完长回→再清"反复折腾，代价是持续的 CPU/IO/缺页。
             # 故：内存充裕时要求回涨量达到下限才算候选；内存吃紧（≥ L3_RETRIM_PRESSURE_PCT）时
             # 下限为 0，行为与旧版逐字一致。被拦下的计入拦截原因，日志可见。
-            bl = self.judger._post_clean_ws.get(name_lower, 0)
-            _bl_c = self.judger._post_clean_create.get(name_lower)
-            _cur_c = getattr(s, "create", None)
-            if _bl_c is not None and _cur_c is not None and _bl_c != _cur_c:
-                bl = 0   # 同名不同实例（PID 复用/另一实例）：不继承基线
+            bl, _blt = self.judger.bl_get(name_lower, getattr(s, "create", None))   # 2026-11-11 按实例取基线
             if bl > 0 and s.ws >= bl * 2.0:
                 if (s.ws - bl) >= growth_floor:
                     d_candidates.append(s)
@@ -1174,9 +1308,11 @@ class PareCleaner:
         - 其余操作按可用内存差计量，_round_ops 记次数/合计/末次（P1-8 去重决策数据）。
         """
         if kind == "filecache":
+            _t0 = time.perf_counter()
             pre = winapi.get_performance_info()
             ok = bool(fn())
             post = winapi.get_performance_info()
+            self._round_time["filecache"] = self._round_time.get("filecache", 0.0) + (time.perf_counter() - _t0)
             f = max(0, pre["system_cache"] - post["system_cache"]) if (pre and post) else 0
             rec = self._round_ops.setdefault("filecache", [0, 0, 0, 0, 0])
             rec[0] += 1
@@ -1186,15 +1322,17 @@ class PareCleaner:
             if pre:
                 rec[4] = round(pre["system_cache"] / (1 << 20), 1)
             return ok, f
+        _nm = getattr(fn, "__name__", "?")
+        _t0 = time.perf_counter()
         pre = winapi.get_memory_status()
         if not fn():
             return False, 0
         post = winapi.get_memory_status()
+        self._round_time[_nm] = self._round_time.get(_nm, 0.0) + (time.perf_counter() - _t0)
         f = 0
         if pre and post:
             f = max(0, post["avail"] - pre["avail"])
-            nm = getattr(fn, "__name__", "?")
-            rec = self._round_ops.setdefault(nm, [0, 0, 0])
+            rec = self._round_ops.setdefault(_nm, [0, 0, 0])
             rec[0] += 1; rec[1] += f; rec[2] = f
         return True, f
 
@@ -1230,7 +1368,9 @@ class PareCleaner:
                         from core.engine import _log_write as _lw
                         _parts = []
                         for k, v in sorted(self._round_ops.items()):
-                            _s = "%s x%d 合计%.1fMB 末次%.1fMB" % (k, v[0], v[1] / (1 << 20), v[2] / (1 << 20))
+                            _s = "%s x%d 合计%.1fMB 末次%.1fMB 耗时%.2fs" % (
+                                k, v[0], v[1] / (1 << 20), v[2] / (1 << 20),
+                                self._round_time.get(k, 0.0))
                             if len(v) >= 5:
                                 _s += " 成功%d/前值%.1fMB" % (v[3], v[4])
                             _parts.append(_s)
@@ -1251,6 +1391,7 @@ class PareCleaner:
         self._lite = bool(lite)
         self._trim_partial = False   # P25：预算截断标记（结果 _partial 供引擎诊断断档判断）
         self._round_ops = {}         # P1-8：本轮系统操作次数/释放量（供“同轮去重”决策采集数据）
+        self._round_time = {}        # 本轮各系统操作耗时（卡顿排查，2026-11-10）
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
         self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
         # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式（**含 quick**）——
@@ -1343,7 +1484,8 @@ class PareCleaner:
             l1_ops = l1_ops & _gap_ops
         self._layer1_memreduct(full=False, game_mode=self.game_mode,
                                ops=l1_ops, clean_self=allow_layer3)
-        # Layer3 门槛由 EFIS layer3_agg_gate 自适应控制（无参数时兜底 0.3）；
+        # Layer3 门槛由 EFIS layer3_agg_gate 自适应控制（0.3 兜底仅测试/旧状态用；
+        # 正常路径 judger.cfg["efis_params"] 恒由 efis.get_params() 提供，含 0.6）；
         # 高频 gap-fill 路径传 allow_layer3=False，深度操作只在 harvest 执行
         if allow_layer3:
             _l3_gate = self.judger.cfg.get("efis_params", {}).get("layer3_agg_gate", 0.3)

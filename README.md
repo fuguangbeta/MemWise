@@ -1,4 +1,4 @@
-# MemWise v5.3.011
+# MemWise v5.4.013
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -44,13 +44,13 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## Windows 智能内存看护工具 · *Intelligent Memory Custodian*
 
-MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 9.76 MB，9,997 KB），零外部依赖。
+MemWise 是一款纯 ctypes Win32 API 构建的 Windows 内存优化与实时守护工具。通过调用 Windows 底层内存管理 API（NtSetSystemInformation、EmptyWorkingSet、SetSystemFileCacheSize 等），对进程闲置工作集、系统待机列表、已修改页列表等进行细化治理，在不终止进程、不挂起线程、不注入、不联网的前提下实现物理内存的释放与回收。支持 GUI 和命令行两种使用方式，以单 exe 分发（约 9.79 MB，10,023 KB），零外部依赖。
 
 系统的核心价值在于"主动+持续"：在 Windows 自身内存压力感知机制启动之前提前介入回收，并在守护模式下保持每个守护周期内（默认 60 秒，可在设置中调整 10-3600 秒）零空闲的持续优化。同时通过 Thompson Sampling、Kalman 滤波、分层先验、五树投票框架等学习与决策机制，为每个进程建立独立画像，在最大化释放效率的同时抑制缺页副作用。
 
 程序内嵌了轻量看门狗机制，可在意外崩溃后自动恢复运行状态，并为自身内存占用与运行功耗设立了严格的自律约束。
 
-Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 9.76 MB (9,997 KB).
+Built entirely on ctypes Win32 API with zero third-party dependencies, MemWise reclaims physical memory through disciplined management of idle working sets, standby lists, and modified page lists — all without terminating processes, suspending threads, injecting code, or touching the network. Distributed as a single executable of about 9.79 MB (10,023 KB).
 
 MemWise intercepts memory pressure before Windows initiates its own reclamation, maintaining uninterrupted optimization within each daemon cycle (60 s by default, adjustable from 10 to 3600 s). A cognitive engine combining Thompson Sampling, Kalman filtering, hierarchical priors, and five-tree policy voting (3 active) builds independent behavioral profiles per process, maximizing release efficiency while minimizing page-fault side effects.
 
@@ -167,7 +167,7 @@ The File Cache toggle in Settings enables that operation within the mode gradien
 对每个非自身进程调用 `EmptyWorkingSet`，释放其物理内存中的非活跃页。决策链路：
 
 1. **安全过滤**：排除系统核心进程、用户排除列表、游戏进程树（游戏模式时）；刚切走的程序（5-10 分钟窗口，有可见窗口更久，deep 减半、full 跳过）、前台窗口保护（压力达到阈值时放开）、CPU 或磁盘 IO 活跃的进程（full 跳过——极限释放不设活跃度限制）、连续低活动确认（normal 两轮、deep 一轮、full 跳过）、工作集过小的微小进程、WS 基线检查（deep/full 跳过）、稳态锚点抑制（deep/full 跳过）、回弹自动回退（deep/full 跳过）、失败冷却检查、系统目录进程（需高评分）
-2. **策略投票（三树决策）**：Kalman 预期收益、内存压力与趋势、反事实优势（对比全体画像均值）。各树贡献经在线学习的权重加权（权重可为负，按清理结果持续调节预测可靠度），加权总分达模式阈值即通过（normal 0 / deep -1 / full -2，全负分仍拒绝）；deep/full 模式另设价值底线（θ ≥ 0.12/0.06），防完全无意义清理
+2. **策略投票（三树决策）**：Kalman 预期收益、内存压力与趋势、反事实优势（对比全体画像均值）。三树等权求和，总分达模式阈值即通过（normal 0 / deep -1 / full -2，全负分仍拒绝）；deep/full 模式另设价值底线（θ ≥ 0.12/0.06），防完全无意义清理
 3. **复合评分排序**：θ、Kalman 预期释放量、WS 大小、WS 回弹率、预期 PF 代价（低代价优先）五维加权，EFIS 可调权重
 4. **PID 增益调度**：根据当前内存压力自动分三区调节响应强度——低压（<40%）保守、中压（40–75%）标准、高压（>75%）激进
 5. **执行前复检**：清理执行瞬间重新检查前台窗口与游戏进程树，用户刚切过去或游戏刚启动会即时取消
@@ -180,7 +180,7 @@ The File Cache toggle in Settings enables that operation within the mode gradien
 Invokes EmptyWorkingSet on every process except MemWise itself to release idle physical pages. The decision pipeline follows:
 
 1. *Safety gate — system-core processes, user exclusions, game process trees (in Game Mode), recently-used apps (5–10 min window, longer with a visible window; halved in deep, skipped in full), foreground windows, CPU or disk-I/O-active processes (skipped in full — ultimate mode sets no activity limit), low-activity confirmation (two rounds in normal, one in deep, skipped in full), tiny processes, baseline-checked processes (skipped in deep/full), stable-state suppression (skipped in deep/full), rebound backoff (skipped in deep/full), failure cooldown, and system-directory processes (require a high score)*
-2. *Three-tree policy vote — Kalman-predicted gain, memory-pressure and trend, and counterfactual advantage over the profile average; contributions weighted by online-learned per-tree weights (can be negative), with a mode-graded pass threshold (0 / −1 / −2 for normal/deep/full; all-negative totals still rejected), plus a value floor in deep/full (θ ≥ 0.12/0.06) against meaningless cleanups*
+2. *Three-tree policy vote — Kalman-predicted gain, memory-pressure and trend, and counterfactual advantage over the profile average; the three trees sum with equal weight against a mode-graded threshold (0 / −1 / −2 for normal/deep/full; all-negative totals still rejected), plus a value floor in deep/full (θ ≥ 0.12/0.06) against meaningless cleanups*
 3. *Composite score ranking — five-dimensional weighted ranking: θ, Kalman expected gain, WS size, regrowth rate, and expected PF cost (lower cost ranks first), with EFIS-tunable weights*
 4. *PID gain scheduling — three-zone response: conservative below 40%, standard at 40–75%, aggressive above 75%*
 5. *Pre-execution recheck — foreground and game-process-tree are re-verified at execution time; a switch to the app or a game launch cancels the trim instantly*
@@ -226,7 +226,7 @@ Each daemon cycle (60 s by default, adjustable) alternates between lightweight s
 - **软上限**：α 超过阈值后等比缩归，保持 α/β 比例不畸变，防止长期运行后探索能力退化
 - **对数缩放学习率**：α 增量按释放量对数缩放——释放 500MB 的学习速度是释放 5MB 的约两倍，使大释放量产生更强的正反馈
 - **时间遗忘**：距离上次反馈超过 1 小时后，每小时向先验回归 5%（上限 50%），避免历史数据对当前状态的滞后影响
-- **置信度**：基于 Beta 分布标准差计算，用于策略投票中的权重调节
+- **置信度**：基于 Beta 分布标准差计算，样本越少探索加成越高
 
 Each process maintains a conjugate Beta distribution. A trim that actually frees memory increments α with a magnitude scaled logarithmically by freed volume — larger releases produce faster learning — while a zero-release trim earns nothing and failure increments β by one. The sampled θ represents how worthwhile the process is to clean under current knowledge.
 
@@ -234,7 +234,7 @@ Each process maintains a conjugate Beta distribution. A trim that actually frees
 - *Soft cap — α is proportionally scaled down beyond a threshold to preserve the α/β ratio and prevent exploration decay over long runs*
 - *Log-scaled learning rate — α increments scale logarithmically with freed volume; releasing 500 MB learns about twice as fast as 5 MB*
 - *Temporal decay — more than an hour after the last feedback, values regress toward the prior by 5% per hour (cap 50%), avoiding stale history*
-- *Confidence — derived from the Beta distribution's standard deviation, used to modulate policy-vote weights*
+- *Confidence — derived from the Beta distribution's standard deviation; lower confidence grants a larger exploration bonus*
 
 ### 3.2 Kalman 滤波器 · *Kalman Filter*
 
@@ -244,15 +244,11 @@ Each process maintains a conjugate Beta distribution. A trim that actually frees
 - 时间衰减：长时间未观测的估计值协方差有界增长（上限 400），保证重新遇到该进程时能快速收敛且不被单次观测完全覆盖
 - 观测噪声作为 EFIS 参数开放配置（`kalman_r`，1.0-20.0），可通过界面/配置调整对新观测的敏感度
 
-预测值在进入决策前经过在线学习的上下文修正——基于内存压力、前台状态和时段的三维查找表，自动学习当前条件下的实际释放量与 Kalman 基线的偏差比例，使 LP (低压) 和 HP (高压) 场景下的估值精确度大幅提升。
-
 Two independent scalar Kalman filters per process track expected freed bytes and expected page-fault cost, capturing continuous magnitudes and uncertainties more effectively than Beta alone.
 
 - *Adaptive process noise adjusts tracking speed vs. stability based on innovation magnitude*
 - *Stale covariance grows with a hard cap (400) after extended idle periods for rapid re-convergence without letting a single observation fully overwrite the estimate*
 - *Observation noise is exposed as an EFIS parameter (kalman_r, 1.0-20.0) tunable via UI/config to control sensitivity to new observations*
-
-Before entering the decision pipeline, Kalman predictions pass through an online-learned context correction layer — a three-dimensional lookup table indexed by memory pressure, foreground status, and time-of-day, which automatically learns the deviation ratio between actual freed bytes and the Kalman baseline under each condition.
 
 ### 3.3 内存泄漏检测 · *Memory Leak Detection*
 
@@ -270,19 +266,19 @@ Ten predefined categories auto-classify processes by name keyword. New processes
 
 替代单一门槛的多维综合决策：
 
-- **收益树**：Kalman 预期释放量（经上下文修正），权重最高
+- **收益树**：Kalman 预期释放量
 - **压力树**：内存占用与趋势——达到紧急阈值（默认 80%）加分、接近阈值（其 80%，默认 64%）小加分、低于 30% 减分，内存上升中再加分
 - **反事实树**：Kalman 预期释放量对比全体画像均值——高于均值 50MB 加分、20MB 小加分
-- **在线权重学习**：每轮清理后按"预测贡献 × 实际结果"调节各树权重（有界 ±2）——正贡献+成功升权重、正贡献+失败降权重、负贡献+成功降权重（可为负），使投票随经验收敛；权重随学习数据持久化，重启后沿用
+- **等权求和**：三树得分直接相加后与阈值比较，不做按结果调节的权重学习
 
 加权总分达模式阈值即通过（normal 0 / deep -1 / full -2，全负分仍拒绝）；deep/full 模式另设价值底线（θ ≥ 0.12/0.06），防完全无意义清理。
 
 A multi-dimensional decision model replaces single-threshold gating:
 
-- *Gain tree — Kalman-predicted gain (context-corrected), highest weight*
+- *Gain tree — Kalman-predicted gain*
 - *Pressure tree — memory usage and trend: at the emergency threshold (default 80%) scores 2, near it (80% of the threshold, default 64%) scores 1, below 30% penalizes, and a rising trend adds another point*
 - *Counterfactual tree — Kalman gain vs. the profile average: 2 points if 50 MB above average, 1 point if 20 MB above*
-- *Online weight learning — per-tree weights (bounded ±2) adjust by "prediction contribution × outcome" after each trim; positive contribution + success raises a weight, positive + failure lowers it, negative + success lowers it too (weights may go negative), converging with experience; weights persist with the learned state and survive restarts*
+- *Equal weighting — the three tree scores are summed directly against the mode threshold; there is no outcome-driven weight learning*
 
 Weighted total reaches the mode-graded threshold to pass (0 / −1 / −2 for normal/deep/full; all-negative totals still rejected); deep/full additionally enforce a value floor (θ ≥ 0.12/0.06) against meaningless cleanups.
 
@@ -337,7 +333,7 @@ EFIS（Efficiency Feedback Intelligent System）是全程序覆盖的闭环调�
 
 **游戏态冻结**：游戏模式运行期间调参自动冻结——游戏周期的统计由保护机制刻意塑形（系统级操作抑制、试探禁用、非游戏进程限定），不具备调参归因意义，不进入任何参数组的评估窗口；游戏退出后从干净窗口恢复日常态调参，进程画像学习不受影响。
 
-**参数分组（按清理模式）**：EFIS 参数按清理模式分组隔离（4 组，按需创建）——每个清理模式拥有独立的调参演进，切换模式互不污染，切回后沿用该模式自己的参数；每模式只调参本模式有实际作用面的参数（极限与深度模式不调深层触发门与锚点余量，极限模式不调深清门槛，quick 模式不参与进程参数调参；响应类参数在轻量阶段真实生效，各进程清理模式均参与调参），深度与极限模式使用更激进的科学初始值（更低的压力目标、更短的失败冷却、更灵敏的观测与更快的反馈适应），首次使用即接近目标；策略树权重同样按模式隔离。升级时各模式保留升级当时生效的那组参数，行为与升级前一致。
+**参数分组（按清理模式）**：EFIS 参数按清理模式分组隔离（4 组，按需创建）——每个清理模式拥有独立的调参演进，切换模式互不污染，切回后沿用该模式自己的参数；每模式只调参本模式有实际作用面的参数（极限与深度模式不调深层触发门与锚点余量，极限模式不调深清门槛，quick 模式不参与进程参数调参；响应类参数在轻量阶段真实生效，各进程清理模式均参与调参），深度与极限模式使用更激进的科学初始值（更低的压力目标、更短的失败冷却、更灵敏的观测与更快的反馈适应），首次使用即接近目标；升级时各模式保留升级当时生效的那组参数，行为与升级前一致。
 
 EFIS is a 12-parameter closed-loop tuning engine spanning the entire system — every parameter auto-tuned.
 
@@ -364,7 +360,7 @@ An independent state file with atomic write semantics (tmp-then-replace). Deprec
 
 Game-mode freeze — tuning pauses automatically while Game Mode is active: game-period statistics are deliberately shaped by the protection mechanisms (system-level suppression, probes disabled, non-game processes only) and carry no tuning attribution, so they never enter any parameter group's evaluation window; daily tuning resumes from a clean window after the game exits, while per-process profile learning continues.
 
-Parameter grouping (per cleaning mode) — EFIS parameters are isolated per cleaning mode (4 groups, created on demand). Each mode evolves its own tuning without cross-mode contamination, and switching back to a mode restores its own parameters. Each mode tunes only the parameters that actually take effect in it (ultimate/deep modes skip the deep-trigger gate and anchor margin, ultimate mode also skips the deep-clean threshold, quick mode does no process-level tuning; response-type parameters remain active in the gentle phase and stay tunable in every process-cleaning mode), and deep/ultimate start from scientifically aggressive initial values (lower usage targets, shorter failure cooldowns, more sensitive observation and faster feedback adaptation), reaching their targets from the first use. Policy tree weights are also isolated per mode. On upgrade each mode keeps the parameter set active at that moment, so behavior is unchanged.
+Parameter grouping (per cleaning mode) — EFIS parameters are isolated per cleaning mode (4 groups, created on demand). Each mode evolves its own tuning without cross-mode contamination, and switching back to a mode restores its own parameters. Each mode tunes only the parameters that actually take effect in it (ultimate/deep modes skip the deep-trigger gate and anchor margin, ultimate mode also skips the deep-clean threshold, quick mode does no process-level tuning; response-type parameters remain active in the gentle phase and stay tunable in every process-cleaning mode), and deep/ultimate start from scientifically aggressive initial values (lower usage targets, shorter failure cooldowns, more sensitive observation and faster feedback adaptation), reaching their targets from the first use. On upgrade each mode keeps the parameter set active at that moment, so behavior is unchanged.
 
 ---
 
@@ -383,7 +379,7 @@ High-value large processes (high learning score, large memory footprint) receive
 激活后实施四重保护：
 
 - **进程级完全保护**：游戏进程及其全部子进程树（反作弊、更新器等）的 PID 被实时追踪，`EmptyWorkingSet` 清理、内存优先级降权、`can_trim`/`can_probe` 判定对所有匹配进程自动跳过，游戏工作集完全不受触碰
-- **系统级操作抑制**：standby 清空、脏页写回、文件缓存清空、卷缓存冲刷在游戏模式全部跳过，仅保留注册表缓存清理——零磁盘 I/O，消除游戏读盘竞争
+- **系统级操作抑制**：standby 全量清空、脏页写回、文件缓存清空、卷缓存冲刷在游戏模式全部跳过，仅保留低优先待机页与注册表缓存清理——零磁盘 I/O，消除游戏读盘竞争
 - **非游戏智能释放**：非游戏进程按智能评分持续清理（受门槛约束，前台窗口与排除列表受保护），内存优先级降为低优先，操作系统优先回收其页面供游戏使用
 - **操作频率自适应**：gap 间隔从常规 12s 拉长至 18s（游戏模式自动 ×1.5），降低守护周期对系统的干预密度
 
@@ -394,7 +390,7 @@ Auto-activated via process-name matching against your custom game list, or toggl
 When active, a four-tier protection scheme engages:
 
 - *Per-process full protection — game PIDs and their entire descendant process trees (anti-cheat, updaters, etc.) are tracked in real time, exempt from WS trims, memory-priority demotion, and can_trim/can_probe gating; the game's working set is never touched*
-- *System-level operation suppression — standby purge, dirty-page flush, file-cache clear, and volume flush are all skipped; only registry-cache cleanup remains — zero disk I/O, eliminating read contention with the game*
+- *System-level operation suppression — the full standby purge, dirty-page flush, file-cache clear, and volume flush are all skipped; only the low-priority standby purge and registry-cache cleanup remain — zero disk I/O, eliminating read contention with the game*
 - *Non-game intelligent release — non-game processes are continuously cleaned via intelligent scoring (gated; foreground and excluded processes are protected) and demoted to low memory priority so the OS reclaims their pages for the game first*
 - *Adaptive intervention density — the gap interval extends from 12s to 18s (auto ×1.5 in game mode) to reduce daemon intervention*
 
@@ -470,7 +466,7 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **重置**：恢复默认——将全部配置、学习数据与调参结果恢复为默认状态，确认时可选先备份当前状态为配置包（存放于数据目录 import_export 文件夹，可再次导入），确认后自动重启程序生效；守护运行中无法执行。
 
-**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户；导出的包会自动移除代理地址、对路径中的用户名脱敏（同机恢复不受影响），导出完成后可在提示中一键打开所在文件夹）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
+**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户；导出的包会自动移除代理地址、对路径中的用户名脱敏，排除列表与游戏名单也以占位符替换（代理与两个名单在导入时沿用本机设置，同机恢复不受影响），导出完成后可在提示中一键打开所在文件夹）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
 
 All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, suppression interval, daemon cycle, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.
 
@@ -484,7 +480,7 @@ All changes are saved immediately. During daemon operation, the exclusion list, 
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
 - *Global hotkeys — manual optimize (default ctrl+shift+m) and game-mode toggle (default ctrl+shift+g), independently configurable with format validation (at least one modifier + a letter or F1-F24), conflict detection, and busy-key fallback, taking effect instantly*
 - *Reset — factory reset restores all settings, learned data, and tuning results to defaults; optionally backs up the current state as a config package first (stored in the import_export folder of the data directory, re-importable), then restarts automatically to apply; unavailable while the daemon is running*
-- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing; the exported package drops the proxy address and masks the user name in paths (local restore is unaffected); the success notice offers a one-click Open its folder) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running). The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
+- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing; the exported package drops the proxy address, masks the user name in paths, and replaces the exclusion and game lists with placeholders (the proxy and both lists keep your local values on import; local restore is unaffected); the success notice offers a one-click Open its folder) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running). The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
 
 ---
 
@@ -513,7 +509,7 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | 单次优化（支持 quick/normal/deep/full） |
 | `daemon [--mode MODE]` | CLI 守护模式 |
 | `profile <PID>` | 查看指定进程的完整学习画像 |
-| `export` | 导出当前全部配置、学习数据与调参结果为配置包（数据目录 import_export 文件夹） |
+| `export` | 导出当前配置、学习数据与调参结果为配置包（数据目录 import_export 文件夹；代理与软件清单会脱敏） |
 | `import <文件名>` | 从数据目录 import_export 文件夹导入指定配置包（导入前严格校验并自动备份当前状态，重启后生效） |
 | `service [remove]` | 安装/移除计划任务服务（系统启动自动运行，需管理员） |
 | `reset` | 恢复出厂设置（当前状态自动备份为配置包后移除配置、画像与调参状态，重启后生效） |
@@ -527,7 +523,7 @@ Command reference:
 | `optimize [--mode MODE]` | Run one optimization pass (quick/normal/deep/full) |
 | `daemon [--mode MODE]` | CLI daemon mode |
 | `profile <PID>` | View a process's complete learning profile |
-| `export` | Export all settings, learned data, and tuning results as a config package (import_export folder of the data directory) |
+| `export` | Export settings, learned data, and tuning results as a config package (import_export folder; proxy and software lists are redacted) |
 | `import <name>` | Import the named config package from the import_export folder of the data directory (strictly validated, current state auto-backed up, effective after restart) |
 | `service [remove]` | Install/remove the scheduled-task service (runs at system startup, requires administrator) |
 | `reset` | Factory reset (auto-backs up the current state as a config package, then removes config, profiles, and tuning state; effective after restart) |

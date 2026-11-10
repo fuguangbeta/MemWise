@@ -401,7 +401,7 @@ _EN = {
     "秒": " seconds",
     "无法识别按键「": "Unrecognized key \"",
     "」（需 ctrl/alt/shift + 单字母或 F1-F24）": "\" (need ctrl/alt/shift + a letter or F1-F24)",
-    "MemWise v5.3.011 启动· ": "MemWise v5.3.011 started · ",
+    "MemWise v5.4.013 启动· ": "MemWise v5.4.013 started · ",
     "当前是否管理员权限:": "admin rights: ",
     # ── 内存状态标签 / 清理强度标签 / 维持 ──
     "（充裕）": " (plenty)",
@@ -517,8 +517,15 @@ _EN = {
     "热键注册失败（可能被其他程序占用）: ": " hotkey registration failed (possibly taken by another app): ",
     "热键已设为 ": " hotkey set to ",
 
+    # ── 2026-11-08 复核补键（英文界面残留：CLI 守护/重置/服务安装/用法 + 导入恢复提示）──
+    "守护已在运行（或互斥被占用），本实例退出": "Guard is already running (or the mutex is taken); this instance exits",
+    "重置失败：部分文件无法删除（可能被占用），请关闭占用程序后重试": "Reset failed: some files could not be deleted (possibly in use). Close the programs using them and try again",
+    "用法: memwise.py import <文件名>": "Usage: memwise.py import <file name>",
+    "✗ 安装失败 (需管理员权限)": "✗ Install failed (administrator rights required)",
+    "检测到未完成的导入，已从自动备份恢复": "Detected an unfinished import; restored from the automatic backup",
+    "检测到未完成的导入，恢复失败；请手动导入最近的备份包": "Detected an unfinished import; restore failed — please import the most recent backup package manually",
+
     # ── 2026-09-06 全量审查批次补键（守护互斥/状态栏/自启最小化联动）──
-    "命令行守护已在运行，本实例退出": "Command-line guard is already running; this instance exits",
     "命令行守护模式运行中，无法开启界面守护": "Command-line guard is running — cannot start Guard here",
     "⚠ 守护异常": "⚠ Guard error",
     "开机自启动已按新的最小化设置更新": "Auto-start task updated with the new minimize setting",
@@ -741,6 +748,7 @@ _EN = {
     "「将当前配置导出」": "Export configuration",
     "1. 将当前全部配置、学习数据与调参结果打包导出到数据目录": "1. Packs all settings, learned data, and tuning results into a single file and exports it to the data directory",
     "2. 导出文件可用于本机恢复，也可分享给其他用户导入": "2. The exported file can be used to restore on this machine, or shared with other users for import",
+    "3. 排除与游戏名单以占位符替换，导入时用本机设置": "3. Exclusion and game lists become placeholders; import keeps your local settings",
     "「导入配置包数据」": "Import a config package",
     "1. 从配置包导入全部配置、学习数据与调参结果": "1. Imports all settings, learned data, and tuning results from a config package",
     "2. 支持本程序导出与自动备份生成的配置包": "2. Supports config packages exported by this program and those created by automatic backup",
@@ -841,7 +849,7 @@ _EN = {
     "⚠ 即时优化异常，已自动恢复": "⚠ Instant optimize error — auto recovered",
     "无法获取内存状态": "Cannot get memory status",
     "  ... 还有 ": "  ... plus ",
-    "MemWise v5.3.011 PARES —— 智能内存看护": "MemWise v5.3.011 PARES — Intelligent Memory Custodian",
+    "MemWise v5.4.013 PARES —— 智能内存看护": "MemWise v5.4.013 PARES — Intelligent Memory Custodian",
     # ── 工作集硬上限（高级选项，设计 v2.4 文案规格）──
     "已设硬上限": "Hard-capped",
     "设置工作集硬上限…": "Set working-set hard cap…",
