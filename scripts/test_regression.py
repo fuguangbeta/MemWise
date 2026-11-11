@@ -4581,8 +4581,8 @@ check("D 埋点·D4 每轮清空快照间隔（防 deque 跨轮累计失真）",
 check("游戏模式·保留低优先待机（quick 同级低感知），仅跳磁盘类",
       'if "standby_low" in use and _capture(winapi.purge_low_priority_standby)' in _cl61
       and 'not game_mode and "standby_low"' not in _cl61)
-check("游戏轮播报解释系统级暂缓 + 明细改本轮增量口径",
-      "🎮 系统级暂缓" in _eg61 and "_prev_sys_detail" in _eg61)
+check("游戏轮摘要不再追加额外标注（行宽回到单排）+ 明细改本轮增量口径",
+      "系统级暂缓" not in _eg61 and "_prev_sys_detail" in _eg61)
 check("试探统计口径：累计=成功+失败+超时，合格=成功数",
       "_pt + _pf + _pi, _pt, _pf, _pi" in _eg61)
 check("试探 PF 允许量扣自身速率（与 trim 同口径）",

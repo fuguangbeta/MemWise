@@ -1721,10 +1721,9 @@ class MemWiseEngine:
                 if getattr(self, "_last_logged_mode", None) not in (None, _cur_mode):
                     summary_line += " · 后续模式：%s→%s" % (self._last_logged_mode, _cur_mode)
                 self._last_logged_mode = _cur_mode
-                # 游戏轮解释（2026-11-09）：系统级磁盘类操作按设计暂缓，清理量天然低于普通轮——
-                # 行内标注，避免被误读为"游戏模式坏了/保护过度"。
-                if game_seen:
-                    summary_line += " · 🎮 系统级暂缓"
+                # 游戏轮不再追加额外状态标注（2026-11-11 用户裁定）：该标注把本就较长的
+                # 汇总行推过日志面板宽度、强行折成两排，可读性反而变差。游戏轮的清理量差异
+                # 已由「模式」字段与「操作」快照体现，无需额外行内解释。
                 if CFG.get("log_to_file"):
                     _log_write("清理", summary_line)
                     # 明细行（2026-09-11 用户要求"日志要能定位问题"）：系统操作计数 + 释放前三 +
