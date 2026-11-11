@@ -21,7 +21,7 @@ from core.engine import (
 
 from core import winapi
 from core import update as _update
-from core.backup import APP_VERSION
+from core.backup import APP_VERSION, display_version as _display_version
 from core.learner import PareLearner as Learner
 from core.learner import _is_system_core, _is_self_path  # 系统核心保护名单（进程排行终止保护等）/自身可执行路径（WS 硬上限守卫）
 from core.judger import PareJudger as Judger
@@ -60,6 +60,9 @@ def _normalize_proc_name(raw):
 
 
 # ── 日志面板分组写入语义（2026-08-30）：组间 ≤7 接续 / >7 清屏，组内可超 7 完整呈现 ──
+# 运行时显示用标题（含 .beta 本地构建标识；正式版显示 APP_VERSION）——见 core/backup.display_version
+_APP_TITLE = "MemWise v" + _display_version()
+
 PANEL_MAX_LINES = 7  # 日志面板组间刷新阈值（行）
 
 # ── 日志图标槽对齐（2026-09-11 用户要求：图标对图标、文字对文字）──
@@ -1035,7 +1038,7 @@ class MemWiseGUI:
                     ctypes.windll.user32.MessageBoxW(
                         None,
                         tr("程序已在其他用户会话中运行，本机同一时间只允许运行一个实例"),
-                        "MemWise v5.4.013", 0x00000040)  # MB_ICONINFORMATION
+                        _APP_TITLE, 0x00000040)  # MB_ICONINFORMATION
                 except Exception:
                     pass
                 sys.exit(0)
@@ -1075,7 +1078,7 @@ class MemWiseGUI:
         # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
         self.root.report_callback_exception = self._tk_exception_hook
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
-        self.root.title("MemWise v5.4.013")
+        self.root.title(_APP_TITLE)
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
@@ -1140,7 +1143,7 @@ class MemWiseGUI:
         self._refresh_mem()
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(f"MemWise v5.4.013 启动· 当前是否管理员权限:{adm}")
+        self._log(_APP_TITLE + tr(" 启动· ") + tr("当前是否管理员权限:") + adm)
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1231,7 +1234,7 @@ class MemWiseGUI:
             # 启动早期 wrapper 可能尚未创建（GetAncestor 返回自身）：FindWindowExW 找隐藏 TkTopLevel（withdrawn 亦可）
             if not top or top == wid:
                 try:
-                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", "MemWise v5.4.013")
+                    fw = ctypes.windll.user32.FindWindowExW(None, None, "TkTopLevel", _APP_TITLE)
                     if fw:
                         top = fw
                 except Exception:

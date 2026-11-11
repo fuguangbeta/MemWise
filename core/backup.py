@@ -20,7 +20,17 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 1
-APP_VERSION = "5.4.013"  # 版本同步面之一（manifest 记录用）
+APP_VERSION = "5.4.013"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
+# 本地临时构建标识（2026-11-11 用户规则）：正式发布前，本地构建的版本号一律加 ".beta"
+# （如 "5.4.014.beta"）；正式发布时把本行置空、并把 APP_VERSION 升到该正式号。
+# ⚠ 只有**运行时显示**（窗口标题/启动日志/单实例提示）用 display_version()；
+#   仓库文档与发布断言继续用 APP_VERSION —— beta 因此不会污染任何发布检查。
+BUILD_VERSION = "5.4.014.beta"
+
+
+def display_version():
+    """运行时显示的版本号：有本地构建标识时返回它，否则回退最近一次正式发布号。"""
+    return BUILD_VERSION or APP_VERSION
 PACKAGE_FILE_MAX = 8 * 1024 * 1024    # 单个状态文件上限（2026-09-11 加固；2026-11-06 由 64MB 收紧：
                                        # 实际四文件约 1MB，64MB 只会让校验期多占 4×64MB 内存）
 
