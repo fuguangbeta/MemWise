@@ -59,8 +59,7 @@ class PolicyVoter:
         # 树1: 预期收益（Kalman 原始预测；ctx 修正层 2026-11-08 移除——实测 MAE 负收益）
         p = learner.profiles.get(name.lower())
         if p:
-            k_freed, k_cost = p.kalman.predict()
-            k_freed = p.effective_freed   # 2026-11-11：树1 用可靠性加权值（连续失败即折扣）
+            k_freed = p.effective_freed   # 树1 用可靠性加权值（连续失败即折扣；不再多算一次 kalman.predict）
             if k_freed > TREE1_HIGH:
                 scores[0] += 2
                 reasons.append("收益高")

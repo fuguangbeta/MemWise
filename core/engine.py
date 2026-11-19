@@ -85,6 +85,7 @@ def init_runtime():
         except Exception:
             pass
     _migrate_runtime_data()
+    _migrate_state_location()   # 3.1：旧分叉位置 → <base>/data（失败自动回退旧目录）
     _cleanup_stale_tmp()
     # P18：上次导入若在四文件落位途中中断，先恢复再继续（有 journal 才动作）
     try:
@@ -125,17 +126,8 @@ def _cleanup_stale_tmp():
     except Exception:
         pass
 
-if getattr(sys, "frozen", False):
-    exe_dir = os.path.dirname(sys.executable)
-    # dist 特判仅用于开发态（同级存在 MemWise.spec）；普通用户把 exe 放进名为 dist 的文件夹时
-    # 仍在 exe 旁读写数据（P33：避免“数据跑到父目录/不可写”的意外）
-    if (os.path.basename(exe_dir).lower() == "dist"
-            and os.path.isfile(os.path.join(os.path.dirname(exe_dir), "MemWise.spec"))):
-        base = os.path.dirname(exe_dir)
-    else:
-        base = exe_dir
-else:
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from core.config import resolve_base as _resolve_base   # 路径规则单一来源（见 config.resolve_base）
+base = _resolve_base()
 if base not in sys.path:
     sys.path.insert(0, base)
 
@@ -175,6 +167,85 @@ def _migrate_runtime_data():
                 os.replace(src, dst)
     except Exception:
         pass
+
+
+def _legacy_state_base():
+    """旧 get_state_path 规则（仅用于分叉检测）：frozen 时目录名为 dist 即上移，源码态项目根。"""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        return os.path.dirname(exe_dir) if os.path.basename(exe_dir).lower() == "dist" else exe_dir
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+_STATE_MIGRATE_NAMES = ("memwise_state.json", "memwise_efis_state.json",
+                        "memwise_eris_ewma.json", "memwise_eris_calib.json",
+                        "memwise_update.json")
+
+
+def _migrate_state_location():
+    """把旧分叉位置（<父级>/data）的状态类数据一次性搬到 <base>/data（修复 3.1）。
+
+    只移动、不复制（复制会让 reset_factory 删除新文件后被旧副本“复活”）；
+    目标已有同名文件时保留目标、源留原地（不覆盖、不删除）。
+    任一移动失败 → 逆序回滚已移动项，并把本次进程回退到旧目录（config.set_state_base），
+    保证“新路径空、旧数据没人读”的情况不会发生。幂等：目标齐全时无动作。"""
+    try:
+        old_base = _legacy_state_base()
+        if os.path.normcase(os.path.abspath(old_base)) == os.path.normcase(os.path.abspath(base)):
+            return True
+        old_dir = os.path.join(old_base, "data")
+        new_dir = os.path.join(base, "data")
+        if not os.path.isdir(old_dir):
+            return True
+        names = [n for n in _STATE_MIGRATE_NAMES if os.path.isfile(os.path.join(old_dir, n))]
+        old_pkg = os.path.join(old_dir, "import_export")
+        if not names and not os.path.isdir(old_pkg):
+            return True
+        os.makedirs(new_dir, exist_ok=True)
+        moved = []
+        try:
+            for n in names:
+                src, dst = os.path.join(old_dir, n), os.path.join(new_dir, n)
+                if os.path.exists(dst):
+                    continue
+                os.replace(src, dst)
+                moved.append((src, dst))
+            new_pkg = os.path.join(new_dir, "import_export")
+            if os.path.isdir(old_pkg):
+                if not os.path.exists(new_pkg):
+                    os.replace(old_pkg, new_pkg)
+                    moved.append((old_pkg, new_pkg))
+                else:
+                    for fn in os.listdir(old_pkg):
+                        src, dst = os.path.join(old_pkg, fn), os.path.join(new_pkg, fn)
+                        if os.path.isfile(src) and not os.path.exists(dst):
+                            os.replace(src, dst)
+                            moved.append((src, dst))
+        except Exception:
+            for src, dst in reversed(moved):
+                try:
+                    if os.path.exists(dst) and not os.path.exists(src):
+                        os.replace(dst, src)
+                except Exception:
+                    pass
+            try:
+                from core.config import set_state_base as _ssb
+                _ssb(old_base)
+            except Exception:
+                pass
+            try:
+                _event_log("数据目录迁移失败，本次回退旧目录：%s" % old_dir)
+            except Exception:
+                pass
+            return False
+        if moved:
+            try:
+                _diag_log("数据目录迁移: %d 项 → %s" % (len(moved), new_dir))
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
 
 
 if "--watchdog" in sys.argv:
@@ -646,8 +717,13 @@ def _event_log(msg):
         pass
 
 
-# ── 配置/状态路径（模块级单例：引擎与展示层共享同一 CFG/STATE_FILE）──
-STATE_FILE = get_state_path()
+# ── 配置/状态路径（CFG 为进程级单例；状态路径必须经 state_file() 在 init_runtime 之后取，
+#    否则迁移/回退的结果不会生效）──
+def state_file():
+    """运行时状态文件路径（迁移/回退后由 get_state_path 决定；入口在 init_runtime 之后调用）。"""
+    return get_state_path()
+
+
 CFG = _load_cfg()
 set_language(CFG.get("language", "zh_CN"))  # 界面语言加载（设置面板可即时切换）
 _CFG_SNAPSHOT = dict(CFG)  # 配置变更日志基线（_save_cfg 输出 旧→新 diff）
@@ -749,7 +825,7 @@ def _emergency_active(m):
         return True
     ap = CFG.get("emergency_abs_pct", 0) or 0
     # 防御性自检（2026-09-11 审查 F3）：ap ≥ 100 时"可用率 ≤ ap"恒真 ⇒ 每周期恒紧急 full。
-    # 配置层已钳制到 0-99，这里再兜一层：即便配置被绕过也绝不进入恒触发。
+    # 配置层已钳制到 0-50（config.load），这里再兜一层：即便配置被绕过也绝不进入恒触发。
     if 0 < ap <= 99 and m.get("total") and m.get("avail"):
         return m["avail"] / m["total"] * 100 <= ap
     return False
@@ -846,8 +922,17 @@ class MemWiseEngine:
         self._last_harvest_freed = 0
         # 共享最近快照（2026-08-15 审查）：进程排行窗口在守护运行中零额外采集直接读取
         self._last_snaps = []
+        self._self_pids = {os.getpid()}   # 自身实例 PID 集（主进程 + 看门狗；9.2）
+        self._gap_wsall_ts = 0.0           # gap 段 ws_all 上次执行时间（A4 节流）
+        self._gap_wsall_hits = 0           # 本周期 gap 全清次数（D8 诊断）
         self._refill_hot = False   # 跨周期：是否处于回涨快状态（状态翻转去重，2026-08-14）
         self._refill_cycle = False # 本周期是否触发过回涨快（周期末判定）
+        # GUI 播报闸（2026-11-20）：动作仍按单轮判定，播报需持续/冷却，抖动期静默
+        self._refill_hot_streak = 0
+        self._refill_cool_streak = 0
+        self._refill_msg_ts = 0.0
+        self._refill_announced = False
+        self._refill_log_state = None
         self._refill_total = 0     # 最新回涨量（进入回涨快时展示）
         # ── 工作集硬上限（高级选项，设计 v2.1-v2.5）：簿记与锁 ──
         self._ws_cap_lock = threading.RLock()   # P11：_apply_ws_caps 内需调用 ws_cap_rule_removed（同锁）
@@ -905,6 +990,11 @@ class MemWiseEngine:
         # _refill_hot 残留会致新守护首周期误报"↻ 内存回涨已放缓"）
         self._refill_hot = False
         self._refill_cycle = False
+        self._refill_hot_streak = 0
+        self._refill_cool_streak = 0
+        self._refill_msg_ts = 0.0
+        self._refill_announced = False
+        self._refill_log_state = None
         self._refill_total = 0
         self._last_snaps = []  # 新守护周期从空开始（排行窗口按 daemon_running 切换数据源）
         self._running = True
@@ -945,13 +1035,27 @@ class MemWiseEngine:
         self._last_snaps = snaps
         return snaps
 
-    # ── 收尾 ──
     def save_state(self):
         try:
-            self.learner.save(self._state_file)
+            self._save_learner()
         except Exception:
             pass
         self._save_eris_state()
+
+    def _save_learner(self):
+        """保存学习状态；失败时（目录运行中变只读/磁盘满等）每进程只提示一次（见 3.3）。"""
+        ok = False
+        try:
+            ok = bool(self.learner.save(self._state_file))
+        except Exception:
+            ok = False
+        if not ok and not getattr(self, "_save_warned", False):
+            self._save_warned = True
+            try:
+                self.events.put(('log', "⚠ 数据无法保存（程序所在目录可能不可写），本次运行的学习与设置不会落盘"))
+            except Exception:
+                pass
+        return ok
 
     def ensure_watchdog(self, daemon_flag=False):
         """看门狗存活自检/自愈（2026-11-06）。
@@ -1072,7 +1176,7 @@ class MemWiseEngine:
                     self.events.put(('log', f"第 {round_idx + 1}/3 轮完成 · 本轮释放 {r.get('net_freed', 0) / (1 << 20):.0f} MB"))
                     if round_idx < 2:
                         time.sleep(2)
-                self.learner.save(self._state_file)
+                self._save_learner()
                 m1 = winapi.get_memory_status()
                 freed1 = self.cleaner.summary()['freed_mb']
                 released = max(0.0, freed1 - freed0)  # 三轮释放量标量总和
@@ -1115,7 +1219,7 @@ class MemWiseEngine:
                 m0 = winapi.get_memory_status()
                 freed0 = self.cleaner.summary()['freed_mb']
                 r = self.cleaner.optimize(snaps, self.learner, mode, operations=ops, deadline=time.time() + 30)
-                self.learner.save(self._state_file)
+                self._save_learner()
                 m1 = winapi.get_memory_status()
                 freed1 = self.cleaner.summary()['freed_mb']
                 released = max(0.0, freed1 - freed0)
@@ -1226,15 +1330,20 @@ class MemWiseEngine:
                 m_emerg = winapi.get_memory_status()
                 if m_emerg and _emergency_active(m_emerg):
                     _saved_efis = self.judger.cfg.get("efis_params")
+                    _gate_bak = dict(getattr(self.cleaner, "_heavy_allow", {}))
                     self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                     agg_emerg = self.judger.update_pressure(m_emerg["pct"])
                     self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg,
                                            deadline=time.time() + 25)
                     if _saved_efis is not None:
                         self.judger.cfg["efis_params"] = _saved_efis
+                    self.cleaner._heavy_allow = _gate_bak   # 紧急轮不污染本周期余下阶段的判定
                     self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])
                     self._emergency_done_cycle = True
-                interval = CFG.get("interval", 60)  # 周期由配置驱动（默认 60s，原硬编码 60 使配置键失效）
+                # 周期级择时判定（2026-11-19 决策 B）：gap 与 harvest 共用同一次判定
+                self.cleaner.begin_cycle(mode)
+                self._refresh_self_pids()
+                interval = self._effective_interval(CFG.get("interval", 60))  # A7：回涨持续时动态缩短
                 deadline = time.time() + interval - 3 - overtime_debt
                 # P26：债务不得把本周期压到“连一次 gap 都没有”；至少保留 0.5s 轻量压制段
                 if deadline - 6 <= time.time():
@@ -1298,11 +1407,17 @@ class MemWiseEngine:
                                 ops_gap = {"registry"}
                             elif mode == "full":
                                 ops_gap = {"registry", "standby", "standby_low", "modified"}
+                                # A4：gap 段持续压 WS（harvest 之间不再放任回涨）；20s 节流
+                                if self._gap_wsall_due(mode, time.time()):
+                                    ops_gap.add("ws_all")
+                                    self._gap_wsall_ts = time.time()
+                                    self._gap_wsall_hits += 1
                             elif mode == "deep":
                                 ops_gap = {"registry", "standby", "modified"}
                             else:
                                 ops_gap = {"registry"}
-                            self.cleaner._layer1_memreduct(full=False, ops=ops_gap, clean_self=False)
+                            self.cleaner.refresh_cycle_gate()
+                            self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap, clean_self=False)
                             if mode != "quick":
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；
                                 # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢。
@@ -1339,12 +1454,14 @@ class MemWiseEngine:
                                 self._emergency_done_cycle = True
                                 self._cycle_log_groups.append(["⚠ 周期内紧急触发清理(full模式)"])
                                 _saved_efis = self.judger.cfg.get("efis_params")
+                                _gate_bak2 = dict(getattr(self.cleaner, "_heavy_allow", {}))
                                 self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                                 self.cleaner.optimize(snaps, self.learner, "full",
                                                       operations=ops, aggressiveness=agg,
                                                       deadline=time.time() + 25)
                                 if _saved_efis is not None:
                                     self.judger.cfg["efis_params"] = _saved_efis
+                                self.cleaner._heavy_allow = _gate_bak2   # 恢复周期判定，紧急轮不影响后续阶段
                                 m2 = winapi.get_memory_status()
                                 if m2:
                                     m = m2
@@ -1384,6 +1501,7 @@ class MemWiseEngine:
                             ops_tail = {"registry", "standby", "modified"}
                         else:
                             ops_tail = {"registry"}
+                        self.cleaner.refresh_cycle_gate()
                         self.cleaner._layer1_memreduct(full=False, ops=ops_tail, clean_self=False)
                     time.sleep(1.5)
                 # harvest：每轮完整收割（游戏进程由 PID 保护、系统缓存由 game_mode 跳过，
@@ -1396,16 +1514,37 @@ class MemWiseEngine:
                 # 回涨状态机（2026-08-14 定稿，2026-09-26 前移）：进入回涨快提示一次 → 持续静默 →
                 # 回落提示恢复。判据（_refill_cycle/_refill_total）在本周期轮询阶段即已定稿，故这里
                 # 先于本轮强度决策求值——F1 与播报读同一次判定，且回涨量配的除数是上一轮释放量。
+                # 动作状态仍按单轮判定（收紧/lite 语义不变）；GUI 播报加闸（2026-11-20）：
+                # 进入需连续 3 轮、恢复需连续 10 轮，且两条之间 ≥600s；抖动期全程静默。
+                # 文件侧每次状态翻转仍留一行诊断（可追溯，不打扰界面）。
                 if self._refill_cycle:
-                    if not self._refill_hot:
-                        _rate = int(round(self._refill_total / max(self._last_harvest_freed, 1) * 100))
+                    self._refill_hot_streak += 1
+                    self._refill_cool_streak = 0
+                else:
+                    self._refill_cool_streak += 1
+                    self._refill_hot_streak = 0
+                _rnow = time.time()
+                _rate = int(round(self._refill_total / max(self._last_harvest_freed, 1) * 100))
+                if self._refill_cycle and not self._refill_hot:
+                    if self._refill_hot_streak >= 3 and _rnow - self._refill_msg_ts >= 600:
                         self._cycle_log_groups.append(
                             [f"↻ 内存回涨较快，仅上轮收割后即回涨{_rate}% · 将持续收紧收割节奏直到放缓"])
-                    self._refill_hot = True
-                else:
-                    if self._refill_hot:
+                        self._refill_msg_ts = _rnow
+                        self._refill_announced = True
+                if (not self._refill_cycle) and self._refill_hot:
+                    if self._refill_announced and self._refill_cool_streak >= 10 and _rnow - self._refill_msg_ts >= 600:
                         self._cycle_log_groups.append(["↻ 内存回涨已放缓，试探性恢复正常收割节奏"])
-                    self._refill_hot = False
+                        self._refill_msg_ts = _rnow
+                        self._refill_announced = False
+                self._refill_hot = self._refill_cycle
+                if self._refill_hot != self._refill_log_state:
+                    self._refill_log_state = self._refill_hot
+                    try:
+                        _log_write("诊断", "回涨状态: %s（回涨 %d MB / 上轮释放 %d MB）"
+                                   % ("较快" if self._refill_hot else "已放缓",
+                                      int(self._refill_total) >> 20, int(self._last_harvest_freed) >> 20))
+                    except Exception:
+                        pass
                 # F1 压力自适应（2026-09-26 用户定稿）：内存宽裕 + 上轮回涨快 ⇒ full 模式轻量轮。
                 # 占用回升到阈值或回涨放缓立即恢复全强度；手动优化与紧急 full 不走此路径（各自全强度）。
                 # 本轮是否轻量不单独播报——回涨快慢由上面状态机统一播报，同一信号不两个时点各说一次
@@ -1414,16 +1553,28 @@ class MemWiseEngine:
                 _pending_busy = (self._pending_harvest is not None
                                  and not self._pending_harvest.done())
                 if _pending_busy:
+                    self._harvest_stuck = getattr(self, "_harvest_stuck", 0) + 1
+                    if self._harvest_stuck == 2:
+                        try:
+                            _event_log("harvest 连续两轮未完成（可能卡在内核调用）；清理暂缓，等待其自然结束")
+                        except Exception:
+                            pass
+                else:
+                    self._harvest_stuck = 0
+                if _pending_busy:
                     # P25：上一轮 harvest 仍在跑 ⇒ 本轮不再排队（单线程池排队会连锁超时）
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
                     self._cycle_log_groups.append(["⏱ 上轮 harvest 未完成 · 本轮跳过收割"])
                 else:
                     self._pending_harvest = None
+                    self.cleaner.refresh_cycle_gate()   # 收割前按当前停手状态补判（周期开头可能正好在动）
+                    # A1（2026-11-20）：收割预算随周期收缩（固定 25s 会让 interval=10 名不副实）
+                    _harvest_budget = max(6, min(25, int(interval) - 5))
                     harvest_future = self._harvest_executor.submit(
                         self.cleaner.optimize, snaps, self.learner, mode,
                         operations=ops, aggressiveness=agg, lite=_lite,
-                        deadline=time.time() + 25)
+                        deadline=time.time() + _harvest_budget)
                     result = None
                     try:
                         result = harvest_future.result(timeout=30)
@@ -1553,10 +1704,11 @@ class MemWiseEngine:
                         except Exception:
                             _eb = "?"
                         _log_write("诊断", "学习状态: 画像 %d · 锚点 %d · 回退 %d · 稳态抑制计数 %d · "
-                                           "当前参数 %s · 模式 %s · 效率基线 %s · 调参dwell跳过 %d"
+                                           "当前参数 %s · 模式 %s · 效率基线 %s · 调参dwell跳过 %d · 冻结计数 %d"
                                    % (_prof, _anch, _back, _sup, _ps,
                                       CFG.get("clean_mode", "normal"), _eb,
-                                      getattr(self.efis, "_dwell_skipped", 0)))
+                                      getattr(self.efis, "_dwell_skipped", 0),
+                                      getattr(self.efis, "_freeze_count", 0)))
                         # 试探结果构成（2026-09-26 实测缺口：日志侧成功率与画像侧口径不同，
                         # 分不清"缺页超预算"与"未完成/超时"）⇒ 分桶累计，便于据此定策
                         try:
@@ -1574,7 +1726,7 @@ class MemWiseEngine:
                     except Exception:
                         pass
                     self.judger.purge_expired()
-                    self.learner.save(self._state_file)
+                    self._save_learner()
                     self._save_eris_state()  # ERIS 分位数窗随周期保存：运行中崩溃（watchdog 重启）不丢
                 trimmed = [(snap, ok, freed, reason) for snap, ok, freed, reason in l2_results if ok]
                 failed = [r for r in l2_results if not r[1]]
@@ -1635,7 +1787,8 @@ class MemWiseEngine:
                         'repeat_fail': len(failed),
                         'suppress_cnt': self.judger.suppress_cnt,  # 锚点抑制拦截数（EFIS 自平衡诊断；每轮由 update_activity 重置）
                     }
-                    self._log_diag_round(game_seen)   # D1–D6 只读诊断（2026-11-08；不参与判定；游戏轮单独标记）
+                    self._log_diag_round(game_seen)   # D1–D6 只读诊断
+                    self._log_partial_drop(game_seen)  # D7 截断计量（5.1）（2026-11-08；不参与判定；游戏轮单独标记）
                     try:
                         efis_msg = self.efis.tick(stats)
                     except Exception as e:
@@ -1789,6 +1942,10 @@ class MemWiseEngine:
             self._running = False
         finally:
             try:
+                self.cleaner.end_cycle()
+            except Exception:
+                pass
+            try:
                 if h_low:
                     winapi.close_handle(h_low)
             except Exception:
@@ -1885,6 +2042,39 @@ class MemWiseEngine:
                         create = None
                 self._ws_cap_applied.setdefault(path, {})[pid] = (create, orig_max)
 
+    def _effective_interval(self, base):
+        """A7（2026-11-20）：回涨连续 2 轮 → 动态缩短周期到 ×0.6（不低于 15s、不超过设定值）。"""
+        try:
+            b = max(10, min(3600, int(base or 60)))
+        except Exception:
+            b = 60
+        if getattr(self, "_refill_hot_streak", 0) >= 2 and b > 20:
+            return min(b, max(15, int(b * 0.6)))
+        return b
+
+    def _gap_wsall_due(self, mode, now):
+        """A4（2026-11-20）：full 的 gap 段每 ≥20s 做一次 ws_all（约每周期 2-3 次，light 0.3-0.6s）。"""
+        if mode != "full":
+            return False
+        return (now - getattr(self, "_gap_wsall_ts", 0.0)) >= 20.0
+
+    def _refresh_self_pids(self):
+        """自身实例 PID 集（主进程 + 看门狗）：路径不可读时按 PID 精确排除自身（9.2）。"""
+        pids = {os.getpid()}
+        try:
+            import json
+            with open(_watchdog_path(), "r", encoding="utf-8") as f:
+                _wd = int((json.load(f) or {}).get("wd_pid", 0) or 0)
+            if _wd > 0:
+                pids.add(_wd)
+        except Exception:
+            pass
+        self._self_pids = pids
+        try:
+            self.judger.set_self_pids(pids)
+        except Exception:
+            pass
+
     def ws_cap_rule_removed(self, path):
         """GUI 删除规则：先对簿记内活 PID 解除（disable+还原 per-pid orig_max），
         再清簿记/失败计数/锚点/回弹（B5：cap 期间学到的假稳态不可留），最后刷新判定快照。"""
@@ -1914,6 +2104,13 @@ class MemWiseEngine:
         # 游戏轮单独标记：游戏模式跳过磁盘类系统操作、对游戏 PID 树绝对保护，
         # 其 D5/D6/D2 样本与普通轮不可合并；回放按「deep·游戏」单独分组。
         _tag = "·游戏" if game else ""
+        try:
+            _gw = int(getattr(self, "_gap_wsall_hits", 0))
+            if _gw:
+                self._gap_wsall_hits = 0
+                _log_write("诊断", "模式 %s%s · D8 gap全清 %d 次" % (_mode, _tag, _gw))
+        except Exception:
+            pass
         try:
             d = self.cleaner.diag_snapshot()
         except Exception:
@@ -1965,12 +2162,22 @@ class MemWiseEngine:
         except Exception:
             pass
 
+    def _log_partial_drop(self, game=False):
+        """D7：本轮因预算/卡死未提交的候选数（5.1 的量化入口；无丢弃时不输出）。"""
+        _drop = int(getattr(self.cleaner, "_last_partial_drop", 0) or 0)
+        if _drop <= 0:
+            return
+        _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
+        try:
+            _log_write("诊断", "模式 %s%s · D7 截断: 本轮未提交候选 %d"
+                       % (_mode, "·游戏" if game else "", _drop))
+        except Exception:
+            pass
+
     def _push_round(self, chart_accum, harvest_partial, game_seen=None):
         self._chart_bar_seq += 1
         # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
-        from core import eris as _E
-        _k = _E.k_value(self._eris_calib, _mode)   # 冻结基线 K（自标定期总分 p92，日志可见）
         with self._chart_lock:
             self._chart_data.append(chart_accum)
             self._chart_cycle_meta.append(bool(harvest_partial))
@@ -1981,8 +2188,9 @@ class MemWiseEngine:
                                         self._cycle_failed,
                                         probe_ok=_pk, probe_total=_pt, update_state=True,
                                         game_run=game_seen)
-            self._eff_data.append(result["total"])
-            self._eff_factors.append(result.get("factors", ["冷启动"]))
+            with self._chart_lock:
+                self._eff_data.append(result["total"])
+                self._eff_factors.append(result.get("factors", ["冷启动"]))
             # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
             try:
                     _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 有效[%s] · K %.0f · 校准 n=%s · 模式 %s%s" % (
@@ -1994,7 +2202,7 @@ class MemWiseEngine:
                         (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
                         getattr(self, "_cycle_pf", 0),
                         ",".join(str(j) for j in (result.get("valid") or [])) or "无",
-                        _k,
+                        result.get("k", 0.0),
                         self._eris_calib.get("modes", {}).get(_mode, {}).get("n", "?"),
                         _mode, " · 游戏" if getattr(self, "_last_eris_game_mode", False) else ""))
             except Exception:
@@ -2123,7 +2331,8 @@ class MemWiseEngine:
                     self._eris_trend = self._eris_trend[-10:]
                 self._eris_prev_scores = scores
                 self._eris_prev_eff = eff
-        return {"total": eff, "factors": factors, "scores": scores, "raws": sm, "valid": list(_valid)}
+        return {"total": eff, "factors": factors, "scores": scores, "raws": sm,
+                "valid": list(_valid), "k": _k}
     def _save_eris_state(self):
         with self._eris_save_lock:
             try:

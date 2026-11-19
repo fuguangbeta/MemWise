@@ -85,6 +85,7 @@ class EfisController:
         self._adjust_log = []
         self._last_change = {}      # param -> 最近一次调整的轮号（内存态；见 MIN_ADJUST_DWELL）
         self._dwell_skipped = 0     # 因最小停留被推迟的调整次数（诊断用）
+        self._freeze_count = 0      # 因协方差冲突被冻结的参数次数（诊断用，1.4）
         self.load()
 
     def _group(self, mode=None):
@@ -375,6 +376,7 @@ class EfisController:
                         conflicting[p2] = 0
         for p in conflicting:
             diag[p] = 0
+        self._freeze_count += len(conflicting)
         for param, direction in diag.items():
             if direction == 0:
                 continue

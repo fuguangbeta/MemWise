@@ -9,19 +9,23 @@ try:
 except ImportError:
     yaml = None
 
-if getattr(sys, "frozen", False):
-    _exe_dir = os.path.dirname(sys.executable)
-    # P33：dist 特判只用于开发态（同级存在 MemWise.spec）；用户把 exe 放进名为 dist 的文件夹时
-    # 数据仍在 exe 旁，避免“数据跑到父目录/不可写”的意外
-    if (os.path.basename(_exe_dir).lower() == "dist"
-            and os.path.isfile(os.path.join(os.path.dirname(_exe_dir), "MemWise.spec"))):
-        _base = os.path.dirname(_exe_dir)
-    else:
-        _base = _exe_dir
-    CONFIG_PATH = os.path.join(_base, "config", "config.yaml")
-else:
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
+def resolve_base():
+    """统一 base（配置 / 状态 / 引擎日志同一来源）。
+
+    · frozen：exe 所在目录；仅当目录名为 dist 且父级存在 MemWise.spec（开发态）时上移到父级；
+    · 源码态：项目根。
+    P33：用户把 exe 放进名为 dist 的文件夹时，数据仍在 exe 旁（有 spec 才是开发态）。"""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        if (os.path.basename(exe_dir).lower() == "dist"
+                and os.path.isfile(os.path.join(os.path.dirname(exe_dir), "MemWise.spec"))):
+            return os.path.dirname(exe_dir)
+        return exe_dir
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+BASE_DIR = resolve_base()
+CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 
 # ⛔ 冷启动契约（2026-10-15 实测订正）：发布形态 MemWise.spec 为 datas=[]，exe 内不存在
 # config/config.yaml（解析 dist/MemWise.exe 的 CArchive：995 个条目零含 config），故旧版
@@ -69,6 +73,7 @@ DEFAULT_CFG = {
     "close_action": "ask", "tray_left_action": "show",
     "emergency_abs_pct": 0,  # 紧急触发兜底：可用内存百分比阈值（0=禁用；使用率阈值调高时的保险）
     "language": "zh_CN",  # 界面语言（zh_CN=简体中文 / en=English）
+    "ui_animation": True,  # 界面动效（默认开；关闭或系统“减少动画”时全部立即到位）
     "elevate_declined": False,  # 用户曾取消过 UAC 提权 ⇒ 不再自动请求（界面仍可手动重启）
     "ws_caps": {},  # 工作集硬上限规则（高级选项）：{规范化路径: {"mb":int, "orig_max":int}}
 }
@@ -93,17 +98,18 @@ def _norm_proc_name(raw):
     return n
 
 
+_STATE_BASE_OVERRIDE = None
+
+
+def set_state_base(path):
+    """迁移失败时回退到旧数据目录（仅本进程有效；engine.init_runtime 调用）。"""
+    global _STATE_BASE_OVERRIDE
+    _STATE_BASE_OVERRIDE = path or None
+
+
 def get_state_path():
-    """获取 memwise_state.json 路径（运行时数据统一在 data/ 目录），兼容 PyInstaller 打包"""
-    if getattr(sys, "frozen", False):
-        exe_dir = os.path.dirname(sys.executable)
-        if os.path.basename(exe_dir).lower() == "dist":
-            base = os.path.dirname(exe_dir)
-        else:
-            base = exe_dir
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "data", "memwise_state.json")
+    """获取 memwise_state.json 路径（运行时数据统一在 <base>/data），与 CONFIG_PATH 同一 base。"""
+    return os.path.join(_STATE_BASE_OVERRIDE or resolve_base(), "data", "memwise_state.json")
 
 def load():
     """加载 config.yaml，缺失字段用 DEFAULT_CFG 兜底。
@@ -150,7 +156,7 @@ def load():
         d["never"] = [n for n in (_norm_proc_name(x) for x in d["never"] if x and str(x).strip()) if n]
         # P35：游戏名单与 never 同口径归一（补 .exe/小写）；旧配置零行为变化（消费方本就会归一）
         d["game_processes"] = [n for n in (_norm_proc_name(x) for x in d["game_processes"] if x and str(x).strip()) if n]
-        # 工作集硬上限规则（高级选项）：键=规范化完整路径；mb 钳 256-65536；条目上限 16
+        # 工作集硬上限规则（高级选项）：键=规范化完整路径；mb 钳 256-65536；条目上限 32（WS_CAP_MAX_RULES）
         # （先全量校验再截断——有效条目优先于位置）；非法/越界/畸形条目整体剔除
         _wc = d.get("ws_caps")
         if not isinstance(_wc, dict):

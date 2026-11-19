@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemWise v5.4.013 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
+MemWise 全量单元测试 — 16 模块全覆盖（ERIS 纯函数共用 core.eris，无内联副本）
 """
 import sys, os, json, math, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1321,7 +1321,7 @@ with _zf33.ZipFile(p1) as _z33:
     _names33 = _z33.namelist()
     _m33 = json.loads(_z33.read("manifest.json").decode("utf-8"))
 check("包根平铺 manifest+files", sorted(_names33) == sorted(_m33["files"] + ["manifest.json"])
-      and _m33["format_version"] == 1 and _m33["source"] == "export"
+      and _m33["format_version"] == 2 and _m33["source"] == "export"
       and _m33["files"] == ["config.yaml", "memwise_state.json"])
 _m33v, _e33v = _bk33.validate_package(p1)
 check("validate 正常包通过", _e33v == [] and _m33v is not None)
@@ -1367,6 +1367,19 @@ check("导入成功", _ok33 and _err33 == "", _err33)
 check("复刻 config", open(os.path.join(os.path.dirname(_bB), "config", "config.yaml"), encoding="utf-8").read() == "interval: 33\n")
 check("复刻 state", json.load(open(os.path.join(_bB, "memwise_state.json"), encoding="utf-8"))["mark"] == "A")
 check("预期外文件已删（完整复刻）", not os.path.isfile(os.path.join(_bB, "memwise_efis_state.json")))
+# ── v2 partial：仅配置导出不含学习数据；导入不清除本机学习 ──
+_pc33, _ = _bk33.export_state("export", base=_bA, include_learning=False)
+with _zf33.ZipFile(_pc33) as _zc:
+    _mc = json.loads(_zc.read("manifest.json").decode("utf-8"))
+    _nc = _zc.namelist()
+check("仅配置包 partial=true 且不含学习文件", _mc.get("partial") is True
+      and "memwise_state.json" not in _nc and "config.yaml" in _nc)
+_bC = os.path.join(tempfile.mkdtemp(), "data")
+os.makedirs(_bC, exist_ok=True)
+os.makedirs(os.path.join(os.path.dirname(_bC), "config"), exist_ok=True)
+open(os.path.join(_bC, "memwise_state.json"), "w", encoding="utf-8").write('{"version": 4, "mark": "C"}')
+_okc33, _errc33 = _bk33.import_state(_pc33, backup=False, base=_bC)
+check("仅配置包导入保留本机学习", _okc33 and json.load(open(os.path.join(_bC, "memwise_state.json"), encoding="utf-8"))["mark"] == "C")
 # ── reset_factory：备份可选 + 删除 ──
 _ok33r, _bak33 = _bk33.reset_factory(backup=True, base=_bB)
 check("reset 备份包生成", _ok33r and _bak33 and "MemWise_Backup_" in os.path.basename(_bak33)
@@ -1405,7 +1418,7 @@ check("GUI 导入候选单目录（import_export 三合一）", "backup.import_e
       and "backup_export" not in _gui26_src)
 check("CLI export/import/reset 接线", "cmd_export" in _mw26_src and "cmd_import" in _mw26_src
       and "reset_factory" in _mw26_src and "backup.import_state" in _mw26_src)
-check("backup 模块核心面", "PACKAGE_VERSION = 1" in _src26("core", "backup.py")
+check("backup 模块核心面", "PACKAGE_VERSION = 2" in _src26("core", "backup.py")
       and "restart_application" in _src26("core", "backup.py")
       and "watchdog" in _src26("core", "backup.py"))
 check("T6 分区联动两行", "  · 重置 — 恢复默认设置与数据" in _gui26_src
@@ -2390,7 +2403,7 @@ check("F5 quick+None=低优先待机+注册表",
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
 _mf41 = open(os.path.join(_ROOT26, "MemWise.manifest"), encoding="utf-8").read()
-check("F9 manifest 版本随版", 'version="5.4.0.13"' in _mf41)
+check("F9 manifest 版本随版", 'version="5.5.0.11"' in _mf41)
 check("F10 清理执行前名单复核接线", "if _is_self_path(_rt_path):" in _cl41
       and '_rt_name in self.judger.cfg.get("never", [])' in _cl41)
 check("F11 周期死赋值已清", "total_samples = sum(" not in _eg41)
@@ -3759,9 +3772,7 @@ for _n55 in ("empty_all_working_sets", "empty_ws", "empty_standby", "flush_modif
     _old55[_n55] = getattr(_C55.winapi, _n55)
     setattr(_C55.winapi, _n55, _rec55(_n55))
 _old_idle55 = _C55.winapi.get_idle_seconds
-_old_dirty55 = _C55.winapi.get_dirty_bytes
 _C55.winapi.get_idle_seconds = lambda: 999.0        # 视为空闲，让择时门放行（本测试只管 gap 操作集）
-_C55.winapi.get_dirty_bytes = lambda: (1 << 30)     # 脏页充足，避免 modified 被脏页门拦掉
 try:
     _l55c = PareLearner(); _j55c = PareJudger(_l55c, {"never": [], "clean_passes": 4, "efis_params": {}})
     _c55c = PareCleaner(_j55c)
@@ -3775,7 +3786,6 @@ try:
     _c55c.shutdown()
 finally:
     _C55.winapi.get_idle_seconds = _old_idle55
-    _C55.winapi.get_dirty_bytes = _old_dirty55
     for _n55, _f55 in _old55.items():
         setattr(_C55.winapi, _n55, _f55)
 check("P08 全部取消 ⇒ 零调用（含自身）", _e55 == [])
@@ -4725,15 +4735,13 @@ _idle63 = _wa63.get_idle_seconds()
 check("K9 get_idle_seconds 返回非负有限值", isinstance(_idle63, float) and 0.0 <= _idle63 < 1e7, repr(_idle63))
 check("K9b LASTINPUTINFO 结构体 8 字节（x64）", _ct63.sizeof(_wa63.LASTINPUTINFO) == 8)
 
-def _mk63(mode="full", idle=0.0, manual=False, dirty=(1 << 30)):
+def _mk63(mode="full", idle=0.0, manual=False):
     _c = PareCleaner(PareJudger(PareLearner(), {"never": [], "efis_params": {}}))
     _c._last_mode = mode
     _c._manual_run = manual
     _wa63.get_idle_seconds = lambda: idle
-    _wa63.get_dirty_bytes = lambda: dirty     # 默认 1GB 脏页：让 modified 走正常门
     return _c
 _orig_idle63 = _wa63.get_idle_seconds
-_orig_dirty63 = _wa63.get_dirty_bytes
 try:
     _c63 = _mk63("full", 10.0)
     check("K10 停手 ≥3s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
@@ -4775,13 +4783,21 @@ try:
     finally:
         del os.environ["MEMWISE_DISABLE_HEAVY_GATE"]
 
-    _c63 = _mk63("full", 10.0, dirty=(50 << 20))
-    check("K16 脏页不足 200MB ⇒ modified 跳过且不清 defer",
-          _c63._decide_heavy("modified") is False and _c63._heavy_defer.get("modified", 0) == 0)
-    _c63 = _mk63("full", 10.0, dirty=(1 << 30))
-    check("K16b 脏页充足 ⇒ 走正常门（空闲即放行）", _c63._decide_heavy("modified") is True)
-    _c63 = _mk63("full", 10.0, dirty=None)
-    check("K16c 脏页读数不可用 ⇒ 退化为纯门（不误杀）", _c63._decide_heavy("modified") is True)
+    # 2026-11-19 误判修正：CcTotalDirtyPages 只覆盖缓存脏页（实测 dirty≈0 时 flush 仍释放 122MB），
+    # 脏页硬门已移除，modified 只受择时门约束。
+    _c63 = _mk63("full", 10.0)
+    check("K16 脏页读数不再拦截 modified（误判修正）", _c63._decide_heavy("modified") is True)
+    _cl63 = _src47("core/cleaner.py")
+    check("K16b 脏页门已移除（cleaner 不再读 get_dirty_bytes）",
+          "get_dirty_bytes" not in _cl63 and "_MODIFIED_MIN_DIRTY" not in _cl63)
+
+    _c63 = _mk63("full", 0.0); _c63._heavy_allow = {"modified": False}
+    _wa63.get_idle_seconds = lambda: 5.0
+    _c63.refresh_cycle_gate()
+    check("K17 周期内补判放行（不计 defer）", _c63._heavy_allow.get("modified") is True
+          and _c63._heavy_defer.get("modified", 0) == 0)
+    _c63 = _mk63("full", 0.0); _c63._heavy_allow = {"modified": False}
+    check("K17b 仍活跃则不补判", _c63._gate_would_allow("modified") is False)
 
     _cl63 = _src47("core/cleaner.py")
     check("K15 每轮判定一次并缓存", "self._heavy_allow = {_k: self._decide_heavy(_k)" in _cl63)
@@ -4792,7 +4808,54 @@ try:
           and 'if not self._heavy_allowed("modified"):' in _cl63)
 finally:
     _wa63.get_idle_seconds = _orig_idle63
-    _wa63.get_dirty_bytes = _orig_dirty63
+
+# ── [64] 2026-11-20：full 专项调度 + 回涨播报闸 + 内存条高频链 ──
+from core.judger import PareJudger as _J64, SYS_DIR_MIN_THETA as _S64, SYS_DIR_MIN_THETA_FULL as _SF64
+_l64 = PareLearner(); _j64 = _J64(_l64, {"never": [], "efis_params": {}})
+_j64._mode_guard = "normal"
+check("full 专项：系统目录 θ 底线 normal=0.3 / full=0.2",
+      _S64 == 0.3 and _SF64 == 0.2
+      and _j64.is_system_dir_low_theta(os.environ.get("SystemRoot", r"C:\Windows") + r"\notepad.exe", 0.25) is True)
+_j64._mode_guard = "full"
+check("full 专项：full 下同一进程放行",
+      _j64.is_system_dir_low_theta(os.environ.get("SystemRoot", r"C:\Windows") + r"\notepad.exe", 0.25) is False)
+_j64._mode_guard = "normal"
+
+_cl64 = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "cleaner.py"), encoding="utf-8").read()
+check("full 专项：full 趟数下限 6", "max_p = max(max_p, 6)" in _cl64)
+check("full 专项：full 暂停探针", '!= "full" and self.judger.can_probe' in _cl64)
+check("full 专项：L3 收益闸 full 2MB", "(2 << 20) if getattr(self.judger, \"_mode_guard\", \"normal\") == \"full\"" in _cl64)
+check("full 专项：combine full 5 分钟", "300 if (not self._manual_run and" in _cl64)
+
+_en64 = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "engine.py"), encoding="utf-8").read()
+check("回涨播报闸：连续 3 轮进入 / 10 轮恢复 / 600s 冷却",
+      "_refill_hot_streak >= 3" in _en64 and "_refill_cool_streak >= 10" in _en64
+      and "_rnow - self._refill_msg_ts >= 600" in _en64)
+check("harvest 预算随 interval 收缩", "_harvest_budget = max(6, min(25" in _en64)
+_g64 = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memwise_gui.py"), encoding="utf-8").read()
+check("full 模式锁定趟数滑杆（灰置 + 固定 6）",
+      "_sync_passes_widget" in _g64 and 'sl.state(["disabled"])' in _g64
+      and "轮（full 固定）" in _g64)
+_e64 = MemWiseEngine.__new__(MemWiseEngine)
+_e64._refill_hot_streak = 0
+check("动态周期：未回涨不变", _e64._effective_interval(60) == 60)
+_e64._refill_hot_streak = 2
+check("动态周期：回涨连续 2 轮 → 60→36（下限 15）", _e64._effective_interval(60) == 36 and _e64._effective_interval(10) == 10)
+_e64._gap_wsall_ts = 1000.0
+check("gap ws_all 20s 节流且仅 full", _e64._gap_wsall_due("full", 1005) is False
+      and _e64._gap_wsall_due("full", 1021) is True and _e64._gap_wsall_due("normal", 9999) is False)
+check("gap 调用 full 标志随模式", 'self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap' in _en64)
+check("内存条 300ms 独立刷新 + 退出停链",
+      "self.root.after(300, self._tick_mem_bar)" in _g64 and "self._stop_mem_bar()" in _g64
+      and "def _render_mem_bar" in _g64)
+
+from core.motion import EASE_OUT as _E64, Animator as _AN64
+check("动效：bezier 端点 0/1", abs(_E64(0.0)) < 1e-6 and abs(_E64(1.0) - 1.0) < 1e-6)
+_a64 = _AN64(lambda ms, fn: None)
+_a64.tween("k", 10, 100, _E64, lambda v: None, start=0)
+check("动效：单链重定向", len(_a64._jobs) == 1 and "ui_animation" in config_load())
+check("动效：GUI 接线", "_prep_window_anim" in _g64 and "_anim_chart_bar" in _g64
+      and "_flash_log" in _g64 and "界面动效" in _g64)
 
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))

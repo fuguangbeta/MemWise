@@ -169,8 +169,8 @@ class Profile:
                         if self.leak_tick_count == 2:
                             self._info_msgs.append(f"🕳️ {self.name} 疑似内存持续增长，建议关注")
                 elif rel_slope > 0.002 and z > 1.5:
-                    # 轻度泄漏——标记但不跳过冷却
-                    self.leak_suspect = "mild"
+                    # 轻度泄漏：同样标记为疑似（保持 bool 类型；无需单独档位——无消费方区分）
+                    self.leak_suspect = True
                 else:
                     self.leak_tick_count = max(0, self.leak_tick_count - 1)
                     if self.leak_tick_count == 0:
@@ -464,7 +464,6 @@ class PareLearner:
         self.prior = HierarchicalPrior()   # 分层先验
         self.policy = PolicyVoter()        # 策略投票器
         self.meta = MetaCognition(self)    # 元认知监控
-        self._ctx = {}                     # 当前系统上下文
         self._info_msgs = []
         # 稳态锚点存储（P1-D）：按可执行路径学习"应用自然稳态"，低于稳态抑制清理
         self.stable_anchors = StableAnchorStore()
@@ -499,8 +498,9 @@ class PareLearner:
 
     # ── Thompson Sampling ──
 
-    def thompson_score(self, name, mem_pct=None, is_fg=None):
-        """t — mem_pct/is_fg 由调用方传入真实上下文，修正取实际桶；未传时回退 _ctx/默认值"""
+    def thompson_score(self, name):
+        """θ 现值：Kalman 基线 + Beta 探索，经 theta_discount 折扣。
+        不再接受 mem_pct/is_fg（ctx 修正层已于 2026-11-08 移除，参数随之删除，2026-11-19）。"""
         key = name.lower()
         if _is_system_core(key):
             return 0.0
@@ -509,10 +509,6 @@ class PareLearner:
             return self.prior.initial_theta(key, self.profiles)
         base = p.thompson_theta
         base *= p.theta_discount   # 失败折扣（2026-11-11，单一真源；健康进程恒为 1.0）
-        if mem_pct is None:
-            mem_pct = self._ctx.get("mem_pct", 50)
-        if is_fg is None:
-            is_fg = self._ctx.get("is_fg", False)
         uncertainty = max(0, 0.12 - p.confidence * 0.12)
         result = min(0.99, base + uncertainty)
         result = max(0.01, min(0.99, result))

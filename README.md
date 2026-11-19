@@ -1,4 +1,4 @@
-# MemWise v5.4.013
+# MemWise v5.5.011
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -172,7 +172,7 @@ The File Cache toggle in Settings enables that operation within the mode gradien
 4. **PID 增益调度**：根据当前内存压力自动分三区调节响应强度——低压（<40%）保守、中压（40–75%）标准、高压（>75%）激进
 5. **执行前复检**：清理执行瞬间重新检查前台窗口与游戏进程树，用户刚切过去或游戏刚启动会即时取消
 6. **并行执行**：最多 8 线程池（按 CPU 核数自适应），按评分降序提交
-7. **自适应 Pass 数**：大进程（WS>200 MB 或 θ 超阈值）→ 用户设定上限（默认 4）；中进程 → 3；低 θ → 1；其余 → 2；full 模式全部按用户上限执行（轮间低效截断兜底）。天花板由设置面板 `clean_passes` 直接决定（进程大小类阈值随机器物理内存等比缩放，基准 16 GB）。深度设为 6 时受单轮 30 秒预算限制可能提前结束，图表会标注本轮未完成
+7. **自适应 Pass 数**：大进程（WS>200 MB 或 θ 超阈值）→ 用户设定上限（默认 4）；中进程 → 3；低 θ → 1；其余 → 2；full 模式固定 6 轮执行（轮间低效截断兜底）。天花板由设置面板 `clean_passes` 直接决定（进程大小类阈值随机器物理内存等比缩放，基准 16 GB）。深度设为 6 时受单轮 30 秒预算限制可能提前结束，图表会标注本轮未完成
 8. **PF 反馈（先收后审）**：对比清理前后缺页计数。释放量无条件计入统计，缺页仅用作 Thompson 学习信号的正负向判定
 
 手动优化时跳过等待类保护（前台冷却、连续确认、稳态抑制、回弹后退），实时安全门（CPU/IO 活跃）在 normal/deep 仍然生效（full 跳过）。
@@ -185,7 +185,7 @@ Invokes EmptyWorkingSet on every process except MemWise itself to release idle p
 4. *PID gain scheduling — three-zone response: conservative below 40%, standard at 40–75%, aggressive above 75%*
 5. *Pre-execution recheck — foreground and game-process-tree are re-verified at execution time; a switch to the app or a game launch cancels the trim instantly*
 6. *Parallel execution — up to 8-worker thread pool (CPU-core-adaptive), submitted in descending score order*
-7. *Adaptive pass count — large processes (WS>200 MB or θ above threshold) receive the user-configured ceiling (default 4); mid-size processes receive 3; low-θ processes receive 1; the rest receive 2; full mode applies the ceiling to every process (with low-yield round truncation as a safety net). The ceiling is directly set by the clean_passes slider* (size-class thresholds scale with the machine's physical memory, referenced to 16 GB). At depth 6 the 30 s per-round budget may end a round early, which the chart marks as incomplete
+7. *Adaptive pass count — large processes (WS>200 MB or θ above threshold) receive the user-configured ceiling (default 4); mid-size processes receive 3; low-θ processes receive 1; the rest receive 2; full mode always runs 6 passes (with low-yield round truncation as a safety net). For other modes the ceiling is set by the clean_passes slider* (size-class thresholds scale with the machine's physical memory, referenced to 16 GB). At depth 6 the 30 s per-round budget may end a round early, which the chart marks as incomplete
 8. *PF feedback (collect-first, judge-later) — freed bytes always counted; PF excess only affects the learning signal*
 
 Manual optimization skips the waiting-type guards (recent-foreground cooldown, idle confirmation, stable-state suppression, rebound backoff) while the real-time safety gates (CPU/I/O activity) remain active in normal/deep (skipped in full).
@@ -448,6 +448,8 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **界面语言**：简体中文 / English 即时切换（设置面板顶部独立栏目）。切换瞬间生效，守护与统计数据不受影响；未翻译内容自动回退原语言，日志文件保留原始语言便于排障。
 
+**显示**：可开关「界面动效」，涉及内存条与图表的过渡、启动与托盘恢复的淡入；关闭后或系统开启「减少动画」时立即到位。
+
 **更新检查**：默认关闭——关闭时程序完全不联网。开启后**每次启动都会自动检查**，发现新版本会弹窗提示（可立即更新／稍后／跳过此版本）；「自动下载并替换」默认开启，更新包经 SHA-256 校验后替换程序并自动重启，配置与学习数据原样保留；网络不可用时降级为提示并给出官方发布页地址。请求只读取版本号与更新包信息，不发送任何设备信息（链路层由 GitHub 接收，对方可见你的 IP）。
 
 **启动设置**：以管理员权限开机自启动（计划任务，登录时以最高权限静默运行；笔记本使用电池供电时同样自启）、启动时自动开启守护、开机自启动后最小化到托盘（勾选框名称与说明一致，仅作用于开机自启，不影响手动启动——手动启动时程序会自行请求管理员权限）。
@@ -466,10 +468,11 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **重置**：恢复默认——将全部配置、学习数据与调参结果恢复为默认状态，确认时可选先备份当前状态为配置包（存放于数据目录 import_export 文件夹，可再次导入），确认后自动重启程序生效；守护运行中无法执行。
 
-**配置传输**：导出配置（当前全部配置、学习数据与调参结果打包到数据目录 import_export 文件夹，可用于本机恢复或分享给其他用户；导出的包会自动移除代理地址、对路径中的用户名脱敏，排除列表与游戏名单也以占位符替换（代理与两个名单在导入时沿用本机设置，同机恢复不受影响），导出完成后可在提示中一键打开所在文件夹）与导入配置（将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；导入会覆盖全部数据，守护运行中无法执行）。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
+**配置传输**：导出配置时先给出内容警示，再选择「包含学习数据」或「仅配置与调参」——前者用于本机恢复或换机迁移，后者不含已学习的软件清单与画像；两类包都会移除代理地址、对路径中的用户名脱敏，排除列表与游戏名单以占位符替换（代理与两个名单在导入时沿用本机设置，同机恢复不受影响），导出完成后可在提示中一键打开所在文件夹。导入配置：将放入数据目录 import_export 文件夹的配置包导入，导入前严格校验包内容与格式版本，可选择先备份当前状态，确认后自动重启生效；完整包覆盖全部数据，仅配置包只覆盖包内含有的文件、保留本机学习数据；守护运行中无法执行。自动备份包保留最近 10 个，用户主动导出的配置包不会被自动清理。
 
 All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, suppression interval, daemon cycle, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.
 
+- *Display — turn UI animations on or off: memory-bar/chart transitions and startup/tray fades; when off, or when Windows' "reduce animations" is enabled, changes apply immediately*
 - *Language — Simplified Chinese / English, switchable instantly from the top section of Settings. The whole UI (tips, dialogs, log display, CLI) follows the choice; untranslated text falls back to the source language, and the log file keeps the original language for troubleshooting*
 - *Update check — off by default, and while it is off the program does not touch the network at all. When enabled, MemWise checks on every startup and offers a dialog when a new version appears (Update Now / Later / Skip This Version). "Download and replace automatically" is on by default: the package is verified with SHA-256, then the program is replaced and restarted automatically with settings and learning data kept intact. If the network is unavailable it degrades to a notice with the official release page address. The request reads only the version and package information, sends no device information (at the transport layer it is received by GitHub, which can see your IP).*
 - *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon; also starts on battery power on laptops), auto-enable daemon on launch, minimize to tray on auto-start*
@@ -480,7 +483,7 @@ All changes are saved immediately. During daemon operation, the exclusion list, 
 - *Log — write the unified runtime log to file (memwise.log, 2 MB × 2 rotating; see the Logging System section)*
 - *Global hotkeys — manual optimize (default ctrl+shift+m) and game-mode toggle (default ctrl+shift+g), independently configurable with format validation (at least one modifier + a letter or F1-F24), conflict detection, and busy-key fallback, taking effect instantly*
 - *Reset — factory reset restores all settings, learned data, and tuning results to defaults; optionally backs up the current state as a config package first (stored in the import_export folder of the data directory, re-importable), then restarts automatically to apply; unavailable while the daemon is running*
-- *Config Transfer — export config (packs all settings, learned data, and tuning results into the import_export folder of the data directory, for local restore or sharing; the exported package drops the proxy address, masks the user name in paths, and replaces the exclusion and game lists with placeholders (the proxy and both lists keep your local values on import; local restore is unaffected); the success notice offers a one-click Open its folder) and import config (imports a config package placed in the import_export folder of the data directory; the package content and format version are strictly validated before import, with optional backup of the current state and an automatic restart to apply; importing overwrites all data and is unavailable while the daemon is running). The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
+- *Config Transfer — export asks for confirmation first, then lets you choose Include learning data (for local restore or migration) or Settings and tuning only (no learned software list or profiles); both variants drop the proxy address, mask the user name in paths, and replace the exclusion and game lists with placeholders (the proxy and both lists keep your local values on import; local restore is unaffected), and the success notice offers a one-click Open its folder. Import validates the package content and format version, optionally backs up the current state, and restarts to apply; a full package overwrites all data while a settings-only package overwrites only the files it contains and keeps your local learning data; unavailable while the daemon is running. The 10 most recent automatic backups are kept; packages you exported yourself are never cleaned up automatically*
 
 ---
 
@@ -509,7 +512,7 @@ python memwise.py [command] [options]
 | `optimize [--mode MODE]` | 单次优化（支持 quick/normal/deep/full） |
 | `daemon [--mode MODE]` | CLI 守护模式 |
 | `profile <PID>` | 查看指定进程的完整学习画像 |
-| `export` | 导出当前配置、学习数据与调参结果为配置包（数据目录 import_export 文件夹；代理与软件清单会脱敏） |
+| `export [--config-only]` | 导出配置包到数据目录 import_export（默认含学习数据；`--config-only` 仅配置与调参，不含学习数据） |
 | `import <文件名>` | 从数据目录 import_export 文件夹导入指定配置包（导入前严格校验并自动备份当前状态，重启后生效） |
 | `service [remove]` | 安装/移除计划任务服务（系统启动自动运行，需管理员） |
 | `reset` | 恢复出厂设置（当前状态自动备份为配置包后移除配置、画像与调参状态，重启后生效） |
@@ -523,7 +526,7 @@ Command reference:
 | `optimize [--mode MODE]` | Run one optimization pass (quick/normal/deep/full) |
 | `daemon [--mode MODE]` | CLI daemon mode |
 | `profile <PID>` | View a process's complete learning profile |
-| `export` | Export settings, learned data, and tuning results as a config package (import_export folder; proxy and software lists are redacted) |
+| `export [--config-only]` | Export a config package to the import_export folder (learning data included by default; `--config-only` keeps settings and tuning only) |
 | `import <name>` | Import the named config package from the import_export folder of the data directory (strictly validated, current state auto-backed up, effective after restart) |
 | `service [remove]` | Install/remove the scheduled-task service (runs at system startup, requires administrator) |
 | `reset` | Factory reset (auto-backs up the current state as a config package, then removes config, profiles, and tuning state; effective after restart) |
@@ -558,6 +561,7 @@ Command reference:
 | `game_processes` | list | `[]` | 游戏进程 exe 名 |
 | `emergency_abs_pct` | int | `0` | 紧急触发兜底（可用内存百分比，0=禁用，上限 50） |
 | `language` | str | `"zh_CN"` | 界面语言（`zh_CN`=简体中文 / `en`=English） |
+| `ui_animation` | bool | `true` | 界面动效（内存条/图表过渡、启动淡入；关闭立即到位） |
 | `update_check` | bool | `false` | 启动时自动检查更新（默认关闭；关闭时完全不联网） |
 | `update_auto_apply` | bool | `true` | 发现新版本时自动下载、校验并替换重启 |
 | `update_proxy` | str | `""` | 更新检查使用的代理地址（留空 = 自动使用系统代理） |

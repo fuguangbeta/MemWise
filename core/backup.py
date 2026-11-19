@@ -19,13 +19,13 @@ except ImportError:
 
 from core.i18n import tr, tr_msg
 
-PACKAGE_VERSION = 1
-APP_VERSION = "5.4.013"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
+PACKAGE_VERSION = 2   # v2：manifest 增加 partial（仅配置/不含学习数据的包）；旧版读 v2 会拒绝导入（安全方向）
+APP_VERSION = "5.5.011"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
 # 本地临时构建标识（2026-11-11 用户规则）：正式发布前，本地构建的版本号一律加 ".beta"
 # （如 "5.4.014.beta"）；正式发布时把本行置空、并把 APP_VERSION 升到该正式号。
 # ⚠ 只有**运行时显示**（窗口标题/启动日志/单实例提示）用 display_version()；
 #   仓库文档与发布断言继续用 APP_VERSION —— beta 因此不会污染任何发布检查。
-BUILD_VERSION = "5.4.015.beta"
+BUILD_VERSION = ""
 
 
 def display_version():
@@ -191,12 +191,16 @@ def _unpack_bytes(name, data, local_proxy="", local_lists=None):
     return data
 
 
-def export_state(source="export", base=None):
+def export_state(source="export", base=None, include_learning=True):
     """打包当前状态文件 → data/import_export/ 下 ZIP 包，返回 (路径, 缺失未打包列表)。
     路径为 None 表示无任何状态文件可打包。不存在的文件跳过，
-    manifest.files 忠实记录实际内容（导入端按其完整复刻）。"""
+    manifest.files 忠实记录实际内容（导入端按其完整复刻）。
+    include_learning=False ⇒ 仅配置与调参（不含画像/锚点/回弹与 ERIS 平滑窗），manifest.partial=True。"""
     paths = _state_paths(base)
     files = {n: p for n, p in paths.items() if os.path.isfile(p)}
+    if not include_learning:
+        for _skip in ("memwise_state.json", "memwise_eris_ewma.json"):
+            files.pop(_skip, None)
     if not files:
         return None, sorted(paths.keys())
     pkg_dir = import_export_dir(base)
@@ -220,6 +224,7 @@ def export_state(source="export", base=None):
         "source": source,
         "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "files": sorted(files.keys()),
+        "partial": bool(not include_learning),
     }
     with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, p in sorted(files.items()):
@@ -279,6 +284,8 @@ def validate_package(pkg_path):
                 return None, [tr("配置包缺少清单文件或已损坏")]
             if fv > PACKAGE_VERSION:
                 return manifest, [tr_msg(f"配置包版本较新（{fv}），请先升级程序")]
+            if not isinstance(manifest.get("partial", False), bool):
+                return manifest, [tr("配置包缺少清单文件或已损坏")]
             expected = manifest.get("files")
             if not isinstance(expected, list) or not expected \
                     or not all(isinstance(x, str) for x in expected):
@@ -345,6 +352,8 @@ def import_state(pkg_path, backup=True, base=None):
     manifest, errors = validate_package(pkg_path)
     if errors:
         return False, "\n".join(errors)
+    # v2 partial（仅配置/调参）：只覆盖包内文件，不删除本机未包含的学习数据
+    partial = bool(manifest.get("partial", False))
     bak = ""
     if backup:
         try:
@@ -392,9 +401,10 @@ def import_state(pkg_path, backup=True, base=None):
                 pass
         for name, tmp in temps.items():
             os.replace(tmp, paths[name])
-        for name, target in paths.items():
-            if name not in manifest["files"] and os.path.isfile(target):
-                os.remove(target)
+        if not partial:
+            for name, target in paths.items():
+                if name not in manifest["files"] and os.path.isfile(target):
+                    os.remove(target)
         if bak:
             try:
                 os.remove(journal)

@@ -26,10 +26,13 @@ TARGET_USAGE = 30.0  # 目标内存使用率 (%) — PidController 签名默认�
 # （约 32 次/周期）；原「游戏模式 0.5MB」覆盖项从未生效（决策层放行、执行层仍按 1MB 拒绝）
 # 已删除，三处（can_trim / can_probe / cleaner._trim_process）统一引用本常量。
 MIN_WS_BYTES = 1 << 20
+# full 模式的 agg 下限（单一常量）：cleaner 强制写入、judger 预览推导共用一个值
+FULL_AGG = 0.8
 # 系统目录进程（%SystemRoot% / Program Files*）的额外 θ 底线：无论清理模式（含 full）
 # 都要求高置信度才动——系统组件/常见应用的冷页回收收益低、误清代价高。
 # 与模式价值底线（deep 0.12 / full 0.06）**叠加**：先过本门，再过模式底线。
 SYS_DIR_MIN_THETA = 0.3
+SYS_DIR_MIN_THETA_FULL = 0.2   # full 的"必须尽全力"：系统目录底线放宽（仍高于模式价值底线）
 
 def _system_path_prefixes():
     """系统目录前缀（动态获取，非硬编码 C 盘——换机器/系统盘非 C 盘时依然有效）"""
@@ -152,6 +155,8 @@ class PareJudger:
         # ── 工作集硬上限生效中的规范化路径（frozenset 快照，判定门无锁 O(1) 读；
         #    由引擎周期起点与 GUI 规则变更后经 set_capped_paths 重建——设计 v2.1）──
         self._capped_paths = frozenset()
+        # 自身实例 PID 集（主进程 + 看门狗）——路径不可读时的兜底排除（9.2）
+        self._self_pids = set()
 
     # ── 清后基线（按 进程名 × 实例 create 两级）──
     @staticmethod
@@ -183,6 +188,10 @@ class PareJudger:
             m.pop(self._bl_key(create), None)
             if not m:
                 self._post_clean_ws.pop(k, None)
+
+    def set_self_pids(self, pids):
+        """自身实例 PID 集（主进程 + 看门狗）；路径读不到时按 PID 精确排除。"""
+        self._self_pids = set(int(p) for p in (pids or ()) if p)
 
     def set_capped_paths(self, paths):
         """重建硬上限判定快照（frozenset；调用方持 engine._ws_cap_lock）。"""
@@ -277,11 +286,6 @@ class PareJudger:
             self._mem_trend = 0.5 * raw + 0.5 * getattr(self, '_mem_trend', 0.0)
             self._mem_trend_v = mem_usage_pct
             self._mem_trend_t = now
-        # 同步真实上下文给 learner（thompson_score 参数化后作为兜底源）
-        try:
-            self.learner._ctx["mem_pct"] = mem_usage_pct
-        except Exception:
-            pass
         self.aggressiveness = self.pid.update(mem_usage_pct)
         return self.aggressiveness
 
@@ -306,7 +310,7 @@ class PareJudger:
             return False, "游戏进程(保护)"
 
         # ── 本程序自身（含看门狗子进程/多实例）：按可执行路径精确排除（2026-09-11 审查 F48）──
-        if _is_self_process(snap):
+        if _is_self_process(snap) or snap.pid in self._self_pids:
             return False, "程序自身"
         
         # 安全规则 (不变)
@@ -327,7 +331,7 @@ class PareJudger:
         # 2026-11-11：预览口径必须与实际执行同源。full 的执行语义是 agg 强制 ≥0.8
         # （cleaner._run_full 在进 Layer2 之前设置）；预览时 judger.aggressiveness 仍是旧值，
         # 只看它会让候选预览漏掉前台进程、与实际清理名单不符（F53 同族遗漏面）。
-        _eff_agg = 0.8 if _guard == "full" else self.aggressiveness
+        _eff_agg = FULL_AGG if _guard == "full" else self.aggressiveness
         if is_fg:
             if _eff_agg < fg_gate:
                 return False, "前台窗口"
@@ -422,7 +426,7 @@ class PareJudger:
             ws_override = True
             theta = 1.0
         else:
-            theta = self.learner.thompson_score(name, mem_pct=getattr(self, '_last_mem_pct', 50), is_fg=is_fg)
+            theta = self.learner.thompson_score(name)
 
         # ── 系统目录进程: 需要高 θ 值（L3 走同一判定，防梯度不一致）──
         path = getattr(snap, "path", None)
@@ -522,7 +526,7 @@ class PareJudger:
         """是否可以对进程执行微型试探 — 按 WS 大小 + θ + 间隔"""
         name = snap.name.lower()
         # 系统核心 / 本程序自身（含看门狗）不试探（2026-09-11 审查 F48）
-        if _is_system_core(name) or _is_self_process(snap):
+        if _is_system_core(name) or _is_self_process(snap) or snap.pid in self._self_pids:
             return False
         # 游戏模式：不试探（流畅优先，只做确定性清理）
         if self.game_mode:
@@ -546,7 +550,7 @@ class PareJudger:
         # 前台进程不 probe，避免干扰
         if getattr(snap, "fg", False):return False
         # θ 过低且有足够样本时暂时跳过探测，但冷却后重新评估
-        theta = self.learner.thompson_score(name, mem_pct=getattr(self, '_last_mem_pct', 50), is_fg=getattr(snap, "fg", False))
+        theta = self.learner.thompson_score(name)
         profile = self.learner.get_profile(name)
         if profile and profile.total_samples >= 5 and theta < 0.2:
             # 低θ进程并非永久禁止：超过 10 分钟（600s）未被 probe 则重新给机会
@@ -763,10 +767,11 @@ class PareJudger:
             return False
 
     def is_system_dir_low_theta(self, path, theta):
-        """系统目录进程的额外 θ 底线（L2/L3 同源，2026-11-08）。
-        系统组件/常见应用的冷页回收收益低、误清代价高——任何模式（含 full）都要求
-        θ≥SYS_DIR_MIN_THETA。path 缺失（权限/读取失败）时不拦截，与历史行为一致。"""
-        return bool(path) and self._is_system_path(path) and theta < SYS_DIR_MIN_THETA
+        """系统目录进程的额外 θ 底线（L2/L3 同源，2026-11-08；2026-11-20 full 放宽）。
+        常规/deep 用 0.3；full 用 0.2（仍高于模式价值底线 0.06）——日志显示每轮有 50-60 个
+        Program Files 应用被 0.3 拦掉，full 的压缩目标需要更多候选。path 缺失不拦截。"""
+        _floor = SYS_DIR_MIN_THETA_FULL if (getattr(self, "_mode_guard", "normal") == "full") else SYS_DIR_MIN_THETA
+        return bool(path) and self._is_system_path(path) and theta < _floor
 
     @staticmethod
     def _is_system_path(path):

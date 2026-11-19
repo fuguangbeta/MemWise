@@ -1,9 +1,9 @@
 """
-MemWise v5.4.013 GUI —— 图形界面
+MemWise GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
-import os, sys, time, shutil, subprocess, threading, tempfile, tkinter as tk, queue
+import math, os, random, re, sys, time, shutil, subprocess, threading, tempfile, tkinter as tk, queue
 from collections import deque
 from tkinter import ttk, font as tkfont
 import ctypes
@@ -11,7 +11,7 @@ import ctypes.wintypes as w
 
 # ── 无 UI 引擎（守护循环/ERIS/轮次数据/事件队列）+ 共享基础设施（路径/日志/配置单例/格式化）──
 from core.engine import (
-    base, CFG, STATE_FILE, _save_cfg,
+    base, CFG, state_file, _save_cfg,
     _log_write, _log_open, _log_close, _diag_log, _ERR,
     fmt_label, fmt_count, MemWiseEngine, _push_runtime_cfg,
     _watchdog_path, _spawn_watchdog, _update_watchdog_daemon,
@@ -20,6 +20,10 @@ from core.engine import (
 )
 
 from core import winapi
+from core import motion as _motion
+
+# 全局动效开关（init_runtime 后按配置/系统设置初始化；Tooltip 等模块级代码也会读）
+ANIM_ENABLED = True
 from core import update as _update
 from core.backup import APP_VERSION, display_version as _display_version
 from core.learner import PareLearner as Learner
@@ -675,6 +679,450 @@ def _tree_sort_toggle(state, cols, col):
     return state["idx"], state["rev"]
 
 
+def _parse_hex(c):
+    try:
+        s = str(c).strip()
+        if s.startswith("#") and len(s) == 7:
+            return tuple(int(s[i:i+2], 16) for i in (1, 3, 5))
+        if s.startswith("#") and len(s) == 4:
+            return tuple(int(ch * 2, 16) for ch in s[1:])
+    except Exception:
+        pass
+    return None
+
+
+def _rgb_hex(rgb):
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v)))) for v in rgb)
+
+
+def _lerp_rgb(a, b, k):
+    return tuple(a[i] + (b[i] - a[i]) * k for i in range(3))
+
+
+def _resolve_color(w, c):
+    """把 Tk 颜色名/十六进制解析为 RGB（winfo_rgb 支持命名色与系统色）。"""
+    if c:
+        rgb = _parse_hex(c)
+        if rgb:
+            return rgb
+        try:
+            r, g, b = w.winfo_rgb(str(c))
+            return (r >> 8, g >> 8, b >> 8)
+        except Exception:
+            pass
+    return None
+
+
+def _ui_fg(w, style_name):
+    """解析控件前景色；系统色名解析失败时按背景明暗回退黑/白。"""
+    st = ttk.Style()
+    try:
+        c = st.lookup(style_name, "foreground")
+    except Exception:
+        c = None
+    rgb = _resolve_color(w, c)
+    if rgb:
+        return rgb
+    bg = _resolve_color(w, w.winfo_toplevel().cget("background")) or (240, 240, 240)
+    return (0, 0, 0) if sum(bg) > 384 else (224, 224, 224)
+
+
+def _hook_button_hover(win):
+    """弹窗按钮文字 140ms 悬停变色（近似 dsh 的 hover 过渡；Tk 无 scale）。"""
+    if not ANIM_ENABLED:
+        return
+    st = ttk.Style()
+
+    def _hook(btn):
+        if getattr(btn, "_mw_hover", False):
+            return
+        try:
+            base_style = str(btn.cget("style") or "TButton")
+            base = _ui_fg(btn, base_style)
+            name = base_style + ".MwH%d" % id(btn)
+            st.configure(name, foreground=_rgb_hex(base))
+            btn.configure(style=name)
+            btn._mw_style = name
+        except Exception:
+            return
+        btn._mw_hover = True
+        cur = {"c": base, "id": None}
+
+        def _to(target):
+            try:
+                if cur["id"]:
+                    btn.after_cancel(cur["id"])
+            except Exception:
+                pass
+            start = cur["c"]
+            t0 = time.perf_counter()
+
+            def step():
+                cur["id"] = None
+                if not btn.winfo_exists():
+                    return
+                p = min(1.0, (time.perf_counter() - t0) / 0.14)
+                cur["c"] = _lerp_rgb(start, target, _motion.EASE_OUT(p))
+                try:
+                    st.configure(name, foreground=_rgb_hex(cur["c"]))
+                except Exception:
+                    return
+                if p < 1.0:
+                    try:
+                        cur["id"] = btn.after(8, step)
+                    except Exception:
+                        cur["id"] = None
+            step()
+
+        btn.bind("<Enter>", lambda e: _to((74, 163, 255)), add="+")
+        btn.bind("<Leave>", lambda e: _to(base), add="+")
+        btn.bind("<ButtonPress-1>", lambda e: _to((255, 255, 255)), add="+")
+        btn.bind("<ButtonRelease-1>", lambda e: _to((74, 163, 255)), add="+")
+
+    def walk(w):
+        try:
+            for c in w.winfo_children():
+                if isinstance(c, ttk.Button):
+                    _hook(c)
+                walk(c)
+        except Exception:
+            pass
+    walk(win)
+
+
+def _hook_combo_hover(win):
+    """下拉框恢复原生行为：不再做任何动画（2026-11-20 用户决定）。"""
+    return
+
+
+def _anim_popdown(cb):
+    """下拉列表只做 120ms 淡入，不移动/改尺寸——移动 popdown 会与 Tk 自身定位竞争，
+    在收起/展开末尾形成“到底弹跳”感（2026-11-20 精准修复）。"""
+    try:
+        path = cb.tk.call("ttk::combobox::PopdownWindow", cb._w)
+        if not path:
+            return
+        cb.tk.call("wm", "attributes", path, "-alpha", 0.0)
+        t0 = time.perf_counter()
+
+        def step():
+            if not cb.winfo_exists():
+                return
+            p = min(1.0, (time.perf_counter() - t0) / 0.12)
+            try:
+                cb.tk.call("wm", "attributes", path, "-alpha", 0.02 + 0.98 * p)
+            except Exception:
+                return
+            if p < 1.0:
+                cb.after(16, step)
+        step()
+    except Exception:
+        pass
+
+
+def _tree_reveal(tree, win, delay_ms=0, stagger_ms=16):
+    """Treeview 逐行“打印”：整表先清空文字，再按行错峰恢复；
+    首列逐字出现，其余列在该行首列打完后补齐；相邻行间隔带 ±30% 随机。"""
+    if not ANIM_ENABLED:
+        return
+    try:
+        items = list(tree.get_children(""))
+    except Exception:
+        return
+    if not items:
+        return
+    data = []
+    for iid in items[:120]:
+        try:
+            vals = list(tree.item(iid, "values"))
+        except Exception:
+            continue
+        data.append((iid, vals))
+    if not data:
+        return
+    tree._mw_tree_gen = getattr(tree, "_mw_tree_gen", 0) + 1
+    gen = tree._mw_tree_gen
+    try:
+        prev_anchor = getattr(tree, "_mw_anchor_backup", None)
+        if prev_anchor:
+            for _c, _a in prev_anchor.items():
+                tree.column(_c, anchor=_a)
+        cols = list(tree["columns"])
+        tree._mw_anchor_backup = {c: tree.column(c, "anchor") for c in cols}
+        for c in cols:
+            tree.column(c, anchor="w")
+    except Exception:
+        pass
+    for iid, vals in data:
+        try:
+            tree.item(iid, values=[""] * len(vals))
+        except Exception:
+            pass
+
+    def _row(i):
+        if getattr(tree, "_mw_tree_gen", 0) != gen:
+            return
+        try:
+            if not tree.winfo_exists() or i >= len(data):
+                return
+        except Exception:
+            return
+        iid, vals = data[i]
+        if not vals:
+            return
+        cells = [str(v or "") for v in vals]
+        total = min(sum(len(c) for c in cells), 160)
+        n = [0]
+
+        def _type():
+            if getattr(tree, "_mw_tree_gen", 0) != gen:
+                return
+            n[0] = min(total, n[0] + 2)
+            left = n[0]
+            row = []
+            for c in cells:
+                take = min(len(c), left)
+                left -= take
+                row.append(c[:take] + " " * (len(c) - take))
+            try:
+                tree.item(iid, values=row)
+            except Exception:
+                return
+            if n[0] < total:
+                try:
+                    win.after(8, _type)
+                except Exception:
+                    pass
+            else:
+                try:
+                    tree.item(iid, values=vals)
+                except Exception:
+                    pass
+        _type()
+        if i + 1 >= len(data):
+            try:
+                for _c, _a in (getattr(tree, "_mw_anchor_backup", {}) or {}).items():
+                    tree.column(_c, anchor=_a)
+            except Exception:
+                pass
+        if i + 1 < len(data):
+            try:
+                win.after(int(random.uniform(stagger_ms * 0.4, stagger_ms * 2.0)), lambda: _row(i + 1))
+            except Exception:
+                pass
+
+    try:
+        win.after(delay_ms, lambda: _row(0))
+    except Exception:
+        pass
+
+
+def _mask_text(s):
+    out = []
+    for ch in s:
+        if ch == "\n":
+            out.append("\n")
+        elif ch == "\t":
+            out.append("\t")
+        elif ord(ch) > 127:
+            out.append("\u3000")
+        else:
+            out.append("\u00a0")
+    return "".join(out)
+
+
+def _hide_text(w):
+    try:
+        full = str(w.cget("text"))
+    except Exception:
+        return None
+    if not full.strip():
+        return None
+    try:
+        if int(w.cget("wraplength") or 0) > 0:
+            return None
+    except Exception:
+        pass
+    if "\n" in full:
+        return None
+    hidden = "".join("\n" if ch == "\n" else " " for ch in full)
+    try:
+        w.configure(text=hidden)
+    except Exception:
+        return None
+    return full
+
+
+def _print_prepare(win):
+    if not ANIM_ENABLED:
+        return
+    if getattr(win, "_mw_print_items", None):
+        return
+    items = []
+
+    def walk(w):
+        try:
+            for c in w.winfo_children():
+                if isinstance(c, (tk.Label, tk.Button, tk.Checkbutton,
+                                  tk.Radiobutton, ttk.Label, ttk.Button,
+                                  ttk.Checkbutton, ttk.Radiobutton)):
+                    full = _hide_text(c)
+                    if full:
+                        c._mw_print_full = full
+                        items.append(c)
+                walk(c)
+        except Exception:
+            pass
+    walk(win)
+    try:
+        win._mw_print_items = items
+    except Exception:
+        pass
+
+
+def _restore_print_items(win):
+    for w in list(getattr(win, "_mw_print_items", []) or []):
+        try:
+            if w.winfo_exists():
+                full = getattr(w, "_mw_print_full", None)
+                if full is not None:
+                    w.configure(text=full)
+        except Exception:
+            pass
+
+
+def _local_shuffle(seq, p=0.70):
+    try:
+        n = len(seq)
+        i = 0
+        while i < n - 1:
+            if random.random() < p:
+                j = i + 1 if random.random() < 0.85 else min(n - 1, i + 2)
+                seq[i], seq[j] = seq[j], seq[i]
+                i += 2
+            else:
+                i += 1
+    except Exception:
+        pass
+
+
+def _print_ui(win, delay_ms=140, stagger_ms=18, chars=1, frame_ms=16):
+    if not ANIM_ENABLED:
+        return
+    items = list(getattr(win, "_mw_print_items", []) or [])
+    if not items:
+        return
+    _local_shuffle(items)
+    _t = float(delay_ms)
+    for i, w in enumerate(items):
+        full = getattr(w, "_mw_print_full", None)
+        if not full:
+            continue
+
+        def _run(w=w, full=full):
+            n = 0
+            total = len(full)
+
+            def step():
+                nonlocal n
+                if not w.winfo_exists():
+                    return
+                n = min(total, n + chars)
+                tail = "".join("\n" if ch == "\n" else " " for ch in full[n:])
+                try:
+                    w.configure(text=full[:n] + tail)
+                except Exception:
+                    return
+                if n < total:
+                    try:
+                        win.after(frame_ms, step)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        w.configure(text=full)
+                    except Exception:
+                        pass
+            step()
+        try:
+            win.after(int(_t), _run)
+            _t += random.uniform(stagger_ms * 0.4, stagger_ms * 2.0)
+        except Exception:
+            pass
+    try:
+        win.after(int(_t) + 3000, lambda: _restore_print_items(win))
+    except Exception:
+        pass
+
+
+class _SafeToplevel(tk.Toplevel):
+    def __init__(self, master=None, **kw):
+        super().__init__(master, **kw)
+        self._mw_target = None
+        self._mw_revealed = False
+        try:
+            super().withdraw()
+            super().geometry("1x1+4000+4000")
+        except Exception:
+            pass
+
+    def geometry(self, spec=None):
+        if spec is None:
+            return super().geometry()
+        self._mw_target = spec
+        if self._mw_revealed:
+            try:
+                super().geometry(spec)
+            except Exception:
+                pass
+        return super().geometry()
+
+    def deiconify(self):
+        if self._mw_revealed:
+            return super().deiconify()
+        self._mw_revealed = True
+        try:
+            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._mw_target or "")
+            if ANIM_ENABLED and m:
+                tw, th = int(m.group(1)), int(m.group(2))
+                super().geometry("%dx%d+4000+4000" % (tw, th))
+                super().deiconify()
+                self.update_idletasks()
+                try:
+                    super(_SafeToplevel, self).geometry(self._mw_target)
+                    self.update_idletasks()
+                except Exception:
+                    pass
+                return
+            super().deiconify()
+            self.update_idletasks()
+            if self._mw_target:
+                super().geometry(self._mw_target)
+            self.update_idletasks()
+        except Exception:
+            pass
+
+
+def _prep_window_anim(win, content=False):
+    if not isinstance(win, tk.Toplevel):
+        return
+    if not ANIM_ENABLED or getattr(win, "_mw_anim", False):
+        return
+    win._mw_anim = True
+
+    def _shown(_e=None):
+        try:
+            win.unbind("<Map>")
+        except Exception:
+            pass
+        _hook_combo_hover(win)
+
+    try:
+        win.bind("<Map>", _shown, add="+")
+    except Exception:
+        pass
+
+
 def _center_geometry(win, w, h, parent=None):
     """一次性定位窗口到父窗口中央（首次出现即居中，零闪烁），并钳制在屏幕内。
     替代"先默认位置弹出再移动"的两步 geometry，消除闪现与卡顿时不居中的问题"""
@@ -692,6 +1140,7 @@ def _center_geometry(win, w, h, parent=None):
     cx = max(0, min(cx, sw - w))
     cy = max(0, min(cy, sh - h))
     win.geometry(f"{w}x{h}+{cx}+{cy}")
+    _prep_window_anim(win, content=True)
 
 
 def _parse_hotkey(spec):
@@ -937,18 +1386,61 @@ class ToolTip:
         if x + tw > sw - 8:                     # 右侧越界 ⇒ 向左收边，保证完整可读
             x = max(8, sw - tw - 8)
         tip.wm_geometry(f"+{x}+{y}")
+        if ANIM_ENABLED:
+            try:
+                tip.attributes("-alpha", 0.0)
+            except Exception:
+                pass
         tip.deiconify()
+        if ANIM_ENABLED:
+            try:
+                t0 = time.perf_counter()
+
+                def _fade():
+                    try:
+                        p = min(1.0, (time.perf_counter() - t0) / 0.12)
+                        tip.attributes("-alpha", 0.02 + 0.98 * p)
+                        if p < 1.0 and tip.winfo_exists():
+                            tip.after(8, _fade)
+                    except Exception:
+                        pass
+                _fade()
+            except Exception:
+                pass
         self._tip = tip
         ToolTip._tips.append(tip)
 
     def _hide(self):
-        if self._tip is not None:
-            try:
-                if self._tip.winfo_exists():
-                    self._tip.destroy()
-            except Exception:
-                pass
-            self._tip = None
+        tip = self._tip
+        self._tip = None
+        if tip is None:
+            return
+        try:
+            if not tip.winfo_exists():
+                return
+            if not ANIM_ENABLED:
+                tip.destroy()
+                return
+            t0 = time.perf_counter()
+
+            def _fade():
+                try:
+                    if not tip.winfo_exists():
+                        return
+                    p = min(1.0, (time.perf_counter() - t0) / 0.09)
+                    tip.attributes("-alpha", max(0.0, 1.0 - p))
+                    if p < 1.0:
+                        tip.after(8, _fade)
+                    else:
+                        tip.destroy()
+                except Exception:
+                    try:
+                        tip.destroy()
+                    except Exception:
+                        pass
+            _fade()
+        except Exception:
+            pass
 
 
 # ═══ 看门狗入口 — 无 GUI，纯监控 + 崩溃重启 ═══
@@ -995,6 +1487,7 @@ class MemWiseGUI:
         # 不再由 `import core.engine` 触发副作用，改为入口显式调用）
         # 返回值 = 数据/配置目录可写性哨兵结果（2026-10-15 P4）：只读安装目录下必须提示用户
         self._writable = init_runtime()
+        self._state_file = state_file()   # 迁移/回退后的实际状态路径（路径规则单一来源）
         # 常驻崩溃现场（2026-08-30）：独立于「记录运行日志到文件」开关——默认关日志的
         # 分发用户崩溃后仍有 data/memwise_crash.log 可反馈（看门狗子进程不安装）
         _install_crash_sink()
@@ -1097,7 +1590,7 @@ class MemWiseGUI:
         self._optimizing = False  # 防止并发优化
         self._once_optimizing = False  # 守护运行中即时优化防重入（2026-08-15 审查）
 
-        self.learner = Learner.load(STATE_FILE)
+        self.learner = Learner.load(self._state_file)
         jcfg = {"kp":CFG.get("kp",0.6),"ki":CFG.get("ki",0.15),"kd":CFG.get("kd",0.1),
                 "target_usage":CFG.get("target_usage",60),"never":CFG.get("never",[]),
                 "game_processes":CFG.get("game_processes",[]),
@@ -1105,7 +1598,7 @@ class MemWiseGUI:
                 "efis_params":CFG.get("efis_params",{})}
         self.judger = Judger(self.learner, jcfg)
         self.cleaner = Cleaner(self.judger)
-        self.efis = EfisController(STATE_FILE)
+        self.efis = EfisController(self._state_file)
         # 启动按当前清理模式取参（2026-08-16 模式参数组：16 组中取 CFG 模式对应组，
         # 与守护周期末同步口径一致）
         self.efis.set_mode(CFG.get("clean_mode", "normal"))
@@ -1123,7 +1616,7 @@ class MemWiseGUI:
         self.sniffer = Sniffer()
         # ── 无 UI 引擎（守护循环/ERIS/轮次数据/事件队列全部移入 engine.py）──
         self.engine = MemWiseEngine(self.learner, self.judger, self.cleaner, self.efis,
-                                    self.sniffer, STATE_FILE)
+                                    self.sniffer, self._state_file)
         self.daemon_thread = None  # 仅保留兼容引用（引擎线程在 engine 内）
         self._tray_icon_handle = None
         # 注意：_minimized_to_tray 已在上方初始化（--minimized/auto_start_minimize 分支），此处不得重复赋值覆盖
@@ -1138,9 +1631,21 @@ class MemWiseGUI:
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
         self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
         self._mem_pct = 0
+        self._mem_bar_id = None
+        self._mem_shown = 0.0
+        self._mem_sheen_id = None
+        global ANIM_ENABLED
+        ANIM_ENABLED = bool(CFG.get("ui_animation", True)) and winapi.system_animations_enabled()
+        self._anim_enabled = ANIM_ENABLED
+        self._startup_anim_active = ANIM_ENABLED
+        self._anim = _motion.Animator(self.root.after, self.root.after_cancel, frame_ms=8)
 
         self._build_ui()
+        _print_prepare(self.root)
+        _hook_button_hover(self.root)
+        _hook_combo_hover(self.root)
         self._refresh_mem()
+        self._start_mem_bar()   # 内存条独立 300ms 实时刷新（2026-11-20）
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
         self._log(_APP_TITLE + tr(" 启动· ") + tr("当前是否管理员权限:") + adm)
@@ -1426,30 +1931,46 @@ class MemWiseGUI:
     def _show_window(self):
         """恢复主窗口 — 在 Tkinter 事件循环中安全调用"""
         try:
-            # 先隐藏 → 重新居中 → 显示（恢复位置可能被系统重置，避免错位闪烁）
-            self.root.withdraw()
-            _center_geometry(self.root, 1060, 700)
-            # 图标必须早于窗口映射就绪：任务栏按钮在首次映射时缓存图标，此后 WM_SETICON 不刷新按钮
-            # （标题栏会刷新、任务栏不会——v3.4.19 --minimized/自启场景任务栏立绘根因）
+            # 离屏最终尺寸映射 → 移到居中位置（避免默认 0,0 闪框）
             self._set_main_window_icon()
-            self.root.deiconify()
+            self._reveal_root()
             if self.root.state() == "iconic":
                 self.root.deiconify()
             self.root.lift()
             self._minimized_to_tray = False
+            self._chart_intro_pending = True   # 托盘恢复：图表重新从左到右升起
             # 先完成映射（wrapper 创建）再设置图标：deiconify 前 wrapper 不存在，设置会落到 client 无效
             self.root.update_idletasks()
             # 图标重设：--minimized/托盘期间窗口未映射，wrapper 未创建；恢复后必须重设到 wrapper（幂等缓存句柄零泄漏）
             # 否则标题栏回退 Tk 默认黑色羽毛、任务栏回退 exe 资源立体图标（v3.4.19 重启自启场景根因）
             self._set_main_window_icon()
             self.root.after(150, self._set_main_window_icon)
-            # 触发 <Configure> → _on_chart_configure(50ms) 自动渲染
+            # 先刷新数据并启动图表入场动画，再淡入窗口——避免“先看到刷新前的旧界面”
             self.root.update_idletasks()
-            # 兜底：极端情况下 <Configure> 未触发，500ms 后强制绘制
             self._drawing_chart = False
             if self._chart_redraw_id is not None:
-                self.root.after_cancel(self._chart_redraw_id)
-            self._chart_redraw_id = self.root.after(500, self._draw_chart)
+                try:
+                    self.root.after_cancel(self._chart_redraw_id)
+                except Exception:
+                    pass
+                self._chart_redraw_id = None
+            try:
+                self._refresh_mem()
+            except Exception:
+                pass
+            try:
+                self._upd_stats()
+            except Exception:
+                pass
+            self._chart_intro_pending = True
+            try:
+                self._draw_chart()
+            except Exception:
+                pass
+            self._startup_anim_active = False
+            self.root.after(120, self._flush_startup_logs)
+            self.root.after(140, self._flush_pending_type)
+
         except Exception as e:
             import sys; print(f"[MemWise] _show_window 异常: {e}", file=_ERR)
 
@@ -1463,8 +1984,9 @@ class MemWiseGUI:
         game = not self.cleaner.game_mode
         action = "启用" if game else "关闭"
         # 自定义确认弹窗
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()  # 先隐藏，构建完成居中后一次显示
+        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(tr("游戏模式"))
         dlg.resizable(False, False)
@@ -1520,11 +2042,16 @@ class MemWiseGUI:
         ToolTip(w, tr(txt))  # tooltip 统一翻译（原文即 key——未命中回退中文）
 
     def _add_tip_row(self, row, txt):
-        """整行范围提示：一个 ToolTip 实例挂载行内全部控件（标签+输入框都触发，
-        共享同一延迟回调与提示窗，快速滑动不产生双提示）"""
-        t = ToolTip(row, tr(txt))
+        """整行提示：只挂标签/输入框，不挂下拉框（2026-11-20 用户要求：
+        下拉框位置不激活 tooltip，激活区在旁边的标题文字上）。"""
+        t = None
         for _c in row.winfo_children():
-            t.add_widget(_c)
+            if isinstance(_c, ttk.Combobox):
+                continue
+            if t is None:
+                t = ToolTip(_c, tr(txt))
+            else:
+                t.add_widget(_c)
 
     def _hk_display(self, key="hotkey"):
         """热键配置 → 显示文案（如 ctrl+shift+m → Ctrl+Shift+M）"""
@@ -1595,6 +2122,7 @@ class MemWiseGUI:
             "「打开设置面板进行配置调整」\n"
             "1. 可配置的内容：\n"
             "  · 语言 — 中英文界面即时切换\n"
+            "  · 显示 — 界面动效（打印/过渡/表格）\n"
             "  · 启动 — 开机自启动、自动守护与托盘最小化\n"
             "  · 窗口与托盘 — 关闭按钮行为、托盘左键行为\n"
             "  · 清理 — 6 种操作独立开关与清理深度\n"
@@ -1626,13 +2154,13 @@ class MemWiseGUI:
 
         # 模式选择
         mf = ttk.Frame(self.root); mf.pack(fill="x", padx=12, pady=(0,6))
-        ttk.Label(mf, text=tr("清理模式:")).pack(side="left")
+        mode_lbl = ttk.Label(mf, text=tr("清理模式:")); mode_lbl.pack(side="left")
         self.mode_var = tk.StringVar(value=CFG.get("clean_mode", "normal"))
         self.mode_combo = ttk.Combobox(mf, textvariable=self.mode_var, width=12,
                                         values=["quick","normal","deep","full"], state="readonly")
         self.mode_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
         self.mode_combo.pack(side="left", padx=(4,0))
-        self._add_tip(self.mode_combo,
+        self._add_tip(mode_lbl,
             "「清理模式选择」\n"
             "1. 四模式摘要：\n"
             "  · quick — 仅系统级清理，几秒完成，几乎无感知\n"
@@ -1656,6 +2184,7 @@ class MemWiseGUI:
             CFG["clean_mode"] = new_mode
             _save_cfg()
         self.mode_var.trace_add("write", _on_mode_change)
+        self.mode_var.trace_add("write", lambda *a: self._sync_passes_widget())
         self.btn_game = ttk.Button(mf, text=tr("🎮 游戏模式"), command=self._on_toggle_game)
         self.btn_game.pack(side="left", padx=(6,0))
         self._add_tip(self.btn_game,
@@ -1722,6 +2251,8 @@ class MemWiseGUI:
         self.chart_canvas = tk.Canvas(lf, height=200, bg="#1e1e1e", highlightthickness=0)
         self.chart_canvas.pack(side="bottom", fill="x")
         self._chart_redraw_id = None  # debounce ID
+        self._chart_intro_pending = True   # 首次/恢复显示时整图错峰动画
+        self._chart_intro_id = None
         self._drawing_chart = False   # re-entrancy guard
         self.chart_canvas.bind("<Configure>", self._on_chart_configure)
         # 占位
@@ -1785,7 +2316,7 @@ class MemWiseGUI:
     def _open_settings(self):
         if self._focus_dialog("settings"):
             return
-        win = tk.Toplevel(self.root)
+        win = _SafeToplevel(self.root)
         self._dlgs["settings"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -1829,6 +2360,26 @@ class MemWiseGUI:
             "  · English — 全英文\n"
             "⚠ 切换后立即生效")
         ttk.Label(langf, text=tr("（切换后立即生效）"), foreground="#888").pack(anchor="w", pady=(4,0))
+
+        # ─── 显示（动效独立栏目，2026-11-20 用户要求从语言栏移出）───
+        dispf = ttk.LabelFrame(inner_frame, text=tr("显示"), padding=8)
+        dispf.pack(fill="x", padx=12, pady=(10,4))
+        anim_var = tk.BooleanVar(value=bool(CFG.get("ui_animation", True)))
+
+        def _toggle_anim():
+            global ANIM_ENABLED
+            CFG["ui_animation"] = bool(anim_var.get())
+            _save_cfg()
+            ANIM_ENABLED = bool(anim_var.get()) and winapi.system_animations_enabled()
+            self._anim_enabled = ANIM_ENABLED
+
+        _anim_cb = ttk.Checkbutton(dispf, text=tr("界面动效"), variable=anim_var, command=_toggle_anim)
+        _anim_cb.pack(anchor="w")
+        self._add_tip(_anim_cb,
+            "「界面动效」\n"
+            "1. 打开后：内存条/图表平滑过渡，窗口淡入，文字与表格逐条打印\n"
+            "2. 关闭后：全部立即到位，可降低低配机器的占用\n"
+            "⚠ 系统开启「减少动画」时会自动关闭")
 
         sf = ttk.LabelFrame(inner_frame, text=tr("启动"), padding=8)
         sf.pack(fill="x", padx=12, pady=(10,4))
@@ -1938,7 +2489,7 @@ class MemWiseGUI:
         ta_idx = next((i for i,(_,v) in enumerate(map_vals) if v == ta_cur), 0)
         ta_combo.current(ta_idx)
         ta_combo.pack(fill="x", pady=(0,6))
-        self._add_tip(ta_combo, "「托盘左键单击行为」\n1. 选择行为：\n  · 显示窗口 — 恢复主界面（默认）\n  · 一键清理 — 立即执行优化\n  · 无操作 — 忽略点击\n⚠ 仅在窗口隐藏时生效，任务栏存在图标时锁定")
+        self._add_tip(ta_lbl, "「托盘左键单击行为」\n1. 选择行为：\n  · 显示窗口 — 恢复主界面（默认）\n  · 一键清理 — 立即执行优化\n  · 无操作 — 忽略点击\n⚠ 仅在窗口隐藏时生效，任务栏存在图标时锁定")
         def set_tray_act(e):
             global CFG
             idx = ta_combo.current()
@@ -2037,6 +2588,8 @@ class MemWiseGUI:
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):
             global CFG
+            if self.mode_var.get() == "full":
+                return   # full 固定 6 轮，滑杆已灰置（防被改）
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
             _push_runtime_cfg(self.judger)
@@ -2047,6 +2600,10 @@ class MemWiseGUI:
                          command=lambda v: ps_lbl.config(text=tr("进程清理深度: ") + f"{int(float(v))} " + tr("轮")))
         ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
         ps_sl.pack(fill="x", pady=(0,6))
+        self._passes_val, self._ps_sl, self._ps_lbl = passes_val, ps_sl, ps_lbl
+        self._ps_hint = ttk.Label(cf, text=tr("full 模式下固定 6 轮（上限），切回其他模式后可调"),
+                                  foreground="#888", wraplength=470, justify="left")
+        self._sync_passes_widget()
         if CFG.get("clean_mode", "normal") == "quick":
             # quick 模式零进程清理 ⇒ 深度无消费（2026-10-15 实测：quick 下 _trim_process
             # 调用 0 次，滑杆可调但完全无作用）——与上面三个开关同款置灰 + 说明
@@ -2360,6 +2917,7 @@ class MemWiseGUI:
         cx = max(0, min(px + (pw - w) // 2, sw - w))
         cy = max(0, min(py + (ph - h) // 2, sh - h))
         win.geometry(f"{w}x{h}+{cx}+{cy}")
+        _prep_window_anim(win, content=True)
 
     def _dark_message(self, title, text, kind="info", extra=None):
         """暗色信息弹窗（单按钮"确定"；extra=(标签, 回调) 时在其左侧并行第二按钮，
@@ -2367,8 +2925,9 @@ class MemWiseGUI:
         kind: info / warning / error，影响图标与标题色。"""
         icon = {"info": "ℹ", "warning": "⚠", "error": "❌"}.get(kind, "ℹ")
         tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(kind, "#e0e0e0")
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
+        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -2398,8 +2957,9 @@ class MemWiseGUI:
     def _confirm_reset_dialog(self, title, message, extra_info=None):
         """三按钮确认弹窗（取消 / 确认并备份 / 确认但不备份）——重置与导入共用。
         返回 None（取消）/ True（确认并备份）/ False（确认但不备份）"""
-        dlg = tk.Toplevel(self.root)
-        dlg.withdraw()  # 先隐藏，构建完成后按内容尺寸居中一次显示
+        dlg = _SafeToplevel(self.root)
+        dlg.withdraw()
+        dlg._mw_fast_print = True  # 先隐藏，构建完成后按内容尺寸居中一次显示
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -2431,8 +2991,9 @@ class MemWiseGUI:
     def _confirm_dialog(self, title, message, icon="warning"):
         """两按钮暗色确认弹窗（确认/取消）——程序风格统一（替代系统原生 askyesno）。
         返回 True（确认）/ False（取消）。与 _confirm_reset_dialog 同视觉语言。"""
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
+        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -2466,7 +3027,7 @@ class MemWiseGUI:
     def _ask_string_dialog(self, title, prompt):
         """暗色单行输入弹窗（确认/取消，回车确认、Esc 取消）——程序风格统一
         （替代系统原生 askstring）。返回输入串（取消返回 None；空串原样返回，由调用方判空）"""
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(title)
@@ -2548,7 +3109,19 @@ class MemWiseGUI:
         self._restart_with_new_config()
 
     def _on_export_config(self):
-        p, missing = backup.export_state("export")
+        # 分享场景警示（2026-11-19 决策 A+B）：先讲清包内含什么，再让用户选择导出内容
+        if not self._confirm_dialog(
+                tr("导出配置"),
+                tr("导出的配置包会包含已学习的软件清单与程序路径，可能被识别出你安装过的软件。\n本机恢复或换机迁移需要学习数据；只分享清理设置与调参时请选择「仅配置与调参」。"),
+                icon="warning"):
+            return
+        choice = self._choice_dialog(
+            tr("选择导出内容"),
+            tr("包含学习数据（推荐本机恢复/换机迁移）") + "\n" + tr("仅配置与调参（不含学习数据，导入后学习从零开始）"),
+            [(tr("包含学习数据"), "full"), (tr("仅配置与调参"), "config")])
+        if choice is None:
+            return
+        p, missing = backup.export_state("export", include_learning=(choice == "full"))
         if p is None:
             self._dark_message(tr("导出配置"),
                 tr("无法导出：程序尚未生成任何状态文件"), kind="error")
@@ -2556,6 +3129,8 @@ class MemWiseGUI:
         msg = tr_msg(f"配置包已导出: {p}")
         if missing:
             msg += "\n" + tr("缺少：") + "、".join(missing)
+        if choice == "config":
+            msg += "\n" + tr("本次导出未包含学习数据（导入后学习从零开始）")
         msg += "\n" + tr("可在程序数据目录的 import_export 文件夹找到，也可导入恢复")
 
         def _open_pkg_folder():
@@ -2583,7 +3158,7 @@ class MemWiseGUI:
             return
         # 多包选择（显示文件名）
         picked = {"name": None}
-        sel = tk.Toplevel(self.root)
+        sel = _SafeToplevel(self.root)
         sel.withdraw()
         self._apply_icon(sel)
         sel.title(tr("选择配置包"))
@@ -2639,7 +3214,7 @@ class MemWiseGUI:
     def _edit_exclusion_list(self):
         if self._focus_dialog("excl"):
             return
-        win = tk.Toplevel(self.root)
+        win = _SafeToplevel(self.root)
         self._dlgs["excl"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -2713,7 +3288,7 @@ class MemWiseGUI:
                     "%.1f" % r[6], "%.1f" % (r[7] / (1 << 20)), tr("是") if r[8] else tr("否"),
                     r[9], r[10], r[11])
 
-        win = tk.Toplevel(self.root)
+        win = _SafeToplevel(self.root)
         self._dlgs["learn"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -2754,6 +3329,7 @@ class MemWiseGUI:
         _row_by_iid = {}
         for r, disp in zip(info_data, rows):
             _row_by_iid[tree.insert("", "end", values=disp)] = r
+        pass
         # 点击列头排序（2026-09-26 用户要求：与进程排行同款）——状态按**列索引**（语言无关）
         _sort_state = {"idx": None, "rev": True}
 
@@ -2770,7 +3346,7 @@ class MemWiseGUI:
         """一体化游戏进程管理：列出/添加/删除游戏进程条目"""
         if self._focus_dialog("game"):
             return
-        win = tk.Toplevel(self.root)
+        win = _SafeToplevel(self.root)
         self._dlgs["game"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -2863,7 +3439,7 @@ class MemWiseGUI:
         """弹出进程内存占用排行榜"""
         if self._focus_dialog("rank"):
             return
-        win = tk.Toplevel(self.root)
+        win = _SafeToplevel(self.root)
         self._dlgs["rank"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -3026,6 +3602,9 @@ class MemWiseGUI:
                         tree.move(k, "", i2)
             except Exception as e:
                 import sys; print(f"[MemWise] _refresh data error: {e}", file=_ERR)
+            if not getattr(win, "_mw_tree_revealed", False):
+                win._mw_tree_revealed = True
+                pass
             win.after(_refresh_ms, _refresh)
             self.root.after(10, _restore_hover)
 
@@ -3091,7 +3670,7 @@ class MemWiseGUI:
         caps = CFG.get("ws_caps") or {}
         rule = caps.get(norm)
 
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(tr("工作集硬上限"))
@@ -3142,8 +3721,8 @@ class MemWiseGUI:
             btn_ok.state(["!disabled"] if ack_var.get() else ["disabled"])
         ttk.Checkbutton(dlg, style="DarkW.TCheckbutton", variable=ack_var, command=_ack,
                         text=tr("我了解这会使该程序在访问被换出的内存时变卡")).pack(pady=(6, 2))
-        dlg.deiconify()
         self._center_fit(dlg, min_w=430)
+        dlg.deiconify()
         dlg.wait_window()
 
     def _ws_cap_clear_dialog(self, path):
@@ -3169,7 +3748,7 @@ class MemWiseGUI:
         """规则管理窗口：列出/删除（添加入口=进程排行右键，设计 v2.4）。"""
         if self._focus_dialog("caps"):
             return
-        win = tk.Toplevel(self.root)
+        win = _SafeToplevel(self.root)
         self._dlgs["caps"] = win
         win.withdraw()
         self._apply_icon(win)
@@ -3197,6 +3776,7 @@ class MemWiseGUI:
                 else:
                     st = tr("等待目标进程")
                 tree.insert("", "end", values=(path, rule.get("mb"), st))
+            pass
 
         def _del():
             sel = tree.selection()
@@ -3254,6 +3834,12 @@ class MemWiseGUI:
         · 连续完全相同的单条消息跳过（2026-08-30：启动观察消息实测重复，去重守卫）
         历史缓存照常累积（语言切换重渲染源）；to_file=False 为纯显示模式
         （周期摘要/EFIS 消息已有 [清理]/[调参] 直写，避免双通道重复落盘）"""
+        # 启动淡入期间先暂存，完成后统一写入并打印（避免先完整显示再动画）
+        if getattr(self, "_startup_anim_active", False):
+            if not hasattr(self, "_startup_msgs"):
+                self._startup_msgs = []
+            self._startup_msgs.extend(msgs)
+            return
         # 连续重复去重：单条消息与上一条完全相同则跳过
         if len(msgs) == 1 and msgs[0] == self._last_msg:
             return
@@ -3269,14 +3855,175 @@ class MemWiseGUI:
             cur_lines = 0
         if _panel_needs_clear(cur_lines, _msg_lines(displays)):
             self.log.delete("1.0", "end")
+        self._finish_typewriter()
+        try:
+            _flash_start = self.log.index("end-1c")
+        except Exception:
+            _flash_start = None
         for _d in displays:
             _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(_d), _LOG_TAG)
+        try:
+            _flash_end = self.log.index("end-1c")
+        except Exception:
+            _flash_end = None
         self.log.see("end")
+        if _flash_start is not None and _flash_end is not None:
+            self._typewriter(_flash_start, _flash_end)
         self.log.configure(state="disabled")
         self._last_msg = msgs[-1] if msgs else None
         if to_file and CFG.get("log_to_file"):
             for m in msgs:
                 _log_write("界面", m[0] if isinstance(m, tuple) else m)
+
+    def _flush_startup_logs(self):
+        msgs = getattr(self, "_startup_msgs", None)
+        if not msgs:
+            return
+        self._startup_msgs = []
+        try:
+            self._write_group(msgs, to_file=True)
+        except Exception:
+            pass
+
+    def _flush_pending_type(self):
+        if getattr(self, "_startup_anim_active", False):
+            return
+        if not getattr(self, "_type_queue", None):
+            return
+        try:
+            if self.root.winfo_viewable():
+                self._start_type_next()
+        except Exception:
+            pass
+
+    def _drop_type_state(self):
+        st = getattr(self, "_type_state", None)
+        if st:
+            try:
+                self.log.tag_remove(st["tag"], "1.0", "end")
+                self.log.tag_delete(st["tag"])
+            except Exception:
+                pass
+        self._type_state = None
+
+    def _finish_typewriter(self):
+        self._drop_type_state()
+        for q in (getattr(self, "_type_queue", None) or []):
+            try:
+                self.log.tag_remove(q["tag"], "1.0", "end")
+                self.log.tag_delete(q["tag"])
+            except Exception:
+                pass
+        self._type_queue = []
+        self._type_busy = False
+
+    def _start_type_next(self):
+        if getattr(self, "_type_busy", False):
+            return
+        q = getattr(self, "_type_queue", None) or []
+        if not q:
+            return
+        item = q.pop(0)
+        tag, start, end, total = item["tag"], item["start"], item["end"], item["total"]
+        self._type_busy = True
+        self._type_state = item
+        chunk = max(1, min(6, int(total / 180) + 1))
+        n = 0
+
+        def tick():
+            nonlocal n
+            if not getattr(self, "_type_state", None) or self._type_state.get("tag") != tag:
+                return
+            n += chunk
+            if n >= total:
+                self._drop_type_state()
+                self._type_busy = False
+                self._start_type_next()
+                return
+            try:
+                idx = self.log.index(f"{start} + {n} chars")
+                self.log.tag_remove(tag, "1.0", "end")
+                self.log.tag_add(tag, idx, end)
+            except Exception:
+                self._drop_type_state()
+                self._type_busy = False
+                self._start_type_next()
+                return
+            try:
+                self.log.after(8, tick)
+            except Exception:
+                self._type_busy = False
+        tick()
+
+    def _typewriter(self, start, end):
+        """新日志插入后立刻隐藏，再排队逐字显现（启动期也先隐藏，显示后补打字）。"""
+        _root = getattr(self, "root", None)
+        if not ANIM_ENABLED or _root is None or not hasattr(self, "log"):
+            return
+        try:
+            total = int(self.log.count(start, end, "chars")[0])
+        except Exception:
+            return
+        if total <= 0:
+            return
+        try:
+            self._type_seq = getattr(self, "_type_seq", 0) + 1
+            tag = "mwtype%d" % self._type_seq
+            self.log.tag_add(tag, start, end)
+            self.log.tag_configure(tag, elide=True)
+            if not hasattr(self, "_type_queue") or self._type_queue is None:
+                self._type_queue = []
+            self._type_queue.append({"tag": tag, "start": start, "end": end, "total": total})
+            if _root.winfo_viewable() and not getattr(self, "_startup_anim_active", False):
+                self._start_type_next()
+        except Exception:
+            pass
+
+    def _flash_log(self, start, end):
+        """新到日志行做 1.2s 背景渐隐（参考 dsh 的 flash；不逐行淡入，避免 Text 闪烁）。"""
+        _root = getattr(self, "root", None)
+        if not ANIM_ENABLED or _root is None or not _root.winfo_viewable():
+            return
+        try:
+            if str(start) == str(end):
+                return
+            self._flash_seq = getattr(self, "_flash_seq", 0) + 1
+            tag = "mwflash%d" % self._flash_seq
+            base = self.log.cget("background") or "#1c1c1c"
+            self.log.tag_add(tag, start, end)
+            t0 = time.perf_counter()
+
+            try:
+                b = tuple(int(base.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+            except Exception:
+                b = (0x1c, 0x1c, 0x1c)
+
+            def _blend(k):
+                # #2a3a2a → 面板底色
+                a = (0x2a, 0x3a, 0x2a)
+                return "#%02x%02x%02x" % tuple(
+                    int(round(a[i] + (b[i] - a[i]) * k)) for i in range(3))
+
+            def step():
+                try:
+                    if not self.log.winfo_exists():
+                        return
+                    p = min(1.0, (time.perf_counter() - t0) / 1.2)
+                    k = _motion.EASE_OUT(p)
+                    self.log.tag_configure(tag, background=_blend(k))
+                    if p < 1.0:
+                        _root.after(150, step)
+                    else:
+                        self.log.tag_delete(tag)
+                except Exception:
+                    try:
+                        self.log.tag_delete(tag)
+                    except Exception:
+                        pass
+            self.log.tag_configure(tag, background="#2a3a2a")
+            step()
+        except Exception:
+            pass
 
     def _log_op(self, m):
         """即时事件（单行组）——分组语义见 _write_group"""
@@ -3654,8 +4401,9 @@ class MemWiseGUI:
     def _choice_dialog(self, title, text, options, kind="info"):
         """通用暗色多按钮弹窗（options=[(标签, 返回值)]）：返回被点中的值；关闭 ⇒ None。"""
         res = {"v": None}
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
+        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -3706,7 +4454,7 @@ class MemWiseGUI:
 
     def _progress_dialog(self, info):
         """下载进度弹窗（非模态，可取消）。返回带 set(done,total)/close() 的句柄。"""
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(tr("正在下载更新"))
@@ -3761,8 +4509,9 @@ class MemWiseGUI:
     def _countdown_dialog(self, seconds):
         """倒计时弹窗（默认 5 秒后继续；可取消或立即重启）。返回 True=继续更新。"""
         res = {"go": False}
-        dlg = tk.Toplevel(self.root)
+        dlg = _SafeToplevel(self.root)
         dlg.withdraw()
+        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(tr("即将重启完成更新"))
         dlg.resizable(False, False)
@@ -3857,6 +4606,149 @@ class MemWiseGUI:
     def _upd_learned(self):
         self.lbl_lr.config(text=tr("已学习: ") + str(len(self.learner.profiles)))
 
+    def _sync_passes_widget(self, *_a):
+        """full 模式下把"进程清理深度"滑杆锁到 6 并灰置（2026-11-20 用户要求）。"""
+        try:
+            sl = getattr(self, "_ps_sl", None)
+            if sl is None or not sl.winfo_exists():
+                return
+            val = getattr(self, "_passes_val", None)
+            lbl = getattr(self, "_ps_lbl", None)
+            hint = getattr(self, "_ps_hint", None)
+            if self.mode_var.get() == "full":
+                self._tween_scale(val, 6, on_done=lambda: sl.state(["disabled"]))
+                lbl.config(text=tr("进程清理深度: ") + "6 " + tr("轮（full 固定）"))
+                if hint is not None:
+                    hint.pack(anchor="w", pady=(0, 4))
+            else:
+                sl.state(["!disabled"])
+                self._tween_scale(val, int(CFG.get("clean_passes", 4)))
+                lbl.config(text=tr("进程清理深度: ") + f"{val.get()} " + tr("轮"))
+                if hint is not None:
+                    hint.pack_forget()
+        except Exception:
+            pass
+
+    # 内存条色阶（连续插值：绿→黄→橙→红；与阈值语义一致）
+    _MEM_STOPS = ((0.0, (76, 175, 80)), (60.0, (76, 175, 80)),
+                  (75.0, (255, 193, 7)), (90.0, (255, 152, 0)), (100.0, (244, 67, 54)))
+
+    @classmethod
+    def _mem_color(cls, pct):
+        p = max(0.0, min(100.0, float(pct)))
+        for i in range(1, len(cls._MEM_STOPS)):
+            x0, c0 = cls._MEM_STOPS[i - 1]
+            x1, c1 = cls._MEM_STOPS[i]
+            if p <= x1 or i == len(cls._MEM_STOPS) - 1:
+                k = 0.0 if x1 <= x0 else max(0.0, min(1.0, (p - x0) / (x1 - x0)))
+                rgb = tuple(int(round(c0[j] + (c1[j] - c0[j]) * k)) for j in range(3))
+                return "#%02x%02x%02x" % rgb
+        return "#4caf50"
+
+    def _update_mem_labels(self, m):
+        try:
+            self.lbl_total["text"] = tr("总: ") + f"{m['total']/(1<<30):.1f}G"
+            self.lbl_used["text"] = tr("已用: ") + f"{m['used']/(1<<30):.1f}G"
+            self.lbl_avail["text"] = tr("可用: ") + f"{m['avail']/(1<<30):.1f}G"
+            self.lbl_pct["text"] = f"{int(round(float(m['pct'])))}%"
+        except Exception:
+            pass
+
+    def _apply_mem_bar(self, pct, m, labels=True):
+        try:
+            if not self.root.winfo_viewable():
+                return
+            cw = self.mem_canvas.winfo_width() or 400
+            bar_w = max(1, int(cw * pct / 100))
+            self.mem_canvas.coords(self.mem_bar_rect, 0, 0, bar_w, 22)
+            self.mem_canvas.itemconfig(self.mem_bar_rect, fill=self._mem_color(pct))
+            self.mem_canvas.itemconfig(self.mem_bar_text, text=f"{int(round(pct))}%")
+        except Exception as e:
+            import sys; print(f"[MemWise] 内存条渲染异常: {e}", file=_ERR)
+
+    def _tween_scale(self, var, target, on_done=None):
+        """滑杆数值 170ms 平滑移动（模式切换锁 6/恢复时用）。"""
+        try:
+            cur = int(var.get())
+        except Exception:
+            cur = int(target)
+        if not getattr(self, "_anim_enabled", True) or cur == int(target):
+            var.set(int(target))
+            if on_done:
+                on_done()
+            return
+        t0 = time.perf_counter()
+
+        def step():
+            p = min(1.0, (time.perf_counter() - t0) / 0.17)
+            v = int(round(cur + (int(target) - cur) * _motion.EASE_IN_OUT(p)))
+            try:
+                var.set(v)
+            except Exception:
+                return
+            if p < 1.0:
+                self.root.after(8, step)
+            else:
+                if on_done:
+                    try:
+                        on_done()
+                    except Exception:
+                        pass
+        step()
+
+    def _render_mem_bar(self, m):
+        """内存条/标签：数值变化时 420ms 缓动（可中途重定向；标签在结束时刷新）。"""
+        pct = float(m["pct"])
+        self._mem_pct = m["pct"]
+        self._update_mem_labels(m)   # 标签用真实值即时刷新（不参与动画，防重定向时停更）
+        if not getattr(self, "_anim_enabled", True) or not self.root.winfo_viewable():
+            self._mem_shown = pct
+            self._apply_mem_bar(pct, m)
+            return
+        if abs(pct - self._mem_shown) < 0.5:
+            self._mem_shown = pct
+            self._apply_mem_bar(pct, m)
+            return
+        self._anim.tween("mem_pct", pct, 420, _motion.EASE_OUT,
+                         lambda v: self._apply_mem_bar(v, m, labels=False),
+                         start=self._mem_shown,
+                         on_done=lambda: self._apply_mem_bar(pct, m))
+        self._mem_shown = pct
+
+    def _tick_mem_bar(self):
+        """内存条高频链：另取一次状态、只画条/标签（托盘仍由 5s 链驱动）。"""
+        try:
+            m = winapi.get_memory_status()
+            if m:
+                self._render_mem_bar(m)
+        except Exception:
+            pass
+        finally:
+            try:
+                if getattr(self, "_mem_bar_id", None):
+                    self.root.after_cancel(self._mem_bar_id)
+            except Exception:
+                pass
+            try:
+                self._mem_bar_id = self.root.after(300, self._tick_mem_bar)
+            except Exception:
+                self._mem_bar_id = None
+
+    def _start_mem_bar(self):
+        self._stop_mem_bar()
+        try:
+            self._mem_bar_id = self.root.after(300, self._tick_mem_bar)
+        except Exception:
+            self._mem_bar_id = None
+
+    def _stop_mem_bar(self):
+        try:
+            if getattr(self, "_mem_bar_id", None):
+                self.root.after_cancel(self._mem_bar_id)
+        except Exception:
+            pass
+        self._mem_bar_id = None
+
     def _refresh_mem(self):
         try:
             m = winapi.get_memory_status()
@@ -3868,31 +4760,18 @@ class MemWiseGUI:
                 if now_ts - getattr(self, '_last_tray_update', 0) >= 5:
                     self._update_tray_status(pct)
                     self._last_tray_update = now_ts
-                # Canvas/Label 操作仅在窗口可见时执行
-                try:
-                    if self.root.winfo_viewable():
-                        cw = self.mem_canvas.winfo_width() or 400
-                        bar_w = max(1, int(cw * pct / 100))
-                        color = "#4caf50" if pct < 60 else ("#ffc107" if pct < 75 else ("#ff9800" if pct < 90 else "#f44336"))
-                        self.mem_canvas.coords(self.mem_bar_rect, 0, 0, bar_w, 22)
-                        self.mem_canvas.itemconfig(self.mem_bar_rect, fill=color)
-                        self.mem_canvas.itemconfig(self.mem_bar_text, text=f"{pct}%")
-                        self.lbl_total["text"] = tr("总: ") + f"{m['total']/(1<<30):.1f}G"
-                        self.lbl_used["text"] = tr("已用: ") + f"{m['used']/(1<<30):.1f}G"
-                        self.lbl_avail["text"] = tr("可用: ") + f"{m['avail']/(1<<30):.1f}G"
-                        self.lbl_pct["text"] = f"{pct}%"
-                except Exception as e:
-                    import sys; print(f"[MemWise] _refresh_mem UI异常: {e}", file=_ERR)
+                self._render_mem_bar(m)
+        except Exception as e:
+            import sys; print(f"[MemWise] _refresh_mem 异常: {e}", file=_ERR)
         finally:
             # after 链防叠加（2026-09-06 审查）：重入（语言切换/异常兜底再次调用本方法）
-            # 先取消旧调度再排新，恒保持单条 2s 链——原实现每次调用叠加一条并行链，
-            # 切 N 次语言后 N+1 条链同时刷新，开销随切换次数累积
+            # 先取消旧调度再排新，恒保持单条 5s 链
             try:
                 if getattr(self, "_refresh_mem_id", None):
                     self.root.after_cancel(self._refresh_mem_id)
             except Exception:
                 pass
-            self._refresh_mem_id = self.root.after(5000, self._refresh_mem)   # 2026-11-11：2s→5s，只驱动内存条/托盘，慢一拍无感
+            self._refresh_mem_id = self.root.after(5000, self._refresh_mem)
 
     @staticmethod
     def _sys_ops_count(s):
@@ -3900,15 +4779,122 @@ class MemWiseGUI:
         return (s.get("standby", 0) + s.get("modified", 0) + s.get("filecache", 0)
                 + s.get("registry", 0) + s.get("volume", 0))
 
+    def _num_tween(self, key, widget, prefix, target, unit=None):
+        """统计数字 320ms 递增/递减（文字动画，2026-11-20）。"""
+        target = float(target)
+        prev = getattr(self, "_num_" + key, target)
+
+        def _fmt(v):
+            if unit == "mb":
+                return f"{v/1024.0:.1f}GB" if v >= 1000 else f"{v:.1f}MB"
+            return fmt_count(int(round(v)))
+
+        if getattr(self, "_anim_enabled", True) and abs(target - prev) > 0.001:
+            self._anim.tween("num_" + key, target, 320, _motion.EASE_OUT,
+                             lambda v: widget.__setitem__("text", prefix + _fmt(v)),
+                             start=prev)
+        else:
+            widget["text"] = prefix + _fmt(target)
+        self.__dict__["_num_" + key] = target
+
     def _upd_stats(self):
         s = self.cleaner.summary()
-        self.lbl_sb["text"] = tr("系统杂项: ") + fmt_count(self._sys_ops_count(s))
-        self.lbl_tr["text"] = tr("进程: ") + fmt_count(s['ws_trim'])
-        fm = s['freed_mb']
-        self.lbl_fr["text"] = tr("释放: ") + (f"{fm/1024.0:.1f}GB" if fm >= 1000 else f"{fm:.1f}MB")
+        self._num_tween("sb", self.lbl_sb, tr("系统杂项: "), self._sys_ops_count(s))
+        self._num_tween("tr", self.lbl_tr, tr("进程: "), s['ws_trim'])
+        self._num_tween("fr", self.lbl_fr, tr("释放: "), s['freed_mb'], unit="mb")
         self._upd_learned()
 
     # ---- 柱图 ----
+
+    def _anim_chart_intro(self, c, bars, lines, dots, py1, dur=500, stag=28):
+        """整图入场：柱子从左到右错峰升起；折线像“笔”一样从左侧延伸到右侧，
+        折点在线头经过时亮起（lines/dots 由调用方预创建并隐藏，2026-11-20）。"""
+        try:
+            if getattr(self, "_chart_intro_id", None):
+                self.root.after_cancel(self._chart_intro_id)
+        except Exception:
+            pass
+        self._chart_intro_id = None
+        t0 = time.perf_counter()
+        n = len(bars)
+
+        def step():
+            self._chart_intro_id = None
+            try:
+                if not c.winfo_exists():
+                    return
+            except Exception:
+                return
+            t = (time.perf_counter() - t0) * 1000.0
+            for (rid, x0, x1, _py1, y0, _color, i) in bars:
+                p = min(1.0, max(0.0, (t - i * stag) / float(dur)))
+                yy = int(round(py1 - (py1 - y0) * _motion.EASE_OUT(p)))
+                try:
+                    c.coords(rid, x0, yy, x1, py1)
+                except Exception:
+                    pass
+            for (_ln, x1, y1, x2, y2, at, sdur) in lines:
+                p = min(1.0, max(0.0, (t - at) / float(sdur)))
+                ex = x1 + (x2 - x1) * p
+                ey = y1 + (y2 - y1) * p
+                try:
+                    c.coords(_ln, x1, y1, ex, ey)
+                except Exception:
+                    pass
+            for item, at in dots:
+                if t >= at:
+                    try:
+                        c.itemconfig(item, state="normal")
+                    except Exception:
+                        pass
+            if t < (n - 1) * stag + dur + 200:
+                try:
+                    self._chart_intro_id = self.root.after(8, step)
+                except Exception:
+                    self._chart_intro_id = None
+            else:
+                for (_ln, x1, y1, x2, y2, _at, _sd) in lines:
+                    try:
+                        c.coords(_ln, x1, y1, x2, y2)
+                    except Exception:
+                        pass
+                for item, _at in dots:
+                    try:
+                        c.itemconfig(item, state="normal")
+                    except Exception:
+                        pass
+        step()
+
+    def _anim_chart_bar(self, c, rid, x0, x1, py1, y0, color):
+        """最后一根柱从底部生长到目标高度（300ms，EASE_OUT；重绘时取消旧动画）。"""
+        try:
+            if getattr(self, "_chart_bar_anim_id", None):
+                self.root.after_cancel(self._chart_bar_anim_id)
+        except Exception:
+            pass
+        self._chart_bar_anim_id = None
+        t0 = time.perf_counter()
+
+        def step():
+            self._chart_bar_anim_id = None
+            try:
+                if not c.winfo_exists() or not c.type(rid):
+                    return
+            except Exception:
+                return
+            p = min(1.0, (time.perf_counter() - t0) / 0.45)
+            e = _motion.EASE_OUT(p)
+            yy = int(round(py1 - (py1 - y0) * e))
+            try:
+                c.coords(rid, x0, yy, x1, py1)
+            except Exception:
+                return
+            if p < 1.0:
+                try:
+                    self._chart_bar_anim_id = self.root.after(8, step)
+                except Exception:
+                    self._chart_bar_anim_id = None
+        step()
 
     def _draw_chart_placeholder(self):
         """显示占位文本（无数据时）"""
@@ -3953,6 +4939,12 @@ class MemWiseGUI:
 
     def _do_draw_chart(self):
         c = self.chart_canvas
+        try:
+            if getattr(self, "_chart_intro_id", None):
+                self.root.after_cancel(self._chart_intro_id)
+        except Exception:
+            pass
+        self._chart_intro_id = None
         c.delete("all")  # 先清空画布：防占位文字残留与重复绘制污染（解耦批次误删，2026-08-14 修复）
         data, meta_list, eff_data_view, eff_factors_view = self.engine.chart_snapshot()
         if not data:
@@ -3991,6 +4983,11 @@ class MemWiseGUI:
             if i > 0:
                 c.create_line(px0, y, px1, y, fill="#2a2a2a", dash=(2, 4))
         # 柱条（保护标题区：柱条顶部不低于 y=20）
+        # 2026-11-20：开屏/恢复时从左到右错峰升起（每个 28ms 启动、500ms 生长、彼此重叠）；
+        # 平时每轮只动最后一根，避免整图每轮重播。
+        _intro = bool(getattr(self, "_chart_intro_pending", False))
+        self._chart_intro_pending = False
+        _bars = []
         for i, v in enumerate(visible):
             bh = max(1, int(v / max_val * ph))
             x0 = px0 + i * step; x1 = x0 + self.BAR_W
@@ -3998,7 +4995,11 @@ class MemWiseGUI:
             if v > 0:
                 ratio = v / max_val
                 color = "#4caf50" if ratio < 0.3 else ("#ff9800" if ratio < 0.7 else "#f44336")
-                c.create_rectangle(x0, y0, x1, py1, fill=color, outline="", width=0)
+                if ANIM_ENABLED and _intro:
+                    rid = c.create_rectangle(x0, py1, x1, py1, fill=color, outline="", width=0)
+                else:
+                    rid = c.create_rectangle(x0, y0, x1, py1, fill=color, outline="", width=0)
+                _bars.append((rid, x0, x1, py1, y0, color, i))
             else:
                 c.create_rectangle(x0, py1 - 1, x1, py1, fill="#555", outline="", width=0)
 
@@ -4007,6 +5008,9 @@ class MemWiseGUI:
         # 异常处自然断开；折点、平均效率、悬浮提示同样只认有效值（2026-11-06）。
         eff_data = list(eff_data_view)
         eff_pts = []
+        _lines = []
+        _dots = []
+        _DUR, _STAG = 500, 28
         if eff_data:
             eff_visible = eff_data[-len(visible):] if len(eff_data) > len(visible) else eff_data
             step2 = self.BAR_W + self.BAR_GAP
@@ -4025,7 +5029,13 @@ class MemWiseGUI:
                     _kw = {"fill": "#4488CC", "width": 2, "smooth": False, "tags": "eff_line"}
                     if (eff_start_idx + i2) <= 2:
                         _kw["dash"] = (4, 3)
-                    c.create_line(x1, y1, x2, y2, **_kw)
+                    if ANIM_ENABLED and _intro:
+                        _ln = c.create_line(x1, y1, x1, y1, **_kw)
+                        _lines.append((_ln, x1, y1, x2, y2,
+                                       i1 * _STAG + int(_DUR * 0.15),
+                                       max(140, int((i2 - i1) * _STAG + _DUR * 0.45))))
+                    else:
+                        c.create_line(x1, y1, x2, y2, **_kw)
                 # 折点：只画有效点；异常轮不落点（断口可见）
                 for i, e_val in run:
                     cx = px0 + i * step2 + self.BAR_W // 2
@@ -4040,16 +5050,29 @@ class MemWiseGUI:
                     else:
                         dot_fill = "#4488CC"
                     orig_idx = eff_start_idx + i
+                    _extra = []
                     if orig_idx < 3:
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                      outline="", fill=dot_fill, tags="eff_dot")
+                        _dot = c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                             outline="", fill=dot_fill, tags="eff_dot")
                         for seg_start in range(0, 360, 60):
-                            c.create_arc(cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1,
-                                         start=seg_start, extent=45, style="arc",
-                                         outline="#FFF8E0", width=1, dash=(3, 3), tags="eff_dot")
+                            _arc = c.create_arc(cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1,
+                                                start=seg_start, extent=45, style="arc",
+                                                outline="#FFF8E0", width=1, dash=(3, 3), tags="eff_dot")
+                            _extra.append(_arc)
                     else:
-                        c.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                      outline="#FFF8E0", width=1, fill=dot_fill, tags="eff_dot")
+                        _dot = c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                             outline="#FFF8E0", width=1, fill=dot_fill, tags="eff_dot")
+                    if ANIM_ENABLED and _intro:
+                        for _it in [_dot] + _extra:
+                            c.itemconfig(_it, state="hidden")
+                            _dots.append((_it, i * _STAG + int(_DUR * 0.35)))
+
+        if _bars and ANIM_ENABLED:
+            if _intro:
+                self._anim_chart_intro(c, _bars, _lines, _dots, py1, _DUR, _STAG)
+            else:
+                _rid, _x0, _x1, _py1, _y0, _color = _bars[-1][:6]
+                self._anim_chart_bar(c, _rid, _x0, _x1, _py1, _y0, _color)
 
         # ── 鼠标悬浮提示（单一 Motion 命中，无需逐柱命中区对象）──
 
@@ -4279,7 +5302,7 @@ class MemWiseGUI:
             self._do_exit()
             return
         # ask mode: 弹窗询问
-        choice = tk.Toplevel(self.root)
+        choice = _SafeToplevel(self.root)
         choice.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(choice)
         choice.title("MemWise")
@@ -4386,19 +5409,57 @@ class MemWiseGUI:
         self.engine.shutdown()
         _save_cfg()
         self.engine.save_state()
+        self._stop_mem_bar()
         self.root.destroy()
+
+    def _fade_root_in(self):
+        try:
+            t0 = time.perf_counter()
+
+            def step():
+                p = min(1.0, (time.perf_counter() - t0) / 0.22)
+                try:
+                    self.root.attributes("-alpha", 0.02 + 0.98 * _motion.EASE_OUT(p))
+                except Exception:
+                    return
+                if p < 1.0:
+                    self.root.after(16, step)
+            step()
+        except Exception:
+            pass
+
+    def _reveal_root(self):
+        """主窗口先在屏幕外用最终尺寸映射，再一次移到居中位置；
+        避免 Tk 首次映射用默认 0,0 位置造成左上角闪框。"""
+        try:
+            self.root.withdraw()
+            self.root.geometry("1060x700+4000+4000")
+            if ANIM_ENABLED:
+                try:
+                    self.root.attributes("-alpha", 0.0)
+                except Exception:
+                    pass
+            self.root.deiconify()
+            self.root.update_idletasks()
+            _center_geometry(self.root, 1060, 700)
+            self.root.update_idletasks()
+            if ANIM_ENABLED:
+                self.root.after(16, self._fade_root_in)
+        except Exception:
+            pass
 
     def run(self):
         # 全部启动路径先设图标（映射前/隐藏期；wrapper 未创建时幂等，后续重设）
         self._set_main_window_icon()
         if not self._minimized_to_tray:
-            self.root.deiconify()  # 首次映射即已居中，零闪烁
-            # 同步重设：wrapper 在首次映射时创建，按钮图标在映射瞬间缓存，
-            # 必须在按钮创建后立即重设 + SWP_FRAMECHANGED（窗口已映射才生效）刷新任务栏
-            self.root.update_idletasks()
+            self._reveal_root()
             self._set_main_window_icon()
-            # 兜底：映射完成后重设（幂等，缓存复用零泄漏）
             self.root.after(150, self._set_main_window_icon)
+        if not self._minimized_to_tray and ANIM_ENABLED:
+            self._startup_anim_active = False
+            self.root.after(120, self._flush_startup_logs)
+            self.root.after(140, self._flush_pending_type)
+            self.root.after(320, lambda: _print_ui(self.root, delay_ms=0, stagger_ms=18))
         self.root.mainloop()
 
 if __name__ == "__main__":

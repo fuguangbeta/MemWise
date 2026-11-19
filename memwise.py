@@ -1,5 +1,5 @@
 """
-MemWise v5.4.013 PARES —— 智能内存看护
+MemWise PARES —— 智能内存看护
 进阶算法: 上下文增强 Thompson + PID 控制 + 3层清理
 不杀进程、不挂起、不注入；默认不联网（仅在你开启「检查更新」后访问官方发布渠道，不发送任何设备信息）；仅在按设置写入状态与日志文件。
 """
@@ -285,15 +285,18 @@ def cmd_reset(_):
     winapi.report_event("MemWise", tr_msg("已恢复出厂设置"))
 
 
-def cmd_export(_):
+def cmd_export(args):
     from core import backup as _backup
-    p, missing = _backup.export_state("export")
+    include_learning = "--config-only" not in (args or [])
+    p, missing = _backup.export_state("export", include_learning=include_learning)
     if p is None:
         print(tr("无法导出：程序尚未生成任何状态文件"))
         return
     print(tr_msg(f"配置包已导出: {p}"))
     if missing:
         print(tr("缺少：") + "、".join(missing))
+    if not include_learning:
+        print(tr("（仅配置与调参：不含学习数据）"))
 
 
 def cmd_import(args):
@@ -369,6 +372,7 @@ def cmd_profile(args):
         print(tr("  清理:        ") + f"{p.clean_count}" + tr(" 次 | Probe: ") + f"{p.probe_ok}/{p.probe_ok+p.probe_fail}")
 
 def main():
+    global STATE_PATH   # init_runtime 的迁移/回退结果需要覆盖模块级常量
     # GBK 控制台/重定向时 emoji 输出不崩溃（替换为 ? 而非抛 UnicodeEncodeError）
     try:
         sys.stdout.reconfigure(errors="replace")
@@ -388,6 +392,11 @@ def main():
             os.makedirs(os.path.dirname(_config.CONFIG_PATH), exist_ok=True)
         except Exception:
             pass
+    # 迁移/回退后重新解析状态路径（模块级 STATE_PATH 在 import 时已求值）
+    try:
+        STATE_PATH = get_state_path()
+    except Exception:
+        pass
     # P18：若 init_runtime 恢复了未完成的导入，config.yaml 可能已变——CLI 本地 CFG 同步
     try:
         CFG.clear()
@@ -413,14 +422,15 @@ def main():
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
     winapi.enable_reduct_privileges()
     if len(sys.argv) < 2:
-        print(tr("MemWise v5.4.013 PARES —— 智能内存看护"))
+        from core.backup import display_version as _dv   # 运行时显示号（含本地 .beta）
+        print("MemWise v%s" % _dv() + tr(" PARES —— 智能内存看护"))
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))
         print(tr("  optimize [--mode q|n|d|f] 执行优化"))
         print(tr("  daemon [--mode q|n|d|f] 守护模式"))
         print(tr("  profile <pid>             进程详情 (含 PARES 指标)"))
-        print(tr("  export                    导出配置包到数据目录"))
+        print(tr("  export [--config-only]    导出配置包（可选不含学习数据）"))
         print(tr("  import <文件名>            从导入文件夹导入配置包"))
         print(tr("  service [remove]          安装/移除 Scheduled Task 服务"))
         print(tr("  reset                     恢复出厂设置"))

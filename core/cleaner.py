@@ -9,7 +9,7 @@ from collections import deque
 from . import winapi
 from .learner import _is_system_core, _is_self_process, _is_self_path
 from .rebound import _key as _norm_ws_path
-from .judger import MIN_WS_BYTES  # 工作集下限单一来源（judger 定义，见其注释）
+from .judger import MIN_WS_BYTES, FULL_AGG  # 工作集下限与 full agg 下限的单一来源
 
 # 机器内存标度（2026-10-16 启用）：尺寸类阈值统一按 S 缩放（本机 S=1.0 ⇒ 逐位不变）
 _S = winapi.memory_scale()
@@ -57,7 +57,9 @@ _COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 #   modified = 脏页写回磁盘 —— 磁盘 IO 饱和，与磁盘忙闲强相关 ⇒ 吃快路径。
 #   filecache= 文件缓存钳制（固定 ~0.85s 驻留轮询）⇒ 同 modified。
 # "上次快"是用实测耗时反推磁盘忙闲（零新增 API）：上次 ≤1s 说明这台机器此刻写得动。
-_HEAVY_IDLE_FULL = 0.1      # full：停手 0.1s 即可做（2026-11-19 用户定稿：只需保证"正在拖动"时不卡；
+_HEAVY_IDLE_FULL = 0.05     # full：基准停手 0.05s（2026-11-19 用户拍板）；实际门槛按操作实测耗时自适应上调
+                            # 到最多 0.3s（见 _heavy_need）：快操作几乎不设门、慢操作等更久。
+                            # 旧注释：停手 0.1s 即可做（只需保证"正在拖动"时不卡；
                             # 拖动中 idle≈0 必被跳过，松手 0.1s 即执行 ⇒ 兼顾"绝对高压缩"与拖窗流畅）
 _HEAVY_IDLE_OTHER = 5.0     # 非 full：停手 5 秒
 _HEAVY_FAST_MS = 1000.0     # 上次同类操作 ≤1s ⇒ 视为磁盘空闲，直接放行
@@ -67,10 +69,11 @@ _HEAVY_FAST_KINDS = ("modified", "filecache")
 # 「小动静」分级（2026-11-19 按四模式义务重划）：light = 单次 <0.5s 且无持续副作用
 # ⇒ full 的义务是"每轮都做"，不择时；heavy = 单次 ≥0.5s ⇒ full 也只择时。
 _HEAVY_LIGHT_OPS = ("ws_all", "standby")   # 允许"上次快"快路径的操作
-# 脏页门（C）：低于此值不值得为它付一次磁盘 IO —— OS 后台写回会自行处理少量脏页。
-# 实测：256MB 脏页写回约 0.3–0.5s；<200MB 时 flush 的收益低于代价（2026-11-19）。
-_MODIFIED_MIN_DIRTY = 200 << 20
 _HEAVY_TIME_KEY = {"empty_all_working_sets": "ws_all", "flush_modified_pages": "modified"}
+# 自适应门槛（2026-11-19）：full 下按"上次同类操作实测耗时"上调门槛——3s 的 flush 不该在
+# 50ms 停顿里放行；快操作（filecache/combine）仍接近基准。上限 0.3s，避免门槛反而把 full 锁死。
+_HEAVY_ADAPT_MAX = 0.3
+_HEAVY_ADAPT_RATIO = 0.1
 
 
 
@@ -115,6 +118,7 @@ class PareCleaner:
         self._lite = False          # F1 轻量轮（仅 _optimize_locked 内按本轮赋真；默认值兜底，
                                     # 防 _combine_eligible/_final_consolidation 在首轮前被调用时 AttributeError）
         self._trim_partial = False  # P25 预算截断标记（同上，默认值兜底）
+        self._last_partial_drop = 0  # 本轮因预算/卡死未提交的候选数（诊断，5.1）
         self._cycle_reasons = {}   # 本轮 can_trim 拦截原因计数（日志诊断用）
         # ── D1–D6 只读诊断（2026-11-08）：只统计、不参与任何判定；输出受 log_to_file 门控 ──
         self._diag_cpu_hist = [0] * 7          # D1 **全体候选**的 cpu 桶（<3/3-6/6-8/8-12/12-16/16-25/≥25%）
@@ -264,8 +268,47 @@ class PareCleaner:
             use.add("registry")
         return use
 
+    @staticmethod
+    def _final_ops(ops_filter):
+        """full 收尾的系统操作子集——与 _layer1_ops 共用同一映射（防两处手工表漂移）。"""
+        m = PareCleaner._layer1_ops(ops_filter)
+        if m is None:
+            return {"ws_all", "modified", "standby", "standby_low"}
+        return {k for k in ("ws_all", "modified", "standby", "standby_low") if k in m}
+
+    def _heavy_need(self, kind):
+        """该操作当前需要的最短停手时长（秒）：full 按实测耗时自适应，非 full 固定 5s。"""
+        mode = getattr(self, "_last_mode", None) or "normal"
+        if mode != "full":
+            return _HEAVY_IDLE_OTHER
+        last = self._heavy_last_ms.get(kind, 0.0)
+        return max(_HEAVY_IDLE_FULL, min(_HEAVY_ADAPT_MAX, last / 1000.0 * _HEAVY_ADAPT_RATIO))
+
+    def _gate_would_allow(self, kind):
+        """只读预判：此刻是否已满足停手条件（不改变 defer/放行表）。"""
+        if os.environ.get("MEMWISE_DISABLE_HEAVY_GATE") == "1":
+            return True
+        if self._manual_run or self.game_mode:
+            return True
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
+            return True
+        last = self._heavy_last_ms.get(kind, 0.0)
+        if kind in _HEAVY_FAST_KINDS and 0 < last <= _HEAVY_FAST_MS:
+            return True
+        return winapi.get_idle_seconds() >= self._heavy_need(kind)
+
+    def refresh_cycle_gate(self):
+        """周期内补判（2026-11-19）：开头因"那一刻在动"被否的重操作，若此刻已停手够久则放行。
+        只做 False→True、不改 defer（否则按调用次数累加会折算轮次）。"""
+        allow = getattr(self, "_heavy_allow", None)
+        if not allow:
+            return
+        for _k, _v in list(allow.items()):
+            if not _v and self._gate_would_allow(_k):
+                allow[_k] = True
+
     def _decide_heavy(self, kind):
-        """为本轮判定一次某重系统操作是否允许执行（2026-11-11）。
+        """为本轮判定一次某重系统操作是否允许执行（2026-11-11；2026-11-19 起按实测耗时自适应）。
 
         ⚠ 必须每轮只调用一次：`_layer1_memreduct` 在一轮内会被 gap-fill 与 harvest 各调一次，
         若按调用次数累计 defer，"连续跳过 N 轮"会被折算成 N/2 轮。故 _optimize_locked 在
@@ -278,32 +321,19 @@ class PareCleaner:
         豁免：手动优化、游戏模式、环境变量 MEMWISE_DISABLE_HEAVY_GATE=1（排障/对照用）。
         只延后、不取消：放行时 defer 清零，因此功能零损失。
         """
-        if os.environ.get("MEMWISE_DISABLE_HEAVY_GATE") == "1":
-            return True
-        if self._manual_run or self.game_mode:
-            return True
-        # full 的"义务"：light 操作（ws_all/standby，单次 <0.5s）属"小动静"，每轮必做、不择时。
-        # 它们被门挡掉正是之前 full 压缩能力下降的主因。
-        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
+        # 注：2026-11-19 曾加"脏页 <200MB 跳过"，实测误判（CcTotalDirtyPages 只覆盖缓存脏页：
+        # dirty≈0 时 flush 仍释放 122MB；写 256MB 时读数 253MB）。该硬门已移除，只保留择时门。
+        if self._gate_would_allow(kind):
             self._heavy_defer[kind] = 0
             return True
-        # C：脏页太少时 modified 不值得做（OS 后台写回会自行处理少量脏页）——
-        # 跳过且**不计入连续跳过**，否则会累加到"强制做一次无意义的 flush"。
-        if kind == "modified":
-            _dirty = winapi.get_dirty_bytes()
-            if _dirty is not None and _dirty < _MODIFIED_MIN_DIRTY:
-                self._heavy_defer[kind] = 0
-                return False
         mode = getattr(self, "_last_mode", None) or "normal"
-        idle = winapi.get_idle_seconds()
-        last = self._heavy_last_ms.get(kind, 0.0)
-        defer = self._heavy_defer.get(kind, 0)
-        gate = _HEAVY_IDLE_FULL if mode == "full" else _HEAVY_IDLE_OTHER
         limit = _HEAVY_DEFER_FULL if mode == "full" else _HEAVY_DEFER_OTHER
-        fast = kind in _HEAVY_FAST_KINDS and 0 < last <= _HEAVY_FAST_MS
-        ok = bool((idle >= gate) or fast or (defer >= limit))
-        self._heavy_defer[kind] = 0 if ok else defer + 1
-        return ok
+        defer = self._heavy_defer.get(kind, 0)
+        if defer >= limit:
+            self._heavy_defer[kind] = 0
+            return True
+        self._heavy_defer[kind] = defer + 1
+        return False
 
     def _heavy_allowed(self, kind):
         """查询本轮是否允许（只读 _heavy_allow；未初始化时放行，供直接调用 _layer1_memreduct 的路径）。"""
@@ -311,7 +341,25 @@ class PareCleaner:
             return True
         if self._manual_run or self.game_mode:
             return True
+        # full 的"必须尽全力"：light（ws_all/standby）不择时、每轮必做；与 _decide_heavy 同口径
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
+            return True
         return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
+
+    def begin_cycle(self, mode):
+        """守护周期开头判定一次重操作放行（gap 与 harvest 共用同一结果，见 9.1）。"""
+        _mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
+        _prev = getattr(self, "_last_mode", None)
+        self._last_mode = _mode
+        if _prev != _mode:
+            self._heavy_defer.clear()
+        self._heavy_allow = {_k: self._decide_heavy(_k)
+                             for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
+        self._in_cycle = True
+
+    def end_cycle(self):
+        """周期结束：清周期判定状态（下一周期由 begin_cycle 重新判定）。"""
+        self._in_cycle = False
 
     def _combine_eligible(self):
         """combine 只由 full 收尾调用（与六项开关解耦）；节流/退避，避免每周期全系统扫描。"""
@@ -321,13 +369,15 @@ class PareCleaner:
             return False
         now = time.time()
         gap = now - self._combine_last
-        floor = 60 if self._manual_run else max(_COMBINE_MIN_INTERVAL, self._combine_backoff)
+        _base = 300 if (not self._manual_run and (getattr(self, "_last_mode", None) or "normal") == "full") else _COMBINE_MIN_INTERVAL
+        floor = 60 if self._manual_run else max(_base, self._combine_backoff)
         return gap >= floor
 
     def _note_combine_result(self, ok, pages, elapsed_ms):
         self._combine_last = time.time()
+        _base = 300 if (not self._manual_run and (getattr(self, "_last_mode", None) or "normal") == "full") else _COMBINE_MIN_INTERVAL
         if ok and pages > 0:
-            self._combine_backoff = _COMBINE_MIN_INTERVAL
+            self._combine_backoff = _base
         else:
             self._combine_backoff = min(_COMBINE_MAX_BACKOFF,
                                         max(1800, int(self._combine_backoff) * 2))
@@ -347,14 +397,7 @@ class PareCleaner:
         if deadline is not None and time.time() > deadline - 2.0:
             return
         # combine 与六项开关解耦：full 即可；final 本身只执行用户授权的操作。
-        use = set()
-        if ops_filter is None or "ws" in ops_filter:
-            use.add("ws_all")
-        if ops_filter is None or "modified" in ops_filter:
-            use.add("modified")
-        if ops_filter is None or "standby" in ops_filter:
-            use.add("standby")
-            use.add("standby_low")
+        use = self._final_ops(ops_filter)
         if use:
             self._layer1_memreduct(full=True, ops=use, clean_self=False)
             self._stats_inc("final_sweep")
@@ -509,9 +552,13 @@ class PareCleaner:
         max_p = self.judger.cfg.get("clean_passes", 4)
         try: max_p = int(max_p)
         except (ValueError, TypeError): max_p = 4
+        # A3（2026-11-20）：full 的"必须尽全力"——大进程至少 6 趟（配置上限内），
+        # 轻量轮仍单趟（_lite 路径在此之前已 return/分支）
+        if getattr(self.judger, "_mode_guard", "normal") == "full" and not getattr(self, "_lite", False):
+            max_p = max(max_p, 6)
 
         deepen = self.judger.cfg.get("efis_params", {}).get("deepen_theta", 0.6)
-        theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(snap, 'fg', False))
+        theta = learner.thompson_score(name)
         if getattr(self, "_lite", False) and getattr(self.judger, "_mode_guard", "normal") == "full":
             # F1 轻量轮：每进程只清一趟（正常 full 为 4 趟——同一进程一轮反复清是 churn 主源）
             passes = 1; total_wait = 0.3
@@ -565,7 +612,7 @@ class PareCleaner:
                     return False, "系统核心进程"
                 if _nm and _nm in self.judger.cfg.get("never", []):
                     return False, "用户黑名单"
-                if pid == os.getpid():
+                if pid == os.getpid() or pid in getattr(self.judger, "_self_pids", set()):
                     return False, "程序自身"
             if self.judger.aggressiveness < 0.35 and winapi.get_foreground_pid() == pid:
                 return False, "执行前转前台"
@@ -749,7 +796,7 @@ class PareCleaner:
     def _composite_score_v2(self, s, learner):
         """多维复合评分（θ/预期释放/WS/回弹/预期PF代价）——替代单维 θ 排序"""
         name = s.name.lower()
-        theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
+        theta = learner.thompson_score(name)
         p = learner.get_profile(name)
         x_freed = (p.effective_freed if p and hasattr(p, 'effective_freed') else 0)   # 2026-11-11 可靠性加权
         x_cost = p.kalman.x_cost if p and hasattr(p.kalman, 'x_cost') else 0
@@ -908,7 +955,7 @@ class PareCleaner:
                     self._diag_note_reject(s, reason)   # D1/D6 只读
                 except Exception:
                     pass
-                if self.judger.can_probe(s):
+                if getattr(self.judger, "_mode_guard", "normal") != "full" and self.judger.can_probe(s):
                     probe_list.append(s)
                 self._stats_inc("skipped")  # 锁内统计（与池线程同口径，防竞态丢计数）
 
@@ -1045,7 +1092,7 @@ class PareCleaner:
             if getattr(s, "fg", False):
                 winapi.set_eco_qos(s.pid, False)
                 continue
-            theta = learner.thompson_score(name, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
+            theta = learner.thompson_score(name)
             # EcoQoS + MemoryPriority 门槛梯度（A 方案，2026-08-14）：
             # normal/deep：θ≥0.5 且 WS≥100MB 才设（压缩池效应 + Nt 一次性权衡）
             # full：MemoryPriority 放宽到 θ≥0.3 且 WS≥50MB——低优先级页在系统压力下
@@ -1086,6 +1133,8 @@ class PareCleaner:
             _probe_out = self._bounded_submit(self._probe_executor, fn, probe_list,
                                               max_inflight=self._max_workers * 2,
                                               per_task_timeout=4, deadline=deadline)
+            self._last_partial_drop = max(self._last_partial_drop,
+                                          len(probe_list) - len(_probe_out))
             if len(_probe_out) < len(probe_list) or (deadline is not None and time.time() >= deadline):
                 self._trim_partial = True
             for s, r in _probe_out:
@@ -1171,6 +1220,8 @@ class PareCleaner:
             _trim_out = self._bounded_submit(self._trim_executor, fn, candidates,
                                              max_inflight=max_inflight,
                                              per_task_timeout=8, deadline=deadline)
+            self._last_partial_drop = max(self._last_partial_drop,
+                                          len(candidates) - len(_trim_out))
             if len(_trim_out) < len(candidates) or (deadline is not None and time.time() >= deadline):
                 self._trim_partial = True
             for s, r in _trim_out:
@@ -1205,7 +1256,8 @@ class PareCleaner:
         mem_before_layer3 = winapi.get_memory_status()
         # 收益闸下限：内存充裕时用常量下限，占用达到阈值（高压/紧急/深度需求）时为 0 ⇒ 行为与旧版一致
         _mem_pct = int(getattr(self.judger, "_last_mem_pct", 50) or 50)
-        _l3_growth_floor = 0 if _mem_pct >= L3_RETRIM_PRESSURE_PCT else L3_RETRIM_GROWTH_FLOOR
+        _l3_floor = (2 << 20) if getattr(self.judger, "_mode_guard", "normal") == "full" else L3_RETRIM_GROWTH_FLOOR
+        _l3_growth_floor = 0 if _mem_pct >= L3_RETRIM_PRESSURE_PCT else _l3_floor
         self._stats_inc("layer3_ran")
         self._l3_system_ops(ops_filter, mem_before_layer3)
         # 开关优先：用户取消 ws 勾选时阶段 D 不得清理进程（阶段 A-C 系统操作仍按开关执行）
@@ -1291,9 +1343,7 @@ class PareCleaner:
             # 使 Program Files 应用在 L3 比 L2 更容易被清——梯度不一致，现统一走同一判定。
             _sysdir_path = getattr(s, "path", None)
             if _sysdir_path and self.judger._is_system_path(_sysdir_path):
-                _theta_sys = learner.thompson_score(
-                    name_lower, mem_pct=getattr(self.judger, '_last_mem_pct', 50),
-                    is_fg=getattr(s, 'fg', False))
+                _theta_sys = learner.thompson_score(name_lower)
                 if self.judger.is_system_dir_low_theta(_sysdir_path, _theta_sys):
                     self._cycle_reasons["系统目录进程(概率不足)"] = \
                         self._cycle_reasons.get("系统目录进程(概率不足)", 0) + 1
@@ -1336,7 +1386,7 @@ class PareCleaner:
                     self._cycle_reasons["回涨不足(收益闸)"] = \
                         self._cycle_reasons.get("回涨不足(收益闸)", 0) + 1
             elif bl == 0:
-                theta = learner.thompson_score(name_lower, mem_pct=getattr(self.judger, '_last_mem_pct', 50), is_fg=getattr(s, 'fg', False))
+                theta = learner.thompson_score(name_lower)
                 # θ 门槛模式化（与 Layer2 价值底线同构）：deep 0.12 / full 0.06 / 常规 0.5
                 _theta_d = {"deep": 0.12, "full": 0.06}.get(getattr(self.judger, "_mode_guard", "normal"), 0.5)
                 if theta > _theta_d:
@@ -1352,6 +1402,8 @@ class PareCleaner:
         _l3_out = self._bounded_submit(self._trim_executor, fn, candidates,
                                        max_inflight=max_inflight,
                                        per_task_timeout=8, deadline=deadline)
+        self._last_partial_drop = max(self._last_partial_drop,
+                                      len(candidates) - len(_l3_out))
         if len(_l3_out) < len(candidates) or (deadline is not None and time.time() >= deadline):
             self._trim_partial = True
         for _s, _r in _l3_out:
@@ -1482,6 +1534,7 @@ class PareCleaner:
         # F1 轻量轮（每轮显式赋值，不做残留：手动/紧急/gap-fill 路径默认 False）
         self._lite = bool(lite)
         self._trim_partial = False   # P25：预算截断标记（结果 _partial 供引擎诊断断档判断）
+        self._last_partial_drop = 0  # 本轮未提交候选数（D7 诊断）
         self._round_ops = {}         # P1-8：本轮系统操作次数/释放量（供“同轮去重”决策采集数据）
         self._round_time = {}        # 本轮各系统操作耗时（卡顿排查，2026-11-10）
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
@@ -1490,15 +1543,14 @@ class PareCleaner:
         # 旧写法取 _mode_guard 会把 quick 折成 normal（严格度归一是给判定用的，不该污染模式标签）
         _prev_mode = getattr(self, "_last_mode", None)
         self._last_mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
-        if _prev_mode != self._last_mode:
+        if _prev_mode != self._last_mode and not getattr(self, "_in_cycle", False):
             self._heavy_defer.clear()   # 切模式后旧的"连续跳过"计数不再有意义
-        # 每轮**只判定一次**重操作放行（轮内 gap/harvest/L3 共用同一结论）
-        # standby（全量待机清空）也纳入择时：它本身释放常为 0，但清空待机页会让后续程序重读盘，
-        # 属"体验副作用型"——deep/normal 的"零副作用/零过度整理"要求它同样择时。
-        # combine（页合并）同样纳入：它是全系统物理页扫描，实测 ~0.47s，full 下可能被感知。
-        # 它自带 15 分钟节流，被门跳过时不更新 _combine_last ⇒ 下一次机会自然重试。
-        self._heavy_allow = {_k: self._decide_heavy(_k)
-                             for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
+        # 重操作放行：守护周期开头 begin_cycle() 已判定则整周期复用（gap/harvest 同源）；
+        # 手动优化（守护未运行）或紧急 full 独立判定，不沿用别的模式/上一周期的结论。
+        # 紧急 full 由 engine 在调用前后备份/恢复本字典，不污染本周期余下阶段。
+        if (not getattr(self, "_in_cycle", False)) or (mode == "full" and _prev_mode != "full"):
+            self._heavy_allow = {_k: self._decide_heavy(_k)
+                                 for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()
@@ -1631,7 +1683,7 @@ class PareCleaner:
         # deep 基础 + 进程回弹二轮 + 强制高 agg Layer3（各操作按用户开关）
         # full 极限模式：agg 强制 ≥0.8 并同步 judger——自动闭环前台门/活动确认/稳态豁免
         # （PID 默认参数高压峰值仅 0.38，达不到豁免阈值 0.8，稳态锁曾全局锁死压缩能力）
-        agg = max(agg, 0.8)
+        agg = max(agg, FULL_AGG)
         self.judger.aggressiveness = max(self.judger.aggressiveness, agg)
         l2_results, probe_results = self._layer2_process(snaps, learner, deadline=deadline) if run_ws else ([], [])
         pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
