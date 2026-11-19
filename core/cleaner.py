@@ -57,7 +57,8 @@ _COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 #   modified = 脏页写回磁盘 —— 磁盘 IO 饱和，与磁盘忙闲强相关 ⇒ 吃快路径。
 #   filecache= 文件缓存钳制（固定 ~0.85s 驻留轮询）⇒ 同 modified。
 # "上次快"是用实测耗时反推磁盘忙闲（零新增 API）：上次 ≤1s 说明这台机器此刻写得动。
-_HEAVY_IDLE_FULL = 1.0      # full：停手 1s 即可做（2026-11-19 由 3s 放宽到 1.5s，再按用户要求放宽到 1s）
+_HEAVY_IDLE_FULL = 0.1      # full：停手 0.1s 即可做（2026-11-19 用户定稿：只需保证"正在拖动"时不卡；
+                            # 拖动中 idle≈0 必被跳过，松手 0.1s 即执行 ⇒ 兼顾"绝对高压缩"与拖窗流畅）
 _HEAVY_IDLE_OTHER = 5.0     # 非 full：停手 5 秒
 _HEAVY_FAST_MS = 1000.0     # 上次同类操作 ≤1s ⇒ 视为磁盘空闲，直接放行
 _HEAVY_DEFER_FULL = 1       # full：最多跳 1 轮（≈1 分钟上限；放宽停手门后强制很少触发）
@@ -404,7 +405,7 @@ class PareCleaner:
                     self._op_fail_note("volume")
             if not game_mode and "modified" in use and self._heavy_allowed("modified") and _capture(winapi.flush_modified_pages):
                 self._stats_inc("modified")
-            if not game_mode and "standby" in use and _capture(winapi.empty_standby):
+            if not game_mode and "standby" in use and self._heavy_allowed("standby") and _capture(winapi.empty_standby):
                 self._stats_inc("standby")
             if "standby_low" in use and _capture(winapi.purge_low_priority_standby):
                 self._stats_inc("standby")
@@ -1220,12 +1221,13 @@ class PareCleaner:
         # 现按 ops_filter 逐项调用（底层单一入口均已存在），仅在内部全量调用（None）时保留融合快路径。
         if not self.game_mode:
             if ops_filter is None:
-                _capture(winapi.deep_compress)
+                if self._heavy_allowed("modified"):   # 融合函数含 flush_modified，按最重的那个判
+                    _capture(winapi.deep_compress)
                 _capture(self.clean_modified_pages)
             else:
                 if "modified" in ops_filter:
                     _capture(self.clean_modified_pages)
-                if "standby" in ops_filter:
+                if "standby" in ops_filter and self._heavy_allowed("standby"):
                     _capture(winapi.empty_standby)
         # 内核操作已同步完成，无需等待
 
@@ -1233,7 +1235,8 @@ class PareCleaner:
         if not self.game_mode:
             if ops_filter is None:
                 # 单次深度清空（低优先+全量+脏页写回一次完成），保留内部全量快路径
-                _capture(self.clean_deep_standby)
+                if self._heavy_allowed("standby"):
+                    _capture(self.clean_deep_standby)
             elif "standby" in ops_filter:
                 # 低优先回收（阶段 C 特有部分）；全量回收已在预处理按同一开关执行过一次
                 # ——不再重复调用（原融合函数 deep_compress + empty_standby_deep 会把同一操作
@@ -1241,7 +1244,7 @@ class PareCleaner:
                 _capture(winapi.purge_low_priority_standby)
             if ops_filter is None or "volume" in ops_filter:
                 _capture(self._flush_volume_cache)
-            if ops_filter is None or "filecache" in ops_filter:
+            if (ops_filter is None or "filecache" in ops_filter) and self._heavy_allowed("filecache"):
                 _capture(winapi.clear_system_file_cache_ex, "filecache")
         if freed_l3 > 0:
             self._stats_inc("freed_bytes", freed_l3)
@@ -1478,8 +1481,10 @@ class PareCleaner:
         if _prev_mode != self._last_mode:
             self._heavy_defer.clear()   # 切模式后旧的"连续跳过"计数不再有意义
         # 每轮**只判定一次**重操作放行（轮内 gap/harvest/L3 共用同一结论）
+        # standby（全量待机清空）也纳入择时：它本身释放常为 0，但清空待机页会让后续程序重读盘，
+        # 属"体验副作用型"——deep/normal 的"零副作用/零过度整理"要求它同样择时。
         self._heavy_allow = {_k: self._decide_heavy(_k)
-                             for _k in ("ws_all", "modified", "filecache")}
+                             for _k in ("ws_all", "modified", "filecache", "standby")}
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()
