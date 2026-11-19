@@ -63,7 +63,10 @@ _HEAVY_IDLE_OTHER = 5.0     # 非 full：停手 5 秒
 _HEAVY_FAST_MS = 1000.0     # 上次同类操作 ≤1s ⇒ 视为磁盘空闲，直接放行
 _HEAVY_DEFER_FULL = 1       # full：最多跳 1 轮（≈1 分钟上限；放宽停手门后强制很少触发）
 _HEAVY_DEFER_OTHER = 6      # 非 full：连续跳 6 轮强制（≈6 分钟上限）
-_HEAVY_FAST_KINDS = ("modified", "filecache")   # 允许"上次快"快路径的操作
+_HEAVY_FAST_KINDS = ("modified", "filecache")
+# 「小动静」分级（2026-11-19 按四模式义务重划）：light = 单次 <0.5s 且无持续副作用
+# ⇒ full 的义务是"每轮都做"，不择时；heavy = 单次 ≥0.5s ⇒ full 也只择时。
+_HEAVY_LIGHT_OPS = ("ws_all", "standby")   # 允许"上次快"快路径的操作
 # 脏页门（C）：低于此值不值得为它付一次磁盘 IO —— OS 后台写回会自行处理少量脏页。
 # 实测：256MB 脏页写回约 0.3–0.5s；<200MB 时 flush 的收益低于代价（2026-11-19）。
 _MODIFIED_MIN_DIRTY = 200 << 20
@@ -278,6 +281,11 @@ class PareCleaner:
         if os.environ.get("MEMWISE_DISABLE_HEAVY_GATE") == "1":
             return True
         if self._manual_run or self.game_mode:
+            return True
+        # full 的"义务"：light 操作（ws_all/standby，单次 <0.5s）属"小动静"，每轮必做、不择时。
+        # 它们被门挡掉正是之前 full 压缩能力下降的主因。
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
+            self._heavy_defer[kind] = 0
             return True
         # C：脏页太少时 modified 不值得做（OS 后台写回会自行处理少量脏页）——
         # 跳过且**不计入连续跳过**，否则会累加到"强制做一次无意义的 flush"。

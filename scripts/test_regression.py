@@ -4738,14 +4738,18 @@ try:
     _c63 = _mk63("full", 10.0)
     check("K10 停手 ≥3s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
     _c63 = _mk63("full", 0.0)
-    check("K10b 活跃且无历史 ⇒ 延后", _c63._decide_heavy("ws_all") is False)
+    check("K10b 活跃且无历史 ⇒ heavy 延后", _c63._decide_heavy("modified") is False)
     _c63 = _mk63("normal", 6.0)
     check("K10c 非 full 停手 ≥5s ⇒ 放行", _c63._decide_heavy("modified") is True)
 
     _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 500.0
     check("K11 上次 ≤1s ⇒ 快路径放行", _c63._decide_heavy("modified") is True)
-    _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["ws_all"] = 500.0
-    check("K11b ws_all 不吃快路径（副作用型）", _c63._decide_heavy("ws_all") is False)
+    _c63 = _mk63("deep", 0.0); _c63._heavy_last_ms["ws_all"] = 500.0
+    check("K11b 非 full 下 ws_all 不吃快路径（副作用型）", _c63._decide_heavy("ws_all") is False)
+    _c63 = _mk63("full", 0.0)
+    check("K11c full 下 light(ws_all) 不择时（必须尽全力）", _c63._decide_heavy("ws_all") is True)
+    _c63 = _mk63("deep", 0.0)
+    check("K11d deep 下 ws_all 仍择时（尽力但不打扰）", _c63._decide_heavy("ws_all") is False)
 
     _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 3000.0
     check("K12 full 最多跳 1 轮后强制（0 1 0）",
