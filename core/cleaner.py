@@ -49,6 +49,22 @@ LITE_TOP_K = 48            # 轻量轮候选上限（实测前 25%≈46 个进�
 _COMBINE_MIN_INTERVAL = 900       # 15 分钟；手动 full 首次/间隔 ≥60s 可触发
 _COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 
+# ── 重系统操作择时门（2026-11-11）──
+# 目标：消除"清理瞬间卡顿"，同时不取消任何操作（有 defer 兜底，最多延迟数轮）。
+# 三类操作的伤害机制不同，判据也不同：
+#   ws_all   = 系统级清空所有进程工作集 —— 会清掉 dwm/explorer 的工作集，拖动窗口时逐帧重绘变慢；
+#              耗时短(0.2s)但副作用长 ⇒ **只认"用户停手"，不吃"上次快"快路径**。
+#   modified = 脏页写回磁盘 —— 磁盘 IO 饱和，与磁盘忙闲强相关 ⇒ 吃快路径。
+#   filecache= 文件缓存钳制（固定 ~0.85s 驻留轮询）⇒ 同 modified。
+# "上次快"是用实测耗时反推磁盘忙闲（零新增 API）：上次 ≤1s 说明这台机器此刻写得动。
+_HEAVY_IDLE_FULL = 3.0      # full：用户停手 3 秒即可做（极限模式不长时间等待）
+_HEAVY_IDLE_OTHER = 5.0     # 非 full：停手 5 秒
+_HEAVY_FAST_MS = 1000.0     # 上次同类操作 ≤1s ⇒ 视为磁盘空闲，直接放行
+_HEAVY_DEFER_FULL = 2       # full：连续跳 2 轮强制（≈2 分钟上限，防饿死）
+_HEAVY_DEFER_OTHER = 6      # 非 full：连续跳 6 轮强制（≈6 分钟上限）
+_HEAVY_FAST_KINDS = ("modified", "filecache")   # 允许"上次快"快路径的操作
+_HEAVY_TIME_KEY = {"empty_all_working_sets": "ws_all", "flush_modified_pages": "modified"}
+
 
 
 class PareCleaner:
@@ -64,6 +80,9 @@ class PareCleaner:
         self._pri_refresh_counter = 0
         self._fast_track = {}  # {pid: create} 高回填率进程，gap-fill 期间快速重清（create 供身份复检）
         self._game_tree_mem = {}  # {pid: (create, miss)} 游戏树两轮记忆（2026-11-08）
+        self._heavy_defer = {}     # {op: 连续被跳过的轮数}（择时门，2026-11-11）
+        self._heavy_last_ms = {}   # {op: 上次实测耗时 ms}（磁盘忙闲的代理信号）
+        self._heavy_allow = {}     # {op: 本轮是否允许}（每轮判定一次，轮内复用——见 _decide_heavy）
         self._lock = threading.Lock()
         self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
         self._max_workers = min(os.cpu_count() or 2, 8)
@@ -152,7 +171,12 @@ class PareCleaner:
     # ── Layer 1: 系统级清理 ──
 
     def clean_modified_pages(self):
+        # 择时门（2026-11-11）：L3 深度预处理是独立通道，与 _layer1_memreduct 同款判定
+        if not self._heavy_allowed("modified"):
+            return False
+        _t0 = time.perf_counter()
         ok = winapi.flush_modified_pages()
+        self._heavy_last_ms["modified"] = (time.perf_counter() - _t0) * 1000.0
         if ok:
             self._stats_inc("modified")
         return ok
@@ -233,6 +257,43 @@ class PareCleaner:
             use.add("registry")
         return use
 
+    def _decide_heavy(self, kind):
+        """为本轮判定一次某重系统操作是否允许执行（2026-11-11）。
+
+        ⚠ 必须每轮只调用一次：`_layer1_memreduct` 在一轮内会被 gap-fill 与 harvest 各调一次，
+        若按调用次数累计 defer，"连续跳过 N 轮"会被折算成 N/2 轮。故 _optimize_locked 在
+        每轮开头算好存入 _heavy_allow，轮内只读 _heavy_allowed。
+
+        三个放行条件任一成立：① 用户停手够久（full 3s / 其他 5s）；
+        ② 上次同类操作 ≤1s（磁盘证明自己此刻不忙，仅 modified/filecache 适用）；
+        ③ 连续被跳过达到上限（full 2 轮 / 其他 6 轮）——兜底，防"一直活跃"导致永久不做。
+
+        豁免：手动优化、游戏模式、环境变量 MEMWISE_DISABLE_HEAVY_GATE=1（排障/对照用）。
+        只延后、不取消：放行时 defer 清零，因此功能零损失。
+        """
+        if os.environ.get("MEMWISE_DISABLE_HEAVY_GATE") == "1":
+            return True
+        if self._manual_run or self.game_mode:
+            return True
+        mode = getattr(self, "_last_mode", None) or "normal"
+        idle = winapi.get_idle_seconds()
+        last = self._heavy_last_ms.get(kind, 0.0)
+        defer = self._heavy_defer.get(kind, 0)
+        gate = _HEAVY_IDLE_FULL if mode == "full" else _HEAVY_IDLE_OTHER
+        limit = _HEAVY_DEFER_FULL if mode == "full" else _HEAVY_DEFER_OTHER
+        fast = kind in _HEAVY_FAST_KINDS and 0 < last <= _HEAVY_FAST_MS
+        ok = bool((idle >= gate) or fast or (defer >= limit))
+        self._heavy_defer[kind] = 0 if ok else defer + 1
+        return ok
+
+    def _heavy_allowed(self, kind):
+        """查询本轮是否允许（只读 _heavy_allow；未初始化时放行，供直接调用 _layer1_memreduct 的路径）。"""
+        if os.environ.get("MEMWISE_DISABLE_HEAVY_GATE") == "1":
+            return True
+        if self._manual_run or self.game_mode:
+            return True
+        return bool(self._heavy_allow.get(kind, True))
+
     def _combine_eligible(self):
         """combine 只由 full 收尾调用（与六项开关解耦）；节流/退避，避免每周期全系统扫描。"""
         if os.environ.get("MEMWISE_DISABLE_COMBINE") == "1":
@@ -310,11 +371,11 @@ class PareCleaner:
                 freed_total += _f
             return _ok
         try:
-            if full and not game_mode and "ws_all" in use:
+            if full and not game_mode and "ws_all" in use and self._heavy_allowed("ws_all"):
                 if _capture(winapi.empty_all_working_sets):
                     # P07：一次内核调用只记一次“系统全清”，不再把进程数伪装成 N 次进程清理
                     self._stats_inc("ws_all_rounds")
-            if not game_mode and "filecache_ex" in use:
+            if not game_mode and "filecache_ex" in use and self._heavy_allowed("filecache"):
                 # filecache 统计口径（2026-08-14 审查）：有效实现 clear_system_file_cache_ex
                 # （查询→PeakSize 强制→恢复；MAXSIZE 版 SetSystemFileCacheSize 返回 0xC000009A
                 # 从未生效——原"filecache"分支调它导致开关有效但统计恒 0），统一在此带统计执行
@@ -331,7 +392,7 @@ class PareCleaner:
                     self._stats_inc("volume")
                 else:
                     self._op_fail_note("volume")
-            if not game_mode and "modified" in use and _capture(winapi.flush_modified_pages):
+            if not game_mode and "modified" in use and self._heavy_allowed("modified") and _capture(winapi.flush_modified_pages):
                 self._stats_inc("modified")
             if not game_mode and "standby" in use and _capture(winapi.empty_standby):
                 self._stats_inc("standby")
@@ -1312,7 +1373,9 @@ class PareCleaner:
             pre = winapi.get_performance_info()
             ok = bool(fn())
             post = winapi.get_performance_info()
-            self._round_time["filecache"] = self._round_time.get("filecache", 0.0) + (time.perf_counter() - _t0)
+            _el = time.perf_counter() - _t0
+            self._round_time["filecache"] = self._round_time.get("filecache", 0.0) + _el
+            self._heavy_last_ms["filecache"] = _el * 1000.0   # 择时门的"上次耗时"信号
             f = max(0, pre["system_cache"] - post["system_cache"]) if (pre and post) else 0
             rec = self._round_ops.setdefault("filecache", [0, 0, 0, 0, 0])
             rec[0] += 1
@@ -1328,7 +1391,11 @@ class PareCleaner:
         if not fn():
             return False, 0
         post = winapi.get_memory_status()
-        self._round_time[_nm] = self._round_time.get(_nm, 0.0) + (time.perf_counter() - _t0)
+        _el = time.perf_counter() - _t0
+        self._round_time[_nm] = self._round_time.get(_nm, 0.0) + _el
+        _hk = _HEAVY_TIME_KEY.get(_nm)
+        if _hk:
+            self._heavy_last_ms[_hk] = _el * 1000.0   # 择时门的"上次耗时"信号
         f = 0
         if pre and post:
             f = max(0, post["avail"] - pre["avail"])
@@ -1396,7 +1463,13 @@ class PareCleaner:
         self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
         # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式（**含 quick**）——
         # 旧写法取 _mode_guard 会把 quick 折成 normal（严格度归一是给判定用的，不该污染模式标签）
+        _prev_mode = getattr(self, "_last_mode", None)
         self._last_mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
+        if _prev_mode != self._last_mode:
+            self._heavy_defer.clear()   # 切模式后旧的"连续跳过"计数不再有意义
+        # 每轮**只判定一次**重操作放行（轮内 gap/harvest/L3 共用同一结论）
+        self._heavy_allow = {_k: self._decide_heavy(_k)
+                             for _k in ("ws_all", "modified", "filecache")}
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()

@@ -4711,6 +4711,68 @@ check("K7 _upd_log 读 log_to_file 并分流到崩溃通道",
 check("K8 内存条/托盘刷新链 5s（原 2s）", "self.root.after(5000, self._refresh_mem)" in _gsrc62
       and "after(2000, self._refresh_mem)" not in _gsrc62)
 
+print("\n[63] 2026-11-11 重系统操作择时门（ws_all / modified / filecache）")
+
+import core.winapi as _wa63
+import ctypes as _ct63
+_idle63 = _wa63.get_idle_seconds()
+check("K9 get_idle_seconds 返回非负有限值", isinstance(_idle63, float) and 0.0 <= _idle63 < 1e7, repr(_idle63))
+check("K9b LASTINPUTINFO 结构体 8 字节（x64）", _ct63.sizeof(_wa63.LASTINPUTINFO) == 8)
+
+def _mk63(mode="full", idle=0.0, manual=False):
+    _c = PareCleaner(PareJudger(PareLearner(), {"never": [], "efis_params": {}}))
+    _c._last_mode = mode
+    _c._manual_run = manual
+    _wa63.get_idle_seconds = lambda: idle
+    return _c
+_orig_idle63 = _wa63.get_idle_seconds
+try:
+    _c63 = _mk63("full", 10.0)
+    check("K10 停手 ≥3s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
+    _c63 = _mk63("full", 0.0)
+    check("K10b 活跃且无历史 ⇒ 延后", _c63._decide_heavy("ws_all") is False)
+    _c63 = _mk63("normal", 6.0)
+    check("K10c 非 full 停手 ≥5s ⇒ 放行", _c63._decide_heavy("modified") is True)
+
+    _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 500.0
+    check("K11 上次 ≤1s ⇒ 快路径放行", _c63._decide_heavy("modified") is True)
+    _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["ws_all"] = 500.0
+    check("K11b ws_all 不吃快路径（副作用型）", _c63._decide_heavy("ws_all") is False)
+
+    _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 3000.0
+    check("K12 full 连续跳 2 轮后强制（0 0 1）",
+          [int(_c63._decide_heavy("modified")) for _ in range(3)] == [0, 0, 1])
+    _c63 = _mk63("normal", 0.0); _c63._heavy_last_ms["modified"] = 3000.0
+    check("K12b 非 full 连续跳 6 轮后强制",
+          [int(_c63._decide_heavy("modified")) for _ in range(7)] == [0] * 6 + [1])
+
+    _c63 = _mk63("full", 0.0); _c63._heavy_allow = {"modified": False}
+    check("K13 查询只读不计数", _c63._heavy_allowed("modified") is False
+          and _c63._heavy_defer.get("modified", 0) == 0)
+    _c63 = _mk63("full", 0.0)
+    check("K13b 未判定时放行（直接调用兜底）", _c63._heavy_allowed("ws_all") is True)
+
+    _c63 = _mk63("full", 0.0, manual=True)
+    check("K14 手动优化豁免", _c63._decide_heavy("modified") is True)
+    _c63 = _mk63("full", 0.0); _c63.game_mode = True
+    check("K14b 游戏模式豁免", _c63._decide_heavy("modified") is True)
+    _c63 = _mk63("full", 0.0)
+    os.environ["MEMWISE_DISABLE_HEAVY_GATE"] = "1"
+    try:
+        check("K14c 环境变量可关闭（排障）", _c63._decide_heavy("modified") is True)
+    finally:
+        del os.environ["MEMWISE_DISABLE_HEAVY_GATE"]
+
+    _cl63 = _src47("core/cleaner.py")
+    check("K15 每轮判定一次并缓存", "self._heavy_allow = {_k: self._decide_heavy(_k)" in _cl63)
+    check("K15b 四处调用点全部接门",
+          'self._heavy_allowed("ws_all")' in _cl63
+          and 'and self._heavy_allowed("modified") and _capture(winapi.flush_modified_pages)' in _cl63
+          and 'self._heavy_allowed("filecache")' in _cl63
+          and 'if not self._heavy_allowed("modified"):' in _cl63)
+finally:
+    _wa63.get_idle_seconds = _orig_idle63
+
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))
 

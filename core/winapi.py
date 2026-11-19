@@ -1773,3 +1773,31 @@ def clear_ws_cap(pid, orig_max):
         return False, "系统拒绝（错误码 %d）" % (ctypes.get_last_error() & 0xFFFFFFFF)
     finally:
         CloseHandle(h)
+
+
+# ── 用户空闲时长（2026-11-11：重系统操作择时用）──
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", w.UINT), ("dwTime", w.DWORD)]
+
+
+k32.GetTickCount.restype = w.DWORD   # 默认 c_int 会返回负数，32 位无符号才是真值
+
+
+def get_idle_seconds():
+    """距上次键鼠输入（含鼠标移动）的秒数。
+
+    用途：重系统操作（WS 全清 / 脏页写回 / 文件缓存清空）择时——用户正在操作时不打断，
+    避免"清掉 dwm/explorer 工作集后拖动窗口一顿一顿"这类可感知卡顿。
+
+    取不到输入信息时返回 0.0（视为**活跃**，宁可延后也不误伤）；
+    GetTickCount 是 32 位毫秒计数（49.7 天回绕），差值按 & 0xFFFFFFFF 计算。
+    """
+    try:
+        _lii = LASTINPUTINFO()
+        _lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if not GetLastInputInfo(ctypes.byref(_lii)):
+            return 0.0
+        _now = k32.GetTickCount() & 0xFFFFFFFF
+        return ((_now - _lii.dwTime) & 0xFFFFFFFF) / 1000.0
+    except Exception:
+        return 0.0
