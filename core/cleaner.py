@@ -303,7 +303,7 @@ class PareCleaner:
             return True
         if self._manual_run or self.game_mode:
             return True
-        return bool(self._heavy_allow.get(kind, True))
+        return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
 
     def _combine_eligible(self):
         """combine 只由 full 收尾调用（与六项开关解耦）；节流/退避，避免每周期全系统扫描。"""
@@ -352,7 +352,8 @@ class PareCleaner:
             self._stats_inc("final_sweep")
         if deadline is not None and time.time() > deadline - 1.0:
             return
-        if (ops_filter is None or "combine" in ops_filter) and self._combine_eligible():
+        if ((ops_filter is None or "combine" in ops_filter)
+                and self._combine_eligible() and self._heavy_allowed("combine")):
             ok, pages, ms, _status = winapi.combine_physical_memory()
             self._stats_inc("combine_calls")
             if pages > 0:
@@ -409,6 +410,9 @@ class PareCleaner:
                 self._stats_inc("standby")
             if "standby_low" in use and _capture(winapi.purge_low_priority_standby):
                 self._stats_inc("standby")
+            # registry **不**纳入择时门（2026-11-19 审核结论）：它是零磁盘的内核态操作，
+            # 偶发 0.83s 只阻塞本程序线程、不产生 IO 也不清用户工作集；且 quick 模式仅靠它与
+            # standby_low 兑现"零感知"，门控会让 quick 在用户活跃时几乎什么都不做。
             if "registry" in use:
                 if _capture(winapi.clear_registry_cache):
                     self._stats_inc("registry")
@@ -1483,8 +1487,10 @@ class PareCleaner:
         # 每轮**只判定一次**重操作放行（轮内 gap/harvest/L3 共用同一结论）
         # standby（全量待机清空）也纳入择时：它本身释放常为 0，但清空待机页会让后续程序重读盘，
         # 属"体验副作用型"——deep/normal 的"零副作用/零过度整理"要求它同样择时。
+        # combine（页合并）同样纳入：它是全系统物理页扫描，实测 ~0.47s，full 下可能被感知。
+        # 它自带 15 分钟节流，被门跳过时不更新 _combine_last ⇒ 下一次机会自然重试。
         self._heavy_allow = {_k: self._decide_heavy(_k)
-                             for _k in ("ws_all", "modified", "filecache", "standby")}
+                             for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()
@@ -1548,7 +1554,9 @@ class PareCleaner:
         if not allow_layer3:
             use = use & {"registry"}
         if use:
-            # game_mode 透传：游戏中 quick 只保留 registry（standby_low 同样跳过）
+            # game_mode 透传：游戏中 quick 只保留 registry。
+            # 注（2026-11-19 审核订正）：早前注释称"standby_low 同样跳过"，但 2026-11-09 的定论是
+            # 低优先待机属零磁盘操作、游戏期保留 —— 实际行为以 _layer1_memreduct 为准（不判 game_mode）。
             self._layer1_memreduct(full=False, ops=use, game_mode=self.game_mode,
                                    clean_self=allow_layer3)   # gap-fill 不自清，harvest 才清
 
