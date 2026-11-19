@@ -45,7 +45,7 @@
 
 - **回归**：`python -B scripts\test_regression.py`；日常改动用回归验证，非必要不构建 exe。
 - **构建**：回归全绿后 `python -B -m PyInstaller MemWise.spec --distpath dist --workpath build --noconfirm`（版本/图标加 `--clean`）；构建永不放进含管道的条件链。完整纪律（taskkill、cmd /c 引号坑、`datas=[]`、残留清理、禁删日志）见 `project-overview.md`。
-- **发布**：流程 / RELEASE_ID / 版本 16 处同步 / 旧资产核验见 `release-and-pr-workflow.md`。
+- **发布**：流程 / RELEASE_ID / 版本同步面（`APP_VERSION` 为唯一源，运行时由 `display_version()` 跟随，字面量仅 4 处）/ 旧资产核验见 `release-and-pr-workflow.md`。
 - **文案**：CHANGELOG（四式、25 字、升级注意事项）、README 逐字核查、8 面适配见 `doc-style-guide.md`；tooltip 与 i18n 见 `tooltip-and-i18n.md`。
 - **GitHub**：无明确授权不 push；操作前确认 GitHub / Gitee；`release_*.py` 一律用文件编辑；commit message 隐私红线见 `release-and-pr-workflow.md`。
 - **项目**：Windows 内存看护（Python 3.14 + 纯 ctypes，零第三方依赖，单 exe）；架构与模块见 `project-overview.md`。
