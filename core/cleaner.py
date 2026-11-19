@@ -57,12 +57,15 @@ _COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 #   modified = 脏页写回磁盘 —— 磁盘 IO 饱和，与磁盘忙闲强相关 ⇒ 吃快路径。
 #   filecache= 文件缓存钳制（固定 ~0.85s 驻留轮询）⇒ 同 modified。
 # "上次快"是用实测耗时反推磁盘忙闲（零新增 API）：上次 ≤1s 说明这台机器此刻写得动。
-_HEAVY_IDLE_FULL = 3.0      # full：用户停手 3 秒即可做（极限模式不长时间等待）
+_HEAVY_IDLE_FULL = 1.0      # full：停手 1s 即可做（2026-11-19 由 3s 放宽到 1.5s，再按用户要求放宽到 1s）
 _HEAVY_IDLE_OTHER = 5.0     # 非 full：停手 5 秒
 _HEAVY_FAST_MS = 1000.0     # 上次同类操作 ≤1s ⇒ 视为磁盘空闲，直接放行
-_HEAVY_DEFER_FULL = 2       # full：连续跳 2 轮强制（≈2 分钟上限，防饿死）
+_HEAVY_DEFER_FULL = 1       # full：最多跳 1 轮（≈1 分钟上限；放宽停手门后强制很少触发）
 _HEAVY_DEFER_OTHER = 6      # 非 full：连续跳 6 轮强制（≈6 分钟上限）
 _HEAVY_FAST_KINDS = ("modified", "filecache")   # 允许"上次快"快路径的操作
+# 脏页门（C）：低于此值不值得为它付一次磁盘 IO —— OS 后台写回会自行处理少量脏页。
+# 实测：256MB 脏页写回约 0.3–0.5s；<200MB 时 flush 的收益低于代价（2026-11-19）。
+_MODIFIED_MIN_DIRTY = 200 << 20
 _HEAVY_TIME_KEY = {"empty_all_working_sets": "ws_all", "flush_modified_pages": "modified"}
 
 
@@ -275,6 +278,13 @@ class PareCleaner:
             return True
         if self._manual_run or self.game_mode:
             return True
+        # C：脏页太少时 modified 不值得做（OS 后台写回会自行处理少量脏页）——
+        # 跳过且**不计入连续跳过**，否则会累加到"强制做一次无意义的 flush"。
+        if kind == "modified":
+            _dirty = winapi.get_dirty_bytes()
+            if _dirty is not None and _dirty < _MODIFIED_MIN_DIRTY:
+                self._heavy_defer[kind] = 0
+                return False
         mode = getattr(self, "_last_mode", None) or "normal"
         idle = winapi.get_idle_seconds()
         last = self._heavy_last_ms.get(kind, 0.0)

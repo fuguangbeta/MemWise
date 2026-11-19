@@ -3758,6 +3758,10 @@ for _n55 in ("empty_all_working_sets", "empty_ws", "empty_standby", "flush_modif
              "purge_low_priority_standby"):
     _old55[_n55] = getattr(_C55.winapi, _n55)
     setattr(_C55.winapi, _n55, _rec55(_n55))
+_old_idle55 = _C55.winapi.get_idle_seconds
+_old_dirty55 = _C55.winapi.get_dirty_bytes
+_C55.winapi.get_idle_seconds = lambda: 999.0        # 视为空闲，让择时门放行（本测试只管 gap 操作集）
+_C55.winapi.get_dirty_bytes = lambda: (1 << 30)     # 脏页充足，避免 modified 被脏页门拦掉
 try:
     _l55c = PareLearner(); _j55c = PareJudger(_l55c, {"never": [], "clean_passes": 4, "efis_params": {}})
     _c55c = PareCleaner(_j55c)
@@ -3770,6 +3774,8 @@ try:
     _high55 = set(_c55calls)
     _c55c.shutdown()
 finally:
+    _C55.winapi.get_idle_seconds = _old_idle55
+    _C55.winapi.get_dirty_bytes = _old_dirty55
     for _n55, _f55 in _old55.items():
         setattr(_C55.winapi, _n55, _f55)
 check("P08 全部取消 ⇒ 零调用（含自身）", _e55 == [])
@@ -4719,13 +4725,15 @@ _idle63 = _wa63.get_idle_seconds()
 check("K9 get_idle_seconds 返回非负有限值", isinstance(_idle63, float) and 0.0 <= _idle63 < 1e7, repr(_idle63))
 check("K9b LASTINPUTINFO 结构体 8 字节（x64）", _ct63.sizeof(_wa63.LASTINPUTINFO) == 8)
 
-def _mk63(mode="full", idle=0.0, manual=False):
+def _mk63(mode="full", idle=0.0, manual=False, dirty=(1 << 30)):
     _c = PareCleaner(PareJudger(PareLearner(), {"never": [], "efis_params": {}}))
     _c._last_mode = mode
     _c._manual_run = manual
     _wa63.get_idle_seconds = lambda: idle
+    _wa63.get_dirty_bytes = lambda: dirty     # 默认 1GB 脏页：让 modified 走正常门
     return _c
 _orig_idle63 = _wa63.get_idle_seconds
+_orig_dirty63 = _wa63.get_dirty_bytes
 try:
     _c63 = _mk63("full", 10.0)
     check("K10 停手 ≥3s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
@@ -4740,8 +4748,8 @@ try:
     check("K11b ws_all 不吃快路径（副作用型）", _c63._decide_heavy("ws_all") is False)
 
     _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 3000.0
-    check("K12 full 连续跳 2 轮后强制（0 0 1）",
-          [int(_c63._decide_heavy("modified")) for _ in range(3)] == [0, 0, 1])
+    check("K12 full 最多跳 1 轮后强制（0 1 0）",
+          [int(_c63._decide_heavy("modified")) for _ in range(3)] == [0, 1, 0])
     _c63 = _mk63("normal", 0.0); _c63._heavy_last_ms["modified"] = 3000.0
     check("K12b 非 full 连续跳 6 轮后强制",
           [int(_c63._decide_heavy("modified")) for _ in range(7)] == [0] * 6 + [1])
@@ -4763,6 +4771,14 @@ try:
     finally:
         del os.environ["MEMWISE_DISABLE_HEAVY_GATE"]
 
+    _c63 = _mk63("full", 10.0, dirty=(50 << 20))
+    check("K16 脏页不足 200MB ⇒ modified 跳过且不清 defer",
+          _c63._decide_heavy("modified") is False and _c63._heavy_defer.get("modified", 0) == 0)
+    _c63 = _mk63("full", 10.0, dirty=(1 << 30))
+    check("K16b 脏页充足 ⇒ 走正常门（空闲即放行）", _c63._decide_heavy("modified") is True)
+    _c63 = _mk63("full", 10.0, dirty=None)
+    check("K16c 脏页读数不可用 ⇒ 退化为纯门（不误杀）", _c63._decide_heavy("modified") is True)
+
     _cl63 = _src47("core/cleaner.py")
     check("K15 每轮判定一次并缓存", "self._heavy_allow = {_k: self._decide_heavy(_k)" in _cl63)
     check("K15b 四处调用点全部接门",
@@ -4772,6 +4788,7 @@ try:
           and 'if not self._heavy_allowed("modified"):' in _cl63)
 finally:
     _wa63.get_idle_seconds = _orig_idle63
+    _wa63.get_dirty_bytes = _orig_dirty63
 
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))

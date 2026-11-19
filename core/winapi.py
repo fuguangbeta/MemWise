@@ -187,6 +187,32 @@ def get_performance_info():
                 "page_size": ps}
     return None
 
+# ── 系统脏页量（2026-11-19：modified 择时门的"值不值得做"判据）──
+# PERFORMANCE_INFORMATION 没有脏页字段，只能走 NtQuerySystemInformation(2)：
+# SYSTEM_PERFORMANCE_INFORMATION 的 CcTotalDirtyPages 位于 offset 312（x64/x86 同为 4 字节 ULONG 序列）。
+# 实测校验（2026-11-19）：基线 0.1MB，写 256MB 不 fsync 后读数 256.2MB。
+_SYS_PERF_SIZE = 320
+_OFF_DIRTY_PAGES = 312
+
+
+def get_dirty_bytes():
+    """系统脏页（待写回的 modified page）总量字节数；读不到返回 None。
+    调用方据此判断"这次 flush 值不值得做"（脏页太少时 flush 只是白付磁盘 IO）。"""
+    try:
+        _buf = ctypes.create_string_buffer(_SYS_PERF_SIZE)
+        _ret = w.ULONG()
+        if NtQuerySystemInformation(2, _buf, _SYS_PERF_SIZE, ctypes.byref(_ret)) != 0:
+            return None
+        _pages = ctypes.c_ulong.from_buffer(_buf, _OFF_DIRTY_PAGES).value
+        _ps = 4096
+        _pi = get_performance_info()
+        if _pi and _pi.get("page_size"):
+            _ps = _pi["page_size"]
+        return _pages * _ps
+    except Exception:
+        return None
+
+
 def get_process_memory(pid):
     """获取进程内存信息。先用标准权限查询，失败时回退到受限查询。"""
     h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
