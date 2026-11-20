@@ -2106,8 +2106,10 @@ check("默认图标：真实 Text 插入不报错（align 选项有效）", _ic_
 check("默认图标：插入后行数正确（无图标行仍占一行，末尾换行使末行号为 3）", _ic_lines >= 2, str(_ic_lines))
 check("统一日志开启失败留痕（开关即闸门，失败后须有线索）",
       "统一日志开启失败" in _eng32_src and "_event_log(" in _eng32_src)
+_gui34_main = _gui34.split("class MemWiseGUI", 1)[1] if "class MemWiseGUI" in _gui34 else _gui34
 check("推进宽预热走 self.root.after（包装类无 after —— 2026-09-11 启动即崩教训）",
-      "self.after(" not in _gui34 and "self.root.after(150, lambda: _log_advances" in _gui34)
+      "self.after(" not in _gui34_main
+      and "self.root.after(150, lambda: _log_advances" in _gui34)
 
 print("\n[37] ERIS 四模式隔离（平滑窗按模式分桶 + 切换重置基线；2026-09-11 用户要求）")
 import core.engine as _eng_mod37

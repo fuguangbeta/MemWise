@@ -843,29 +843,68 @@ class _SafeToplevel(tk.Toplevel):
         return super().geometry()
 
     def deiconify(self):
+        """子窗口呈现（2026-11-20 用户定稿）：与主界面同规则——先在隐藏态完成内容与布局，
+        再以 alpha 0 映射到最终尺寸、绘制一次，最后 220ms 淡入；不再做 1×1 放大生长。
+        这样彻底消除设置面板等弹窗的"黑框/先空后填"瞬闪。"""
         if self._mw_revealed:
             return super().deiconify()
         self._mw_revealed = True
-        try:
-            m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._mw_target or "")
-            if ANIM_ENABLED and m:
-                tw, th = int(m.group(1)), int(m.group(2))
-                tx, ty = int(m.group(3)), int(m.group(4))
-                # 子窗口保持之前的方式：1x1 居中打开，再一次到目标尺寸
-                super().geometry("1x1+%d+%d" % (tx + (tw - 1) // 2, ty + (th - 1) // 2))
-                super().deiconify()
-                self.update_idletasks()
-                try:
-                    super(_SafeToplevel, self).geometry(self._mw_target)
+        target = self._mw_target
+        if ANIM_ENABLED:
+            try:
+                if target:
+                    super().geometry(target)
+                else:
+                    # 未显式定尺寸：按内容请求尺寸原地居中
                     self.update_idletasks()
+                    w = max(1, self.winfo_reqwidth())
+                    h = max(1, self.winfo_reqheight())
+                    try:
+                        px, py = self.master.winfo_rootx(), self.master.winfo_rooty()
+                        pw, ph = self.master.winfo_width(), self.master.winfo_height()
+                    except Exception:
+                        px = py = 0
+                        pw, ph = self.winfo_screenwidth(), self.winfo_screenheight()
+                    cx = max(0, min(px + (pw - w) // 2, self.winfo_screenwidth() - w))
+                    cy = max(0, min(py + (ph - h) // 2, self.winfo_screenheight() - h))
+                    target = "%dx%d+%d+%d" % (w, h, cx, cy)
+                    self._mw_target = target
+                    super().geometry(target)
+                self.update_idletasks()   # 隐藏态完成布局（内容已由调用方构建）
+                try:
+                    self.attributes("-alpha", 0.0)
                 except Exception:
                     pass
+                super().deiconify()
+                self.update_idletasks()   # 首个可见帧前先画一次（alpha 0）
+                self.after(16, self._mw_fade_in)
                 return
-            super().deiconify()
-            self.update_idletasks()
-            if self._mw_target:
-                super().geometry(self._mw_target)
-            self.update_idletasks()
+            except Exception:
+                pass
+        # 回退：无动画时直接显示
+        super().deiconify()
+        self.update_idletasks()
+        if target:
+            try:
+                super(_SafeToplevel, self).geometry(target)
+            except Exception:
+                pass
+        self.update_idletasks()
+
+    def _mw_fade_in(self):
+        """子窗口 220ms 淡入（与主界面同一曲线/时长）。"""
+        try:
+            t0 = time.perf_counter()
+
+            def step():
+                p = min(1.0, (time.perf_counter() - t0) / 0.22)
+                try:
+                    self.attributes("-alpha", 0.02 + 0.98 * _motion.EASE_OUT(p))
+                except Exception:
+                    return
+                if p < 1.0:
+                    self.after(16, step)
+            step()
         except Exception:
             pass
 
