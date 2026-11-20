@@ -830,7 +830,6 @@ class _SafeToplevel(tk.Toplevel):
             super().geometry("1x1+4000+4000")
             # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框
             self.attributes("-alpha", 0.0)
-            _dwm_no_transitions(self)
         except Exception:
             pass
 
@@ -915,19 +914,6 @@ class _SafeToplevel(tk.Toplevel):
             step()
         except Exception:
             pass
-
-
-def _dwm_no_transitions(win):
-    """禁止该窗口的 DWM 显示/隐藏过渡（DWMWA_TRANSITIONS_FORCEDISABLED=3）。
-    只影响合成过渡，不碰 layered/alpha/布局。"""
-    try:
-        import ctypes as _ct
-        hwnd = int(win.winfo_id())
-        top = _ct.windll.user32.GetAncestor(hwnd, 2) or hwnd
-        val = _ct.c_int(1)
-        _ct.windll.dwmapi.DwmSetWindowAttribute(top, 3, _ct.byref(val), _ct.sizeof(val))
-    except Exception:
-        pass
 
 
 def _prep_window_anim(win, content=False):
@@ -2160,9 +2146,14 @@ class MemWiseGUI:
     # ---- 设置对话框 ----
 
     def _apply_icon(self, win):
-        """弹窗窗口图标：延迟到层级完整后设置到顶层 wrapper（winfo_id 是 client 窗口）。
-        类图标由主窗口设置一次，所有弹窗自动继承。"""
+        """弹窗窗口图标：延迟到窗口真正映射后再设置（winfo_id 会创建 native wrapper）。
+        旧实现在构建前调用 winfo_id，wrapper 提前存在，是左上角白框的可疑来源。"""
         try:
+            if not win.winfo_exists():
+                return
+            if not win.winfo_ismapped():
+                self.root.after(160, lambda: self._apply_icon(win))
+                return
             wid = int(win.winfo_id())
             if not hasattr(self, '_dlg_icon_sml'):
                 self._dlg_icon_sml = self._baked_hicon("win16") or winapi.create_memwise_icon(16)
