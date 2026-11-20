@@ -89,10 +89,17 @@ class PolicyVoter:
         # list() 快照迭代（2026-09-06 审查 F2）：can_trim 在守护线程调用，手动优化线程可
         # 并发增键——有投票段 try 兜底但会误拒该进程，快照根除
         if p and k_freed > 0:
-            peers = [q.effective_freed for q in list(learner.profiles.values())
-                     if q is not p and q.effective_freed > 0]
-            if peers:
-                adv_mb = (k_freed - sum(peers) / len(peers)) / (1 << 20)
+            # 全池统计走 learner 缓存（2026-11-20 审查 14.1）：逐候选重算 O(P) → O(1)
+            try:
+                _sum, _cnt = learner.peer_freed_stats
+            except Exception:
+                _sum, _cnt = 0.0, 0
+            _own = getattr(p, "effective_freed", 0.0) or 0.0
+            if _own > 0:
+                _sum -= _own
+                _cnt -= 1
+            if _cnt > 0:
+                adv_mb = (k_freed - _sum / _cnt) / (1 << 20)
                 if adv_mb > TREE5_ADV_HIGH_MB:
                     scores[4] += 2
                     reasons.append(f"预测优势{adv_mb:.0f}MB")

@@ -225,6 +225,8 @@ def save(cfg):
             tmp = f"{CONFIG_PATH}.{os.getpid()}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+                f.flush()
+                os.fsync(f.fileno())   # 原子替换 + 落盘（2026-11-20 审查 11.4）
             os.replace(tmp, CONFIG_PATH)
         except Exception as e:
             _warn_once("save_fail", f"配置保存失败（本次设置不会落盘）：{e!r}")

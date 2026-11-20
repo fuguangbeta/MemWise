@@ -734,6 +734,7 @@ _EN = {
     "3. 降低可更及时响应，提高阈值可减少清理频率": "3. Lower responds sooner; higher reduces cleanup frequency",
     "「守护模式每轮周期内的轻量阶段频率」": "Gentle-phase frequency within each Guard cycle",
     "1. 可设置为 8~20 秒，默认 12 秒": "1. 8–20 seconds, 12 by default",
+    "1. 可设置为 8~20 秒，默认 12 秒（游戏模式 ×1.5，最长 30 秒）": "1. 8–20 seconds, 12 by default (×1.5 in Game Mode, up to 30 seconds)",
     "2. 用于控制周期内清理操作的密集程度": "2. Controls how densely cleanup runs within a cycle",
     "3. 间隔越短清理次数越多，但性能要求更大": "3. Shorter intervals mean more cleanups per cycle, at a higher performance cost",
     "「完整收割周期」": "Full harvest cycle",

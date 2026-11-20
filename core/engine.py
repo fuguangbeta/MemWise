@@ -699,6 +699,21 @@ def _close_crash_sink():
         _CRASH_FD = None
 
 
+_SWALLOW_COUNT = {}
+
+
+def _swallow(where, exc=None):
+    """静默失败的最小留痕（2026-11-20 审查 11.2）：首次与每 100 次写一条诊断，带位置。
+    控制流不变（仍吞异常），只补可诊断性并限流防刷屏。"""
+    try:
+        n = _SWALLOW_COUNT.get(where, 0) + 1
+        _SWALLOW_COUNT[where] = n
+        if n == 1 or n % 100 == 0:
+            _diag_log("吞掉异常 @%s（第 %d 次）：%r" % (where, n, exc))
+    except Exception:
+        pass
+
+
 def _diag_log(msg):
     """诊断日志：写入统一运行日志"""
     _log_write("诊断", msg)
@@ -727,6 +742,8 @@ def state_file():
 CFG = _load_cfg()
 set_language(CFG.get("language", "zh_CN"))  # 界面语言加载（设置面板可即时切换）
 _CFG_SNAPSHOT = dict(CFG)  # 配置变更日志基线（_save_cfg 输出 旧→新 diff）
+# 谨慎：这些键的"值"可能含凭据/隐私，日志只写"已更新"不写旧→新（2026-11-20 审查 10.1）
+_SENSITIVE_CFG_KEYS = frozenset({"update_proxy"})
 
 def _ops_with_combine(ops):
     """把独立的 combine 授权并入 operations（combine 不是系统级六项之一）。
@@ -737,6 +754,9 @@ def _ops_with_combine(ops):
     if CFG.get("combine_enabled", True) and "combine" not in out:
         out.append("combine")
     return out
+
+RUNTIME_CFG_KEYS = ("never", "game_processes", "clean_passes", "emergency_threshold")
+
 
 def _push_runtime_cfg(judger, cfg=None):
     """把 CFG 的运行期副本同步进 judger.cfg（never / game_processes / clean_passes / emergency_threshold）。
@@ -749,10 +769,9 @@ def _push_runtime_cfg(judger, cfg=None):
     """
     cfg = CFG if cfg is None else cfg
     try:
-        judger.cfg["never"] = list(cfg.get("never") or [])
-        judger.cfg["game_processes"] = list(cfg.get("game_processes") or [])
-        judger.cfg["clean_passes"] = cfg.get("clean_passes", 4)
-        judger.cfg["emergency_threshold"] = cfg.get("emergency_threshold", 80)
+        for _k in RUNTIME_CFG_KEYS:
+            _v = cfg.get(_k)
+            judger.cfg[_k] = list(_v) if isinstance(_v, list) else _v
     except Exception:
         pass
 
@@ -770,7 +789,7 @@ def _save_cfg():
                 if isinstance(_nv, (dict, list)) or isinstance(_ov, (dict, list)):
                     changed.append(f"{k} 已更新")     # 大结构不倾倒（2026-09-11：曾整段打印 efis_params）
                 else:
-                    changed.append(f"{k} {_ov}→{_nv}")
+                    changed.append(f"{k}=已更新" if k in _SENSITIVE_CFG_KEYS else f"{k} {_ov}→{_nv}")
         for k in _CFG_SNAPSHOT:
             if k not in CFG:
                 changed.append(f"{k}=移除")
@@ -880,7 +899,6 @@ class MemWiseEngine:
         self._eff_factors = deque(maxlen=60)       # 效率主导因子
         self._chart_lock = threading.Lock()
         self._chart_cycle_meta = deque(maxlen=60)  # 每轮收割是否未完成（与柱一一对应，供悬浮提示）
-        self._chart_bar_seq = 0                    # 全局轮次序列号（守护递增）
 
         # ERIS 状态（分位数窗/平滑/趋势/防振荡）
         self._eris_lock = threading.Lock()
@@ -967,11 +985,13 @@ class MemWiseEngine:
         self._chart_last_freed = float(s['freed_mb'])
         self._prev_trim_count = s['ws_trim']
         self._prev_fail_count = s.get('failed_feedback', 0)
+        self._prev_trim_rounds = s.get('trim_rounds', 0)
+        self._prev_sys_detail = None      # 新守护=新基线（2026-11-20 审查 2.4）
+        self._last_logged_mode = None
         self._chart_data.clear()
         self._eff_data.clear()
         self._eff_factors.clear()
         self._chart_cycle_meta.clear()
-        self._chart_bar_seq = 0
         self._load_eris_state()  # 恢复 ERIS 状态
         # 系统操作计数基线：与 trim/fail 两行同口径（2026-10-15 订正）——原先置 0，使启动守护后的
         # 首个周期把「进程启动以来（含此前手动优化）」的累计系统操作全算进本轮，播报虚高。
@@ -998,7 +1018,7 @@ class MemWiseEngine:
         self._refill_total = 0
         self._last_snaps = []  # 新守护周期从空开始（排行窗口按 daemon_running 切换数据源）
         self._running = True
-        self._thread = threading.Thread(target=self._dae_worker, daemon=True)
+        self._thread = threading.Thread(target=self._dae_supervised, daemon=True)
         self._thread.start()
         return True
 
@@ -1009,6 +1029,50 @@ class MemWiseEngine:
     def join_daemon(self, timeout=2.0):
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
+
+    def _dae_supervised(self):
+        """守护线程外层监督（2026-11-20 审查 11.1）：单次异常自动重启（最多 2 次），
+        仍失败才真正停止。与看门狗分工：看门狗管进程存活，本层管守护线程存活。"""
+        attempts = 0
+        while True:
+            self._dae_abnormal = False
+            self._dae_error = None
+            try:
+                self._dae_worker()
+            except Exception as e:
+                self._dae_abnormal = True
+                self._dae_error = "%r" % (e,)
+            if not (self._running and getattr(self, "_dae_abnormal", False) and attempts < 2):
+                if self._running and getattr(self, "_dae_abnormal", False):
+                    self._running = False   # 重试耗尽：必须明确停止（否则 UI 误以为仍在守护）
+                break
+            attempts += 1
+            try:
+                _event_log("守护线程异常（第 %d/2 次），5 秒后自动重启：%s"
+                           % (attempts, (getattr(self, "_dae_error", "") or "").splitlines()[0][:160]))
+            except Exception:
+                pass
+            try:
+                time.sleep(5)
+            except Exception:
+                pass
+            if not self._running:
+                break
+            # _dae_worker 的 finally 已释放互斥；重启前重新持有（被 CLI 占用则放弃）
+            try:
+                _m = ctypes.windll.kernel32.CreateMutexW(None, False, DAEMON_MUTEX_NAME)
+                if ctypes.windll.kernel32.GetLastError() in (0xB7, 5):
+                    self._daemon_busy_cli = True
+                    self._running = False
+                    break
+                self._daemon_mutex = _m
+            except Exception:
+                self._running = False
+                break
+        try:
+            self.events.put(('dae_stopped', None))
+        except Exception:
+            pass
 
     # ── 数据快照（展示层读取）──
     def chart_snapshot(self):
@@ -1334,7 +1398,7 @@ class MemWiseEngine:
                     self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                     agg_emerg = self.judger.update_pressure(m_emerg["pct"])
                     self.cleaner.optimize(snaps, self.learner, "full", operations=ops, aggressiveness=agg_emerg,
-                                           deadline=time.time() + 25)
+                                           deadline=time.time() + 25, force_gate=True)
                     if _saved_efis is not None:
                         self.judger.cfg["efis_params"] = _saved_efis
                     self.cleaner._heavy_allow = _gate_bak   # 紧急轮不污染本周期余下阶段的判定
@@ -1432,6 +1496,10 @@ class MemWiseEngine:
                                                 continue
                                             # 带回记录时的创建时间做身份复检（PID 复用防护，2026-09-11 审查 F12）
                                             _ft_snap = next((s for s in snaps if s.pid == ft_pid), None)
+                                            if _ft_snap is None:
+                                                # 快照里没有它（已退出/PID 复用）：无法确认身份，不重清
+                                                self.cleaner._fast_track.pop(ft_pid, None)
+                                                continue
                                             if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid),
                                                                             snap=_ft_snap):
                                                 self.cleaner._fast_track.pop(ft_pid, None)
@@ -1458,7 +1526,7 @@ class MemWiseEngine:
                                 self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
                                 self.cleaner.optimize(snaps, self.learner, "full",
                                                       operations=ops, aggressiveness=agg,
-                                                      deadline=time.time() + 25)
+                                                      deadline=time.time() + 25, force_gate=True)
                                 if _saved_efis is not None:
                                     self.judger.cfg["efis_params"] = _saved_efis
                                 self.cleaner._heavy_allow = _gate_bak2   # 恢复周期判定，紧急轮不影响后续阶段
@@ -1607,7 +1675,8 @@ class MemWiseEngine:
                 m_fresh = winapi.get_memory_status()
                 if m_fresh:
                     m = m_fresh
-                # 净留存率维分子（v9 dim0 重定义 2026-09-27）：本轮净下降 = 周期末可用 − 周期初可用
+                # 净留存率维分子（v9 dim0）：本轮净留存 = 周期末可用 − 周期初可用（可用增加即留存；
+                # 文档旧称"净下降"是历史用词，勿据此取反）
                 # （总释放由 _cycle_freed_mb 承载；两侧同为全局口径，比值 = 释放量里净留存的比例）
                 self._cycle_net_drop_mb = max(0.0, float(m["avail"] - self._cycle_avail_start)) / (1 << 20)
                 l2_all.extend(result.get("layer2", []))
@@ -1655,11 +1724,9 @@ class MemWiseEngine:
                             if _log_new != _log_old:
                                 (_log_open if _log_new else _log_close)()
                             # 同步 judger 运行配置（排除列表/游戏名单/清理深度/EFIS 参数守护期间即时生效）
-                            self.judger.cfg["never"] = CFG.get("never", [])
-                            self.judger.cfg["game_processes"] = CFG.get("game_processes", [])
-                            self.judger.cfg["clean_passes"] = CFG.get("clean_passes", 4)
-                            # 紧急阈值同步（2026-09-11 S5）：高压让路判据与策略树阈值同口径
-                            self.judger.cfg["emergency_threshold"] = CFG.get("emergency_threshold", 80)
+                            for _k in RUNTIME_CFG_KEYS:   # 单一键表（2026-11-20 审查 7.2）
+                                _v = CFG.get(_k)
+                                self.judger.cfg[_k] = list(_v) if isinstance(_v, list) else _v
                             # EFIS 参数以状态文件为权威（审查 P3）：config.yaml 的 efis_params 是
                             # 上次调参的模式快照,热加载回灌会覆盖当前模式组——改为直接从 EFIS 取
                             self.judger.cfg["efis_params"] = self.efis.get_params()
@@ -1890,6 +1957,10 @@ class MemWiseEngine:
                         _det = ({k: max(0, int(s.get(k, 0)) - int(_prev.get(k, 0))) for k in _keys}
                                 if _prev else {k: int(s.get(k, 0)) for k in _keys})
                         self._prev_sys_detail = {k: int(s.get(k, 0)) for k in _keys}
+                        _tr_now = int(s.get("trim_rounds", 0) or 0)
+                        _tr_delta = max(0, _tr_now - int(getattr(self, "_prev_trim_rounds", 0) or 0))
+                        self._prev_trim_rounds = _tr_now
+                        _avg_passes = (_tr_delta / float(self._cycle_trimmed)) if self._cycle_trimmed else 0.0
                         _ops = "待机 %s · 修改页 %s · 文件缓存 %s · 卷 %s · 注册表 %s" % (
                             _det["standby"], _det["modified"], _det["filecache"],
                             _det["volume"], _det["registry"])
@@ -1900,8 +1971,8 @@ class MemWiseEngine:
                         _rs = getattr(self.cleaner, "_cycle_reasons", {}) or {}
                         _rs_s = ", ".join("%s %d" % (k, v) for k, v in
                                           sorted(_rs.items(), key=lambda kv: -kv[1])[:8]) or "无"
-                        _log_write("清理", "明细: %s · 释放前三 %s · 拦截[%s] · 内存 %d%%(可用 %.1fGB)"
-                                   % (_ops, _top_s, _rs_s, (m or {}).get("pct", 0),
+                        _log_write("清理", "明细: %s · 平均趟数 %.1f · 释放前三 %s · 拦截[%s] · 内存 %d%%(可用 %.1fGB)"
+                                   % (_ops, _avg_passes, _top_s, _rs_s, (m or {}).get("pct", 0),
                                       ((m or {}).get("avail", 0) or 0) / (1 << 30)))
                     except Exception:
                         pass
@@ -1938,8 +2009,8 @@ class MemWiseEngine:
                     return  # 停止守护后立即退出，不提交多余回调
         except Exception as e:
             import traceback
+            self._dae_abnormal = True
             self._dae_error = f"{e}\n{traceback.format_exc()}"
-            self._running = False
         finally:
             try:
                 self.cleaner.end_cycle()
@@ -1957,7 +2028,6 @@ class MemWiseEngine:
                 except Exception:
                     pass
                 self._daemon_mutex = None
-            self.events.put(('dae_stopped', None))
 
     # ── 工作集硬上限（高级选项，设计 v2.1-v2.5）──
 
@@ -2175,7 +2245,6 @@ class MemWiseEngine:
             pass
 
     def _push_round(self, chart_accum, harvest_partial, game_seen=None):
-        self._chart_bar_seq += 1
         # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
         with self._chart_lock:

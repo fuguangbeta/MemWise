@@ -42,6 +42,7 @@ COMPOSITE_WS_SCALE = int((500 << 20) * _S)      # 复合评分：WS 归一尺度
 # F1 压力自适应（2026-09-26 定稿，2026-10-20 修订）：**full 默认永不降级**；
 # 旧规则（内存宽裕 <45% + 回涨快 → 轻量轮）会跳过 Layer3/回弹/final/combine，
 # 与 full“允许负面作用、尽最大能力”的初衷冲突。仅 `MEMWISE_FULL_LITE=1` 保留旧路径
+# ⚠ 仅排障/对照实验用，生产默认不生效（2026-11-20 审查 13.4：避免被误读为 full 有自适应降级）
 # 用于对照/排障：每进程一趟、跳 Layer3/回弹、候选前 K。quick/normal/deep 恒不降级。
 LITE_TOP_K = 48            # 轻量轮候选上限（实测前 25%≈46 个进程占 96.7% 释放量）
 
@@ -105,6 +106,7 @@ class PareCleaner:
             "freed_bytes": 0,  # 新实例从 0 起（旧 prev_freed 依赖 hasattr(self,'stats') 恒 False，等价 0）
             "ws_all_rounds": 0,  # P07：系统级全清次数（不再伪装成 N 次进程清理）
             "deepen_cnt": 0, "deepen_extra": 0,
+            "trim_rounds": 0,   # 进程实际执行轮数累加（5.2：区分"名义趟数"与"实际趟数"）
             "layer3_ran": 0, "layer3_extra": 0,
             # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
             "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
@@ -227,6 +229,14 @@ class PareCleaner:
                 _nl = path.rsplit("\\", 1)[-1].lower()
                 if _is_system_core(_nl) or _nl in self.judger.cfg.get("never", []):
                     return 0
+            else:
+                # path 读不到（权限/长路径）：按快照名兜底；连快照都没有则 fail-safe 放弃
+                # （2026-11-20 审查 9.2：此前该分支没有任何名单检查）
+                if snap is None:
+                    return 0
+                _nl = str(getattr(snap, "name", "") or "").lower()
+                if _is_self_process(snap) or _is_system_core(_nl) or _nl in self.judger.cfg.get("never", []):
+                    return 0
         except Exception:
             pass
         # P10：fast-track 重清此前绕过了 CPU/IO/活动/锚点/回弹——决策可能已过数十秒，补统一复检
@@ -314,9 +324,11 @@ class PareCleaner:
         若按调用次数累计 defer，"连续跳过 N 轮"会被折算成 N/2 轮。故 _optimize_locked 在
         每轮开头算好存入 _heavy_allow，轮内只读 _heavy_allowed。
 
-        三个放行条件任一成立：① 用户停手够久（full 3s / 其他 5s）；
+        三个放行条件任一成立：① 用户停手够久（阈值见 _HEAVY_IDLE_FULL/_HEAVY_IDLE_OTHER，
+        full 0.05s 起、按上次耗时自适应到 0.3s；非 full 5s）；
         ② 上次同类操作 ≤1s（磁盘证明自己此刻不忙，仅 modified/filecache 适用）；
-        ③ 连续被跳过达到上限（full 2 轮 / 其他 6 轮）——兜底，防"一直活跃"导致永久不做。
+        ③ 连续被跳过达到上限（_HEAVY_DEFER_FULL / _HEAVY_DEFER_OTHER：full 1 轮 / 其他 6 轮）
+        ——兜底，防"一直活跃"导致永久不做。
 
         豁免：手动优化、游戏模式、环境变量 MEMWISE_DISABLE_HEAVY_GATE=1（排障/对照用）。
         只延后、不取消：放行时 defer 清零，因此功能零损失。
@@ -432,6 +444,9 @@ class PareCleaner:
             _ok, _f = self._capture_sys_op(fn, kind)
             if _ok:
                 freed_total += _f
+            else:
+                # 失败必须留痕（2026-11-20 审查 4.2）：权限不足/接口不支持时开关看似有效
+                self._op_fail_note(kind or getattr(fn, "__name__", "?"))
             return _ok
         try:
             if full and not game_mode and "ws_all" in use and self._heavy_allowed("ws_all"):
@@ -443,7 +458,11 @@ class PareCleaner:
                 # （查询→PeakSize 强制→恢复；MAXSIZE 版 SetSystemFileCacheSize 返回 0xC000009A
                 # 从未生效——原"filecache"分支调它导致开关有效但统计恒 0），统一在此带统计执行
                 if _capture(winapi.clear_system_file_cache_ex, "filecache"):
-                    self._stats_inc("filecache")
+                    if getattr(winapi, "LAST_FILE_CACHE_NOOP", False):
+                        # 缓存本就 ≤32MB：未执行清理，不计成功（2026-11-20 审查 4.1）
+                        self._op_fail_note("filecache（缓存≤32MB，无需清理）")
+                    else:
+                        self._stats_inc("filecache")
             # 统计按 API 真实成功计数（权限不足时不再虚增）
             # 游戏模式：只跳"会写盘/迫使重读盘"的操作（全量待机/脏页写回/文件缓存/卷冲刷/WS 全清），
             # 保留低优先待机（standby_low）与注册表——quick 模式已证明 standby_low 属低感知操作，
@@ -487,6 +506,9 @@ class PareCleaner:
         执行入口同样过第八道门（2026-10-15 补：旧实现只依赖 can_probe 的判定，决策→执行
         间隔内新增规则时会漏；快照路径已在手，零额外系统调用）"""
         if self.judger.ws_cap_blocked(getattr(snap, "path", None)):
+            return False, 0, 0
+        # 执行期游戏态复检（2026-11-20 审查 9.1）：决策→执行之间游戏可能刚启动
+        if self.game_mode and snap.pid in getattr(self.judger, "_game_pid_set", set()):
             return False, 0, 0
         # P10：试探同样是 EWS 执行通道；补 CPU/IO 实时门（活动/锚点/回弹不拦，保探索）
         _okx, _whyx = self.judger.execution_allowed(
@@ -641,6 +663,7 @@ class PareCleaner:
                 with self._lock:
                     if round_idx == 0:
                         self.stats["skipped"] += 1
+                self._stats_inc("trim_rounds", rounds_done)
                 return "early", (False, 0, 0, "API失败"), None
             if round_idx < passes - 1:
                 time.sleep(max(0.05, t_wait))
@@ -671,7 +694,9 @@ class PareCleaner:
                 learner.record_clean_result(name, True, freed=0, lr=self._efis_lr())
                 self.judger.mark_trimmed(name)
                 self.stats["ws_trim"] += 1
+            self._stats_inc("trim_rounds", rounds_done)
             return "early", (True, 0, 0, "进程已退出·内存随之释放"), None
+        self._stats_inc("trim_rounds", rounds_done)
         return "ok", mem["ws"], mem["pf"]
 
     def _trim_record(self, pid, name, snap, learner, ws_before, ws_after, pf_after, passes):
@@ -1063,8 +1088,9 @@ class PareCleaner:
                     try:
                         winapi.set_eco_qos(s.pid, False)
                         winapi.set_memory_priority(s.pid, 4)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        from core.engine import _swallow
+                        _swallow("l2_priority.game_restore", _e)
                     self._low_pri_pids.discard(s.pid)
                 continue
             if s.pid in self._low_pri_pids:
@@ -1073,8 +1099,9 @@ class PareCleaner:
                 if getattr(self.judger, "_mode_guard", "normal") == "full":
                     try:
                         winapi.set_eco_qos(s.pid, False)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        from core.engine import _swallow
+                        _swallow("l2_priority.full_restore", _e)
                     self._low_pri_pids.discard(s.pid)
                 else:
                     continue
@@ -1344,7 +1371,7 @@ class PareCleaner:
             _sysdir_path = getattr(s, "path", None)
             if _sysdir_path and self.judger._is_system_path(_sysdir_path):
                 _theta_sys = learner.thompson_score(name_lower)
-                if self.judger.is_system_dir_low_theta(_sysdir_path, _theta_sys):
+                if self.judger.is_system_dir_low_theta(_sysdir_path, _theta_sys, getattr(self.judger, "_mode_guard", "normal")):
                     self._cycle_reasons["系统目录进程(概率不足)"] = \
                         self._cycle_reasons.get("系统目录进程(概率不足)", 0) + 1
                     continue
@@ -1480,7 +1507,7 @@ class PareCleaner:
             rec[0] += 1; rec[1] += f; rec[2] = f
         return True, f
 
-    def optimize(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None):
+    def optimize(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None, force_gate=False):
         """
         统一优化入口 —— 四模式行为矩阵与参数契约（2026-09-11 审查 F40 重写为与实现一致）
 
@@ -1504,7 +1531,7 @@ class PareCleaner:
         # 串行执行——守护的 optimize 等待手动完成，杜绝 _manual_run 被守护轮误读/双份 trim 叠加
         with self._exec_lock:
             try:
-                return self._optimize_locked(snaps, learner, mode, operations, aggressiveness, allow_layer3, lite, deadline)
+                return self._optimize_locked(snaps, learner, mode, operations, aggressiveness, allow_layer3, lite, deadline, force_gate)
             finally:
                 # P1-8：full 轮留痕同轮重复系统操作的“末次释放量”，供后续判定是否去重
                 try:
@@ -1526,7 +1553,7 @@ class PareCleaner:
                 # optimize 之前会以手动口径（跳过活动确认/锚点/回弹）放行。收尾统一归位 False。
                 self.judger._manual_mode = False
 
-    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None):
+    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None, force_gate=False):
         """optimize 加锁后的主体：准备轮次上下文 → 按模式分派到 _run_*（C12，2026-11-06）。
 
         拆分只移动代码、不改语义；四模式调用顺序由回归 J24a–d 表征锁定。
@@ -1537,6 +1564,7 @@ class PareCleaner:
         self._last_partial_drop = 0  # 本轮未提交候选数（D7 诊断）
         self._round_ops = {}         # P1-8：本轮系统操作次数/释放量（供“同轮去重”决策采集数据）
         self._round_time = {}        # 本轮各系统操作耗时（卡顿排查，2026-11-10）
+        self._cycle_reasons = {}     # 本轮拦截原因（轮次入口重置，与模式无关；2026-11-20 审查 2.3）
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
         self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
         # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式（**含 quick**）——
@@ -1548,7 +1576,7 @@ class PareCleaner:
         # 重操作放行：守护周期开头 begin_cycle() 已判定则整周期复用（gap/harvest 同源）；
         # 手动优化（守护未运行）或紧急 full 独立判定，不沿用别的模式/上一周期的结论。
         # 紧急 full 由 engine 在调用前后备份/恢复本字典，不污染本周期余下阶段。
-        if (not getattr(self, "_in_cycle", False)) or (mode == "full" and _prev_mode != "full"):
+        if force_gate or (not getattr(self, "_in_cycle", False)) or (mode == "full" and _prev_mode != "full"):
             self._heavy_allow = {_k: self._decide_heavy(_k)
                                  for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
         mem_before_opt = winapi.get_memory_used_bytes()

@@ -225,6 +225,8 @@ def export_state(source="export", base=None, include_learning=True):
         "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "files": sorted(files.keys()),
         "partial": bool(not include_learning),
+        # 供导入方判断包内是否含学习数据（画像键=软件清单；2026-11-20 审查 10.3）
+        "contains_learning": bool(include_learning),
     }
     with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, p in sorted(files.items()):

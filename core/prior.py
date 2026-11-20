@@ -33,8 +33,8 @@ class HierarchicalPrior:
             n = n[:-4]
         if not n:
             return None
-        items = [(cat, m.lower()) for cat, ms in cls.CATEGORIES.items() for m in ms]
-        for cat, m in sorted(items, key=lambda x: -len(x[1])):
+        for cat, m in _HIER_ITEMS:
+            # 分类表是常量 ⇒ 排序在导入期一次完成（2026-11-20 审查 17.1）
             if len(m) >= 6:
                 # 长名允许子串（msedgewebview2 → browser）
                 if m in n:
@@ -69,3 +69,9 @@ class HierarchicalPrior:
             return 0.35  # 同类样本不足 → 默认
 
         return sum(peers) / len(peers)
+
+
+# 分类表常量排序（长名优先；供 classify 直接迭代，避免每次调用重建+排序）
+_HIER_ITEMS = tuple(sorted(
+    ((cat, m.lower()) for cat, ms in HierarchicalPrior.CATEGORIES.items() for m in ms),
+    key=lambda x: -len(x[1])))

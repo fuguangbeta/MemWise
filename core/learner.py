@@ -469,6 +469,9 @@ class PareLearner:
         self.stable_anchors = StableAnchorStore()
         # 回弹学习（B 方案）：清后回填率 EWMA → 自动后退期（回弹高的应用不再重复白清）
         self.rebound = ReboundLearner()
+        # 树5 的"全池预期释放"统计缓存（2026-11-20 审查 14.1）：避免每个候选 O(P) 重算
+        self._peer_ver = 0
+        self._peer_cache = None
     
 
 
@@ -489,7 +492,25 @@ class PareLearner:
         key = name.lower()
         if key not in self.profiles:
             self.profiles[key] = Profile(key, kalman_r=getattr(self, '_kalman_r', 5.0))
+            self._bump_peer()
         return self.profiles[key]
+
+    def _bump_peer(self):
+        self._peer_ver = getattr(self, "_peer_ver", 0) + 1
+        self._peer_cache = None
+
+    @property
+    def peer_freed_stats(self):
+        """"全池预期释放"的 (sum, count) 缓存（2026-11-20 审查 14.1）。
+        失效点：画像新增、清理/试探反馈（effective_freed 与 θ 折扣只在这三处变化）。"""
+        try:
+            if self._peer_cache is None or self._peer_cache[0] != self._peer_ver:
+                vals = [p.effective_freed for p in dict(self.profiles).values()
+                        if p.effective_freed > 0]
+                self._peer_cache = (self._peer_ver, (sum(vals), len(vals)))
+            return self._peer_cache[1]
+        except Exception:
+            return 0.0, 0
 
     def feed(self, snaps):
         """喂入一批快照"""
@@ -556,6 +577,8 @@ class PareLearner:
                 tmp = f"{path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(data, f)
+                    f.flush()
+                    os.fsync(f.fileno())   # 原子替换 + 落盘（2026-11-20 审查 11.4）
                 os.replace(tmp, path)
                 return True
             except Exception:
@@ -595,9 +618,11 @@ class PareLearner:
         p = self.profiles.get(name.lower())
         if p:
             p.record_clean(ok, freed, pf_delta, lr)
+            self._bump_peer()
 
     def record_probe_result(self, name, ok, lr=None, freed=0):
         """记录试探结果"""
         p = self.profiles.get(name.lower())
         if p:
             p.record_probe(ok, lr, freed)
+            self._bump_peer()

@@ -852,6 +852,9 @@ def combine_physical_memory():
         return False, 0, int((time.perf_counter() - _t0) * 1000), -2
 
 
+LAST_FILE_CACHE_NOOP = False   # 上次 filecache 调用是否"缓存≤32MB 未执行"（2026-11-20 审查 4.1）
+
+
 def clear_system_file_cache_ex():
     """强制 OS 回收文件缓存 —— 可回收 + 可验证 + 不留系统级副作用（2026-09-11 审查 F45 重写）。
     旧实现两处缺陷（均实测）：① 把字节口径的 PeakSize 写进页口径的 Min/Max 字段 ⇒ 等于请求
@@ -864,6 +867,8 @@ def clear_system_file_cache_ex():
             ④ SetSystemFileCacheSize 恢复①的字节值 + 回读校验（≤3 次）
     返回值：仅当"上限已确认恢复"且"确实回收了缓存（或缓存本就不足 32 MB 无需回收）"时为 True
             —— 与 Layer1/Layer3 的"按 API 真实成功计数"口径一致，不虚增统计。"""
+    global LAST_FILE_CACHE_NOOP
+    LAST_FILE_CACHE_NOOP = False
     if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
         return False
     orig = get_system_file_cache_limits()
@@ -874,6 +879,7 @@ def clear_system_file_cache_ex():
     # 缓存本已极小（清理待机列表后常见，实测 2114→25 MB）⇒ 无需钳制：直接视为达成，
     # 零耗时且完全不触碰系统上限（2026-09-11 实测：此状态下钳制收益恒为 0）
     if before <= (32 << 20):
+        LAST_FILE_CACHE_NOOP = True   # 未执行任何清理（调用方据此不计"成功"）
         return True
     info = _SFCI()
     ret_len = w.ULONG()

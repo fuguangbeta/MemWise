@@ -739,7 +739,7 @@ def _hook_button_hover(win):
         try:
             base_style = str(btn.cget("style") or "TButton")
             base = _ui_fg(btn, base_style)
-            name = base_style + ".MwH%d" % id(btn)
+            name = base_style + ".MwH" + _rgb_hex(base).lstrip("#")   # 同色复用，防样式随重建累积（11.3）
             st.configure(name, foreground=_rgb_hex(base))
             btn.configure(style=name)
             btn._mw_style = name
@@ -790,269 +790,22 @@ def _hook_button_hover(win):
     walk(win)
 
 
-def _hook_combo_hover(win):
-    """下拉框恢复原生行为：不再做任何动画（2026-11-20 用户决定）。"""
-    return
 
 
-def _anim_popdown(cb):
-    """下拉列表只做 120ms 淡入，不移动/改尺寸——移动 popdown 会与 Tk 自身定位竞争，
-    在收起/展开末尾形成“到底弹跳”感（2026-11-20 精准修复）。"""
-    try:
-        path = cb.tk.call("ttk::combobox::PopdownWindow", cb._w)
-        if not path:
-            return
-        cb.tk.call("wm", "attributes", path, "-alpha", 0.0)
-        t0 = time.perf_counter()
-
-        def step():
-            if not cb.winfo_exists():
-                return
-            p = min(1.0, (time.perf_counter() - t0) / 0.12)
-            try:
-                cb.tk.call("wm", "attributes", path, "-alpha", 0.02 + 0.98 * p)
-            except Exception:
-                return
-            if p < 1.0:
-                cb.after(16, step)
-        step()
-    except Exception:
-        pass
 
 
-def _tree_reveal(tree, win, delay_ms=0, stagger_ms=16):
-    """Treeview 逐行“打印”：整表先清空文字，再按行错峰恢复；
-    首列逐字出现，其余列在该行首列打完后补齐；相邻行间隔带 ±30% 随机。"""
-    if not ANIM_ENABLED:
-        return
-    try:
-        items = list(tree.get_children(""))
-    except Exception:
-        return
-    if not items:
-        return
-    data = []
-    for iid in items[:120]:
-        try:
-            vals = list(tree.item(iid, "values"))
-        except Exception:
-            continue
-        data.append((iid, vals))
-    if not data:
-        return
-    tree._mw_tree_gen = getattr(tree, "_mw_tree_gen", 0) + 1
-    gen = tree._mw_tree_gen
-    try:
-        prev_anchor = getattr(tree, "_mw_anchor_backup", None)
-        if prev_anchor:
-            for _c, _a in prev_anchor.items():
-                tree.column(_c, anchor=_a)
-        cols = list(tree["columns"])
-        tree._mw_anchor_backup = {c: tree.column(c, "anchor") for c in cols}
-        for c in cols:
-            tree.column(c, anchor="w")
-    except Exception:
-        pass
-    for iid, vals in data:
-        try:
-            tree.item(iid, values=[""] * len(vals))
-        except Exception:
-            pass
-
-    def _row(i):
-        if getattr(tree, "_mw_tree_gen", 0) != gen:
-            return
-        try:
-            if not tree.winfo_exists() or i >= len(data):
-                return
-        except Exception:
-            return
-        iid, vals = data[i]
-        if not vals:
-            return
-        cells = [str(v or "") for v in vals]
-        total = min(sum(len(c) for c in cells), 160)
-        n = [0]
-
-        def _type():
-            if getattr(tree, "_mw_tree_gen", 0) != gen:
-                return
-            n[0] = min(total, n[0] + 2)
-            left = n[0]
-            row = []
-            for c in cells:
-                take = min(len(c), left)
-                left -= take
-                row.append(c[:take] + " " * (len(c) - take))
-            try:
-                tree.item(iid, values=row)
-            except Exception:
-                return
-            if n[0] < total:
-                try:
-                    win.after(8, _type)
-                except Exception:
-                    pass
-            else:
-                try:
-                    tree.item(iid, values=vals)
-                except Exception:
-                    pass
-        _type()
-        if i + 1 >= len(data):
-            try:
-                for _c, _a in (getattr(tree, "_mw_anchor_backup", {}) or {}).items():
-                    tree.column(_c, anchor=_a)
-            except Exception:
-                pass
-        if i + 1 < len(data):
-            try:
-                win.after(int(random.uniform(stagger_ms * 0.4, stagger_ms * 2.0)), lambda: _row(i + 1))
-            except Exception:
-                pass
-
-    try:
-        win.after(delay_ms, lambda: _row(0))
-    except Exception:
-        pass
 
 
-def _mask_text(s):
-    out = []
-    for ch in s:
-        if ch == "\n":
-            out.append("\n")
-        elif ch == "\t":
-            out.append("\t")
-        elif ord(ch) > 127:
-            out.append("\u3000")
-        else:
-            out.append("\u00a0")
-    return "".join(out)
 
 
-def _hide_text(w):
-    try:
-        full = str(w.cget("text"))
-    except Exception:
-        return None
-    if not full.strip():
-        return None
-    try:
-        if int(w.cget("wraplength") or 0) > 0:
-            return None
-    except Exception:
-        pass
-    if "\n" in full:
-        return None
-    hidden = "".join("\n" if ch == "\n" else " " for ch in full)
-    try:
-        w.configure(text=hidden)
-    except Exception:
-        return None
-    return full
 
 
-def _print_prepare(win):
-    if not ANIM_ENABLED:
-        return
-    if getattr(win, "_mw_print_items", None):
-        return
-    items = []
-
-    def walk(w):
-        try:
-            for c in w.winfo_children():
-                if isinstance(c, (tk.Label, tk.Button, tk.Checkbutton,
-                                  tk.Radiobutton, ttk.Label, ttk.Button,
-                                  ttk.Checkbutton, ttk.Radiobutton)):
-                    full = _hide_text(c)
-                    if full:
-                        c._mw_print_full = full
-                        items.append(c)
-                walk(c)
-        except Exception:
-            pass
-    walk(win)
-    try:
-        win._mw_print_items = items
-    except Exception:
-        pass
 
 
-def _restore_print_items(win):
-    for w in list(getattr(win, "_mw_print_items", []) or []):
-        try:
-            if w.winfo_exists():
-                full = getattr(w, "_mw_print_full", None)
-                if full is not None:
-                    w.configure(text=full)
-        except Exception:
-            pass
 
 
-def _local_shuffle(seq, p=0.70):
-    try:
-        n = len(seq)
-        i = 0
-        while i < n - 1:
-            if random.random() < p:
-                j = i + 1 if random.random() < 0.85 else min(n - 1, i + 2)
-                seq[i], seq[j] = seq[j], seq[i]
-                i += 2
-            else:
-                i += 1
-    except Exception:
-        pass
 
 
-def _print_ui(win, delay_ms=140, stagger_ms=18, chars=1, frame_ms=16):
-    if not ANIM_ENABLED:
-        return
-    items = list(getattr(win, "_mw_print_items", []) or [])
-    if not items:
-        return
-    _local_shuffle(items)
-    _t = float(delay_ms)
-    for i, w in enumerate(items):
-        full = getattr(w, "_mw_print_full", None)
-        if not full:
-            continue
-
-        def _run(w=w, full=full):
-            n = 0
-            total = len(full)
-
-            def step():
-                nonlocal n
-                if not w.winfo_exists():
-                    return
-                n = min(total, n + chars)
-                tail = "".join("\n" if ch == "\n" else " " for ch in full[n:])
-                try:
-                    w.configure(text=full[:n] + tail)
-                except Exception:
-                    return
-                if n < total:
-                    try:
-                        win.after(frame_ms, step)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        w.configure(text=full)
-                    except Exception:
-                        pass
-            step()
-        try:
-            win.after(int(_t), _run)
-            _t += random.uniform(stagger_ms * 0.4, stagger_ms * 2.0)
-        except Exception:
-            pass
-    try:
-        win.after(int(_t) + 3000, lambda: _restore_print_items(win))
-    except Exception:
-        pass
 
 
 class _SafeToplevel(tk.Toplevel):
@@ -1117,7 +870,6 @@ def _prep_window_anim(win, content=False):
             win.unbind("<Map>")
         except Exception:
             pass
-        _hook_combo_hover(win)
 
     try:
         win.bind("<Map>", _shown, add="+")
@@ -1644,7 +1396,6 @@ class MemWiseGUI:
 
         self._build_ui()
         _hook_button_hover(self.root)
-        _hook_combo_hover(self.root)
         self._refresh_mem()
         self._start_mem_bar()   # 内存条独立 300ms 实时刷新（2026-11-20）
         self._setup_hotkey_and_tray()
@@ -2000,7 +1751,6 @@ class MemWiseGUI:
         # 自定义确认弹窗
         dlg = _SafeToplevel(self.root)
         dlg.withdraw()  # 先隐藏，构建完成居中后一次显示
-        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(tr("游戏模式"))
         dlg.resizable(False, False)
@@ -2690,7 +2440,7 @@ class MemWiseGUI:
         gp_lbl = ttk.Label(gf, text=tr("周期内轻量压制间隔: ") + f"{gap_val.get()} " + tr("秒"), foreground="#555")
         gp_lbl.pack(anchor="w", pady=(6,0))
         self._add_tip(gp_lbl, "「守护模式每轮周期内的轻量阶段频率」\n"
-                         "1. 可设置为 8~20 秒，默认 12 秒\n"
+                         "1. 可设置为 8~20 秒，默认 12 秒（游戏模式 ×1.5，最长 30 秒）\n"
                          "2. 用于控制周期内清理操作的密集程度\n"
                          "3. 间隔越短清理次数越多，但性能要求更大\n"
                          "⚠ 欲降低本程序性能占用建议 15~20\n"
@@ -2940,7 +2690,6 @@ class MemWiseGUI:
         tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(kind, "#e0e0e0")
         dlg = _SafeToplevel(self.root)
         dlg.withdraw()
-        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -2972,7 +2721,6 @@ class MemWiseGUI:
         返回 None（取消）/ True（确认并备份）/ False（确认但不备份）"""
         dlg = _SafeToplevel(self.root)
         dlg.withdraw()
-        dlg._mw_fast_print = True  # 先隐藏，构建完成后按内容尺寸居中一次显示
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -3006,7 +2754,6 @@ class MemWiseGUI:
         返回 True（确认）/ False（取消）。与 _confirm_reset_dialog 同视觉语言。"""
         dlg = _SafeToplevel(self.root)
         dlg.withdraw()
-        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -3992,51 +3739,6 @@ class MemWiseGUI:
         except Exception:
             pass
 
-    def _flash_log(self, start, end):
-        """新到日志行做 1.2s 背景渐隐（参考 dsh 的 flash；不逐行淡入，避免 Text 闪烁）。"""
-        _root = getattr(self, "root", None)
-        if not ANIM_ENABLED or _root is None or not _root.winfo_viewable():
-            return
-        try:
-            if str(start) == str(end):
-                return
-            self._flash_seq = getattr(self, "_flash_seq", 0) + 1
-            tag = "mwflash%d" % self._flash_seq
-            base = self.log.cget("background") or "#1c1c1c"
-            self.log.tag_add(tag, start, end)
-            t0 = time.perf_counter()
-
-            try:
-                b = tuple(int(base.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
-            except Exception:
-                b = (0x1c, 0x1c, 0x1c)
-
-            def _blend(k):
-                # #2a3a2a → 面板底色
-                a = (0x2a, 0x3a, 0x2a)
-                return "#%02x%02x%02x" % tuple(
-                    int(round(a[i] + (b[i] - a[i]) * k)) for i in range(3))
-
-            def step():
-                try:
-                    if not self.log.winfo_exists():
-                        return
-                    p = min(1.0, (time.perf_counter() - t0) / 1.2)
-                    k = _motion.EASE_OUT(p)
-                    self.log.tag_configure(tag, background=_blend(k))
-                    if p < 1.0:
-                        _root.after(150, step)
-                    else:
-                        self.log.tag_delete(tag)
-                except Exception:
-                    try:
-                        self.log.tag_delete(tag)
-                    except Exception:
-                        pass
-            self.log.tag_configure(tag, background="#2a3a2a")
-            step()
-        except Exception:
-            pass
 
     def _log_op(self, m):
         """即时事件（单行组）——分组语义见 _write_group"""
@@ -4416,7 +4118,6 @@ class MemWiseGUI:
         res = {"v": None}
         dlg = _SafeToplevel(self.root)
         dlg.withdraw()
-        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(title)
         dlg.resizable(False, False)
@@ -4524,7 +4225,6 @@ class MemWiseGUI:
         res = {"go": False}
         dlg = _SafeToplevel(self.root)
         dlg.withdraw()
-        dlg._mw_fast_print = True
         self._apply_icon(dlg)
         dlg.title(tr("即将重启完成更新"))
         dlg.resizable(False, False)
@@ -4730,6 +4430,13 @@ class MemWiseGUI:
 
     def _tick_mem_bar(self):
         """内存条高频链：另取一次状态、只画条/标签（托盘仍由 5s 链驱动）。"""
+        try:
+            # 隐藏到托盘/最小化时不采样（2026-11-20 审查 15.1）：托盘由 5s 链独立更新
+            if not self.root.winfo_viewable():
+                self._mem_bar_id = self.root.after(300, self._tick_mem_bar)
+                return
+        except Exception:
+            pass
         try:
             m = winapi.get_memory_status()
             if m:
@@ -5316,10 +5023,10 @@ class MemWiseGUI:
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
-        self.lbl_sb["text"] = tr("系统杂项: ") + fmt_count(self._sys_ops_count(s))
-        self.lbl_tr["text"] = tr("进程: ") + fmt_count(s['ws_trim'])
-        fm = s['freed_mb']
-        self.lbl_fr["text"] = tr("释放: ") + (f"{fm/1024.0:.1f}GB" if fm >= 1000 else f"{fm:.1f}MB")
+        # 与 _upd_stats 同一写入口（2026-11-20 审查 2.2：直接赋值会覆盖 320ms tween）
+        self._num_tween("sb", self.lbl_sb, tr("系统杂项: "), self._sys_ops_count(s))
+        self._num_tween("tr", self.lbl_tr, tr("进程: "), s['ws_trim'])
+        self._num_tween("fr", self.lbl_fr, tr("释放: "), s['freed_mb'], unit="mb")
         self._upd_learned()  # 守护中持续学习新进程，已学习数随周期刷新
         pct = m["pct"]
         # 四档与内存条/托盘口径一致（60/75/90，2026-08-15 审查：原三档 70/90 与托盘不一致）

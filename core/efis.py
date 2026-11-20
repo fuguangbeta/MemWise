@@ -238,6 +238,8 @@ class EfisController:
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())   # 原子替换 + 落盘（2026-11-20 审查 11.4）
             os.replace(tmp, efis_path)
         except Exception:
             try:

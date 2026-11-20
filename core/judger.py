@@ -430,7 +430,7 @@ class PareJudger:
 
         # ── 系统目录进程: 需要高 θ 值（L3 走同一判定，防梯度不一致）──
         path = getattr(snap, "path", None)
-        if self.is_system_dir_low_theta(path, theta):
+        if self.is_system_dir_low_theta(path, theta, _guard):
             return False, "系统目录进程(概率不足)"
 
         # ── 模式价值底线（MuseRAM MinIdleScore 同构，独立于投票的干净梯度）：
@@ -766,11 +766,12 @@ class PareJudger:
         except Exception:
             return False
 
-    def is_system_dir_low_theta(self, path, theta):
+    def is_system_dir_low_theta(self, path, theta, guard=None):
         """系统目录进程的额外 θ 底线（L2/L3 同源，2026-11-08；2026-11-20 full 放宽）。
         常规/deep 用 0.3；full 用 0.2（仍高于模式价值底线 0.06）——日志显示每轮有 50-60 个
         Program Files 应用被 0.3 拦掉，full 的压缩目标需要更多候选。path 缺失不拦截。"""
-        _floor = SYS_DIR_MIN_THETA_FULL if (getattr(self, "_mode_guard", "normal") == "full") else SYS_DIR_MIN_THETA
+        _g = guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal")
+        _floor = SYS_DIR_MIN_THETA_FULL if _g == "full" else SYS_DIR_MIN_THETA
         return bool(path) and self._is_system_path(path) and theta < _floor
 
     @staticmethod

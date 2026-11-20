@@ -1216,8 +1216,10 @@ _judger26_src = _src26("core", "judger.py")
 _rebound26_src = _src26("core", "rebound.py")
 check("F2 prior 快照迭代", "dict(profiles).items()" in _prior26_src)
 check("F2 meta 探索覆盖快照迭代", _meta26_src.count("dict(self.learner.profiles)") == 2)
-check("F2 policy 树5 快照迭代", "list(learner.profiles.values())" in _policy26_src)
-check("F2 learner save 快照迭代", _lm26_src.count("dict(self.profiles)") == 3)
+check("F2 policy 树5 走缓存 + 快照迭代", "peer_freed_stats" in _policy26_src
+      and "dict(self.profiles).values()" in _lm26_src)
+# 3 处（save 过滤/淘汰/树5 缓存）+ 1 处 peer_freed_stats 快照 = 4
+check("F2 learner 快照迭代", _lm26_src.count("dict(self.profiles)") == 4)
 check("F2 engine kalman_r 遍历快照迭代", "list(self.learner.profiles.values())" in _eng26_src)
 # ── F3 守护互斥 + tmp 进程隔离 ──
 check("F3 守护互斥 mutex 接线", "MemWise_Daemon" in _eng26_src and "DAEMON_MUTEX_NAME" in _mw26_src)
@@ -2071,7 +2073,7 @@ check("日志：逐轮效率/五维分数/原始值/输入/校准进度",
       all(k in _eng_log for k in ('"效率"', "result.get(\"scores\"", "result.get(\"raws\"",
                                   "校准 n=", "输入[整理")))
 check("日志：周期明细含系统操作计数/释放前三/判定拦截原因/内存状态",
-      all(k in _eng_log for k in ("明细: %s · 释放前三", "拦截[%s]", "内存 %d%%(可用")))
+      all(k in _eng_log for k in ("明细: %s · 平均趟数", "释放前三", "拦截[%s]", "内存 %d%%(可用")))
 check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff）",
       all(k in _eng_log for k in ("生效设置: 模式 %s", "_CFG_SNAPSHOT", '"配置"')))
 check("日志：学习状态周期摘要（画像/锚点/回退/抑制/当前参数，无策略权重）",
@@ -4744,7 +4746,7 @@ def _mk63(mode="full", idle=0.0, manual=False):
 _orig_idle63 = _wa63.get_idle_seconds
 try:
     _c63 = _mk63("full", 10.0)
-    check("K10 停手 ≥3s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
+    check("K10 停手 ≥0.05s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
     _c63 = _mk63("full", 0.0)
     check("K10b 活跃且无历史 ⇒ heavy 延后", _c63._decide_heavy("modified") is False)
     _c63 = _mk63("normal", 6.0)
@@ -4854,8 +4856,11 @@ check("动效：bezier 端点 0/1", abs(_E64(0.0)) < 1e-6 and abs(_E64(1.0) - 1.
 _a64 = _AN64(lambda ms, fn: None)
 _a64.tween("k", 10, 100, _E64, lambda v: None, start=0)
 check("动效：单链重定向", len(_a64._jobs) == 1 and "ui_animation" in config_load())
-check("动效：GUI 接线", "_prep_window_anim" in _g64 and "_anim_chart_bar" in _g64
-      and "_flash_log" in _g64 and "界面动效" in _g64)
+check("动效：GUI 接线（且无已停用的打印/闪烁死代码）",
+      "_prep_window_anim" in _g64 and "_anim_chart_bar" in _g64 and "界面动效" in _g64
+      and not any(("def " + k) in _g64 for k in ("_flash_log", "_print_ui", "_print_prepare",
+                                                  "_tree_reveal", "_anim_popdown", "_hide_text"))
+      and "_mw_fast_print" not in _g64)
 
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))
