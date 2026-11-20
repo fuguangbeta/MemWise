@@ -4820,9 +4820,9 @@ class MemWiseGUI:
     # ---- 柱图 ----
 
     def _anim_chart_intro(self, c, bars, lines, dots, py1, dur=500, stag=28):
-        """柱状图错峰升起；折线按逐折点时间表推进：
-        中间折点落在各柱起画时刻，最后折点落在整组柱子完成时刻；
-        中段线性、收尾长段缓入缓出，避免全局 ease 的中段冲刺。"""
+        """柱状图错峰升起；折线沿路径使用连续速度曲线：
+        起步余弦加速 → 中段匀速 → 收尾余弦减速，总时长与柱子一致。
+        折点仍按笔尖路径到达显示；起步略落后柱子，中段追平，结尾同步。"""
         try:
             if getattr(self, "_chart_intro_id", None):
                 self.root.after_cancel(self._chart_intro_id)
@@ -4832,38 +4832,26 @@ class MemWiseGUI:
         t0 = time.perf_counter()
         n = len(bars)
         segs = list(lines)
-        m = len(dots)
+        lens = []
+        total = 0.0
+        for (_ln, x1, y1, x2, y2) in segs:
+            L = max(1.0, ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            lens.append(L)
+            total += L
         bar_end = ((n - 1) * stag + dur) / 1000.0 if n else 0.0
-        times = []
-        prev = 0.0
-        for j in range(m):
-            if j == m - 1:
-                tt = bar_end
-            elif m - 1 <= n - 1:
-                tt = j * stag / 1000.0
-            else:
-                tt = bar_end * j / max(1, m - 1)
-            tt = max(tt, prev + 0.001)
-            times.append(tt)
-            prev = tt
-        x_idx = {}
-        for j, (_it, dx) in enumerate(dots):
-            x_idx[round(dx)] = j
-        sched = []
-        for k, (_ln, x1, y1, x2, y2) in enumerate(segs):
-            i1 = x_idx.get(round(x1))
-            i2 = x_idx.get(round(x2))
-            if i1 is None:
-                i1 = min(k, max(0, m - 2))
-            if i2 is None:
-                i2 = min(i1 + 1, max(0, m - 1))
-            ta = times[i1] if times else 0.0
-            tb = times[i2] if times else ta + 0.001
-            if tb <= ta:
-                tb = ta + 0.001
-            sched.append((_ln, x1, y1, x2, y2, ta, tb))
-        end_t = max(bar_end, times[-1] if times else bar_end, 0.5)
-        self._chart_suppress_until = time.time() + end_t + 0.4
+        path_dur = max(dur / 1000.0, bar_end)
+        r = 0.12 if path_dur >= 0.8 else 0.08
+        vmax = 1.0 / (1.0 - r)
+        self._chart_suppress_until = time.time() + path_dur + 0.5
+
+        def profile(u):
+            u = min(1.0, max(0.0, u))
+            if u < r:
+                return vmax * (u / 2.0 - (r / (2.0 * math.pi)) * math.sin(math.pi * u / r))
+            if u <= 1.0 - r:
+                return vmax * (r / 2.0 + (u - r))
+            v = 1.0 - u
+            return 1.0 - vmax * (v / 2.0 - (r / (2.0 * math.pi)) * math.sin(math.pi * v / r))
 
         def step():
             self._chart_intro_id = None
@@ -4875,46 +4863,52 @@ class MemWiseGUI:
             t = time.perf_counter() - t0
             for (rid, x0, x1, _py1, y0, _color, i) in bars:
                 p = min(1.0, max(0.0, (t - i * stag / 1000.0) / (dur / 1000.0)))
-                yy = int(round(py1 - (py1 - y0) * _motion.EASE_OUT(p)))
+                yy = int(round(py1 - (py1 - y0) * _motion.EASE_IN_OUT_COS(p)))
                 try:
                     c.coords(rid, x0, yy, x1, py1)
                 except Exception:
                     pass
-            for (_ln, x1, y1, x2, y2, ta, tb) in sched:
-                if t >= tb:
+            pen = total * profile(t / path_dur)
+            cum = 0.0
+            penx = segs[0][1] if segs else 0
+            for k, (_ln, x1, y1, x2, y2) in enumerate(segs):
+                L = lens[k]
+                if pen >= cum + L:
                     try:
                         c.itemconfig(_ln, state="normal")
                         c.coords(_ln, x1, y1, x2, y2)
                     except Exception:
                         pass
-                elif t <= ta:
+                    penx = x2
+                elif pen <= cum:
                     try:
                         c.itemconfig(_ln, state="hidden")
                     except Exception:
                         pass
                 else:
-                    u = (t - ta) / (tb - ta)
-                    e = _motion.EASE_IN_OUT(u) if (tb - ta) > 0.12 else u
-                    ex = x1 + (x2 - x1) * e
-                    ey = y1 + (y2 - y1) * e
+                    q = (pen - cum) / L
+                    ex = x1 + (x2 - x1) * q
+                    ey = y1 + (y2 - y1) * q
                     try:
                         c.itemconfig(_ln, state="normal")
                         c.coords(_ln, x1, y1, ex, ey)
                     except Exception:
                         pass
-            for j, (item, _dx) in enumerate(dots):
-                if j < len(times) and t >= times[j]:
+                    penx = ex
+                cum += L
+            for item, dx in dots:
+                if penx >= dx - 0.5:
                     try:
                         c.itemconfig(item, state="normal")
                     except Exception:
                         pass
-            if t < end_t + 0.30:
+            if t < path_dur + 0.30:
                 try:
                     self._chart_intro_id = self.root.after(8, step)
                 except Exception:
                     self._chart_intro_id = None
             else:
-                for (_ln, x1, y1, x2, y2, _ta, _tb) in sched:
+                for (_ln, x1, y1, x2, y2) in segs:
                     try:
                         c.itemconfig(_ln, state="normal")
                         c.coords(_ln, x1, y1, x2, y2)

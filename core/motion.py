@@ -5,6 +5,7 @@
 调度交给调用方（Tk 的 after），本模块只管时间与曲线，便于单测。
 """
 import time
+import math
 
 
 def cubic_bezier(x1, y1, x2, y2):
@@ -37,6 +38,15 @@ EASE_OUT = cubic_bezier(0.16, 1.0, 0.3, 1.0)
 EASE_IN_OUT = cubic_bezier(0.83, 0.0, 0.17, 1.0)
 EASE_IN = cubic_bezier(0.7, 0.0, 0.84, 0.0)
 LINEAR = cubic_bezier(0.25, 0.25, 0.75, 0.75)
+
+
+def ease_in_out_cos(p):
+    """余弦 S 曲线：慢起、快中、慢收，峰值约 1.57× 平均速度。"""
+    p = min(1.0, max(0.0, p))
+    return 0.5 - 0.5 * math.cos(math.pi * p)
+
+
+EASE_IN_OUT_COS = ease_in_out_cos
 
 
 class Animator:
