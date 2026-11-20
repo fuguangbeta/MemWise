@@ -4872,6 +4872,9 @@ check("日志图标：所有行首统一默认圈+M（不再渲染任何字形�
 check("子窗口呈现：先构建后淡入（不再 1x1 生长）",
       "_mw_fade_in" in _g64 and "super().geometry(target)" in _g64
       and '"1x1+%d+%d"' not in _g64)
+check("子窗口创建即透明且隐藏态应用居中几何（防左上角白框）",
+      'self.attributes("-alpha", 0.0)' in _g64
+      and "任何提前映射都不会" in _g64)
 check("UI 呈现：先构建后显示（present 管线存在且 draw 后再 paint）",
       "_present_window" in _g64 and "_present_start" in _g64
       and "_draw_chart(force=True, prepare_only=True)" in _g64)
