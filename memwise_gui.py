@@ -926,6 +926,7 @@ class _PoolToplevel(_SafeToplevel):
             pass
 
     def _mw_pool_close(self):
+        _pool_log(self, "pool_close_begin")
         try:
             self.grab_release()
         except Exception:
@@ -951,6 +952,22 @@ class _PoolToplevel(_SafeToplevel):
         if getattr(self, "_mw_app_close", False):
             return super().destroy()
         self._mw_pool_close()
+
+
+def _pool_log(win, phase):
+    try:
+        with open(os.path.join(base, "data", "ui_pool_debug.log"), "a", encoding="utf-8") as f:
+            f.write("%s\t%s\tid=%s\thwnd=%s\texists=%s\trevealed=%s\tmapped=%s\tstate=%s\ttitle=%s\tchildren=%s\n" % (
+                time.strftime("%H:%M:%S"), phase, id(win),
+                win.winfo_id() if win is not None and win.winfo_exists() else "-",
+                win.winfo_exists() if win is not None else "-",
+                getattr(win, "_mw_revealed", "-"),
+                win.winfo_ismapped() if win is not None and win.winfo_exists() else "-",
+                win.state() if win is not None and win.winfo_exists() else "-",
+                win.title() if win is not None and win.winfo_exists() else "-",
+                len(win.winfo_children()) if win is not None and win.winfo_exists() else "-"))
+    except Exception:
+        pass
 
 
 def _prep_window_anim(win, content=False):
@@ -3220,6 +3237,7 @@ class MemWiseGUI:
                     "%.1f" % r[6], "%.1f" % (r[7] / (1 << 20)), tr("是") if r[8] else tr("否"),
                     r[9], r[10], r[11])
 
+        _pool_log(getattr(self, "_learn_win", None), "learn_open_attr")
         win = getattr(self, "_learn_win", None)
         if win is None or not win.winfo_exists():
             win = _PoolToplevel(self.root)
@@ -3234,6 +3252,7 @@ class MemWiseGUI:
             except Exception:
                 pass
         self._dlgs["learn"] = win
+        _pool_log(win, "learn_open_chosen")
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr_msg(f"学习日志 — {len(info_data)} 个进程"))
@@ -5432,6 +5451,7 @@ class MemWiseGUI:
             _lw = _PoolToplevel(self.root)
             _lw.withdraw()
             self._learn_win = _lw
+            _pool_log(_lw, "precreate")
         except Exception:
             self._learn_win = None
         if not self._minimized_to_tray:
