@@ -80,8 +80,8 @@ _LOG_ICON_GAP = 4            # 图标与文字之间的最小间隙（图标位�
 _LOG_ICON_PROBE = "→⚠⇒🎮↑↓✓⚡🔄🟢↻🔴❌✗🟠🟡📋⛨⚙☰📜📊🧠📈🚀🔥🕳🔍✅"
 # ↑ 项目内实际用到的图标全集（2026-09-11 扫描源码得出）：图标位宽按其中最宽者定位。
 _LOG_TAG = "logwrap"         # 换行悬挂缩进标签：续行也对齐到文字列
-# 图标位里保留原字形的图标（2026-09-11 用户定稿）：勾叉（正确/错误）与方向箭头（升/降）含义明确；
-# 其余行首图标都是纯象形装饰（📈⚡🧠🚀🔥📋🎮🔄🟢…），各字形大小/基线/字体回退不一，一律换成统一绘制的默认图标。
+# 图标位策略（2026-11-20 修订）：勾/叉（正确/错误）改为**程序自绘像素图标**（与默认图标同风格），
+# 不再使用字体字形；方向箭头（升/降）仍保留字形。其余纯象形装饰（📈⚡🧠🚀🔥📋🎮…）一律换默认图标。
 _LOG_ICON_KEEP = frozenset("✓✗✅❌↑↓")
 
 
@@ -147,6 +147,72 @@ _LOG_ICON_ROWS = (
     ".....#######......",
     ".......###........",
 )
+
+
+_LOG_CHECK_ROWS = (
+    "..............",
+    "............#.",
+    "...........##.",
+    "..........##..",
+    ".........##...",
+    "#.......##....",
+    "##.....##.....",
+    ".##...##......",
+    "..##.##.......",
+    "...###........",
+    "....#.........",
+    "..............",
+    "..............",
+    "..............",
+)
+_LOG_CROSS_ROWS = (
+    "..............",
+    "..#........#..",
+    "...#......#...",
+    "....#....#....",
+    ".....#..#.....",
+    "......##......",
+    "......##......",
+    ".....#..#.....",
+    "....#....#....",
+    "...#......#...",
+    "..#........#..",
+    "..............",
+    "..............",
+    "..............",
+)
+
+
+def _make_glyph_icon(rows, slot=None):
+    """程序自绘勾/叉图标（与默认图标同风格：透明底 + 黑像素，居中占满图标位）。
+    不再使用字体里的 ✓✗✅❌ 字形（各字体基线/宽度不一，也不属于本程序图标体系）。"""
+    try:
+        iw, ih = len(rows[0]), len(rows)
+        w = max(iw, int(slot or iw))
+        off = (w - iw) // 2
+        img = tk.PhotoImage(width=w, height=ih)
+        for y, row in enumerate(rows):
+            for x, ch in enumerate(row):
+                if ch == "#":
+                    img.put("#000000", (x + off, y))
+        return img
+    except Exception:
+        return None
+
+
+def _log_glyph_icons(text_widget):
+    """按控件缓存自绘勾/叉图（Tk 图像需持续引用，否则被回收）。"""
+    icons = getattr(text_widget, "_log_glyph_icons", None)
+    if icons is None:
+        slot = getattr(text_widget, "_log_slot", None) or _log_slot_px(text_widget)
+        icons = {
+            "✓": _make_glyph_icon(_LOG_CHECK_ROWS, slot),
+            "✅": _make_glyph_icon(_LOG_CHECK_ROWS, slot),
+            "✗": _make_glyph_icon(_LOG_CROSS_ROWS, slot),
+            "❌": _make_glyph_icon(_LOG_CROSS_ROWS, slot),
+        }
+        text_widget._log_glyph_icons = icons
+    return icons
 
 
 def _make_log_icon(slot=None):
@@ -250,7 +316,11 @@ def _insert_log_lines(text_widget, ts, msg, tag):
         rest = line[1:] if icon else (line[1:] if line.startswith(chr(9)) else line)
         rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
         text_widget.insert("end", head, tag)
-        if not icon:
+        _gimg = _log_glyph_icons(text_widget).get(icon) if icon else None
+        if _gimg is not None:
+            # 勾/叉也走程序自绘图标（整位宽，文字列精确对齐）
+            text_widget.image_create("end", image=_gimg, align="center")
+        elif not icon:
             if img is not None:
                 text_widget.image_create("end", image=img, align="center")    # 整位宽的默认图标
         elif icon in adv:
@@ -1739,6 +1809,8 @@ class MemWiseGUI:
             self._refresh_mem(animate=False)
             self._upd_stats(animate=False)
             self._minimized_to_tray = False
+            # 恢复时重新播放整组图表入场（柱错峰 + 折线笔尖）——内核诉求，不能只重绘成静态图
+            self._chart_intro_pending = True
             # 先以 alpha 0 映射（不可见）让 Canvas 拿到真实宽度，再构建图表；随后再绘制一次，
             # 保证首个 alpha>0 帧是"新内容 + 零态图表"而不是上一次的旧 surface。
             _center_geometry(self.root, 1060, 700)
