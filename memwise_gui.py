@@ -2296,6 +2296,7 @@ class MemWiseGUI:
         return False
 
     def _host_win(self):
+        self._host_gen = getattr(self, "_host_gen", 0) + 1
         try:
             for _c in list(self._host.winfo_children()):
                 try:
@@ -3456,7 +3457,8 @@ class MemWiseGUI:
         """弹出进程内存占用排行榜"""
         if self._focus_dialog("rank"):
             return
-        win = _SafeToplevel(self.root)
+        win = self._host_win()
+        _rank_gen = self._host_gen
         self._dlgs["rank"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -3575,6 +3577,8 @@ class MemWiseGUI:
 
         def _refresh():
             nonlocal _first_refresh, _cur_hover
+            if _rank_gen != getattr(self, "_host_gen", 0) or not tree.winfo_exists():
+                return
             if not win.winfo_exists():
                 return
             # 窗口最小化/隐藏时暂停采集（仅续期定时器）——首帧除外（打开时需立即显示数据）
