@@ -988,6 +988,13 @@ class _HostToplevel(_SafeToplevel):
         super().__init__(master, **kw)
         self._mw_busy = False
         self._mw_close_var = tk.BooleanVar(master=self, value=False)
+        # 宿主池常驻且 alpha0：必须从任务栏/Alt-Tab 隐藏，否则会出现多条残缺缩略图
+        try:
+            if master is not None:
+                self.transient(master)
+            self.attributes("-toolwindow", True)
+        except Exception:
+            pass
         self._mw_warm_map()
 
     def wait_window(self, window=None):
