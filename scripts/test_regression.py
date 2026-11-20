@@ -4869,6 +4869,9 @@ check("UI 呈现：恢复时重播整组图表入场",
       "_present_window" in _g64 and "_chart_intro_pending = True" in _g64)
 check("日志图标：所有行首统一默认圈+M（不再渲染任何字形）",
       'icon = ""   # 统一使用默认图标' in _g64 and "_make_glyph_icon" not in _g64)
+check("子窗口呈现：先构建后淡入（不再 1x1 生长）",
+      "_mw_fade_in" in _g64 and "super().geometry(target)" in _g64
+      and '"1x1+%d+%d"' not in _g64)
 check("UI 呈现：先构建后显示（present 管线存在且 draw 后再 paint）",
       "_present_window" in _g64 and "_present_start" in _g64
       and "_draw_chart(force=True, prepare_only=True)" in _g64)
