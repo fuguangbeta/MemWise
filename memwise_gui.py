@@ -828,6 +828,8 @@ class _SafeToplevel(tk.Toplevel):
         try:
             super().withdraw()
             super().geometry("1x1+4000+4000")
+            # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框
+            self.attributes("-alpha", 0.0)
         except Exception:
             pass
 
@@ -835,11 +837,12 @@ class _SafeToplevel(tk.Toplevel):
         if spec is None:
             return super().geometry()
         self._mw_target = spec
-        if self._mw_revealed:
-            try:
-                super().geometry(spec)
-            except Exception:
-                pass
+        # 隐藏态也立即应用：调用方在构建前就把它放到屏幕中央，任何提前映射都不会
+        # 出现在桌面左上角（2026-11-20 用户报障：点开设置/排行时左上角白框闪一下）。
+        try:
+            super().geometry(spec)
+        except Exception:
+            pass
         return super().geometry()
 
     def deiconify(self):
@@ -881,7 +884,11 @@ class _SafeToplevel(tk.Toplevel):
                 return
             except Exception:
                 pass
-        # 回退：无动画时直接显示
+        # 回退：无动画时直接显示（必须把创建时的 alpha 0 复位）
+        try:
+            self.attributes("-alpha", 1.0)
+        except Exception:
+            pass
         super().deiconify()
         self.update_idletasks()
         if target:
