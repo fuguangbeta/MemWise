@@ -4939,8 +4939,8 @@ class MemWiseGUI:
                     return
             except Exception:
                 return
-            p = min(1.0, (time.perf_counter() - t0) / 0.45)
-            e = _motion.EASE_OUT(p)
+            p = min(1.0, (time.perf_counter() - t0) / 0.50)
+            e = _motion.EASE_IN_OUT_COS(p)
             yy = int(round(py1 - (py1 - y0) * e))
             try:
                 c.coords(rid, x0, yy, x1, py1)
