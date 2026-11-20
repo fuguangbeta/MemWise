@@ -1932,9 +1932,22 @@ class MemWiseGUI:
     def _show_window(self):
         """恢复主窗口 — 在 Tkinter 事件循环中安全调用"""
         try:
+            # 显示前清空旧图，避免淡入时先看到上一次完整图表
+            self._drawing_chart = False
+            if self._chart_redraw_id is not None:
+                try:
+                    self.root.after_cancel(self._chart_redraw_id)
+                except Exception:
+                    pass
+                self._chart_redraw_id = None
+            try:
+                self.chart_canvas.delete("all")
+            except Exception:
+                pass
+            self._chart_intro_pending = True
             # 离屏最终尺寸映射 → 移到居中位置（避免默认 0,0 闪框）
             self._set_main_window_icon()
-            self._reveal_root()
+            self._reveal_root(animated=True)
             if self.root.state() == "iconic":
                 self.root.deiconify()
             self.root.lift()
@@ -1965,7 +1978,7 @@ class MemWiseGUI:
                 pass
             self._chart_intro_pending = True
             try:
-                self._draw_chart()
+                self._draw_chart(force=True)
             except Exception:
                 pass
             self._startup_anim_active = False
@@ -2254,6 +2267,7 @@ class MemWiseGUI:
         self._chart_redraw_id = None  # debounce ID
         self._chart_intro_pending = True   # 首次/恢复显示时整图错峰动画
         self._chart_intro_id = None
+        self._chart_suppress_until = 0.0
         self._drawing_chart = False   # re-entrancy guard
         self.chart_canvas.bind("<Configure>", self._on_chart_configure)
         # 占位
@@ -4806,8 +4820,8 @@ class MemWiseGUI:
     # ---- 柱图 ----
 
     def _anim_chart_intro(self, c, bars, lines, dots, py1, dur=500, stag=28):
-        """整图入场：柱子从左到右错峰升起；折线像“笔”一样从左侧延伸到右侧，
-        折点在线头经过时亮起（lines/dots 由调用方预创建并隐藏，2026-11-20）。"""
+        """整图入场：柱子错峰升起；折线由单个“笔尖”沿路径推进，
+        未到达的线段/折点保持隐藏，到达折点才显示，再继续下一段。"""
         try:
             if getattr(self, "_chart_intro_id", None):
                 self.root.after_cancel(self._chart_intro_id)
@@ -4816,6 +4830,16 @@ class MemWiseGUI:
         self._chart_intro_id = None
         t0 = time.perf_counter()
         n = len(bars)
+        segs = list(lines)
+        lens = []
+        total = 0.0
+        for (_ln, x1, y1, x2, y2) in segs:
+            L = max(1.0, ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            lens.append(L)
+            total += L
+        path_dur = dur / 1000.0  # 与单根柱子生长时长对齐；折点最迟在对应柱子完成时已出现
+        bar_end = (n - 1) * stag / 1000.0 + dur / 1000.0 if n else 0.0
+        self._chart_suppress_until = time.time() + max(0.8, bar_end, path_dur) + 0.4
 
         def step():
             self._chart_intro_id = None
@@ -4824,44 +4848,66 @@ class MemWiseGUI:
                     return
             except Exception:
                 return
-            t = (time.perf_counter() - t0) * 1000.0
+            t = time.perf_counter() - t0
             for (rid, x0, x1, _py1, y0, _color, i) in bars:
-                p = min(1.0, max(0.0, (t - i * stag) / float(dur)))
+                p = min(1.0, max(0.0, (t - i * stag / 1000.0) / (dur / 1000.0)))
                 yy = int(round(py1 - (py1 - y0) * _motion.EASE_OUT(p)))
                 try:
                     c.coords(rid, x0, yy, x1, py1)
                 except Exception:
                     pass
-            for (_ln, x1, y1, x2, y2, at, sdur) in lines:
-                p = min(1.0, max(0.0, (t - at) / float(sdur)))
-                ex = x1 + (x2 - x1) * p
-                ey = y1 + (y2 - y1) * p
-                try:
-                    c.coords(_ln, x1, y1, ex, ey)
-                except Exception:
-                    pass
-            for item, at in dots:
-                if t >= at:
+            pen = total * _motion.EASE_IN_OUT(min(1.0, max(0.0, t / path_dur)))
+            cum = 0.0
+            penx = segs[0][1] if segs else 0
+            for k, (_ln, x1, y1, x2, y2) in enumerate(segs):
+                L = lens[k]
+                if pen >= cum + L:
+                    try:
+                        c.itemconfig(_ln, state="normal")
+                        c.coords(_ln, x1, y1, x2, y2)
+                    except Exception:
+                        pass
+                    penx = x2
+                elif pen <= cum:
+                    try:
+                        c.itemconfig(_ln, state="hidden")
+                    except Exception:
+                        pass
+                else:
+                    q = (pen - cum) / L
+                    ex = x1 + (x2 - x1) * q
+                    ey = y1 + (y2 - y1) * q
+                    try:
+                        c.itemconfig(_ln, state="normal")
+                        c.coords(_ln, x1, y1, ex, ey)
+                    except Exception:
+                        pass
+                    penx = ex
+                cum += L
+            for item, dx in dots:
+                if penx >= dx - 0.5:
                     try:
                         c.itemconfig(item, state="normal")
                     except Exception:
                         pass
-            if t < (n - 1) * stag + dur + 200:
+            if t < max(bar_end, path_dur) + 0.30:
                 try:
                     self._chart_intro_id = self.root.after(8, step)
                 except Exception:
                     self._chart_intro_id = None
             else:
-                for (_ln, x1, y1, x2, y2, _at, _sd) in lines:
+                for (_ln, x1, y1, x2, y2) in segs:
                     try:
+                        c.itemconfig(_ln, state="normal")
                         c.coords(_ln, x1, y1, x2, y2)
                     except Exception:
                         pass
-                for item, _at in dots:
+                for item, _dx in dots:
                     try:
                         c.itemconfig(item, state="normal")
                     except Exception:
                         pass
+                self._chart_suppress_until = time.time() + 0.25
         step()
 
     def _anim_chart_bar(self, c, rid, x0, x1, py1, y0, color):
@@ -4909,16 +4955,20 @@ class MemWiseGUI:
     BAR_GAP = 3  # 柱间距 px
 
     def _on_chart_configure(self, event):
-        """防抖：合并短时间内的多次 Configure 事件，延迟 120ms 统一重绘"""
+        """防抖：合并短时间内的多次 Configure 事件；入场动画期间不得抢跑重绘。"""
+        if self._chart_intro_id is not None or time.time() < getattr(self, "_chart_suppress_until", 0.0):
+            return
         if self._chart_redraw_id is not None:
             self.root.after_cancel(self._chart_redraw_id)
         # 强制复位：如果上次绘制异常退出导致 _drawing_chart 未复位，此处恢复
         self._drawing_chart = False
         self._chart_redraw_id = self.root.after(50, self._draw_chart)
 
-    def _draw_chart(self):
+    def _draw_chart(self, force=False):
         """在 Canvas 上绘制固定宽度滚动柱图 + 统计指标"""
         self._chart_redraw_id = None
+        if not force and (self._chart_intro_id is not None or time.time() < getattr(self, "_chart_suppress_until", 0.0)):
+            return
         if self._drawing_chart:
             return  # 嵌套事件循环触发二次进入，跳过避免 delete("all") 踩踏
         c = self.chart_canvas
@@ -5029,10 +5079,8 @@ class MemWiseGUI:
                     if (eff_start_idx + i2) <= 2:
                         _kw["dash"] = (4, 3)
                     if ANIM_ENABLED and _intro:
-                        _ln = c.create_line(x1, y1, x1, y1, **_kw)
-                        _lines.append((_ln, x1, y1, x2, y2,
-                                       i1 * _STAG + int(_DUR * 0.15),
-                                       max(140, int((i2 - i1) * _STAG + _DUR * 0.45))))
+                        _ln = c.create_line(x1, y1, x1, y1, state="hidden", **_kw)
+                        _lines.append((_ln, x1, y1, x2, y2))
                     else:
                         c.create_line(x1, y1, x2, y2, **_kw)
                 # 折点：只画有效点；异常轮不落点（断口可见）
@@ -5064,7 +5112,7 @@ class MemWiseGUI:
                     if ANIM_ENABLED and _intro:
                         for _it in [_dot] + _extra:
                             c.itemconfig(_it, state="hidden")
-                            _dots.append((_it, i * _STAG + int(_DUR * 0.35)))
+                            _dots.append((_it, cx))
 
         if _bars and ANIM_ENABLED:
             if _intro:
