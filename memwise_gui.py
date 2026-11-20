@@ -828,8 +828,9 @@ class _SafeToplevel(tk.Toplevel):
         try:
             super().withdraw()
             super().geometry("1x1+4000+4000")
-            # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框
+            # 从创建起就保持全透明 + DWM cloak：即使 OS 抢先映射一帧，合成器也不显示它
             self.attributes("-alpha", 0.0)
+            _dwm_cloak(self, True)
             # 临时诊断（无行为影响）：记录子窗口 Map/Unmap 的真实时刻/几何/alpha
             try:
                 self.bind("<Map>", lambda e: self._mw_dbg("Map"), add="+")
@@ -896,7 +897,8 @@ class _SafeToplevel(tk.Toplevel):
                     pass
                 super().deiconify()
                 self._mw_dbg("deiconify-after")
-                self.update_idletasks()   # 首个可见帧前先画一次（alpha 0）
+                self.update_idletasks()   # cloak 状态下完成首帧绘制
+                _dwm_cloak(self, False)   # 内容已就绪，解 cloak 时不显示白底
                 self.after(16, self._mw_fade_in)
                 return
             except Exception:
@@ -931,6 +933,18 @@ class _SafeToplevel(tk.Toplevel):
             step()
         except Exception:
             pass
+
+
+def _dwm_cloak(win, on):
+    """DWM cloak：映射后暂不参与合成，内容画好再解 cloak（不碰 WS_EX_LAYERED）。"""
+    try:
+        import ctypes as _ct
+        hwnd = int(win.winfo_id())
+        top = _ct.windll.user32.GetAncestor(hwnd, 2) or hwnd
+        val = _ct.c_int(1 if on else 0)
+        _ct.windll.dwmapi.DwmSetWindowAttribute(top, 13, _ct.byref(val), _ct.sizeof(val))
+    except Exception:
+        pass
 
 
 def _prep_window_anim(win, content=False):
