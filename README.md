@@ -448,7 +448,7 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 **界面语言**：简体中文 / English 即时切换（设置面板顶部独立栏目）。切换瞬间生效，守护与统计数据不受影响；未翻译内容自动回退原语言，日志文件保留原始语言便于排障。
 
-**显示**：可开关「界面动效」，涉及内存条与图表的过渡、启动与托盘恢复的淡入；关闭后或系统开启「减少动画」时立即到位。
+**显示**：可开关「界面动效」，涉及内存条与图表的过渡、日志逐字打印；关闭后或系统开启「减少动画」时立即到位。
 
 **更新检查**：默认关闭——关闭时程序完全不联网。开启后**每次启动都会自动检查**，发现新版本会弹窗提示（可立即更新／稍后／跳过此版本）；「自动下载并替换」默认开启，更新包经 SHA-256 校验后替换程序并自动重启，配置与学习数据原样保留；网络不可用时降级为提示并给出官方发布页地址。请求只读取版本号与更新包信息，不发送任何设备信息（链路层由 GitHub 接收，对方可见你的 IP）。
 
@@ -472,7 +472,7 @@ A standalone window lists every learned process's full profile — α/β (cumula
 
 All changes are saved immediately. During daemon operation, the exclusion list, cleaning operations, cleaning depth, global hotkeys, emergency threshold, suppression interval, daemon cycle, and file logging take effect instantly; tray and close behaviors apply at their next event, and auto-start at the next logon.
 
-- *Display — turn UI animations on or off: memory-bar/chart transitions and startup/tray fades; when off, or when Windows' "reduce animations" is enabled, changes apply immediately*
+- *Display — turn UI animations on or off: memory-bar/chart transitions and log typing; when off, or when Windows' "reduce animations" is enabled, changes apply immediately*
 - *Language — Simplified Chinese / English, switchable instantly from the top section of Settings. The whole UI (tips, dialogs, log display, CLI) follows the choice; untranslated text falls back to the source language, and the log file keeps the original language for troubleshooting*
 - *Update check — off by default, and while it is off the program does not touch the network at all. When enabled, MemWise checks on every startup and offers a dialog when a new version appears (Update Now / Later / Skip This Version). "Download and replace automatically" is on by default: the package is verified with SHA-256, then the program is replaced and restarted automatically with settings and learning data kept intact. If the network is unavailable it degrades to a notice with the official release page address. The request reads only the version and package information, sends no device information (at the transport layer it is received by GitHub, which can see your IP).*
 - *Startup — elevated auto-start (scheduled task, runs at highest privilege silently on logon; also starts on battery power on laptops), auto-enable daemon on launch, minimize to tray on auto-start*
@@ -561,7 +561,7 @@ Command reference:
 | `game_processes` | list | `[]` | 游戏进程 exe 名 |
 | `emergency_abs_pct` | int | `0` | 紧急触发兜底（可用内存百分比，0=禁用，上限 50） |
 | `language` | str | `"zh_CN"` | 界面语言（`zh_CN`=简体中文 / `en`=English） |
-| `ui_animation` | bool | `true` | 界面动效（内存条/图表过渡、启动淡入；关闭立即到位） |
+| `ui_animation` | bool | `true` | 界面动效（内存条/图表过渡、日志打印；关闭立即到位） |
 | `update_check` | bool | `false` | 启动时自动检查更新（默认关闭；关闭时完全不联网） |
 | `update_auto_apply` | bool | `true` | 发现新版本时自动下载、校验并替换重启 |
 | `update_proxy` | str | `""` | 更新检查使用的代理地址（留空 = 自动使用系统代理） |
