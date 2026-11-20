@@ -982,6 +982,43 @@ def _pool_log(win, phase):
         pass
 
 
+class _HostToplevel(_SafeToplevel):
+    """宿主窗口：启动即创建并保持映射；子界面内容装进它，不再新建 Toplevel。"""
+    def __init__(self, master=None, **kw):
+        super().__init__(master, **kw)
+        self._mw_warm_map()
+
+    def _mw_warm_map(self):
+        try:
+            self.geometry("1x1+4000+4000")
+            self.attributes("-alpha", 0.0)
+            super().deiconify()
+            self.update_idletasks()
+            self.attributes("-alpha", 0.0)
+            self._mw_revealed = False
+        except Exception:
+            pass
+
+    def withdraw(self):
+        try:
+            self.geometry("1x1+4000+4000")
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        self._mw_revealed = False
+
+    def destroy(self):
+        try:
+            for _c in list(self.winfo_children()):
+                try:
+                    _c.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.withdraw()
+
+
 def _prep_window_anim(win, content=False):
     if not isinstance(win, tk.Toplevel):
         return
@@ -2258,10 +2295,21 @@ class MemWiseGUI:
             pass
         return False
 
+    def _host_win(self):
+        try:
+            for _c in list(self._host.winfo_children()):
+                try:
+                    _c.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return self._host
+
     def _open_settings(self):
         if self._focus_dialog("settings"):
             return
-        win = _SafeToplevel(self.root)
+        win = self._host_win()
         self._dlgs["settings"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -3249,20 +3297,7 @@ class MemWiseGUI:
                     "%.1f" % r[6], "%.1f" % (r[7] / (1 << 20)), tr("是") if r[8] else tr("否"),
                     r[9], r[10], r[11])
 
-        _pool_log(getattr(self, "_learn_win", None), "learn_open_attr")
-        win = getattr(self, "_learn_win", None)
-        if win is None or not win.winfo_exists():
-            win = _PoolToplevel(self.root)
-            self._learn_win = win
-        else:
-            try:
-                for _c in list(win.winfo_children()):
-                    _c.destroy()
-                win._mw_revealed = False
-                win._mw_target = None
-                win.attributes("-alpha", 0.0)
-            except Exception:
-                pass
+        win = self._host_win()
         self._dlgs["learn"] = win
         _pool_log(win, "learn_open_chosen")
         if not win.winfo_ismapped():
@@ -5465,6 +5500,10 @@ class MemWiseGUI:
     def run(self):
         # 全部启动路径先设图标（wrapper 未创建时幂等，映射前仅 client）
         self._set_main_window_icon()
+        try:
+            self._host = _HostToplevel(self.root)
+        except Exception:
+            self._host = _SafeToplevel(self.root)
         # 预创建学习日志空壳（隐藏/屏外）：首次打开不再新建 native 窗口
         try:
             _lw = _PoolToplevel(self.root)
