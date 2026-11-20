@@ -1641,7 +1641,6 @@ class MemWiseGUI:
         self._anim = _motion.Animator(self.root.after, self.root.after_cancel, frame_ms=8)
 
         self._build_ui()
-        _print_prepare(self.root)
         _hook_button_hover(self.root)
         _hook_combo_hover(self.root)
         self._refresh_mem()
@@ -5429,22 +5428,13 @@ class MemWiseGUI:
             pass
 
     def _reveal_root(self):
-        """主窗口先在屏幕外用最终尺寸映射，再一次移到居中位置；
-        避免 Tk 首次映射用默认 0,0 位置造成左上角闪框。"""
+        """直接居中显示：不做启动/恢复进入动画（2026-11-20 v5.5.012）。"""
         try:
             self.root.withdraw()
-            self.root.geometry("1060x700+4000+4000")
-            if ANIM_ENABLED:
-                try:
-                    self.root.attributes("-alpha", 0.0)
-                except Exception:
-                    pass
-            self.root.deiconify()
-            self.root.update_idletasks()
             _center_geometry(self.root, 1060, 700)
             self.root.update_idletasks()
-            if ANIM_ENABLED:
-                self.root.after(16, self._fade_root_in)
+            self.root.deiconify()
+            self.root.update_idletasks()
         except Exception:
             pass
 
@@ -5459,7 +5449,6 @@ class MemWiseGUI:
             self._startup_anim_active = False
             self.root.after(120, self._flush_startup_logs)
             self.root.after(140, self._flush_pending_type)
-            self.root.after(320, lambda: _print_ui(self.root, delay_ms=0, stagger_ms=18))
         self.root.mainloop()
 
 if __name__ == "__main__":

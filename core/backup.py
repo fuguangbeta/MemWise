@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 2   # v2：manifest 增加 partial（仅配置/不含学习数据的包）；旧版读 v2 会拒绝导入（安全方向）
-APP_VERSION = "5.5.011"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
+APP_VERSION = "5.5.012"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
 # 本地临时构建标识（2026-11-11 用户规则）：正式发布前，本地构建的版本号一律加 ".beta"
 # （如 "5.4.014.beta"）；正式发布时把本行置空、并把 APP_VERSION 升到该正式号。
 # ⚠ 只有**运行时显示**（窗口标题/启动日志/单实例提示）用 display_version()；
