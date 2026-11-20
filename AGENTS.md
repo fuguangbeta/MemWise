@@ -8,7 +8,7 @@
 
 进入项目：先调用 `skill("memwise")`，再读 `workstate.md`；预热轮按 `session-protocols` 例外。任务篇目由下表路由，按需读，不通读全库。
 
-## 📚 知识库索引（13 篇 + MEMORY.md）
+## 📚 知识库索引（14 篇 + MEMORY.md）
 
 新窗口顺序：`skill` → workstate → memory-writing-rules → red-lines → session-protocols + project-overview → 按任务取用。
 
@@ -21,6 +21,7 @@
 | session-protocols.md | 会话开头、压缩后 |
 | doc-style-guide.md | 写文档/CHANGELOG/README、发布前核查 |
 | tooltip-and-i18n.md | 改 UI 文案、翻译 |
+| animation-spec.md | 改 UI 动效、启动/托盘/子窗口/图表动画 |
 | release-and-pr-workflow.md | 发布、PR、发布脚本与档案 |
 | project-overview.md | 架构/目录/构建/日志排查 |
 | optimization-specs.md | 改清理机制、模式参数 |
