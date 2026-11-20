@@ -916,6 +916,30 @@ class _SafeToplevel(tk.Toplevel):
             pass
 
 
+class _PoolToplevel(_SafeToplevel):
+    """复用型子窗口：关闭时清空内容并隐藏，保留 native 窗口，避免每次打开新建窗口。"""
+    def destroy(self):
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            for _c in list(self.winfo_children()):
+                try:
+                    _c.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.withdraw()
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        self._mw_revealed = False
+        self._mw_target = None
+
+
 def _prep_window_anim(win, content=False):
     if not isinstance(win, tk.Toplevel):
         return
@@ -2180,7 +2204,8 @@ class MemWiseGUI:
         重复打开会让同一份 CFG 出现两套控件；排行/学习日志窗口还会叠加各自的刷新链。"""
         w = getattr(self, "_dlgs", {}).get(key)
         try:
-            if w is not None and w.winfo_exists():
+            if (w is not None and w.winfo_exists() and w.winfo_ismapped()
+                    and getattr(w, "_mw_revealed", True)):
                 w.deiconify(); w.lift(); w.focus_set()
                 return True
         except Exception:
@@ -3182,7 +3207,19 @@ class MemWiseGUI:
                     "%.1f" % r[6], "%.1f" % (r[7] / (1 << 20)), tr("是") if r[8] else tr("否"),
                     r[9], r[10], r[11])
 
-        win = _SafeToplevel(self.root)
+        win = getattr(self, "_learn_win", None)
+        if win is None or not win.winfo_exists():
+            win = _PoolToplevel(self.root)
+            self._learn_win = win
+        else:
+            try:
+                for _c in list(win.winfo_children()):
+                    _c.destroy()
+                win._mw_revealed = False
+                win._mw_target = None
+                win.attributes("-alpha", 0.0)
+            except Exception:
+                pass
         self._dlgs["learn"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -5377,6 +5414,13 @@ class MemWiseGUI:
     def run(self):
         # 全部启动路径先设图标（wrapper 未创建时幂等，映射前仅 client）
         self._set_main_window_icon()
+        # 预创建学习日志空壳（隐藏/屏外）：首次打开不再新建 native 窗口
+        try:
+            _lw = _PoolToplevel(self.root)
+            _lw.withdraw()
+            self._learn_win = _lw
+        except Exception:
+            self._learn_win = None
         if not self._minimized_to_tray:
             self._present_window()   # 启动与恢复共用同一呈现管线（先构建、后显示）
         else:
