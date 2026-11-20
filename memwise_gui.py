@@ -4837,7 +4837,8 @@ class MemWiseGUI:
             L = max(1.0, ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
             lens.append(L)
             total += L
-        path_dur = dur / 1000.0  # 与单根柱子生长时长对齐；折点最迟在对应柱子完成时已出现
+        # 折线总时长 = 整组柱子的错峰总时长（最后一根柱子完成时刻）
+        path_dur = max(dur / 1000.0, ((n - 1) * stag + dur) / 1000.0)
         bar_end = (n - 1) * stag / 1000.0 + dur / 1000.0 if n else 0.0
         self._chart_suppress_until = time.time() + max(0.8, bar_end, path_dur) + 0.4
 
