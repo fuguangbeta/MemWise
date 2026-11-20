@@ -1086,7 +1086,7 @@ class _SafeToplevel(tk.Toplevel):
             if ANIM_ENABLED and m:
                 tw, th = int(m.group(1)), int(m.group(2))
                 tx, ty = int(m.group(3)), int(m.group(4))
-                # 先以 1x1 居中打开，再一次到目标尺寸（不逐帧缩放，避免撕裂）
+                # 子窗口保持之前的方式：1x1 居中打开，再一次到目标尺寸
                 super().geometry("1x1+%d+%d" % (tx + (tw - 1) // 2, ty + (th - 1) // 2))
                 super().deiconify()
                 self.update_idletasks()
@@ -5427,9 +5427,21 @@ class MemWiseGUI:
         except Exception:
             pass
 
-    def _reveal_root(self):
-        """直接居中显示：不做启动/恢复进入动画（2026-11-20 v5.5.012）。"""
+    def _reveal_root(self, animated=False):
         try:
+            if animated and ANIM_ENABLED:
+                self.root.withdraw()
+                self.root.geometry("1060x700+4000+4000")
+                try:
+                    self.root.attributes("-alpha", 0.0)
+                except Exception:
+                    pass
+                self.root.deiconify()
+                self.root.update_idletasks()
+                _center_geometry(self.root, 1060, 700)
+                self.root.update_idletasks()
+                self.root.after(16, self._fade_root_in)
+                return
             self.root.withdraw()
             _center_geometry(self.root, 1060, 700)
             self.root.update_idletasks()
@@ -5442,7 +5454,7 @@ class MemWiseGUI:
         # 全部启动路径先设图标（映射前/隐藏期；wrapper 未创建时幂等，后续重设）
         self._set_main_window_icon()
         if not self._minimized_to_tray:
-            self._reveal_root()
+            self._reveal_root(animated=True)
             self._set_main_window_icon()
             self.root.after(150, self._set_main_window_icon)
         if not self._minimized_to_tray and ANIM_ENABLED:
