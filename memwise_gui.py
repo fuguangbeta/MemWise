@@ -990,9 +990,10 @@ class _HostToplevel(_SafeToplevel):
         self._mw_close_var = tk.BooleanVar(master=self, value=False)
         # 宿主池常驻且 alpha0：必须从任务栏/Alt-Tab 隐藏，否则会出现多条残缺缩略图
         try:
+            # 仅用 owner（transient）隐藏任务栏；不要 -toolwindow：
+            # toolwindow 会把标题栏切成工具窗口样式，关闭按钮呈红色常驻，且标题栏变窄。
             if master is not None:
                 self.transient(master)
-            self.attributes("-toolwindow", True)
         except Exception:
             pass
         self._mw_warm_map()
