@@ -830,6 +830,7 @@ class _SafeToplevel(tk.Toplevel):
             super().geometry("1x1+4000+4000")
             # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框
             self.attributes("-alpha", 0.0)
+            _dwm_no_transitions(self)
         except Exception:
             pass
 
@@ -914,6 +915,19 @@ class _SafeToplevel(tk.Toplevel):
             step()
         except Exception:
             pass
+
+
+def _dwm_no_transitions(win):
+    """禁止该窗口的 DWM 显示/隐藏过渡（DWMWA_TRANSITIONS_FORCEDISABLED=3）。
+    只影响合成过渡，不碰 layered/alpha/布局。"""
+    try:
+        import ctypes as _ct
+        hwnd = int(win.winfo_id())
+        top = _ct.windll.user32.GetAncestor(hwnd, 2) or hwnd
+        val = _ct.c_int(1)
+        _ct.windll.dwmapi.DwmSetWindowAttribute(top, 3, _ct.byref(val), _ct.sizeof(val))
+    except Exception:
+        pass
 
 
 def _prep_window_anim(win, content=False):
