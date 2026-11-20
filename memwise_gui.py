@@ -986,7 +986,14 @@ class _HostToplevel(_SafeToplevel):
     """宿主窗口：启动即创建并保持映射；子界面内容装进它，不再新建 Toplevel。"""
     def __init__(self, master=None, **kw):
         super().__init__(master, **kw)
+        self._mw_busy = False
+        self._mw_close_var = tk.BooleanVar(master=self, value=False)
         self._mw_warm_map()
+
+    def wait_window(self, window=None):
+        if self._mw_close_var.get():
+            return
+        self.wait_variable(self._mw_close_var)
 
     def _mw_warm_map(self):
         try:
@@ -1009,6 +1016,10 @@ class _HostToplevel(_SafeToplevel):
 
     def destroy(self):
         try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
             for _c in list(self.winfo_children()):
                 try:
                     _c.destroy()
@@ -1017,6 +1028,11 @@ class _HostToplevel(_SafeToplevel):
         except Exception:
             pass
         self.withdraw()
+        self._mw_busy = False
+        try:
+            self._mw_close_var.set(True)
+        except Exception:
+            pass
 
 
 def _prep_window_anim(win, content=False):
@@ -1960,7 +1976,7 @@ class MemWiseGUI:
         game = not self.cleaner.game_mode
         action = "启用" if game else "关闭"
         # 自定义确认弹窗
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(dlg)
         dlg.title(tr("游戏模式"))
@@ -2296,16 +2312,24 @@ class MemWiseGUI:
         return False
 
     def _host_win(self):
-        self._host_gen = getattr(self, "_host_gen", 0) + 1
-        try:
-            for _c in list(self._host.winfo_children()):
+        if not hasattr(self, "_hosts"):
+            self._hosts = []
+        for _h in self._hosts:
+            if not getattr(_h, "_mw_busy", False):
+                _h._mw_busy = True
+                _h._mw_close_var.set(False)
+                self._host_gen = getattr(self, "_host_gen", 0) + 1
                 try:
-                    _c.destroy()
+                    for _c in list(_h.winfo_children()):
+                        _c.destroy()
                 except Exception:
                     pass
-        except Exception:
-            pass
-        return self._host
+                return _h
+        _h = _HostToplevel(self.root)
+        _h._mw_busy = True
+        self._hosts.append(_h)
+        self._host_gen = getattr(self, "_host_gen", 0) + 1
+        return _h
 
     def _open_settings(self):
         if self._focus_dialog("settings"):
@@ -2938,7 +2962,7 @@ class MemWiseGUI:
         kind: info / warning / error，影响图标与标题色。"""
         icon = {"info": "ℹ", "warning": "⚠", "error": "❌"}.get(kind, "ℹ")
         tfg = {"info": "#4aa3ff", "warning": "#ffb84d", "error": "#ff6b6b"}.get(kind, "#e0e0e0")
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(title)
@@ -2969,7 +2993,7 @@ class MemWiseGUI:
     def _confirm_reset_dialog(self, title, message, extra_info=None):
         """三按钮确认弹窗（取消 / 确认并备份 / 确认但不备份）——重置与导入共用。
         返回 None（取消）/ True（确认并备份）/ False（确认但不备份）"""
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(title)
@@ -3002,7 +3026,7 @@ class MemWiseGUI:
     def _confirm_dialog(self, title, message, icon="warning"):
         """两按钮暗色确认弹窗（确认/取消）——程序风格统一（替代系统原生 askyesno）。
         返回 True（确认）/ False（取消）。与 _confirm_reset_dialog 同视觉语言。"""
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(title)
@@ -3037,7 +3061,7 @@ class MemWiseGUI:
     def _ask_string_dialog(self, title, prompt):
         """暗色单行输入弹窗（确认/取消，回车确认、Esc 取消）——程序风格统一
         （替代系统原生 askstring）。返回输入串（取消返回 None；空串原样返回，由调用方判空）"""
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(title)
@@ -3168,7 +3192,7 @@ class MemWiseGUI:
             return
         # 多包选择（显示文件名）
         picked = {"name": None}
-        sel = _SafeToplevel(self.root)
+        sel = self._host_win()
         sel.withdraw()
         self._apply_icon(sel)
         sel.title(tr("选择配置包"))
@@ -3224,7 +3248,7 @@ class MemWiseGUI:
     def _edit_exclusion_list(self):
         if self._focus_dialog("excl"):
             return
-        win = _SafeToplevel(self.root)
+        win = self._host_win()
         self._dlgs["excl"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -3364,7 +3388,7 @@ class MemWiseGUI:
         """一体化游戏进程管理：列出/添加/删除游戏进程条目"""
         if self._focus_dialog("game"):
             return
-        win = _SafeToplevel(self.root)
+        win = self._host_win()
         self._dlgs["game"] = win
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
@@ -3701,7 +3725,7 @@ class MemWiseGUI:
         caps = CFG.get("ws_caps") or {}
         rule = caps.get(norm)
 
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(tr("工作集硬上限"))
@@ -3779,7 +3803,7 @@ class MemWiseGUI:
         """规则管理窗口：列出/删除（添加入口=进程排行右键，设计 v2.4）。"""
         if self._focus_dialog("caps"):
             return
-        win = _SafeToplevel(self.root)
+        win = self._host_win()
         self._dlgs["caps"] = win
         win.withdraw()
         self._apply_icon(win)
@@ -4388,7 +4412,7 @@ class MemWiseGUI:
     def _choice_dialog(self, title, text, options, kind="info"):
         """通用暗色多按钮弹窗（options=[(标签, 返回值)]）：返回被点中的值；关闭 ⇒ None。"""
         res = {"v": None}
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(title)
@@ -4440,7 +4464,7 @@ class MemWiseGUI:
 
     def _progress_dialog(self, info):
         """下载进度弹窗（非模态，可取消）。返回带 set(done,total)/close() 的句柄。"""
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(tr("正在下载更新"))
@@ -4495,7 +4519,7 @@ class MemWiseGUI:
     def _countdown_dialog(self, seconds):
         """倒计时弹窗（默认 5 秒后继续；可取消或立即重启）。返回 True=继续更新。"""
         res = {"go": False}
-        dlg = _SafeToplevel(self.root)
+        dlg = self._host_win()
         dlg.withdraw()
         self._apply_icon(dlg)
         dlg.title(tr("即将重启完成更新"))
@@ -5370,7 +5394,7 @@ class MemWiseGUI:
             self._do_exit()
             return
         # ask mode: 弹窗询问
-        choice = _SafeToplevel(self.root)
+        choice = self._host_win()
         choice.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(choice)
         choice.title("MemWise")
@@ -5505,17 +5529,9 @@ class MemWiseGUI:
         # 全部启动路径先设图标（wrapper 未创建时幂等，映射前仅 client）
         self._set_main_window_icon()
         try:
-            self._host = _HostToplevel(self.root)
+            self._hosts = [_HostToplevel(self.root) for _ in range(4)]
         except Exception:
-            self._host = _SafeToplevel(self.root)
-        # 预创建学习日志空壳（隐藏/屏外）：首次打开不再新建 native 窗口
-        try:
-            _lw = _PoolToplevel(self.root)
-            _lw._mw_warm_map()
-            self._learn_win = _lw
-            _pool_log(_lw, "precreate")
-        except Exception:
-            self._learn_win = None
+            self._hosts = []
         if not self._minimized_to_tray:
             self._present_window()   # 启动与恢复共用同一呈现管线（先构建、后显示）
         else:
