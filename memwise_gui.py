@@ -1781,16 +1781,16 @@ class MemWiseGUI:
             self._minimized_to_tray = False
             # 恢复时重新播放整组图表入场（柱错峰 + 折线笔尖）——内核诉求，不能只重绘成静态图
             self._chart_intro_pending = True
-            # 先以 alpha 0 映射（不可见）让 Canvas 拿到真实宽度，再构建图表；随后再绘制一次，
-            # 保证首个 alpha>0 帧是"新内容 + 零态图表"而不是上一次的旧 surface。
-            _center_geometry(self.root, 1060, 700)
+            # ① 先在**屏外**以 alpha 0 映射最终尺寸：让 Canvas 拿到真实宽度，同时保证任何
+            #    "旧尺寸/旧 surface"帧都发生在屏幕外（Windows 恢复动画也看不到）。
+            self.root.geometry("1060x700+4000+4000")
             try:
                 self.root.attributes("-alpha", 0.0)
             except Exception:
                 pass
             self.root.deiconify()
             self.root.update_idletasks()
-            # 映射后（alpha 0）再刷一次内存条：_apply_mem_bar 只在可见时绘制，前一次在隐藏态被跳过
+            # 映射后（alpha 0、屏外）再刷内存条：_apply_mem_bar 只在可见时绘制
             try:
                 self._refresh_mem(animate=False)
             except Exception:
@@ -1800,7 +1800,10 @@ class MemWiseGUI:
                 payload = self._draw_chart(force=True, prepare_only=True)
             except Exception:
                 payload = None
-            self.root.update_idletasks()   # 内容绘制完成后的唯一一次可见前绘制
+            self.root.update_idletasks()   # 屏外完成新内容绘制
+            # ② 移到屏幕中央（仍 alpha 0）后再绘制一次：首个 alpha>0 帧必为最终位置/尺寸
+            _center_geometry(self.root, 1060, 700)
+            self.root.update_idletasks()
             self.root.after_idle(lambda: self._present_start(payload))
         except Exception as e:
             self._presenting = False
