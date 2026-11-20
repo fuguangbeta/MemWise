@@ -828,11 +828,8 @@ class _SafeToplevel(tk.Toplevel):
         try:
             super().withdraw()
             super().geometry("1x1+4000+4000")
-            # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框。
-            # 只 realize wrapper（winfo_id）后直接钉原生 alpha0，不做 update_idletasks：
-            # 后者会在每次开窗时同步跑布局，是 82bf899 卡顿的根源。
+            # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框
             self.attributes("-alpha", 0.0)
-            _native_alpha0(self)
         except Exception:
             pass
 
@@ -876,6 +873,7 @@ class _SafeToplevel(tk.Toplevel):
                     target = "%dx%d+%d+%d" % (w, h, cx, cy)
                     self._mw_target = target
                     super().geometry(target)
+                self.update_idletasks()   # 隐藏态完成布局（内容已由调用方构建）
                 try:
                     self.attributes("-alpha", 0.0)
                 except Exception:
@@ -916,24 +914,6 @@ class _SafeToplevel(tk.Toplevel):
             step()
         except Exception:
             pass
-
-
-def _native_alpha0(win):
-    """只创建 wrapper 并直接置 WS_EX_LAYERED + alpha0（不跑 update_idletasks）。"""
-    try:
-        import ctypes as _ct
-        u = _ct.windll.user32
-        hwnd = int(win.winfo_id())
-        top = u.GetAncestor(hwnd, 2) or hwnd
-        GWL_EXSTYLE = -20
-        WS_EX_LAYERED = 0x00080000
-        LWA_ALPHA = 0x00000002
-        ex = u.GetWindowLongW(top, GWL_EXSTYLE)
-        if not (ex & WS_EX_LAYERED):
-            u.SetWindowLongW(top, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-        u.SetLayeredWindowAttributes(top, 0, 0, LWA_ALPHA)
-    except Exception:
-        pass
 
 
 def _prep_window_anim(win, content=False):
