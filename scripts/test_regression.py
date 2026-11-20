@@ -4865,9 +4865,8 @@ check("动效：GUI 接线（且无已停用的打印/闪烁死代码）",
       and "_mw_fast_print" not in _g64)
 check("UI 呈现：恢复时重播整组图表入场",
       "_present_window" in _g64 and "_chart_intro_pending = True" in _g64)
-check("日志图标：勾叉为程序自绘（非字体字形）",
-      "_make_glyph_icon" in _g64 and "_log_glyph_icons" in _g64
-      and 'image_create("end", image=_gimg' in _g64)
+check("日志图标：所有行首统一默认圈+M（不再渲染任何字形）",
+      'icon = ""   # 统一使用默认图标' in _g64 and "_make_glyph_icon" not in _g64)
 check("UI 呈现：先构建后显示（present 管线存在且 draw 后再 paint）",
       "_present_window" in _g64 and "_present_start" in _g64
       and "_draw_chart(force=True, prepare_only=True)" in _g64)

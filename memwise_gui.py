@@ -80,8 +80,8 @@ _LOG_ICON_GAP = 4            # 图标与文字之间的最小间隙（图标位�
 _LOG_ICON_PROBE = "→⚠⇒🎮↑↓✓⚡🔄🟢↻🔴❌✗🟠🟡📋⛨⚙☰📜📊🧠📈🚀🔥🕳🔍✅"
 # ↑ 项目内实际用到的图标全集（2026-09-11 扫描源码得出）：图标位宽按其中最宽者定位。
 _LOG_TAG = "logwrap"         # 换行悬挂缩进标签：续行也对齐到文字列
-# 图标位策略（2026-11-20 修订）：勾/叉（正确/错误）改为**程序自绘像素图标**（与默认图标同风格），
-# 不再使用字体字形；方向箭头（升/降）仍保留字形。其余纯象形装饰（📈⚡🧠🚀🔥📋🎮…）一律换默认图标。
+# 图标位策略（2026-11-20 用户定稿）：**所有行首图标一律用默认「圈+M」自绘图**，不保留任何字形
+# （✓✗✅❌↑↓ 也剥离后换默认图标）。_LOG_ICON_KEEP 仅用于识别并剥离行首字形，不再参与渲染。
 _LOG_ICON_KEEP = frozenset("✓✗✅❌↑↓")
 
 
@@ -147,72 +147,6 @@ _LOG_ICON_ROWS = (
     ".....#######......",
     ".......###........",
 )
-
-
-_LOG_CHECK_ROWS = (
-    "..............",
-    "............#.",
-    "...........##.",
-    "..........##..",
-    ".........##...",
-    "#.......##....",
-    "##.....##.....",
-    ".##...##......",
-    "..##.##.......",
-    "...###........",
-    "....#.........",
-    "..............",
-    "..............",
-    "..............",
-)
-_LOG_CROSS_ROWS = (
-    "..............",
-    "..#........#..",
-    "...#......#...",
-    "....#....#....",
-    ".....#..#.....",
-    "......##......",
-    "......##......",
-    ".....#..#.....",
-    "....#....#....",
-    "...#......#...",
-    "..#........#..",
-    "..............",
-    "..............",
-    "..............",
-)
-
-
-def _make_glyph_icon(rows, slot=None):
-    """程序自绘勾/叉图标（与默认图标同风格：透明底 + 黑像素，居中占满图标位）。
-    不再使用字体里的 ✓✗✅❌ 字形（各字体基线/宽度不一，也不属于本程序图标体系）。"""
-    try:
-        iw, ih = len(rows[0]), len(rows)
-        w = max(iw, int(slot or iw))
-        off = (w - iw) // 2
-        img = tk.PhotoImage(width=w, height=ih)
-        for y, row in enumerate(rows):
-            for x, ch in enumerate(row):
-                if ch == "#":
-                    img.put("#000000", (x + off, y))
-        return img
-    except Exception:
-        return None
-
-
-def _log_glyph_icons(text_widget):
-    """按控件缓存自绘勾/叉图（Tk 图像需持续引用，否则被回收）。"""
-    icons = getattr(text_widget, "_log_glyph_icons", None)
-    if icons is None:
-        slot = getattr(text_widget, "_log_slot", None) or _log_slot_px(text_widget)
-        icons = {
-            "✓": _make_glyph_icon(_LOG_CHECK_ROWS, slot),
-            "✅": _make_glyph_icon(_LOG_CHECK_ROWS, slot),
-            "✗": _make_glyph_icon(_LOG_CROSS_ROWS, slot),
-            "❌": _make_glyph_icon(_LOG_CROSS_ROWS, slot),
-        }
-        text_widget._log_glyph_icons = icons
-    return icons
 
 
 def _make_log_icon(slot=None):
@@ -312,15 +246,12 @@ def _insert_log_lines(text_widget, ts, msg, tag):
     adv = _log_advances(text_widget)
     for k, line in enumerate(str(msg).split(chr(10))):
         head = ("[%s] " % ts) if k == 0 else ""
-        icon = line[:1] if line[:1] in _LOG_ICON_KEEP else ""
-        rest = line[1:] if icon else (line[1:] if line.startswith(chr(9)) else line)
+        _has_icon = line[:1] in _LOG_ICON_KEEP
+        icon = ""   # 统一使用默认图标（2026-11-20 用户定稿：所有行首图标一律圈+M）
+        rest = line[1:] if _has_icon else (line[1:] if line.startswith(chr(9)) else line)
         rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
         text_widget.insert("end", head, tag)
-        _gimg = _log_glyph_icons(text_widget).get(icon) if icon else None
-        if _gimg is not None:
-            # 勾/叉也走程序自绘图标（整位宽，文字列精确对齐）
-            text_widget.image_create("end", image=_gimg, align="center")
-        elif not icon:
+        if not icon:
             if img is not None:
                 text_widget.image_create("end", image=img, align="center")    # 整位宽的默认图标
         elif icon in adv:
