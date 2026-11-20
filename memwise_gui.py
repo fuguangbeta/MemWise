@@ -2322,6 +2322,9 @@ class MemWiseGUI:
                 try:
                     for _c in list(_h.winfo_children()):
                         _c.destroy()
+                    # 宿主会被不同子界面复用：必须把背景恢复为默认浅色，
+                    # 否则上一个暗色弹窗（确认框/设置）的 #1c1c1c 会残留成黑底。
+                    _h.configure(bg=self.root.cget("background"))
                 except Exception:
                     pass
                 return _h
