@@ -1085,7 +1085,9 @@ class _SafeToplevel(tk.Toplevel):
             m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", self._mw_target or "")
             if ANIM_ENABLED and m:
                 tw, th = int(m.group(1)), int(m.group(2))
-                super().geometry("%dx%d+4000+4000" % (tw, th))
+                tx, ty = int(m.group(3)), int(m.group(4))
+                # 先以 1x1 居中打开，再一次到目标尺寸（不逐帧缩放，避免撕裂）
+                super().geometry("1x1+%d+%d" % (tx + (tw - 1) // 2, ty + (th - 1) // 2))
                 super().deiconify()
                 self.update_idletasks()
                 try:
@@ -2591,6 +2593,8 @@ class MemWiseGUI:
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
             _push_runtime_cfg(self.judger)
+        ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
+                  foreground="#888").pack(anchor="w", pady=(6, 0))
         ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
         self._add_tip(ps_lbl, "「每个进程反复清理的轮数」\n1. 可设置为 2~6 轮，默认 4 轮\n2. 越高持续释放能力越高，但耗时更长\n⚠ 欲降低本程序性能占用建议 2~3\n⚠ 对于更彻底的优化需求可设 5~6\n⚠ 程序会在进程已无更多可释放内存时提前结束；单轮收割另有 30 秒预算，深度设高时可能被截断")
@@ -2611,9 +2615,6 @@ class MemWiseGUI:
                 pass
             ttk.Label(cf, text=tr("quick 模式下「进程清理深度」不适用"), foreground="#888",
                       wraplength=470, justify="left").pack(anchor="w")
-        ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
-                  foreground="#888").pack(anchor="w")
-
         # ─── 游戏模式 ───
         gmf = ttk.LabelFrame(inner_frame, text=tr("游戏模式"), padding=8)
         gmf.pack(fill="x", padx=12, pady=4)
