@@ -918,7 +918,14 @@ class _SafeToplevel(tk.Toplevel):
 
 class _PoolToplevel(_SafeToplevel):
     """复用型子窗口：关闭时清空内容并隐藏，保留 native 窗口，避免每次打开新建窗口。"""
-    def destroy(self):
+    def __init__(self, master=None, **kw):
+        super().__init__(master, **kw)
+        try:
+            self.protocol("WM_DELETE_WINDOW", self._mw_pool_close)
+        except Exception:
+            pass
+
+    def _mw_pool_close(self):
         try:
             self.grab_release()
         except Exception:
@@ -938,6 +945,12 @@ class _PoolToplevel(_SafeToplevel):
             pass
         self._mw_revealed = False
         self._mw_target = None
+
+    def destroy(self):
+        # 程序化 destroy 也走回收；只有应用退出才真正销毁
+        if getattr(self, "_mw_app_close", False):
+            return super().destroy()
+        self._mw_pool_close()
 
 
 def _prep_window_anim(win, content=False):
