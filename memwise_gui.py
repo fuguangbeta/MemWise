@@ -940,12 +940,24 @@ class _PoolToplevel(_SafeToplevel):
         except Exception:
             pass
         try:
-            self.withdraw()
+            # 关键：不 withdraw（Tk 会重建 native wrapper）；保持映射，仅透明+屏外
+            self.geometry("1x1+4000+4000")
             self.attributes("-alpha", 0.0)
         except Exception:
             pass
         self._mw_revealed = False
         self._mw_target = None
+
+    def _mw_warm_map(self):
+        try:
+            self.geometry("1x1+4000+4000")
+            self.attributes("-alpha", 0.0)
+            self.deiconify()
+            self.update_idletasks()
+            self.attributes("-alpha", 0.0)
+            self._mw_revealed = False
+        except Exception:
+            pass
 
     def destroy(self):
         # 程序化 destroy 也走回收；只有应用退出才真正销毁
@@ -3253,7 +3265,14 @@ class MemWiseGUI:
                 pass
         self._dlgs["learn"] = win
         _pool_log(win, "learn_open_chosen")
-        win.withdraw()  # 先隐藏，构建完成居中后一次显示
+        if not win.winfo_ismapped():
+            win.withdraw()
+        else:
+            try:
+                win.geometry("1x1+4000+4000")
+                win.attributes("-alpha", 0.0)
+            except Exception:
+                pass
         self._apply_icon(win)
         win.title(tr_msg(f"学习日志 — {len(info_data)} 个进程"))
         win.transient(self.root)
@@ -5449,7 +5468,7 @@ class MemWiseGUI:
         # 预创建学习日志空壳（隐藏/屏外）：首次打开不再新建 native 窗口
         try:
             _lw = _PoolToplevel(self.root)
-            _lw.withdraw()
+            _lw._mw_warm_map()
             self._learn_win = _lw
             _pool_log(_lw, "precreate")
         except Exception:
