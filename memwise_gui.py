@@ -828,13 +828,8 @@ class _SafeToplevel(tk.Toplevel):
         try:
             super().withdraw()
             super().geometry("1x1+4000+4000")
-            # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框。
-            # 注意 Tk 的 -alpha 要到第一次 idle 才落到原生 layered 窗口；大窗口构建慢，
-            # 期间只要有人抢跑映射就会露出白框（2026-11-20 学习日志复现）⇒ 这里立刻
-            # update_idletasks 把 wrapper 建出来，并用 Win32 再钉一层 alpha=0。
+            # 从创建起就保持全透明：即使某条 OS/Tk 路径抢先映射一帧，也不会出现白框
             self.attributes("-alpha", 0.0)
-            self.update_idletasks()
-            _force_transparent(self)
         except Exception:
             pass
 
@@ -919,25 +914,6 @@ class _SafeToplevel(tk.Toplevel):
             step()
         except Exception:
             pass
-
-
-def _force_transparent(win):
-    """把顶层 wrapper 直接设为 WS_EX_LAYERED + alpha 0（Tk 的 -alpha 要等 idle 才生效）。
-    子窗口创建时调用：抢跑映射的窗口也必须是全透明，杜绝左上角白框。"""
-    try:
-        import ctypes as _ct
-        u = _ct.windll.user32
-        hwnd = int(win.winfo_id())
-        top = u.GetAncestor(hwnd, 2) or hwnd
-        GWL_EXSTYLE = -20
-        WS_EX_LAYERED = 0x00080000
-        LWA_ALPHA = 0x00000002
-        ex = u.GetWindowLongW(top, GWL_EXSTYLE)
-        if not (ex & WS_EX_LAYERED):
-            u.SetWindowLongW(top, GWL_EXSTYLE, ex | WS_EX_LAYERED)
-        u.SetLayeredWindowAttributes(top, 0, 0, LWA_ALPHA)
-    except Exception:
-        pass
 
 
 def _prep_window_anim(win, content=False):
