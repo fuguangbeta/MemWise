@@ -3919,9 +3919,10 @@ check("T2 θ 同 tick 复用（判定一致性保持）", _a57 == _a57b)
 check("T2 θ 跨 tick 失效重采样", _a57 != _b57, "%s vs %s" % (_a57, _b57))
 # ── T3 排行悬浮竞态：10s 刷新全删行后，<Motion> 对旧 item 调 tree.item 抛 TclError ──
 _gui57 = _src47("memwise_gui.py")
-check("T3 悬浮守卫源码形态（两处 exists 先查 + 刷新清空）",
+check("T3 悬浮守卫源码形态（两处 exists 先查 + 差量刷新）",
       _gui57.count("tree.exists(_cur_hover)") == 2
-      and "_cur_hover = None   # 行已全删重建" in _gui57)
+      and "差量刷新" in _gui57
+      and 'for _iid in list(tree.get_children(""))' in _gui57)
 _root57 = _tk54s.Tk(); _root57.withdraw()
 _tree57 = _ttk54s.Treeview(_root57, columns=("a",), show="headings", height=3)
 _tree57.pack()
@@ -4138,7 +4139,8 @@ try:
     _metrics = [_cv60.itemcget(i, "text") for i in _cv60.find_all() if _cv60.type(i) == "text"]
     check("J14 真实 Tk 渲染：None 断口 + 悬浮未计算 + 均值排除",
           len(_cv60.find_withtag("eff_line")) == 1
-          and len(_cv60.find_withtag("eff_dot")) == 3
+          and sum(1 for _i in _cv60.find_withtag("eff_dot")
+                  if _cv60.type(_i) == "oval") == 3
           and "未计算" in _tip_txt
           and any("平均效率 24%" in str(t) for t in _metrics),
           "line=%d dot=%d tip=%r" % (len(_cv60.find_withtag("eff_line")),
@@ -4861,6 +4863,17 @@ check("动效：GUI 接线（且无已停用的打印/闪烁死代码）",
       and not any(("def " + k) in _g64 for k in ("_flash_log", "_print_ui", "_print_prepare",
                                                   "_tree_reveal", "_anim_popdown", "_hide_text"))
       and "_mw_fast_print" not in _g64)
+check("UI 呈现：先构建后显示（present 管线存在且 draw 后再 paint）",
+      "_present_window" in _g64 and "_present_start" in _g64
+      and "_draw_chart(force=True, prepare_only=True)" in _g64)
+check("UI 呈现：图表两阶段交换（无可见 delete-all）",
+      "_chart_delete_items" in _g64 and 'c.delete("all")' not in _g64
+      and "find_all()" in _g64)
+check("托盘左键只认抬起事件（防双恢复）",
+      "0x202, 0x203" in _g64 and "0x201, 0x202" not in _g64)
+check("排行刷新为差量（不整表删除）",
+      "差量刷新" in _g64 and 'for _iid in list(tree.get_children' in _g64
+      and "_cur_hover = None   # 行已全删重建" not in _g64)
 
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))

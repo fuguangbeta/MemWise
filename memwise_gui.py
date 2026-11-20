@@ -624,6 +624,17 @@ def _tree_measure_columns(cols, rows, pad=26, p90_cols=(), floor=0):
     return out
 
 
+def _chart_delete_items(canvas, ids):
+    """按 id 删除旧图表 item（不 delete("all")：避免可见空白帧，2026-11-20 UI 批）。"""
+    if not ids:
+        return
+    for _iid in ids:
+        try:
+            canvas.delete(_iid)
+        except Exception:
+            pass
+
+
 def _eff_runs(points):
     """把效率点序列切成“连续有效”的段：[[(local_idx, value), …], …]。
 
@@ -1033,7 +1044,8 @@ def _wnd_proc(hwnd, msg, wp, lp):
             # HIWORD=uID——低字在两种格式下均为事件值，与托盘 ADD→SETVERSION（文档
             # 顺序，2026-08-30 修正）配套后无论 Shell 实际采用何种格式均正确
             ev = lp & 0xFFFF
-            if ev in (0x201, 0x202, 0x203):
+            # 只认抬起（WM_LBUTTONUP/NIN_SELECT）与双击：按下事件也映射会概率性产生两次恢复
+            if ev in (0x202, 0x203):
                 _tray_action = 'left'
             elif ev in (0x205, 0x007B):
                 _tray_action = 'right'
@@ -1681,63 +1693,107 @@ class MemWiseGUI:
             pass
 
     def _show_window(self):
-        """恢复主窗口 — 在 Tkinter 事件循环中安全调用"""
+        """恢复主窗口（2026-11-20 UI 批）：先构建、后显示；首个可见帧即最终内容 + 零态图表。"""
         try:
-            # 显示前清空旧图，避免淡入时先看到上一次完整图表
-            self._drawing_chart = False
-            if self._chart_redraw_id is not None:
+            # 已可见：只置前，绝不重建（防二次进入造成"清空"闪）
+            if self.root.state() == "normal" and not self._minimized_to_tray:
                 try:
-                    self.root.after_cancel(self._chart_redraw_id)
+                    self.root.lift()
                 except Exception:
                     pass
-                self._chart_redraw_id = None
-            try:
-                self.chart_canvas.delete("all")
-            except Exception:
-                pass
-            self._chart_intro_pending = True
-            # 离屏最终尺寸映射 → 移到居中位置（避免默认 0,0 闪框）
-            self._set_main_window_icon()
-            self._reveal_root(animated=True)
-            if self.root.state() == "iconic":
-                self.root.deiconify()
-            self.root.lift()
-            self._minimized_to_tray = False
-            self._chart_intro_pending = True   # 托盘恢复：图表重新从左到右升起
-            # 先完成映射（wrapper 创建）再设置图标：deiconify 前 wrapper 不存在，设置会落到 client 无效
-            self.root.update_idletasks()
-            # 图标重设：--minimized/托盘期间窗口未映射，wrapper 未创建；恢复后必须重设到 wrapper（幂等缓存句柄零泄漏）
-            # 否则标题栏回退 Tk 默认黑色羽毛、任务栏回退 exe 资源立体图标（v3.4.19 重启自启场景根因）
-            self._set_main_window_icon()
-            self.root.after(150, self._set_main_window_icon)
-            # 先刷新数据并启动图表入场动画，再淡入窗口——避免“先看到刷新前的旧界面”
-            self.root.update_idletasks()
+                return
+            now = time.time()
+            # 托盘 down/up 双事件去抖（同一左键可能产生两个事件）
+            if now - getattr(self, "_last_present_ts", 0.0) < 0.3:
+                return
+            self._last_present_ts = now
+            self._present_window()
+        except Exception as e:
+            import sys; print(f"[MemWise] _show_window 异常: {e}", file=_ERR)
+
+    def _present_window(self):
+        """统一呈现管线：隐藏态完成全部内容 → 单次映射（alpha 0）→ 同一回调启动淡入与图表入场。
+        关键：内容绘制后必须再做一次 update_idletasks，保证首个 alpha>0 帧不是旧 surface。"""
+        self._presenting = True
+        try:
             self._drawing_chart = False
-            if self._chart_redraw_id is not None:
-                try:
-                    self.root.after_cancel(self._chart_redraw_id)
-                except Exception:
-                    pass
-                self._chart_redraw_id = None
+            for _id_name in ("_chart_redraw_id", "_chart_intro_id"):
+                _id = getattr(self, _id_name, None)
+                if _id is not None:
+                    try:
+                        self.root.after_cancel(_id)
+                    except Exception:
+                        pass
+                    setattr(self, _id_name, None)
             try:
-                self._refresh_mem()
-            except Exception:
-                pass
-            try:
-                self._upd_stats()
-            except Exception:
-                pass
-            self._chart_intro_pending = True
-            try:
-                self._draw_chart(force=True)
+                self.root.withdraw()
             except Exception:
                 pass
             self._startup_anim_active = False
-            self.root.after(120, self._flush_startup_logs)
-            self.root.after(140, self._flush_pending_type)
-
+            # 历史日志一次性呈现（不逐字），避免映射后再注入造成重排/闪烁；新日志仍逐字
+            self._suppress_typewriter = True
+            try:
+                self._flush_startup_logs()
+            finally:
+                self._suppress_typewriter = False
+            self._refresh_mem(animate=False)
+            self._upd_stats(animate=False)
+            self._minimized_to_tray = False
+            # 先以 alpha 0 映射（不可见）让 Canvas 拿到真实宽度，再构建图表；随后再绘制一次，
+            # 保证首个 alpha>0 帧是"新内容 + 零态图表"而不是上一次的旧 surface。
+            _center_geometry(self.root, 1060, 700)
+            try:
+                self.root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
+            self.root.deiconify()
+            self.root.update_idletasks()
+            # 映射后（alpha 0）再刷一次内存条：_apply_mem_bar 只在可见时绘制，前一次在隐藏态被跳过
+            try:
+                self._refresh_mem(animate=False)
+            except Exception:
+                pass
+            payload = None
+            try:
+                payload = self._draw_chart(force=True, prepare_only=True)
+            except Exception:
+                payload = None
+            self.root.update_idletasks()   # 内容绘制完成后的唯一一次可见前绘制
+            self.root.after_idle(lambda: self._present_start(payload))
         except Exception as e:
-            import sys; print(f"[MemWise] _show_window 异常: {e}", file=_ERR)
+            self._presenting = False
+            try:
+                self.root.attributes("-alpha", 1.0)
+            except Exception:
+                pass
+            import sys; print(f"[MemWise] _present_window 异常: {e}", file=_ERR)
+
+    def _present_start(self, payload):
+        try:
+            self._set_main_window_icon()   # wrapper 已存在；必须在 alpha 抬升前
+            try:
+                self.root.lift()
+            except Exception:
+                pass
+            if payload:
+                try:
+                    self._anim_chart_intro(*payload)
+                except Exception:
+                    pass
+            self._fade_root_in(on_done=self._present_done)
+            self.root.after(240, self._set_main_window_icon)   # 兜底：fade 完成后校正
+        except Exception:
+            self._presenting = False
+
+    def _present_done(self):
+        self._presenting = False
+        pend = getattr(self, "_pending_dae", None)
+        if pend:
+            self._pending_dae = None
+            try:
+                self._upd_dae_ui(*pend)
+            except Exception:
+                pass
 
     def _on_hotkey(self):
         """Ctrl+Shift+M → 执行一键优化"""
@@ -2620,6 +2676,13 @@ class MemWiseGUI:
                 self._pre_switch_log_lines = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
             except Exception:
                 self._pre_switch_log_lines = 0
+            # 重建在整个窗口不可见时进行（2026-11-20 UI 批）：防"清空再重绘"的空白闪
+            _was_visible = self.root.state() == "normal"
+            if _was_visible:
+                try:
+                    self.root.attributes("-alpha", 0.0)
+                except Exception:
+                    pass
             # 关闭所有弹窗（设置/排除/排行等——旧语言界面）
             for w in list(self.root.winfo_children()):
                 if isinstance(w, tk.Toplevel):
@@ -2634,6 +2697,9 @@ class MemWiseGUI:
             self._upd_stats()
             self._rerender_log()         # 历史日志按新语言重渲染（原文缓存）
             self._draw_chart()           # 图表标题/底部指标/悬浮因子随新语言重绘
+            if _was_visible:
+                self.root.update_idletasks()
+                self._fade_root_in()     # 重建完成后再淡入，避免可见空白
             if self.engine.daemon_running:
                 self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
                 self.lbl_st["text"] = tr("守护运行中")
@@ -2652,9 +2718,20 @@ class MemWiseGUI:
                 self._refresh_mem()
                 self._upd_stats()
                 self._log_op("语言已切换")
+                if self.root.state() == "normal":
+                    try:
+                        self.root.update_idletasks()
+                        self._fade_root_in()
+                    except Exception:
+                        pass
             except Exception:
                 try:
                     self._log_op("语言切换失败，请重启程序")
+                except Exception:
+                    pass
+                try:
+                    # 重建也失败时至少恢复可见，避免窗口永久 alpha 0
+                    self.root.attributes("-alpha", 1.0)
                 except Exception:
                     pass
 
@@ -3335,12 +3412,12 @@ class MemWiseGUI:
                 import sys; print(f"[MemWise] _refresh sniffer error: {e}", file=_ERR)
                 win.after(_refresh_ms, _refresh)
                 return
-            for item in tree.get_children():
-                tree.delete(item)
-            _cur_hover = None   # 行已全删重建：旧 item id 失效（_on_motion 守卫外的第二道防线）
+            # 差量刷新（2026-11-20 UI 批）：iid=pid，存在则改值、新增插入、消失删除；
+            # 不再整表 delete+insert（原实现每 10s 闪一次并丢悬停/选择）。
             try:
                 caps = CFG.get("ws_caps") or {}
                 applied = getattr(self.engine, "_ws_cap_applied", {}) or {}
+                _wanted = set()
                 for s in snaps:
                     commit_mb = s.priv / (1 << 20)
                     ws_col = f"{s.ws / (1 << 20):.0f} MB"
@@ -3351,9 +3428,19 @@ class MemWiseGUI:
                     spath = getattr(s, "path", None)
                     norm = spath.lower().replace("/", "\\") if spath else ""
                     cap_cell = str(caps[norm]["mb"]) if norm in caps else ""
-                    tree.insert("", "end", values=(
-                        s.name, s.pid, f"{commit_mb:.0f} MB", ws_col,
-                        f"{s.cpu:.1f}%", cap_cell, learned))
+                    _vals = (s.name, s.pid, f"{commit_mb:.0f} MB", ws_col,
+                             f"{s.cpu:.1f}%", cap_cell, learned)
+                    _iid = str(s.pid)
+                    _wanted.add(_iid)
+                    if tree.exists(_iid):
+                        tree.item(_iid, values=_vals)
+                    else:
+                        tree.insert("", "end", iid=_iid, values=_vals)
+                for _iid in list(tree.get_children("")):
+                    if _iid not in _wanted:
+                        tree.delete(_iid)
+                if _cur_hover not in _wanted:
+                    _cur_hover = None   # 仅悬停行确实消失时才清（保留存活行的悬停）
                 # 应用用户选择的排序（列索引，语言无关）
                 if _sort_col_idx is not None:
                     items = [(tree.set(k, cols[_sort_col_idx]), k) for k in tree.get_children("")]
@@ -3627,7 +3714,8 @@ class MemWiseGUI:
         except Exception:
             _flash_end = None
         self.log.see("end")
-        if _flash_start is not None and _flash_end is not None:
+        if (_flash_start is not None and _flash_end is not None
+                and not getattr(self, "_suppress_typewriter", False)):
             self._typewriter(_flash_start, _flash_end)
         self.log.configure(state="disabled")
         self._last_msg = msgs[-1] if msgs else None
@@ -4296,12 +4384,19 @@ class MemWiseGUI:
                     # 大整体内部零刷新、全部行完整输出；否则同周期内前几个组会被后组清掉
                     self._write_group([m for g in args for m in g], to_file=False)  # 仅显示：内容已有 [清理]/[调参] 直写落盘
                 elif action == 'chart':
+                    if getattr(self, "_presenting", False):
+                        self._chart_dirty = True   # 呈现期间不画：显示后再由下一次自然刷新覆盖
+                        continue
                     self._drawing_chart = False  # 异常恢复：防止标志永锁
                     if self._chart_redraw_id is not None:
                         self.root.after_cancel(self._chart_redraw_id)
                         self._chart_redraw_id = None
                     self._draw_chart()
-                elif action == 'upd_ui': self._upd_dae_ui(*args)
+                elif action == 'upd_ui':
+                    if getattr(self, "_presenting", False):
+                        self._pending_dae = args
+                        continue
+                    self._upd_dae_ui(*args)
                 elif action == 'opt_done': self._opt_done(args)
                 elif action == 'dae_stopped': self._dae_stopped()
                 elif action == 'upd_result': self._on_update_result(args)
@@ -4409,11 +4504,15 @@ class MemWiseGUI:
                         pass
         step()
 
-    def _render_mem_bar(self, m):
+    def _render_mem_bar(self, m, animate=True):
         """内存条/标签：数值变化时 420ms 缓动（可中途重定向；标签在结束时刷新）。"""
         pct = float(m["pct"])
         self._mem_pct = m["pct"]
         self._update_mem_labels(m)   # 标签用真实值即时刷新（不参与动画，防重定向时停更）
+        if not animate:
+            self._mem_shown = pct
+            self._apply_mem_bar(pct, m)
+            return
         if not getattr(self, "_anim_enabled", True) or not self.root.winfo_viewable():
             self._mem_shown = pct
             self._apply_mem_bar(pct, m)
@@ -4431,8 +4530,8 @@ class MemWiseGUI:
     def _tick_mem_bar(self):
         """内存条高频链：另取一次状态、只画条/标签（托盘仍由 5s 链驱动）。"""
         try:
-            # 隐藏到托盘/最小化时不采样（2026-11-20 审查 15.1）：托盘由 5s 链独立更新
-            if not self.root.winfo_viewable():
+            # 隐藏到托盘/最小化/呈现管线期间不采样（2026-11-20）：托盘由 5s 链独立更新
+            if not self.root.winfo_viewable() or getattr(self, "_presenting", False):
                 self._mem_bar_id = self.root.after(300, self._tick_mem_bar)
                 return
         except Exception:
@@ -4469,7 +4568,7 @@ class MemWiseGUI:
             pass
         self._mem_bar_id = None
 
-    def _refresh_mem(self):
+    def _refresh_mem(self, animate=True):
         try:
             m = winapi.get_memory_status()
             if m:
@@ -4480,7 +4579,7 @@ class MemWiseGUI:
                 if now_ts - getattr(self, '_last_tray_update', 0) >= 5:
                     self._update_tray_status(pct)
                     self._last_tray_update = now_ts
-                self._render_mem_bar(m)
+                self._render_mem_bar(m, animate=animate)
         except Exception as e:
             import sys; print(f"[MemWise] _refresh_mem 异常: {e}", file=_ERR)
         finally:
@@ -4499,7 +4598,7 @@ class MemWiseGUI:
         return (s.get("standby", 0) + s.get("modified", 0) + s.get("filecache", 0)
                 + s.get("registry", 0) + s.get("volume", 0))
 
-    def _num_tween(self, key, widget, prefix, target, unit=None):
+    def _num_tween(self, key, widget, prefix, target, unit=None, animate=True):
         """统计数字 320ms 递增/递减（文字动画，2026-11-20）。"""
         target = float(target)
         prev = getattr(self, "_num_" + key, target)
@@ -4509,7 +4608,7 @@ class MemWiseGUI:
                 return f"{v/1024.0:.1f}GB" if v >= 1000 else f"{v:.1f}MB"
             return fmt_count(int(round(v)))
 
-        if getattr(self, "_anim_enabled", True) and abs(target - prev) > 0.001:
+        if animate and getattr(self, "_anim_enabled", True) and abs(target - prev) > 0.001:
             self._anim.tween("num_" + key, target, 320, _motion.EASE_OUT,
                              lambda v: widget.__setitem__("text", prefix + _fmt(v)),
                              start=prev)
@@ -4517,11 +4616,11 @@ class MemWiseGUI:
             widget["text"] = prefix + _fmt(target)
         self.__dict__["_num_" + key] = target
 
-    def _upd_stats(self):
+    def _upd_stats(self, animate=True):
         s = self.cleaner.summary()
-        self._num_tween("sb", self.lbl_sb, tr("系统杂项: "), self._sys_ops_count(s))
-        self._num_tween("tr", self.lbl_tr, tr("进程: "), s['ws_trim'])
-        self._num_tween("fr", self.lbl_fr, tr("释放: "), s['freed_mb'], unit="mb")
+        self._num_tween("sb", self.lbl_sb, tr("系统杂项: "), self._sys_ops_count(s), animate=animate)
+        self._num_tween("tr", self.lbl_tr, tr("进程: "), s['ws_trim'], animate=animate)
+        self._num_tween("fr", self.lbl_fr, tr("释放: "), s['freed_mb'], unit="mb", animate=animate)
         self._upd_learned()
 
     # ---- 柱图 ----
@@ -4660,13 +4759,14 @@ class MemWiseGUI:
                     self._chart_bar_anim_id = None
         step()
 
-    def _draw_chart_placeholder(self):
+
+    def _draw_chart_placeholder(self, old_ids=None):
         """显示占位文本（无数据时）"""
         c = self.chart_canvas
-        c.delete("all")
         cw = c.winfo_width() or 400
         c.create_text(cw//2, 70, text=tr("启动守护模式后显示实时优化图表"),
                       fill="#888", font=("微软雅黑", 10))
+        _chart_delete_items(c, old_ids)
 
 
 
@@ -4683,17 +4783,21 @@ class MemWiseGUI:
         self._drawing_chart = False
         self._chart_redraw_id = self.root.after(50, self._draw_chart)
 
-    def _draw_chart(self, force=False):
+    def _draw_chart(self, force=False, prepare_only=False):
         """在 Canvas 上绘制固定宽度滚动柱图 + 统计指标"""
         self._chart_redraw_id = None
         if not force and (self._chart_intro_id is not None or time.time() < getattr(self, "_chart_suppress_until", 0.0)):
             return
+        if not force and not self.root.winfo_viewable():
+            # 隐藏/呈现期间不画：留给恢复时的 prepare（force）或下一次自然刷新
+            self._chart_dirty = True
+            return
         if self._drawing_chart:
-            return  # 嵌套事件循环触发二次进入，跳过避免 delete("all") 踩踏
+            return  # 嵌套事件循环触发二次进入，跳过避免重入踩踏
         c = self.chart_canvas
         self._drawing_chart = True
         try:
-            self._do_draw_chart()
+            return self._do_draw_chart(prepare_only=prepare_only)
         except Exception as e:
             import sys, traceback
             print(f"[MemWise] 图表渲染异常: {e}", file=_ERR)
@@ -4705,7 +4809,7 @@ class MemWiseGUI:
         finally:
             self._drawing_chart = False
 
-    def _do_draw_chart(self):
+    def _do_draw_chart(self, prepare_only=False):
         c = self.chart_canvas
         try:
             if getattr(self, "_chart_intro_id", None):
@@ -4713,12 +4817,17 @@ class MemWiseGUI:
         except Exception:
             pass
         self._chart_intro_id = None
-        c.delete("all")  # 先清空画布：防占位文字残留与重复绘制污染（解耦批次误删，2026-08-14 修复）
+        # 两阶段交换（2026-11-20 UI 批）：先记为旧，全部新 item 建好后再删旧，
+        # 同一回调内完成 ⇒ Tk 只在 idle 绘制一次，用户看不到"清空"帧。
+        old_ids = c.find_all()
         data, meta_list, eff_data_view, eff_factors_view = self.engine.chart_snapshot()
         if not data:
-            self._draw_chart_placeholder()
+            self._draw_chart_placeholder(old_ids)
             return
-        cw = c.winfo_width(); ch = 200
+        cw = c.winfo_width()
+        if cw < 50:          # 首次/未映射时 winfo_width 为 1：用名义宽度，避免负坐标与空数据
+            cw = 1000
+        ch = 200
         pad_left = 50; pad_right = 10; pad_top = 20; pad_bottom = 46
         px0 = pad_left; px1 = cw - pad_right
         py0 = pad_top; py1 = ch - pad_bottom
@@ -4833,12 +4942,14 @@ class MemWiseGUI:
                             c.itemconfig(_it, state="hidden")
                             _dots.append((_it, cx))
 
-        if _bars and ANIM_ENABLED:
-            if _intro:
-                self._anim_chart_intro(c, _bars, _lines, _dots, py1, _DUR, _STAG)
-            else:
+        _anim_intro = getattr(self, "_anim_chart_intro", None)
+        _anim_bar = getattr(self, "_anim_chart_bar", None)
+        if _bars and ANIM_ENABLED and not prepare_only:
+            if _intro and _anim_intro:
+                _anim_intro(c, _bars, _lines, _dots, py1, _DUR, _STAG)
+            elif _anim_bar:
                 _rid, _x0, _x1, _py1, _y0, _color = _bars[-1][:6]
-                self._anim_chart_bar(c, _rid, _x0, _x1, _py1, _y0, _color)
+                _anim_bar(c, _rid, _x0, _x1, _py1, _y0, _color)
 
         # ── 鼠标悬浮提示（单一 Motion 命中，无需逐柱命中区对象）──
 
@@ -4875,9 +4986,13 @@ class MemWiseGUI:
         c.tag_unbind("all", "<Leave>")
         c.bind("<Motion>", self._chart_on_motion)
         c.bind("<Leave>", self._chart_hide_tip)
-        # 重绘已 delete("all") 清掉提示：悬停列缓存必须同步复位，否则鼠标停在同一列
+        # 新内容已建好：删除旧 item（两阶段交换，无空白帧）
+        _chart_delete_items(c, old_ids)
+        # 重绘已清掉提示：悬停列缓存必须同步复位，否则鼠标停在同一列
         # 不再触发 _chart_on_motion 的重绘分支，提示消失后无法恢复（2026-11-08 复核）。
         self._last_hover_col = -1
+        if prepare_only:
+            return (c, _bars, _lines, _dots, py1) if (_bars and ANIM_ENABLED and _intro) else None
 
     def _chart_show_tip(self, x, freed_mb, eff_pct, idx):
         c = self.chart_canvas
@@ -5023,6 +5138,9 @@ class MemWiseGUI:
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
     def _upd_dae_ui(self, s, m, txt="🟢 守护中"):
+        if getattr(self, "_presenting", False):
+            self._pending_dae = (s, m, txt)   # 呈现管线期间只存最新值，避免映射前起动画
+            return
         # 与 _upd_stats 同一写入口（2026-11-20 审查 2.2：直接赋值会覆盖 320ms tween）
         self._num_tween("sb", self.lbl_sb, tr("系统杂项: "), self._sys_ops_count(s))
         self._num_tween("tr", self.lbl_tr, tr("进程: "), s['ws_trim'])
@@ -5178,7 +5296,7 @@ class MemWiseGUI:
         self._stop_mem_bar()
         self.root.destroy()
 
-    def _fade_root_in(self):
+    def _fade_root_in(self, on_done=None):
         try:
             t0 = time.perf_counter()
 
@@ -5187,47 +5305,25 @@ class MemWiseGUI:
                 try:
                     self.root.attributes("-alpha", 0.02 + 0.98 * _motion.EASE_OUT(p))
                 except Exception:
+                    if on_done:
+                        on_done()
                     return
                 if p < 1.0:
                     self.root.after(16, step)
+                elif on_done:
+                    on_done()
             step()
         except Exception:
-            pass
-
-    def _reveal_root(self, animated=False):
-        try:
-            if animated and ANIM_ENABLED:
-                self.root.withdraw()
-                self.root.geometry("1060x700+4000+4000")
-                try:
-                    self.root.attributes("-alpha", 0.0)
-                except Exception:
-                    pass
-                self.root.deiconify()
-                self.root.update_idletasks()
-                _center_geometry(self.root, 1060, 700)
-                self.root.update_idletasks()
-                self.root.after(16, self._fade_root_in)
-                return
-            self.root.withdraw()
-            _center_geometry(self.root, 1060, 700)
-            self.root.update_idletasks()
-            self.root.deiconify()
-            self.root.update_idletasks()
-        except Exception:
-            pass
+            if on_done:
+                on_done()
 
     def run(self):
-        # 全部启动路径先设图标（映射前/隐藏期；wrapper 未创建时幂等，后续重设）
+        # 全部启动路径先设图标（wrapper 未创建时幂等，映射前仅 client）
         self._set_main_window_icon()
         if not self._minimized_to_tray:
-            self._reveal_root(animated=True)
-            self._set_main_window_icon()
-            self.root.after(150, self._set_main_window_icon)
-        if not self._minimized_to_tray and ANIM_ENABLED:
+            self._present_window()   # 启动与恢复共用同一呈现管线（先构建、后显示）
+        else:
             self._startup_anim_active = False
-            self.root.after(120, self._flush_startup_logs)
-            self.root.after(140, self._flush_pending_type)
         self.root.mainloop()
 
 if __name__ == "__main__":
