@@ -1510,6 +1510,10 @@ class MemWiseGUI:
         # P13：Tk 回调异常默认只写 sys.stderr（windowed 下为 devnull）⇒ 不进 sys.excepthook。
         # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
         self.root.report_callback_exception = self._tk_exception_hook
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         self.root.withdraw()  # 先隐藏：居中定位后再统一显示，消除"默认位置闪现"
         self.root.title(_APP_TITLE)
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
@@ -1903,6 +1907,7 @@ class MemWiseGUI:
                         pass
                     setattr(self, _id_name, None)
             try:
+                self.root.attributes("-alpha", 0.0)
                 self.root.withdraw()
             except Exception:
                 pass
@@ -5505,6 +5510,10 @@ class MemWiseGUI:
         mode = CFG.get("close_action", "ask")
         if mode == "minimize":
             self._minimized_to_tray = True
+            try:
+                self.root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
             self.root.withdraw()
             return
         if mode == "exit":
@@ -5535,6 +5544,10 @@ class MemWiseGUI:
         self.root.wait_window(choice)
         if result[0] == "minimize":
             self._minimized_to_tray = True
+            try:
+                self.root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
             self.root.withdraw()
         else:
             self._do_exit()
