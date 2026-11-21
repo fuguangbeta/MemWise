@@ -1571,6 +1571,7 @@ class MemWiseGUI:
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
         self._panel_msgs = []                  # 当前日志面板实际承载的消息（恢复时整体重建）
         self._animated_count = 0               # 这些消息中已经播完打印动画的数量
+        self._present_log_pending = []         # 呈现期间到达的新日志暂存，淡入后再追加
         self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
         self._mem_pct = 0
         self._mem_bar_id = None
@@ -1970,10 +1971,31 @@ class MemWiseGUI:
         except Exception:
             self._presenting = False
 
+    def _append_present_pending(self):
+        msgs = list(getattr(self, "_present_log_pending", None) or [])
+        if not msgs:
+            return
+        self._present_log_pending = []
+        try:
+            self.log.configure(state="normal")
+            start = self.log.index("end-1c")
+            for m in msgs:
+                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+                                  _align_log_line(self._log_display(m)), _LOG_TAG)
+            self.log.see("end")
+            self.log.configure(state="disabled")
+            self._typewriter(start, "end-1c", len(msgs))
+        except Exception:
+            pass
+
     def _present_done(self):
         self._presenting = False
         try:
             self._flush_pending_type()
+        except Exception:
+            pass
+        try:
+            self._append_present_pending()
         except Exception:
             pass
         pend = getattr(self, "_pending_dae", None)
@@ -3921,6 +3943,19 @@ class MemWiseGUI:
                     self._startup_msgs = []
                 self._startup_msgs.extend(msgs)
             return
+        # 呈现期间到达的新日志先暂存，避免在淡入过程中触发清屏/重排
+        if getattr(self, "_presenting", False) and not getattr(self, "_suppress_typewriter", False):
+            if getattr(self, "_panel_msgs", None) is None:
+                self._panel_msgs = []
+            self._log_history.extend(msgs)
+            self._panel_msgs.extend(msgs)
+            if not hasattr(self, "_present_log_pending"):
+                self._present_log_pending = []
+            self._present_log_pending.extend(msgs)
+            if to_file and CFG.get("log_to_file"):
+                for m in msgs:
+                    _log_write("界面", m[0] if isinstance(m, tuple) else m)
+            return
         # 连续重复去重：单条消息与上一条完全相同则跳过
         if len(msgs) == 1 and msgs[0] == self._last_msg:
             return
@@ -3983,6 +4018,7 @@ class MemWiseGUI:
             msgs = list(getattr(self, "_panel_msgs", None) or [])
             if not msgs:
                 return
+            self._present_log_pending = []
             animated = min(getattr(self, "_animated_count", 0), len(msgs))
             self._finish_typewriter()
             self._animated_count = animated
