@@ -110,6 +110,7 @@ class PareCleaner:
             "layer3_ran": 0, "layer3_extra": 0,
             # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
             "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
+            "deep_rebound_freed": 0, "deep_rebound_hits": 0, "deep_final_freed": 0, "deep_final_sweep": 0,
         }
         self._info_msgs = []
         self._last_mode = None   # 最近一次 optimize 的**真实模式**（ERIS 按模式分桶取真值）；None ⇒

@@ -25,7 +25,7 @@ APP_VERSION = "5.6.025"  # 最近一次**正式发布**的版本号（README/CHA
 # （如 "5.4.014.beta"）；正式发布时把本行置空、并把 APP_VERSION 升到该正式号。
 # ⚠ 只有**运行时显示**（窗口标题/启动日志/单实例提示）用 display_version()；
 #   仓库文档与发布断言继续用 APP_VERSION —— beta 因此不会污染任何发布检查。
-BUILD_VERSION = "5.6.027.beta"
+BUILD_VERSION = "5.6.028.beta"
 
 
 def display_version():
