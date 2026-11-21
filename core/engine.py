@@ -502,8 +502,8 @@ def _log_rotate():
         pass
 
 
-def _log_write(cat, msg):
-    """线程安全写入一行：[时间] [类别] 内容；受「记录运行日志到文件」开关总控（关=不写），超上限自动轮转"""
+def _log_write(cat, msg, raw=False):
+    """线程安全写入一行；raw=True 时不写时间/类别前缀（高频 T1/C/O/S 自带编码）。"""
     cfg = globals().get('CFG')
     if cfg is None or not cfg.get('log_to_file') or _LOG_FD is None:
         return
@@ -514,7 +514,7 @@ def _log_write(cat, msg):
                     _log_rotate()
             except Exception:
                 pass
-            _LOG_FD.write(f"[{_log_ts()}][{cat}] {msg}\n")
+            _LOG_FD.write((msg if raw else f"[{_log_ts()}][{cat}] {msg}") + "\n")
             _LOG_FD.flush()
     except Exception:
         pass
@@ -1609,9 +1609,9 @@ class MemWiseEngine:
                 if self._refill_hot != self._refill_log_state:
                     self._refill_log_state = self._refill_hot
                     try:
-                        _log_write("诊断", "回涨状态: %s（回涨 %d MB / 上轮释放 %d MB）"
-                                   % ("较快" if self._refill_hot else "已放缓",
-                                      int(self._refill_total) >> 20, int(self._last_harvest_freed) >> 20))
+                        _log_write("诊断", "R|%d|%d|%d" % (
+                            1 if self._refill_hot else 0,
+                            int(self._refill_total) >> 20, int(self._last_harvest_freed) >> 20), raw=True)
                     except Exception:
                         pass
                 # F1 压力自适应（2026-09-26 用户定稿）：内存宽裕 + 上轮回涨快 ⇒ full 模式轻量轮。
@@ -1771,12 +1771,10 @@ class MemWiseEngine:
                                                                    _cal9, _E9.CALIB_N)
                         except Exception:
                             _eb = "?"
-                        _log_write("诊断", "学习状态: 画像 %d · 锚点 %d · 回退 %d · 稳态抑制计数 %d · "
-                                           "当前参数 %s · 模式 %s · 效率基线 %s · 调参dwell跳过 %d · 冻结计数 %d"
-                                   % (_prof, _anch, _back, _sup, _ps,
-                                      CFG.get("clean_mode", "normal"), _eb,
-                                      getattr(self.efis, "_dwell_skipped", 0),
-                                      getattr(self.efis, "_freeze_count", 0)))
+                        _log_write("诊断", "L|%d|%d|%d|%d|%s|%s|%s|%d|%d" % (
+                            _prof, _anch, _back, _sup, CFG.get("clean_mode", "normal"),
+                            _eb, _ps, getattr(self.efis, "_dwell_skipped", 0),
+                            getattr(self.efis, "_freeze_count", 0)), raw=True)
                         # 试探结果构成（2026-09-26 实测缺口：日志侧成功率与画像侧口径不同，
                         # 分不清"缺页超预算"与"未完成/超时"）⇒ 分桶累计，便于据此定策
                         try:
@@ -1787,8 +1785,7 @@ class MemWiseEngine:
                             _pt = int(_st.get("probe", 0) or 0)
                             _pf = int(_st.get("probe_pf_fail", 0) or 0)
                             _pi = int(_st.get("probe_incomplete", 0) or 0)
-                            _log_write("诊断", "试探统计: 累计 %d · 合格 %d · 缺页超预算 %d · 未完成/超时 %d"
-                                       % (_pt + _pf + _pi, _pt, _pf, _pi))
+                            _log_write("诊断", "P|%d|%d|%d|%d" % (_pt + _pf + _pi, _pt, _pf, _pi), raw=True)
                         except Exception:
                             pass
                     except Exception:
@@ -1980,7 +1977,7 @@ class MemWiseEngine:
                             ((m or {}).get("avail", 0) or 0) / (1 << 30),
                             float(_e.get("total", 0.0)), _scores, _raws, _valid,
                             float(_e.get("k", 0.0)), _cal)
-                        _log_write("清理", _line)
+                        _log_write("清理", _line, raw=True)
                     except Exception:
                         pass
                 # 回涨状态机已前移到本轮强度决策之前（2026-09-26）——此处不再重复判定/播报
@@ -2270,7 +2267,7 @@ class MemWiseEngine:
                     _ef.get("cpu_gate", ""), _ef.get("io_gate", "")))
             except Exception:
                 _parts.append("P:")
-            _log_write("诊断", "|".join(_parts))
+            _log_write("诊断", "|".join(_parts), raw=True)
             if _s:
                 self._snap_dts.clear()
             self._t1_prev = _cur

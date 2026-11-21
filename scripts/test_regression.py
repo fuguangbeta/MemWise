@@ -2078,7 +2078,7 @@ check("日志：C 行含系统操作/释放前三/拦截原因/内存状态",
 check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff）",
       all(k in _eng_log for k in ("S|%s|%s", "_CFG_SNAPSHOT", '"配置"')))
 check("日志：学习状态周期摘要（画像/锚点/回退/抑制/当前参数，无策略权重）",
-      all(k in _eng_log for k in ("学习状态: 画像 %d", "当前参数 %s"))
+      all(k in _eng_log for k in ("L|%d|%d|%d|%d", "|%s|%s"))
       and "策略权重" not in _eng_log)
 check("日志：游戏启停入文件（[界面] 通道单写，无 [决策] 双写）+ 模式仅切换时标注（措辞「后续模式」）",
       "for msg in self.cleaner.pop_game_msgs():" in _eng_log and " · 后续模式：%s→%s" in _eng_log
@@ -2167,7 +2167,7 @@ check("收益闸：被拦下的计入拦截原因（诊断看得到、不留盲�
       'self._cycle_reasons["回涨不足(收益闸)"]' in _cl26)
 check("试探结果分桶（合格 / 缺页超预算 / 未完成超时）",
       'stats["probe_pf_fail"]' in _cl26 and 'stats["probe_incomplete"]' in _cl26
-      and "试探统计: 累计 %d" in _src26("core", "engine.py"))
+      and "P|%d|%d|%d|%d" in _src26("core", "engine.py"))
 check("系统操作无效时留一次痕（保留官方通道，只如实报告本机实效）",
       "_op_fail_note" in _cl26 and "系统操作无效: %s" in _cl26)
 # 卫生两项（行为级，全程临时目录）
@@ -4560,7 +4560,7 @@ check("D 埋点·T1 单行高密度遥测方法齐备",
       "def _log_diag_round" in _eg61 and "T1" in _eg61
       and '"|".join(_parts)' in _eg61 and "T1ERR" in _eg61)
 check("D 埋点·仅走 _log_write（受 log_to_file 门控）",
-      '_log_write("诊断", "|".join(_parts))' in _eg61)
+      '_log_write("诊断", "|".join(_parts), raw=True)' in _eg61)
 
 _l61 = PareLearner(); _j61 = PareJudger(_l61, {"never": [], "efis_params": {}})
 _c61 = _PC60(_j61)

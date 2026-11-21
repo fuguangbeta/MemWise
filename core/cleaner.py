@@ -1552,7 +1552,7 @@ class PareCleaner:
                             if len(v) >= 5:
                                 _s += ",%d,%.1f" % (v[3], v[4] / (1 << 20))
                             _parts.append(_s)
-                        _lw("诊断", "O|" + "|".join(_parts))
+                        _lw("诊断", "O|" + "|".join(_parts), raw=True)
                 except Exception:
                     pass
                 # 防手动口径泄漏（2026-10-25 原理审查）：_layer2_process 开头把 judger._manual_mode
