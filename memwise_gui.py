@@ -1569,6 +1569,7 @@ class MemWiseGUI:
         self._upd_cancel = False
         self._upd_downloading = False
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
+        self._panel_msgs = []                  # 当前日志面板实际承载的消息（恢复时整体重建）
         self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
         self._mem_pct = 0
         self._mem_bar_id = None
@@ -1910,6 +1911,10 @@ class MemWiseGUI:
                 self._flush_startup_logs()
             finally:
                 self._suppress_typewriter = False
+            try:
+                self._prepare_log_for_present()
+            except Exception:
+                pass
             self._refresh_mem(animate=False)
             self._upd_stats(animate=False)
             self._minimized_to_tray = False
@@ -3930,6 +3935,7 @@ class MemWiseGUI:
             cur_lines = 0
         if _panel_needs_clear(cur_lines, _msg_lines(displays)):
             self.log.delete("1.0", "end")
+            self._panel_msgs = []
         self._finish_typewriter()
         try:
             _flash_start = self.log.index("end-1c")
@@ -3941,6 +3947,9 @@ class MemWiseGUI:
             _flash_end = self.log.index("end-1c")
         except Exception:
             _flash_end = None
+        if getattr(self, "_panel_msgs", None) is None:
+            self._panel_msgs = []
+        self._panel_msgs.extend(msgs)
         self.log.see("end")
         if (_flash_start is not None and _flash_end is not None
                 and not getattr(self, "_suppress_typewriter", False)):
@@ -3959,6 +3968,25 @@ class MemWiseGUI:
         self._startup_msgs = []
         try:
             self._write_group(msgs, to_file=True)
+        except Exception:
+            pass
+
+    def _prepare_log_for_present(self):
+        """恢复前在隐藏态重建最终日志内容，并整批排队等待淡入后打印。
+        只取当前面板实际承载的消息（受原清屏规则约束），不追加未显示的积压。"""
+        try:
+            msgs = list(getattr(self, "_panel_msgs", None) or [])
+            if not msgs:
+                return
+            self._finish_typewriter()
+            self.log.configure(state="normal")
+            self.log.delete("1.0", "end")
+            for m in msgs:
+                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+                                  _align_log_line(self._log_display(m)), _LOG_TAG)
+            self.log.see("end")
+            self.log.configure(state="disabled")
+            self._typewriter("1.0", "end-1c")
         except Exception:
             pass
 
@@ -4088,6 +4116,8 @@ class MemWiseGUI:
             if cur_lines <= 0:
                 return
             msgs = list(self._log_history)[-cur_lines:]
+            self._finish_typewriter()
+            self._panel_msgs = list(msgs)
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             for m in msgs:
@@ -5550,7 +5580,7 @@ class MemWiseGUI:
         # 全部启动路径先设图标（wrapper 未创建时幂等，映射前仅 client）
         self._set_main_window_icon()
         try:
-            self._hosts = [_HostToplevel(self.root) for _ in range(4)]
+            self._hosts = [_HostToplevel(self.root) for _ in range(8)]
         except Exception:
             self._hosts = []
         if not self._minimized_to_tray:
