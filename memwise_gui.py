@@ -260,6 +260,11 @@ def _insert_log_lines(text_widget, ts, msg, tag):
                         or _log_is_icon(rest[0])):
             rest = rest[1:]
         rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
+        # 正文中残留的任何图标字形一律移除：日志面板只保留默认图标位，不显示额外符号
+        rest = "".join(ch for ch in rest
+                       if not _log_is_icon(ch)
+                       and ord(ch) not in (0xFE0E, 0xFE0F, 0x200D)
+                       and unicodedata.category(ch) not in ("Mn", "Cf", "Sk"))
         text_widget.insert("end", head, tag)
         if not icon:
             if img is not None:
