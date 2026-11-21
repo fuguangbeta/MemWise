@@ -3,7 +3,7 @@ MemWise GUI —— 图形界面
 系统托盘 + 全局热键 + 颜色状态 + 排除列表编辑 + 设置面板
 """
 
-import math, os, random, re, sys, time, shutil, subprocess, threading, tempfile, tkinter as tk, queue
+import math, os, random, re, sys, time, shutil, subprocess, threading, tempfile, tkinter as tk, queue, unicodedata
 from collections import deque
 from tkinter import ttk, font as tkfont
 import ctypes
@@ -86,10 +86,14 @@ _LOG_ICON_KEEP = frozenset("✓✗✅❌↑↓")
 
 
 def _log_is_icon(ch):
-    """该字符是否作图标使用（决定它独占图标位）"""
+    """该字符是否作图标使用（决定它独占图标位）。覆盖全部常见符号/表情，防止漏字形落进文字段。"""
+    if not ch or ord(ch) < 128:
+        return False
     o = ord(ch)
-    return (0x2190 <= o <= 0x21FF or 0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF
-            or 0x1F000 <= o <= 0x1FAFF or 0x2300 <= o <= 0x23FF or 0x2710 <= o <= 0x2718)
+    if (0x2190 <= o <= 0x21FF or 0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF
+            or 0x1F000 <= o <= 0x1FAFF or 0x2300 <= o <= 0x23FF or 0x2710 <= o <= 0x2718):
+        return True
+    return unicodedata.category(ch) in ("So", "Sk", "Sm", "Sc")
 
 
 def _log_slot_px(text_widget):
@@ -246,9 +250,15 @@ def _insert_log_lines(text_widget, ts, msg, tag):
     adv = _log_advances(text_widget)
     for k, line in enumerate(str(msg).split(chr(10))):
         head = ("[%s] " % ts) if k == 0 else ""
-        _has_icon = line[:1] in _LOG_ICON_KEEP
+        _head = line.lstrip()
+        _has_icon = bool(_head) and _log_is_icon(_head[0])
         icon = ""   # 统一使用默认图标（2026-11-20 用户定稿：所有行首图标一律圈+M）
-        rest = line[1:] if _has_icon else (line[1:] if line.startswith(chr(9)) else line)
+        rest = _head[1:] if _has_icon else _head
+        # 吃掉图标后的 VS16/ZWJ/肤色/组合符，避免残留半个字形
+        while rest and (ord(rest[0]) in (0xFE0E, 0xFE0F, 0x200D)
+                        or unicodedata.category(rest[0]) == "Mn"
+                        or _log_is_icon(rest[0])):
+            rest = rest[1:]
         rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
         text_widget.insert("end", head, tag)
         if not icon:
