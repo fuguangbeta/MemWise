@@ -2170,71 +2170,99 @@ class MemWiseEngine:
     # ── D1–D6 只读诊断（2026-11-08）：只统计与落日志，不参与任何判定 ──
 
     def _log_diag_round(self, game=False):
-        """周期末输出 D1/D4/D5/D6 诊断行（受 log_to_file 门控；单行失败不影响其他行）。
-        harvest 超时轮跳过输出，其计数顺延到下一完整轮（日志行数值为"自上次输出以来"）。
-        每行带「模式 X」：D5 阈值随模式变化、D1 只在 normal/deep 有样本，混合模式数据不可比。"""
-        _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
-        # 游戏轮单独标记：游戏模式跳过磁盘类系统操作、对游戏 PID 树绝对保护，
-        # 其 D5/D6/D2 样本与普通轮不可合并；回放按「deep·游戏」单独分组。
-        _tag = "·游戏" if game else ""
+        """T1：每周期单行高密度遥测（替代 D1/D4/D5/D6/M9 多行；只读，不参与判定）。
+        字段以 | 分隔；数组以逗号分隔；时间戳为 YYYYMMDDTHHMMSS。"""
         try:
-            _gw = int(getattr(self, "_gap_wsall_hits", 0))
-            if _gw:
-                self._gap_wsall_hits = 0
-                _log_write("诊断", "模式 %s%s · D8 gap全清 %d 次" % (_mode, _tag, _gw))
-        except Exception:
-            pass
-        try:
-            d = self.cleaner.diag_snapshot()
-        except Exception:
-            d = {}
-        try:
-            h = d.get("cpu_hist") or [0] * 7
-            _tot = sum(h) if isinstance(h, list) else 0
-            if _tot:
-                _log_write("诊断", "模式 %s%s · D1 CPU门: 候选 %d · 拒 %d · 桶[<3:%d 3-6:%d 6-8:%d 8-12:%d 12-16:%d 16-25:%d >=25:%d]"
-                           % (_mode, _tag, _tot, d.get("cpu_rej", 0), h[0], h[1], h[2], h[3], h[4], h[5], h[6]))
-        except Exception:
-            pass
-        try:
-            _dts = list(self._snap_dts)
-            if _dts:
-                _s = sorted(_dts)
-                _log_write("诊断", "模式 %s%s · D4 采样: 快照 %d 次/周期 · dt 中位 %.1fs 最大 %.1fs · 进程 %d"
-                           % (_mode, _tag, len(_dts), _s[len(_s) // 2], _s[-1], getattr(self, "_snap_n", 0)))
-                self._snap_dts.clear()   # 每轮清空：deque 是跨轮累计的，不清会让"快照次数"恒为 maxlen(200)
-        except Exception:
-            pass
-        try:
-            _tr = d.get("tree") or []
-            _v = d.get("vote") or [0, 0, 0]
-            if _v and _v[0]:
-                _parts = []
-                _lab = ("树1", "树2", "树5")   # 启用树编号（树 3/4 为预留、scores 恒 0，不输出）
-                for _k, _i in enumerate((0, 1, 4)):
-                    _row = _tr[_i] if _i < len(_tr) else [0] * 5
-                    _parts.append("%s[+2:%d +1:%d 0:%d -1:%d -2:%d]"
-                                  % (_lab[_k], _row[4], _row[3], _row[2], _row[1], _row[0]))
-                _log_write("诊断", "模式 %s%s · D5 投票: 样本 %d · %s · 通过 %d (%.0f%%) · 阈值 %d"
-                           % (_mode, _tag, _v[0], " ".join(_parts), _v[1],
-                              (100.0 * _v[1] / _v[0]) if _v[0] else 0.0,
-                              {"deep": -1, "full": -2}.get(getattr(self.judger, "_mode_guard", "normal"), 0)))
-        except Exception:
-            pass
-        try:
-            _sp = d.get("supp") or {}
-            if _sp:
-                _names = {"稳态抑制": "稳态", "回弹后退": "回弹", "WS未填满": "WS未满"}
-                _txt = []
-                for _k in ("稳态抑制", "回弹后退", "WS未填满"):
-                    _n2, _r2 = _sp.get(_k, [0, 0])
-                    if _n2:   # 首轮无对照样本（n=0）不输出，避免日志噪声
-                        _txt.append("%s %d/%d(%.0f%%)" % (_names[_k], _r2, _n2, 100.0 * _r2 / _n2))
-                if _txt:
-                    _log_write("诊断", "模式 %s%s · D6 抑制回涨: " % (_mode, _tag) + " · ".join(_txt))
-        except Exception:
-            pass
-        self._log_mode_special(_mode, _tag)
+            _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
+            _tag = "G" if game else "-"
+            _d = {}
+            try:
+                _d = self.cleaner.diag_snapshot() or {}
+            except Exception:
+                pass
+            _cs = getattr(self, "_cycle_stats", {}) or {}
+            _st = getattr(self.cleaner, "stats", {}) or {}
+            _prev = getattr(self, "_t1_prev", {}) or {}
+            _keys = ("layer3_ran", "layer3_extra", "deepen_cnt", "deepen_extra",
+                     "ws_all_rounds", "trim_rounds", "normal_final_sweep", "normal_l3_extra",
+                     "deep_rebound_hits", "deep_rebound_freed", "deep_final_sweep",
+                     "final_sweep", "combine_calls", "combine_pages", "standby", "modified")
+            _cur = {k: _st.get(k, 0) for k in _keys}
+            _dl = {k: max(0, _cur.get(k, 0) - _prev.get(k, 0)) for k in _keys}
+            _tr = int(_cs.get("trimmed_cnt") or 0)
+            _freed = float(_cs.get("cycle_freed") or 0) / (1 << 20)
+            _dur = float(_cs.get("cycle_duration") or 0)
+            _agg = _cs.get("agg")
+            _probe = getattr(self, "_cycle_probe", (0, 0))
+            _dts = list(getattr(self, "_snap_dts", []) or [])
+            _s = sorted(_dts) if _dts else []
+            _hist = _d.get("cpu_hist") or [0] * 7
+            _tree = _d.get("tree") or []
+            _vote = _d.get("vote") or [0, 0, 0]
+            _supp = _d.get("supp") or {}
+            _parts = [
+                "T1", time.strftime("%Y%m%dT%H%M%S"), _mode, _tag,
+                str(_cs.get("mem_pct", "")), str(round(_cs.get("avail", 0) / (1 << 20), 1) if _cs.get("avail") else ""),
+                ("%.1f" % _dur), str(_tr), str(int(_cs.get("failed_cnt") or 0)),
+                "%d/%d" % (_probe[0], _probe[1]),
+                ("%.1f" % _freed),
+                ("%.2f" % float(_agg)) if isinstance(_agg, (int, float)) else "",
+                str(_dl["layer3_ran"]), str(_dl["layer3_extra"]),
+                str(_dl["deepen_cnt"]), str(_dl["deepen_extra"]),
+                str(_dl["ws_all_rounds"]), str(_dl["trim_rounds"]),
+                ("%.2f" % (_dl["trim_rounds"] / float(_tr))) if _tr else "0",
+            ]
+            _parts.append("D1:%d/%d/%s" % (sum(_hist), int(_d.get("cpu_rej", 0)), ",".join(str(x) for x in _hist)))
+            if _s:
+                _parts.append("S:%d/%.1f/%.1f/%d" % (len(_s), _s[len(_s)//2], _s[-1], int(getattr(self, "_snap_n", 0))))
+            else:
+                _parts.append("S:0")
+            _tv = []
+            for _i in (0, 1, 4):
+                _row = _tree[_i] if _i < len(_tree) else [0] * 5
+                _tv.append(":".join(str(x) for x in _row))
+            _parts.append("V:%d/%d/%d/%s" % (int(_vote[0]), int(_vote[1]),
+                                              {"deep": -1, "full": -2}.get(getattr(self.judger, "_mode_guard", "normal"), 0),
+                                              "/".join(_tv)))
+            _bs = []
+            for _k in ("稳态抑制", "回弹后退", "WS未填满"):
+                _n, _r = _supp.get(_k, [0, 0])
+                _bs.append("%d/%d" % (_r, _n))
+            _parts.append("B:" + ",".join(_bs))
+            if _mode == "deep":
+                _parts.append("M:%d/%.1f/%d" % (_dl["deep_rebound_hits"], _dl["deep_rebound_freed"]/(1<<20), _dl["deep_final_sweep"]))
+            elif _mode == "normal":
+                _parts.append("M:%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
+            elif _mode == "full":
+                _parts.append("M:%d/%d/%d" % (_dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"]))
+            else:
+                _parts.append("M:%d/%d" % (_dl["standby"], _dl["modified"]))
+            try:
+                _reasons = getattr(self.cleaner, "_cycle_reasons", {}) or {}
+                _top = sorted(_reasons.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                _parts.append("K:" + ",".join("%s:%d" % (str(k).replace(" ", ""), v) for k, v in _top))
+            except Exception:
+                _parts.append("K:")
+            try:
+                _parts.append("I:%d" % int(winapi.get_idle_seconds()))
+            except Exception:
+                _parts.append("I:-")
+            try:
+                _ef = self.judger.cfg.get("efis_params", {}) or {}
+                _parts.append("P:%s/%s/%s/%s" % (
+                    _ef.get("target_usage", ""), CFG.get("emergency_threshold", ""),
+                    _ef.get("cpu_gate", ""), _ef.get("io_gate", "")))
+            except Exception:
+                _parts.append("P:")
+            _log_write("诊断", "|".join(_parts))
+            if _s:
+                self._snap_dts.clear()
+            self._t1_prev = _cur
+        except Exception as e:
+            try:
+                _log_write("诊断", "T1ERR|%r" % (e,))
+            except Exception:
+                pass
 
     def _log_mode_special(self, mode, tag=""):
         """M9：每模式周期专项画像（只读诊断，每个周期一行）。"""

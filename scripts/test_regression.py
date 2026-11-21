@@ -4555,13 +4555,11 @@ _eg61 = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read(
 check("D 埋点·cleaner 统计容器与快照方法齐备",
       all(k in _cl61 for k in ("_diag_cpu_hist", "_diag_tree",
                                "_diag_vote", "_diag_supp", "def diag_snapshot")))
-check("D 埋点·engine 输出方法与五行前缀齐备（D3 并入学习状态行）",
-      "def _log_diag_round" in _eg61
-      and all(k in _eg61 for k in ("D1 CPU门", "D4 采样", "D5 投票", "D6 抑制回涨"))
-      and "调参dwell跳过" in _eg61)
-check("D 埋点·仅走 _log_write（受 log_to_file 门控）且每行带模式标签",
-      '_log_write("诊断", "模式 %s%s · D1' in _eg61
-      and '_log_write("诊断", "模式 %s%s · D6' in _eg61)
+check("D 埋点·T1 单行高密度遥测方法齐备",
+      "def _log_diag_round" in _eg61 and "T1" in _eg61
+      and '"|".join(_parts)' in _eg61 and "T1ERR" in _eg61)
+check("D 埋点·仅走 _log_write（受 log_to_file 门控）",
+      '_log_write("诊断", "|".join(_parts))' in _eg61)
 
 _l61 = PareLearner(); _j61 = PareJudger(_l61, {"never": [], "efis_params": {}})
 _c61 = _PC60(_j61)
@@ -4588,17 +4586,8 @@ _r1_61 = _j61.can_trim(_s61); _r2_61 = _j61.can_trim(_s61)
 check("D 埋点·不影响 can_trim 判定（两次一致）", _r1_61 == _r2_61, str((_r1_61, _r2_61)))
 
 import re as _re61
-_ok61 = all(_re61.search(_p61, _line61) for _p61, _line61 in (
-    (r"D1 CPU门: 候选 \d+ · 拒 \d+ · 桶\[<3:\d+",
-     "D1 CPU门: 候选 228 · 拒 3 · 桶[<3:0 3-6:1 6-8:0 8-12:2 12-16:0 16-25:0 >=25:0]"),
-    (r"D4 采样: 快照 \d+ 次/周期 · dt 中位 [\d.]+s",
-     "D4 采样: 快照 12 次/周期 · dt 中位 3.0s 最大 3.4s · 进程 214"),
-    (r"D5 投票: 样本 \d+ · 树1\[\+2:\d+",
-     "D5 投票: 样本 9 · 树1[+2:1 +1:2 0:3 -1:2 -2:1] 树2[+2:0 +1:0 0:9 -1:0 -2:0] 树5[+2:0 +1:0 0:9 -1:0 -2:0] · 实际通过 9 · 全1权重通过 8 · 阈值 0"),
-    (r"D6 抑制回涨: 稳态 \d+/\d+\(\d+%\)",
-     "D6 抑制回涨: 稳态 7/10(70%) · 回弹 3/5(60%) · WS未满 0/2(0%)"),
-))
-check("D 埋点·四行日志可被回放脚本解析", _ok61)
+_t1_ok = bool(_re61.match(r"T1\|\d{8}T\d{6}\|[QNDF]\|[^|]*\|", "T1|20261121T213004|D|-|80|65.0|16|8/17|0.0|2|2|56|D1:1/0/1,0,0,0,0,0,0|S:17/3.1/8.7/255|V:34/34/-1/0:0:30:0:0/0:0:30:0:0|B:0/0,0/0,0/0|M:0/0.0/0|K:|I:12|P:"))
+check("D 埋点·T1 单行可被解析（模式/内存/耗时/采样/投票/回涨）", _t1_ok)
 check("D 埋点·D4 每轮清空快照间隔（防 deque 跨轮累计失真）", "self._snap_dts.clear()" in _eg61)
 check("游戏模式·保留低优先待机（quick 同级低感知），仅跳磁盘类",
       'if "standby_low" in use and _capture(winapi.purge_low_priority_standby)' in _cl61
@@ -4621,7 +4610,7 @@ check("D 埋点·D1 记录全体候选 cpu（不依赖是否被 CPU 门拦）",
       and '"cpu_rej"' in _cl61)
 check("D5 否决算入：否决者也计入样本（真实通过率可见）",
       "_diag_note_vote_scores" in _cl61 and "投票样本(通过+否决)" in _cl61
-      and "样本 %d · %s · 通过 %d" in _eg61)
+      and '"V:%d/%d/%d/%s"' in _eg61)
 
 print("\n[62] 2026-11-11 决策面与执行域修复（θ 折扣 / 冷却收口 / 预算语义 / 多实例基线 / 预览口径 / 导出脱敏 / 更新日志开关 / 刷新链）")
 
