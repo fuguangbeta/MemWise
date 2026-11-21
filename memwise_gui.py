@@ -4558,11 +4558,13 @@ class MemWiseGUI:
         ttk.Button(dlg, text=tr("取消"), command=_cancel).pack(pady=(0, 14))
         self._center_fit(dlg, min_w=420)
         dlg.deiconify()
-        holder = {"dlg": dlg}
+        holder = {"dlg": dlg, "gen": getattr(self, "_host_gen", 0)}
 
         def _set(done, total):
             d = holder.get("dlg")
-            if d is None or not d.winfo_exists():
+            if (d is None or not d.winfo_exists()
+                    or holder.get("gen") != getattr(self, "_host_gen", 0)
+                    or not getattr(d, "_mw_revealed", False)):
                 return
             total = total or 0
             frac = min(1.0, (done / total)) if total else 0.0
@@ -4604,6 +4606,7 @@ class MemWiseGUI:
         row.pack(pady=(2, 14))
 
         _daemon_on = bool(getattr(self.engine, "daemon_running", False))
+        _dlg_gen = getattr(self, "_host_gen", 0)
 
         def _go():
             res["go"] = True
@@ -4613,7 +4616,8 @@ class MemWiseGUI:
                 pass
 
         def _tick(n):
-            if not dlg.winfo_exists():
+            if (not dlg.winfo_exists() or _dlg_gen != getattr(self, "_host_gen", 0)
+                    or not getattr(dlg, "_mw_revealed", False)):
                 return
             cnt["text"] = tr_fmt("将在 %d 秒后自动重启完成更新", n) + (tr("（守护会随重启短暂中断，随后自动恢复）") if _daemon_on else "")
             if n <= 0:
@@ -5596,7 +5600,7 @@ class MemWiseGUI:
         # 全部启动路径先设图标（wrapper 未创建时幂等，映射前仅 client）
         self._set_main_window_icon()
         try:
-            self._hosts = [_HostToplevel(self.root) for _ in range(8)]
+            self._hosts = [_HostToplevel(self.root) for _ in range(12)]
         except Exception:
             self._hosts = []
         if not self._minimized_to_tray:
