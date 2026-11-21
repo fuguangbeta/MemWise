@@ -1570,6 +1570,7 @@ class MemWiseGUI:
         self._upd_downloading = False
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
         self._panel_msgs = []                  # 当前日志面板实际承载的消息（恢复时整体重建）
+        self._animated_count = 0               # 这些消息中已经播完打印动画的数量
         self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
         self._mem_pct = 0
         self._mem_bar_id = None
@@ -3936,6 +3937,7 @@ class MemWiseGUI:
         if _panel_needs_clear(cur_lines, _msg_lines(displays)):
             self.log.delete("1.0", "end")
             self._panel_msgs = []
+            self._animated_count = 0
         self._finish_typewriter()
         try:
             _flash_start = self.log.index("end-1c")
@@ -3949,11 +3951,14 @@ class MemWiseGUI:
             _flash_end = None
         if getattr(self, "_panel_msgs", None) is None:
             self._panel_msgs = []
+        _before = len(self._panel_msgs)
         self._panel_msgs.extend(msgs)
         self.log.see("end")
         if (_flash_start is not None and _flash_end is not None
-                and not getattr(self, "_suppress_typewriter", False)):
-            self._typewriter(_flash_start, _flash_end)
+                and not getattr(self, "_suppress_typewriter", False) and ANIM_ENABLED):
+            self._typewriter(_flash_start, _flash_end, len(msgs))
+        else:
+            self._animated_count = len(self._panel_msgs)
         self.log.configure(state="disabled")
         self._last_msg = msgs[-1] if msgs else None
         if to_file and CFG.get("log_to_file"):
@@ -3978,15 +3983,22 @@ class MemWiseGUI:
             msgs = list(getattr(self, "_panel_msgs", None) or [])
             if not msgs:
                 return
+            animated = min(getattr(self, "_animated_count", 0), len(msgs))
             self._finish_typewriter()
+            self._animated_count = animated
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
-            for m in msgs:
+            for m in msgs[:animated]:
+                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+                                  _align_log_line(self._log_display(m)), _LOG_TAG)
+            tail_start = self.log.index("end-1c")
+            for m in msgs[animated:]:
                 _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
-            self._typewriter("1.0", "end-1c")
+            if len(msgs) > animated:
+                self._typewriter(tail_start, "end-1c", len(msgs) - animated)
         except Exception:
             pass
 
@@ -4021,6 +4033,7 @@ class MemWiseGUI:
                 pass
         self._type_queue = []
         self._type_busy = False
+        self._animated_count = len(getattr(self, "_panel_msgs", None) or [])
 
     def _start_type_next(self):
         if getattr(self, "_type_busy", False):
@@ -4043,6 +4056,8 @@ class MemWiseGUI:
             if n >= total:
                 self._drop_type_state()
                 self._type_busy = False
+                self._animated_count = min(len(getattr(self, "_panel_msgs", None) or []),
+                                           getattr(self, "_animated_count", 0) + int(item.get("count", 0)))
                 self._start_type_next()
                 return
             try:
@@ -4060,7 +4075,7 @@ class MemWiseGUI:
                 self._type_busy = False
         tick()
 
-    def _typewriter(self, start, end):
+    def _typewriter(self, start, end, count=0):
         """新日志插入后立刻隐藏，再排队逐字显现（启动期也先隐藏，显示后补打字）。"""
         _root = getattr(self, "root", None)
         if not ANIM_ENABLED or _root is None or not hasattr(self, "log"):
@@ -4078,7 +4093,7 @@ class MemWiseGUI:
             self.log.tag_configure(tag, elide=True)
             if not hasattr(self, "_type_queue") or self._type_queue is None:
                 self._type_queue = []
-            self._type_queue.append({"tag": tag, "start": start, "end": end, "total": total})
+            self._type_queue.append({"tag": tag, "start": start, "end": end, "total": total, "count": count})
             if _root.winfo_viewable() and not getattr(self, "_startup_anim_active", False):
                 self._start_type_next()
         except Exception:
@@ -4118,6 +4133,7 @@ class MemWiseGUI:
             msgs = list(self._log_history)[-cur_lines:]
             self._finish_typewriter()
             self._panel_msgs = list(msgs)
+            self._animated_count = len(msgs)
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
             for m in msgs:
