@@ -2005,6 +2005,12 @@ class MemWiseGUI:
                 self._upd_dae_ui(*pend)
             except Exception:
                 pass
+        if getattr(self, "_chart_dirty", False):
+            self._chart_dirty = False
+            try:
+                self.root.after(60, self._draw_chart)
+            except Exception:
+                pass
 
     def _on_hotkey(self):
         """Ctrl+Shift+M → 执行一键优化"""
@@ -5137,6 +5143,10 @@ class MemWiseGUI:
         old_ids = c.find_all()
         data, meta_list, eff_data_view, eff_factors_view = self.engine.chart_snapshot()
         if not data:
+            # 呈现/入场期间的空快照不得清空可见图表；留给下一轮自然刷新
+            if not prepare_only and (getattr(self, "_presenting", False) or self._chart_intro_id is not None):
+                self._chart_dirty = True
+                return
             self._draw_chart_placeholder(old_ids)
             return
         cw = c.winfo_width()
