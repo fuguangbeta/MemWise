@@ -2233,6 +2233,38 @@ class MemWiseEngine:
                     _log_write("诊断", "模式 %s%s · D6 抑制回涨: " % (_mode, _tag) + " · ".join(_txt))
         except Exception:
             pass
+        self._log_mode_special(_mode, _tag)
+
+    def _log_mode_special(self, mode, tag=""):
+        """M9：按模式输出专项计数（每个周期增量，不改行为）。"""
+        try:
+            st = getattr(self.cleaner, "stats", {}) or {}
+            spec = {
+                "quick": [("standby", "低待机", ""), ("modified", "修改页", "")],
+                "normal": [("normal_final_sweep", "轻收尾", "次"), ("normal_l3_extra", "L3补位", "次")],
+                "deep": [("deep_rebound_hits", "回弹", "次"), ("deep_rebound_freed", "回弹释放", "MB"),
+                         ("deep_final_sweep", "收尾", "次")],
+                "full": [("final_sweep", "收尾", "次"), ("combine_calls", "combine", "次")],
+            }.get(mode, [])
+            if not spec:
+                return
+            prev = getattr(self, "_mode_special_prev", None)
+            prev_mode = getattr(self, "_mode_special_mode", None)
+            cur = {k: st.get(k, 0) for k, _lab, _u in spec}
+            if prev_mode == mode and isinstance(prev, dict):
+                parts = []
+                for k, lab, unit in spec:
+                    d = cur.get(k, 0) - prev.get(k, 0)
+                    if unit == "MB":
+                        parts.append("%s %.1f MB" % (lab, d / (1 << 20)))
+                    elif d:
+                        parts.append("%s %d %s" % (lab, d, unit))
+                if parts:
+                    _log_write("诊断", "模式 %s%s · M9 专项: " % (mode, tag) + " · ".join(parts))
+            self._mode_special_prev = cur
+            self._mode_special_mode = mode
+        except Exception:
+            pass
 
     def _log_partial_drop(self, game=False):
         """D7：本轮因预算/卡死未提交的候选数（5.1 的量化入口；无丢弃时不输出）。"""
