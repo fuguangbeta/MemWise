@@ -89,7 +89,7 @@ def _log_is_icon(ch):
     """该字符是否作图标使用（决定它独占图标位）"""
     o = ord(ch)
     return (0x2190 <= o <= 0x21FF or 0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF
-            or 0x1F000 <= o <= 0x1FAFF or 0x2710 <= o <= 0x2718)
+            or 0x1F000 <= o <= 0x1FAFF or 0x2300 <= o <= 0x23FF or 0x2710 <= o <= 0x2718)
 
 
 def _log_slot_px(text_widget):

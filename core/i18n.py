@@ -264,7 +264,7 @@ _EN = {
     " 试探 ": " probes ",
     " (": " (",
     "成功)": " succeeded)",
-    "⏱ harvest 超时(30s)·跳过本轮诊断": "⏱ Harvest timeout (30s) · diagnostics skipped",
+    "harvest 超时(30s)·跳过本轮诊断": "Harvest timeout (30s) · diagnostics skipped",
     "🔄 检测到上次崩溃，已自动恢复": "🔄 Crash detected — auto recovered",
     "🔄 检测到上次崩溃，已自动恢复（如需彻底退出，请用托盘右键菜单的「退出」）": "🔄 Crash detected — auto recovered (to quit for good, use Exit in the tray menu)",
     "🔄 从崩溃中恢复 — 守护模式已自动继续": "🔄 Recovered from crash — Guard resumed",

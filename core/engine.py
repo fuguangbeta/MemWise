@@ -1634,7 +1634,7 @@ class MemWiseEngine:
                     # P25：上一轮 harvest 仍在跑 ⇒ 本轮不再排队（单线程池排队会连锁超时）
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
-                    self._cycle_log_groups.append(["⏱ 上轮 harvest 未完成 · 本轮跳过收割"])
+                    self._cycle_log_groups.append(["上轮 harvest 未完成 · 本轮跳过收割"])
                     try:
                         _m = winapi.get_memory_status() or {}
                         _log_write("诊断", "T1P|%d|%s|%d|1|1" % (int(time.time()), mode, _m.get("pct", 0)), raw=True)
@@ -1656,7 +1656,7 @@ class MemWiseEngine:
                         self._pending_harvest = harvest_future  # 下轮开头继续等，不叠加
                         result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                                   "net_freed": 0, "_partial": True}
-                        self._cycle_log_groups.append(["⏱ harvest 超时(30s)·跳过本轮诊断"])
+                        self._cycle_log_groups.append(["harvest 超时(30s)·跳过本轮诊断"])
                         try:
                             _m = winapi.get_memory_status() or {}
                             _log_write("诊断", "T1P|%d|%s|%d|1|2" % (int(time.time()), mode, _m.get("pct", 0)), raw=True)
