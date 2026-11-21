@@ -2069,11 +2069,12 @@ check("v9 四模式隔离与平滑窗仍按模式分桶（v8 起结构未变，�
 print("\n[35] 运行日志诊断性（2026-09-11 用户要求：只看日志即可定位问题）")
 _eng_log = _src26("core", "engine.py")
 _cl_log = _src26("core", "cleaner.py")
-check("日志：逐轮效率/五维分数/原始值/输入/校准进度",
-      all(k in _eng_log for k in ('"效率"', "result.get(\"scores\"", "result.get(\"raws\"",
-                                  "校准 n=", "输入[整理")))
-check("日志：周期明细含系统操作计数/释放前三/判定拦截原因/内存状态",
-      all(k in _eng_log for k in ("明细: %s · 平均趟数", "释放前三", "拦截[%s]", "内存 %d%%(可用")))
+check("日志：C 行携带效率/五维/原始值/校准/清理明细",
+      all(k in _eng_log for k in ('"清理"', "C|%d|%.1f", "_last_eris_result",
+                                  "_e.get(\"scores\"", "_e.get(\"raws\"", "_cal")))
+check("日志：C 行含系统操作/释放前三/拦截原因/内存状态",
+      all(k in _eng_log for k in ("C|%d|%.1f", "cycle_standby", "_top_s", "_rs_s",
+                                  '(m or {}).get("pct"')))
 check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff）",
       all(k in _eng_log for k in ("生效设置: 模式 %s", "_CFG_SNAPSHOT", '"配置"')))
 check("日志：学习状态周期摘要（画像/锚点/回退/抑制/当前参数，无策略权重）",

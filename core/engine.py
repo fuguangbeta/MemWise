@@ -1949,12 +1949,7 @@ class MemWiseEngine:
                 # 汇总行推过日志面板宽度、强行折成两排，可读性反而变差。游戏轮的清理量差异
                 # 已由「模式」字段与「操作」快照体现，无需额外行内解释。
                 if CFG.get("log_to_file"):
-                    _log_write("清理", summary_line)
-                    # 明细行（2026-09-11 用户要求"日志要能定位问题"）：系统操作计数 + 释放前三 +
-                    # 本轮判定拦截原因统计（为什么某些进程没被清理）
                     try:
-                        # 明细口径修正（2026-11-09）：旧实现取 cleaner.summary() 的**累计**值，
-                        # 与同一行的"本轮优化/系统杂项"（本轮增量）口径不一致，会被误读为"本轮清了这么多"。
                         _keys = ("standby", "modified", "filecache", "volume", "registry")
                         _prev = getattr(self, "_prev_sys_detail", None) or {}
                         _det = ({k: max(0, int(s.get(k, 0)) - int(_prev.get(k, 0))) for k in _keys}
@@ -1964,19 +1959,29 @@ class MemWiseEngine:
                         _tr_delta = max(0, _tr_now - int(getattr(self, "_prev_trim_rounds", 0) or 0))
                         self._prev_trim_rounds = _tr_now
                         _avg_passes = (_tr_delta / float(self._cycle_trimmed)) if self._cycle_trimmed else 0.0
-                        _ops = "待机 %s · 修改页 %s · 文件缓存 %s · 卷 %s · 注册表 %s" % (
-                            _det["standby"], _det["modified"], _det["filecache"],
-                            _det["volume"], _det["registry"])
                         _top = sorted([t for t in (l2_results or []) if len(t) >= 3 and t[1]],
                                       key=lambda t: -t[2])[:3]
-                        _top_s = ", ".join("%s %.0fMB" % (getattr(t[0], "name", "?"), t[2] / (1 << 20))
-                                           for t in _top) or "无"
+                        _top_s = ",".join("%s:%.0f" % (getattr(t[0], "name", "?"), t[2] / (1 << 20))
+                                          for t in _top) or "-"
                         _rs = getattr(self.cleaner, "_cycle_reasons", {}) or {}
-                        _rs_s = ", ".join("%s %d" % (k, v) for k, v in
-                                          sorted(_rs.items(), key=lambda kv: -kv[1])[:8]) or "无"
-                        _log_write("清理", "明细: %s · 平均趟数 %.1f · 释放前三 %s · 拦截[%s] · 内存 %d%%(可用 %.1fGB)"
-                                   % (_ops, _avg_passes, _top_s, _rs_s, (m or {}).get("pct", 0),
-                                      ((m or {}).get("avail", 0) or 0) / (1 << 30)))
+                        _rs_s = ",".join("%s:%d" % (k, v) for k, v in
+                                         sorted(_rs.items(), key=lambda kv: -kv[1])[:8]) or "-"
+                        _e = getattr(self, "_last_eris_result", {}) or {}
+                        _scores = ",".join("%.0f" % x for x in (_e.get("scores") or [])) or "-"
+                        _raws = ",".join(("-" if x is None else "%.4g" % x) for x in (_e.get("raws") or [])) or "-"
+                        _valid = ",".join(str(j) for j in (_e.get("valid") or [])) or "-"
+                        _cal = self._eris_calib.get("modes", {}).get(_cur_mode, {}).get("n", "?")
+                        _line = "C|%d|%.1f|%d|%d|%d/%d|%.1f|%s|%s|%s|%d|%.1f|%.0f|%s|%s|%s|%.0f|%s" % (
+                            cycle_freed, float(getattr(self, "_cycle_net_drop_mb", 0.0)),
+                            cycle_standby, self._cycle_trimmed, (self._cycle_probe or (0, 0))[0],
+                            (self._cycle_probe or (0, 0))[1], _avg_passes,
+                            "%d,%d,%d,%d,%d" % (_det["standby"], _det["modified"], _det["filecache"],
+                                                 _det["volume"], _det["registry"]),
+                            _top_s, _rs_s, (m or {}).get("pct", 0),
+                            ((m or {}).get("avail", 0) or 0) / (1 << 30),
+                            float(_e.get("total", 0.0)), _scores, _raws, _valid,
+                            float(_e.get("k", 0.0)), _cal)
+                        _log_write("清理", _line)
                     except Exception:
                         pass
                 # 回涨状态机已前移到本轮强度决策之前（2026-09-26）——此处不再重复判定/播报
@@ -2362,22 +2367,8 @@ class MemWiseEngine:
             with self._chart_lock:
                 self._eff_data.append(result["total"])
                 self._eff_factors.append(result.get("factors", ["冷启动"]))
-            # [效率] 逐轮落盘（2026-09-11 用户反馈"日志看不到效率值"）：效率/词条/五维分数/原始值/校准进度
-            try:
-                    _log_write("效率", "效率 %.0f%% · %s · 分[%s] · 原[%s] · 输入[整理 %s 失败 %s 试探 %s/%s PF %s] · 有效[%s] · K %.0f · 校准 n=%s · 模式 %s%s" % (
-                        result.get("total", 0.0),
-                        " ".join(result.get("factors", [])[:2]),
-                        " ".join("%.0f" % x for x in result.get("scores", [])),
-                        " ".join(("-" if x is None else "%.4g" % x) for x in result.get("raws", [])),
-                        self._cycle_trimmed, self._cycle_failed,
-                        (self._cycle_probe or (0, 0))[0], (self._cycle_probe or (0, 0))[1],
-                        getattr(self, "_cycle_pf", 0),
-                        ",".join(str(j) for j in (result.get("valid") or [])) or "无",
-                        result.get("k", 0.0),
-                        self._eris_calib.get("modes", {}).get(_mode, {}).get("n", "?"),
-                        _mode, " · 游戏" if getattr(self, "_last_eris_game_mode", False) else ""))
-            except Exception:
-                pass
+            # T2/清理行统一携带 ERIS 结果，避免单独 [效率] 行
+            self._last_eris_result = result
         except Exception:
             # 计算异常 ≠ 效率 80%：不再伪造中间值（2026-11-06）。记 None 让图表断口、
             # 平均效率排除该轮、悬浮显示“未计算”；因子仍写“计算异常”，两边长度保持对齐。
