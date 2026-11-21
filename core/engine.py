@@ -1961,10 +1961,10 @@ class MemWiseEngine:
                         _avg_passes = (_tr_delta / float(self._cycle_trimmed)) if self._cycle_trimmed else 0.0
                         _top = sorted([t for t in (l2_results or []) if len(t) >= 3 and t[1]],
                                       key=lambda t: -t[2])[:3]
-                        _top_s = ",".join("%s:%.0f" % (getattr(t[0], "name", "?"), t[2] / (1 << 20))
+                        _top_s = ",".join("%s:%.0f" % (str(getattr(t[0], "name", "?"))[:10], t[2] / (1 << 20))
                                           for t in _top) or "-"
                         _rs = getattr(self.cleaner, "_cycle_reasons", {}) or {}
-                        _rs_s = ",".join("%s:%d" % (k, v) for k, v in
+                        _rs_s = ",".join("%s:%d" % (self._reason_code(k), v) for k, v in
                                          sorted(_rs.items(), key=lambda kv: -kv[1])[:8]) or "-"
                         _e = getattr(self, "_last_eris_result", {}) or {}
                         _scores = ",".join("%.0f" % x for x in (_e.get("scores") or [])) or "-"
@@ -2174,6 +2174,20 @@ class MemWiseEngine:
     # ── 轮次推送（图表数据产生时即算 ERIS——原渲染时计算，消除渲染时序耦合）──
     # ── D1–D6 只读诊断（2026-11-08）：只统计与落日志，不参与任何判定 ──
 
+    _REASON_CODE = {
+        "系统核心进程": "core", "系统目录进程(概率不足)": "dir", "工作集太小": "small",
+        "刚切走": "fg", "失败冷却中": "cool", "IO活跃": "io", "价值不足": "low",
+        "回涨不足(收益闸)": "rb", "轻量轮候选上限": "lite", "轻量轮(跳过深度整理)": "liteL3",
+    }
+    @classmethod
+    def _reason_code(cls, k):
+        k = str(k)
+        if k in cls._REASON_CODE:
+            return cls._REASON_CODE[k]
+        if k.startswith("失败冷却中("):
+            return "cool" + k[len("失败冷却中("):-1]
+        return k[:6]
+
     def _log_diag_round(self, game=False):
         """T1：每周期单行高密度遥测（替代 D1/D4/D5/D6/M9 多行；只读，不参与判定）。
         字段以 | 分隔；数组以逗号分隔；时间戳为 YYYYMMDDTHHMMSS。"""
@@ -2206,55 +2220,55 @@ class MemWiseEngine:
             _vote = _d.get("vote") or [0, 0, 0]
             _supp = _d.get("supp") or {}
             _parts = [
-                "T1", time.strftime("%Y%m%dT%H%M%S"), _mode, _tag,
+                "T1", str(int(time.time())), _mode, _tag,
                 str(_cs.get("mem_pct", "")), str(round(_cs.get("avail", 0) / (1 << 20), 1) if _cs.get("avail") else ""),
                 ("%.1f" % _dur), str(_tr), str(int(_cs.get("failed_cnt") or 0)),
                 "%d/%d" % (_probe[0], _probe[1]),
                 ("%.1f" % _freed),
                 ("%.2f" % float(_agg)) if isinstance(_agg, (int, float)) else "",
                 str(_dl["layer3_ran"]), str(_dl["layer3_extra"]),
-                str(_dl["deepen_cnt"]), str(_dl["deepen_extra"]),
+                str(_dl["deepen_cnt"]), ("%.1f" % (_dl["deepen_extra"]/(1<<20))),
                 str(_dl["ws_all_rounds"]), str(_dl["trim_rounds"]),
                 ("%.2f" % (_dl["trim_rounds"] / float(_tr))) if _tr else "0",
             ]
-            _parts.append("D1:%d/%d/%s" % (sum(_hist), int(_d.get("cpu_rej", 0)), ",".join(str(x) for x in _hist)))
+            _parts.append("%d/%d/%s" % (sum(_hist), int(_d.get("cpu_rej", 0)), ",".join(str(x) for x in _hist)))
             if _s:
-                _parts.append("S:%d/%.1f/%.1f/%d" % (len(_s), _s[len(_s)//2], _s[-1], int(getattr(self, "_snap_n", 0))))
+                _parts.append("%d/%.1f/%.1f/%d" % (len(_s), _s[len(_s)//2], _s[-1], int(getattr(self, "_snap_n", 0))))
             else:
                 _parts.append("S:0")
             _tv = []
             for _i in (0, 1, 4):
                 _row = _tree[_i] if _i < len(_tree) else [0] * 5
                 _tv.append(":".join(str(x) for x in _row))
-            _parts.append("V:%d/%d/%d/%s" % (int(_vote[0]), int(_vote[1]),
+            _parts.append("%d/%d/%d/%s" % (int(_vote[0]), int(_vote[1]),
                                               {"deep": -1, "full": -2}.get(getattr(self.judger, "_mode_guard", "normal"), 0),
                                               "/".join(_tv)))
             _bs = []
             for _k in ("稳态抑制", "回弹后退", "WS未填满"):
                 _n, _r = _supp.get(_k, [0, 0])
                 _bs.append("%d/%d" % (_r, _n))
-            _parts.append("B:" + ",".join(_bs))
+            _parts.append(",".join(_bs))
             if _mode == "deep":
-                _parts.append("M:%d/%.1f/%d" % (_dl["deep_rebound_hits"], _dl["deep_rebound_freed"]/(1<<20), _dl["deep_final_sweep"]))
+                _parts.append("%d/%.1f/%d" % (_dl["deep_rebound_hits"], _dl["deep_rebound_freed"]/(1<<20), _dl["deep_final_sweep"]))
             elif _mode == "normal":
-                _parts.append("M:%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
+                _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
             elif _mode == "full":
-                _parts.append("M:%d/%d/%d" % (_dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"]))
+                _parts.append("%d/%d/%d" % (_dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"]))
             else:
                 _parts.append("M:%d/%d" % (_dl["standby"], _dl["modified"]))
             try:
                 _reasons = getattr(self.cleaner, "_cycle_reasons", {}) or {}
                 _top = sorted(_reasons.items(), key=lambda kv: kv[1], reverse=True)[:5]
-                _parts.append("K:" + ",".join("%s:%d" % (str(k).replace(" ", ""), v) for k, v in _top))
+                _parts.append(",".join("%s:%d" % (self._reason_code(k), v) for k, v in _top))
             except Exception:
                 _parts.append("K:")
             try:
-                _parts.append("I:%d" % int(winapi.get_idle_seconds()))
+                _parts.append(str(int(winapi.get_idle_seconds())))
             except Exception:
-                _parts.append("I:-")
+                _parts.append("-")
             try:
                 _ef = self.judger.cfg.get("efis_params", {}) or {}
-                _parts.append("P:%s/%s/%s/%s" % (
+                _parts.append("%s/%s/%s/%s" % (
                     _ef.get("target_usage", ""), CFG.get("emergency_threshold", ""),
                     _ef.get("cpu_gate", ""), _ef.get("io_gate", "")))
             except Exception:

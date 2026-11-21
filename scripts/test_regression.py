@@ -4611,7 +4611,7 @@ check("D 埋点·D1 记录全体候选 cpu（不依赖是否被 CPU 门拦）",
       and '"cpu_rej"' in _cl61)
 check("D5 否决算入：否决者也计入样本（真实通过率可见）",
       "_diag_note_vote_scores" in _cl61 and "投票样本(通过+否决)" in _cl61
-      and '"V:%d/%d/%d/%s"' in _eg61)
+      and '"/".join(_tv)' in _eg61)
 
 print("\n[62] 2026-11-11 决策面与执行域修复（θ 折扣 / 冷却收口 / 预算语义 / 多实例基线 / 预览口径 / 导出脱敏 / 更新日志开关 / 刷新链）")
 
