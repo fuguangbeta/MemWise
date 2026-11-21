@@ -568,13 +568,12 @@ def _log_open(announce=True):
             _log_write("启动", f"MemWise v{_dv()} 启动 · PID {os.getpid()} · 参数:{' '.join(sys.argv[1:]) or '无'}")
             try:
                 _ops = ",".join(CFG.get("clean_operations") or []) or "(空)"
-                _log_write("启动", "生效设置: 模式 %s · 守护周期 %ss · 压制间隔 %ss · 紧急阈值 %s%% · "
-                                   "清理深度 %s · 操作[%s] · 日志落盘 %s · 语言 %s · 排除 %d 项 · 游戏 %d 项"
-                          % (CFG.get("clean_mode", "normal"), CFG.get("interval", 60),
-                             CFG.get("gap_seconds", 12), CFG.get("emergency_threshold", 80),
-                             CFG.get("clean_passes", 4), _ops, bool(CFG.get("log_to_file")),
-                             CFG.get("language", "zh_CN"), len(CFG.get("never") or []),
-                             len(CFG.get("game_processes") or [])))
+                _log_write("启动", "S|%s|%s|%s|%s|%s|%s|%d|%s|%d|%d" % (
+                    CFG.get("clean_mode", "normal"), CFG.get("interval", 60),
+                    CFG.get("gap_seconds", 12), CFG.get("emergency_threshold", 80),
+                    CFG.get("clean_passes", 4), _ops, 1 if CFG.get("log_to_file") else 0,
+                    CFG.get("language", "zh_CN"), len(CFG.get("never") or []),
+                    len(CFG.get("game_processes") or [])))
             except Exception:
                 pass
             # 环境画像（跨机器归因第一手证据）：仅在日志开启路径执行 ⇒ 关日志用户零开销；
@@ -1995,10 +1994,8 @@ class MemWiseEngine:
                 cycle_groups += self._cycle_log_groups
                 self.events.put(('display_groups', cycle_groups))
                 if CFG.get("log_to_file"):
-                    # 各组内容（压力/游戏/决策等）直写 [界面]，与 [清理] 分开，去重保持
-                    for g in self._cycle_log_groups:
-                        for msg in g:
-                            _log_write("界面", msg)
+                    # 高频界面组不再落盘：关键状态已由 T1/C 覆盖，GUI 仍完整显示
+                    pass
                 # 状态栏（累计数据）
                 self.events.put(('upd_ui', (s, m, "🟢 守护中")))
                 self.events.put(('chart', None))
@@ -2226,7 +2223,7 @@ class MemWiseEngine:
                 "%d/%d" % (_probe[0], _probe[1]),
                 ("%.1f" % _freed),
                 ("%.2f" % float(_agg)) if isinstance(_agg, (int, float)) else "",
-                str(_dl["layer3_ran"]), str(_dl["layer3_extra"]),
+                str(_dl["layer3_ran"]), ("%.1f" % (_dl["layer3_extra"]/(1<<20))),
                 str(_dl["deepen_cnt"]), ("%.1f" % (_dl["deepen_extra"]/(1<<20))),
                 str(_dl["ws_all_rounds"]), str(_dl["trim_rounds"]),
                 ("%.2f" % (_dl["trim_rounds"] / float(_tr))) if _tr else "0",

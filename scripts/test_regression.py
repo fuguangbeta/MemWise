@@ -2076,7 +2076,7 @@ check("日志：C 行含系统操作/释放前三/拦截原因/内存状态",
       all(k in _eng_log for k in ("C|%d|%.1f", "cycle_standby", "_top_s", "_rs_s",
                                   '(m or {}).get("pct"')))
 check("日志：设定与配置（启动生效设置快照 + 逐键变更 diff）",
-      all(k in _eng_log for k in ("生效设置: 模式 %s", "_CFG_SNAPSHOT", '"配置"')))
+      all(k in _eng_log for k in ("S|%s|%s", "_CFG_SNAPSHOT", '"配置"')))
 check("日志：学习状态周期摘要（画像/锚点/回退/抑制/当前参数，无策略权重）",
       all(k in _eng_log for k in ("学习状态: 画像 %d", "当前参数 %s"))
       and "策略权重" not in _eng_log)
@@ -4084,7 +4084,7 @@ check("J9c 硬上限边界与清理判定解耦（Program Files 可设 / System3
       and PareJudger._is_cap_protected(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "x.exe")) is True
       and PareJudger._is_system_path(r"C:\Program Files\App\a.exe") is True)
 check("J9d 同轮系统操作留痕（P1-8 去重数据来源）",
-      "_round_ops" in _cl59 and 'self._round_ops = {}' in _cl59 and "full 系统操作: " in _cl59)
+      "_round_ops" in _cl59 and 'self._round_ops = {}' in _cl59 and '"O|" + "|".join' in _cl59)
 check("J10 轻量轮默认值兜底（新建 cleaner 不再 AttributeError）",
       "self._lite = False" in _cl59 and "self._trim_partial = False" in _cl59)
 # ── 兼容性：旧状态文件带已删字段仍可加载 ──
@@ -4604,7 +4604,7 @@ check("在线权重学习整体移除（cleaner 无 _trim_success/update_weights
       "_trim_success" not in _cl61 and "update_weights_per_trim" not in _cl61)
 check("卡顿排查埋点：系统操作耗时 + 前台进程清理计数",
       "_round_time" in _cl61 and "fg_trimmed" in _cl61
-      and "耗时%.2fs" in _cl61)
+      and "self._round_time.get(k, 0.0)" in _cl61)
 
 check("D 埋点·D1 记录全体候选 cpu（不依赖是否被 CPU 门拦）",
       "_diag_note_candidate" in _cl61 and "_diag_cpu_rej" in _cl61

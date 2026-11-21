@@ -1540,14 +1540,19 @@ class PareCleaner:
                     if mode == "full" and self._round_ops:
                         from core.engine import _log_write as _lw
                         _parts = []
+                        _code = {"_flush_volume_cache": "fv", "flush_volume_cache": "fv2",
+                                 "clean_modified_pages": "cmp", "clear_registry_cache": "crc",
+                                 "empty_all_working_sets": "ws", "empty_standby": "sb",
+                                 "filecache": "fc", "flush_modified_pages": "fmp",
+                                 "purge_low_priority_standby": "pls", "combine_physical_memory": "cb"}
                         for k, v in sorted(self._round_ops.items()):
-                            _s = "%s x%d 合计%.1fMB 末次%.1fMB 耗时%.2fs" % (
-                                k, v[0], v[1] / (1 << 20), v[2] / (1 << 20),
-                                self._round_time.get(k, 0.0))
+                            _s = "%s:%d,%.1f,%.1f,%.2f" % (
+                                _code.get(k, k[:4]), v[0], v[1] / (1 << 20),
+                                v[2] / (1 << 20), self._round_time.get(k, 0.0))
                             if len(v) >= 5:
-                                _s += " 成功%d/前值%.1fMB" % (v[3], v[4])
+                                _s += ",%d,%.1f" % (v[3], v[4] / (1 << 20))
                             _parts.append(_s)
-                        _lw("诊断", "full 系统操作: " + "; ".join(_parts))
+                        _lw("诊断", "O|" + "|".join(_parts))
                 except Exception:
                     pass
                 # 防手动口径泄漏（2026-10-25 原理审查）：_layer2_process 开头把 judger._manual_mode
