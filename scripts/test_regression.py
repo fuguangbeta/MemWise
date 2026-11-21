@@ -1171,7 +1171,7 @@ _stub29._write_group(["多行\n消息"])  # 实际 2 行：7+2=9>7 → 清屏（
 check("多行消息按实际行计", _panel29() == 2)
 check("历史缓存累积", len(_stub29._log_history) == 4 + 2 + 3 + 10 + 1 + 6 + 1)
 _root29.destroy()
-check("三路径统一委托", _gui26_src.count("_write_group([m])") == 2
+check("三路径统一委托", _gui26_src.count("_write_group([m]") == 2
       and "_write_group(msgs, to_file)" in _gui26_src)
 check("engine 启动信息打包", "'log_batch', start_lines" in _eng26_src)
 

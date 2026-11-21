@@ -1586,7 +1586,7 @@ class MemWiseGUI:
         self._start_mem_bar()   # 内存条独立 300ms 实时刷新（2026-11-20）
         self._setup_hotkey_and_tray()
         adm = "✓" if winapi.is_elevated() else "✗"
-        self._log(_APP_TITLE + tr(" 启动· ") + tr("当前是否管理员权限:") + adm)
+        self._log(_APP_TITLE + tr(" 启动· ") + tr("当前是否管理员权限:") + adm, priority=True)
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
             self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
@@ -1966,6 +1966,10 @@ class MemWiseGUI:
 
     def _present_done(self):
         self._presenting = False
+        try:
+            self._flush_pending_type()
+        except Exception:
+            pass
         pend = getattr(self, "_pending_dae", None)
         if pend:
             self._pending_dae = None
@@ -3890,7 +3894,7 @@ class MemWiseGUI:
             return tr_msg(_raw)
         return tr_msg(item)
 
-    def _write_group(self, msgs, to_file=True):
+    def _write_group(self, msgs, to_file=True, priority=False):
         """分组原子写入日志面板（2026-08-30 分组语义，三种写入路径统一走此原语）：
         · 组 = 逻辑上同批的消息集合，一次清屏判断后整组输出，绝不逐行判断
           （防组内前半截被清屏自食——原逐行 _log 输出名单实测只剩最后 1-2 个）
@@ -3902,9 +3906,14 @@ class MemWiseGUI:
         （周期摘要/EFIS 消息已有 [清理]/[调参] 直写，避免双通道重复落盘）"""
         # 启动淡入期间先暂存，完成后统一写入并打印（避免先完整显示再动画）
         if getattr(self, "_startup_anim_active", False):
-            if not hasattr(self, "_startup_msgs"):
-                self._startup_msgs = []
-            self._startup_msgs.extend(msgs)
+            if priority:
+                if not hasattr(self, "_startup_priority_msgs"):
+                    self._startup_priority_msgs = []
+                self._startup_priority_msgs.extend(msgs)
+            else:
+                if not hasattr(self, "_startup_msgs"):
+                    self._startup_msgs = []
+                self._startup_msgs.extend(msgs)
             return
         # 连续重复去重：单条消息与上一条完全相同则跳过
         if len(msgs) == 1 and msgs[0] == self._last_msg:
@@ -3943,9 +3952,10 @@ class MemWiseGUI:
                 _log_write("界面", m[0] if isinstance(m, tuple) else m)
 
     def _flush_startup_logs(self):
-        msgs = getattr(self, "_startup_msgs", None)
+        msgs = list(getattr(self, "_startup_priority_msgs", None) or []) + list(getattr(self, "_startup_msgs", None) or [])
         if not msgs:
             return
+        self._startup_priority_msgs = []
         self._startup_msgs = []
         try:
             self._write_group(msgs, to_file=True)
@@ -4055,9 +4065,9 @@ class MemWiseGUI:
         """批量组输出——分组语义见 _write_group"""
         self._write_group(msgs, to_file)
 
-    def _log(self, m):
-        """实时日志（单行组）——分组语义见 _write_group"""
-        self._write_group([m])
+    def _log(self, m, priority=False):
+        """实时日志（单行组）——priority 用于启动身份行，flush 时排在观察消息之前"""
+        self._write_group([m], priority=priority)
 
     def _log_t(self, template, *args):
         """带参数的模板日志（P03/F51）：历史存中文原文，显示按当前语言渲染；
