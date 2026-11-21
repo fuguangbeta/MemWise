@@ -1425,7 +1425,9 @@ class MemWiseEngine:
                         # 快照降频：每3s采集一次（节省~20% CPU/功耗，进程列表在gap期间变化极小）
                         if snap_skip <= 0:
                             snaps = self._snap()
-                            snap_skip = 6
+                            # D4 专项（2026-11-21）：full 模式快照 3s→2s，把每周期快照
+                            # 从 ~11 提到 ~16；其他模式保持 3s，避免无谓开销。
+                            snap_skip = 4 if mode == "full" else 6
                             # 回弹驱动（C 方案，2026-08-14）：full 模式回填率 >60% → gap 立即收紧，
                             # 提前进入收割（回弹越猛压得越密；net_freed≤32MB 的微小轮跳过判断）
                             if mode == "full" and self._last_harvest_freed > (32 << 20) \
