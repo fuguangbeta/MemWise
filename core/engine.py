@@ -2300,8 +2300,11 @@ class MemWiseEngine:
                 _log_write("诊断", "模式 %s%s · M9 专项: " % (mode, tag) + " · ".join(parts))
             self._mode_special_prev = cur
             self._mode_special_mode = mode
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                _log_write("诊断", "模式 %s%s · M9 异常: %r" % (mode, tag, e))
+            except Exception:
+                pass
 
     def _log_partial_drop(self, game=False):
         """D7：本轮因预算/卡死未提交的候选数（5.1 的量化入口；无丢弃时不输出）。"""
