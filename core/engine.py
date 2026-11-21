@@ -1635,6 +1635,11 @@ class MemWiseEngine:
                     result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                               "net_freed": 0, "_partial": True}
                     self._cycle_log_groups.append(["⏱ 上轮 harvest 未完成 · 本轮跳过收割"])
+                    try:
+                        _m = winapi.get_memory_status() or {}
+                        _log_write("诊断", "T1P|%d|%s|%d|1|1" % (int(time.time()), mode, _m.get("pct", 0)), raw=True)
+                    except Exception:
+                        pass
                 else:
                     self._pending_harvest = None
                     self.cleaner.refresh_cycle_gate()   # 收割前按当前停手状态补判（周期开头可能正好在动）
@@ -1652,6 +1657,11 @@ class MemWiseEngine:
                         result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
                                   "net_freed": 0, "_partial": True}
                         self._cycle_log_groups.append(["⏱ harvest 超时(30s)·跳过本轮诊断"])
+                        try:
+                            _m = winapi.get_memory_status() or {}
+                            _log_write("诊断", "T1P|%d|%s|%d|1|2" % (int(time.time()), mode, _m.get("pct", 0)), raw=True)
+                        except Exception:
+                            pass
                     except Exception:
                         self._pending_harvest = harvest_future
                         result = {"mode": mode, "aggressiveness": agg, "layer2": [], "probe": [],
@@ -1798,18 +1808,21 @@ class MemWiseEngine:
                 probe_ok = sum(1 for _, ok, _ in probe_results if ok)
                 self._cycle_probe = (probe_ok, len(probe_results or []))
 
-                # 累计图表数据 — 每轮必定推送，chart_accum 即本轮净释放
-                cur_freed = float(s['freed_mb'])
-                cycle_freed = cur_freed - self._chart_last_freed
-                self._chart_last_freed = cur_freed
-                chart_accum = max(0.0, cycle_freed)
-                # 每轮必定推送一个柱，零释放轮也占位，图表与日志严格一一对应
-                # ⚠ 时序（2026-09-11 修正）：本周期口径数据必须先备齐再推——否则 ERIS 用到的是
-                #   上一轮的 PF 与本轮释放量（旧实现 PF 在推送之后才更新 ⇒ [效率] 行慢一拍）
-                self._cycle_freed_mb = chart_accum
-                pf_delta_cycle = _drain_pf_delta(self.judger)
-                self._cycle_pf = float(pf_delta_cycle or 0)
-                self._push_round(chart_accum, harvest_partial, game_seen)
+                # 累计图表数据 — 完整轮才推送；partial 不生成假零柱/假 ERIS
+                if not harvest_partial:
+                    cur_freed = float(s['freed_mb'])
+                    cycle_freed = cur_freed - self._chart_last_freed
+                    self._chart_last_freed = cur_freed
+                    chart_accum = max(0.0, cycle_freed)
+                    self._cycle_freed_mb = chart_accum
+                    pf_delta_cycle = _drain_pf_delta(self.judger)
+                    self._cycle_pf = float(pf_delta_cycle or 0)
+                    self._push_round(chart_accum, False, game_seen)
+                else:
+                    cycle_freed = 0.0
+                    chart_accum = 0.0
+                    self._cycle_freed_mb = 0.0
+                    self._cycle_pf = 0.0
                 # Layer3 周期增量基线（累计口径会让诊断误判"持续触发"，导致 gate 持续爬升）
                 l3_ran_cur = s.get('layer3_ran', 0)
                 l3_extra_cur = s.get('layer3_extra', 0)
