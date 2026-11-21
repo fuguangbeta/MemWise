@@ -111,6 +111,7 @@ class PareCleaner:
             # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
             "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
             "deep_rebound_freed": 0, "deep_rebound_hits": 0, "deep_final_freed": 0, "deep_final_sweep": 0,
+            "normal_final_sweep": 0, "normal_l3_extra": 0,
         }
         self._info_msgs = []
         self._last_mode = None   # 最近一次 optimize 的**真实模式**（ERIS 按模式分桶取真值）；None ⇒
@@ -1672,12 +1673,9 @@ class PareCleaner:
         # Layer3 门槛由 EFIS layer3_agg_gate 自适应控制（0.3 兜底仅测试/旧状态用；
         # 正常路径 judger.cfg["efis_params"] 恒由 efis.get_params() 提供，含 0.6）；
         # 高频 gap-fill 路径传 allow_layer3=False，深度操作只在 harvest 执行
+        _l3_done = False
         if allow_layer3:
             _l3_gate = self.judger.cfg.get("efis_params", {}).get("layer3_agg_gate", 0.3)
-            # 使用率路径（2026-09-11 审查 F4）：agg 判据在 normal 现有标定下要到 ~90% 使用率
-            # 才可达，而 80% 起已被紧急 full 接管 ⇒ 深度聚合在"设计意图的高压区间"内不工作。
-            # 补一条与 DEEP_WSALL_PCT_GATE 同思路的使用率判据（阈值 = 用户紧急阈值×85%，
-            # 默认 68%）：低压/中压零影响，且能在紧急清理之前先做深度聚合。
             _em_l3 = self.judger.cfg.get("emergency_threshold", 80)
             try:
                 _em_l3 = float(_em_l3)
@@ -1687,7 +1685,42 @@ class PareCleaner:
             _l3_usage = bool(_mp_l3 and _mp_l3["pct"] >= _em_l3 * 0.85)
             if agg >= _l3_gate or _l3_usage:
                 self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
+                _l3_done = True
+            if (not _l3_done and pipeline_ctx.get("layer2_trimmed")
+                    and self._normal_tail_ok(deadline)):
+                try:
+                    _target = float(self.judger.cfg.get("efis_params", {}).get("target_usage", 45))
+                except Exception:
+                    _target = 45.0
+                if _mp_l3 and (_target + 8.0) <= _mp_l3["pct"] < _em_l3 * 0.85:
+                    self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
+                    _l3_done = True
+                    self._stats_inc("normal_l3_extra")
+        if allow_layer3 and pipeline_ctx.get("layer2_trimmed") and self._normal_tail_ok(deadline):
+            self._normal_final_consolidation(ops_filter, deadline)
         return l2_results, probe_results
+
+    def _normal_tail_ok(self, deadline=None):
+        if self.game_mode or getattr(self, "_lite", False):
+            return False
+        try:
+            if winapi.get_idle_seconds() < _HEAVY_IDLE_OTHER:
+                return False
+        except Exception:
+            return False
+        if deadline is not None and time.time() > deadline - 2.0:
+            return False
+        return True
+
+    def _normal_final_consolidation(self, ops_filter, deadline):
+        if deadline is not None and time.time() > deadline - 2.0:
+            return
+        ops = self._layer1_ops(ops_filter)
+        use = set(ops or set()) & {"standby", "standby_low", "modified"}
+        if not use:
+            return
+        self._layer1_memreduct(full=False, game_mode=False, ops=use, clean_self=False)
+        self._stats_inc("normal_final_sweep")
 
     def _run_deep(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
         """deep 模式主体：normal 基础 + 全清 WS（使用率门控）+ 强制深度聚合。"""
