@@ -1856,6 +1856,7 @@ class MemWiseEngine:
                         'repeat_fail': len(failed),
                         'suppress_cnt': self.judger.suppress_cnt,  # 锚点抑制拦截数（EFIS 自平衡诊断；每轮由 update_activity 重置）
                     }
+                    self._cycle_stats = stats
                     self._log_diag_round(game_seen)   # D1–D6 只读诊断
                     self._log_partial_drop(game_seen)  # D7 截断计量（5.1）（2026-11-08；不参与判定；游戏轮单独标记）
                     try:
@@ -2236,31 +2237,67 @@ class MemWiseEngine:
         self._log_mode_special(_mode, _tag)
 
     def _log_mode_special(self, mode, tag=""):
-        """M9：按模式输出专项计数（每个周期增量，不改行为）。"""
+        """M9：每模式周期专项画像（只读诊断，每个周期一行）。"""
         try:
             st = getattr(self.cleaner, "stats", {}) or {}
-            spec = {
-                "quick": [("standby", "低待机", ""), ("modified", "修改页", "")],
-                "normal": [("normal_final_sweep", "轻收尾", "次"), ("normal_l3_extra", "L3补位", "次")],
-                "deep": [("deep_rebound_hits", "回弹", "次"), ("deep_rebound_freed", "回弹释放", "MB"),
-                         ("deep_final_sweep", "收尾", "次")],
-                "full": [("final_sweep", "收尾", "次"), ("combine_calls", "combine", "次")],
-            }.get(mode, [])
-            if not spec:
-                return
-            prev = getattr(self, "_mode_special_prev", None)
-            prev_mode = getattr(self, "_mode_special_mode", None)
-            cur = {k: st.get(k, 0) for k, _lab, _u in spec}
-            if prev_mode == mode and isinstance(prev, dict):
+            cs = getattr(self, "_cycle_stats", {}) or {}
+            keys = ("standby", "modified", "normal_final_sweep", "normal_l3_extra",
+                    "deep_rebound_hits", "deep_rebound_freed", "deep_final_sweep",
+                    "final_sweep", "combine_calls", "combine_pages",
+                    "layer3_ran", "trim_rounds", "ws_all_rounds")
+            cur = {k: st.get(k, 0) for k in keys}
+            prev = getattr(self, "_mode_special_prev", {}) or {}
+            delta = {k: max(0, cur.get(k, 0) - prev.get(k, 0)) for k in keys}
+            if getattr(self, "_mode_special_mode", None) == mode:
                 parts = []
-                for k, lab, unit in spec:
-                    d = cur.get(k, 0) - prev.get(k, 0)
-                    if unit == "MB":
-                        parts.append("%s %.1f MB" % (lab, d / (1 << 20)))
-                    elif d:
-                        parts.append("%s %d %s" % (lab, d, unit))
-                if parts:
-                    _log_write("诊断", "模式 %s%s · M9 专项: " % (mode, tag) + " · ".join(parts))
+                if cs.get("mem_pct") is not None:
+                    parts.append("内存 %s%%" % cs.get("mem_pct"))
+                if cs.get("cycle_duration") is not None:
+                    parts.append("耗时 %.1fs" % float(cs.get("cycle_duration") or 0))
+                parts.append("整理 %d" % int(cs.get("trimmed_cnt") or 0))
+                _pk, _pt = getattr(self, "_cycle_probe", (0, 0))
+                parts.append("试探 %d/%d" % (int(_pk or 0), int(_pt or 0)))
+                if cs.get("cycle_freed") is not None:
+                    parts.append("净释放 %.1fMB" % (float(cs.get("cycle_freed") or 0) / (1 << 20)))
+                if mode == "quick":
+                    if delta["standby"]:
+                        parts.append("低待机 %d" % delta["standby"])
+                    if delta["modified"]:
+                        parts.append("修改页 %d" % delta["modified"])
+                else:
+                    if delta["layer3_ran"]:
+                        parts.append("L3 %d" % delta["layer3_ran"])
+                    if mode == "normal":
+                        if delta["normal_l3_extra"]:
+                            parts.append("L3补位 %d" % delta["normal_l3_extra"])
+                        if delta["normal_final_sweep"]:
+                            parts.append("轻收尾 %d" % delta["normal_final_sweep"])
+                    elif mode == "deep":
+                        if delta["deep_rebound_hits"]:
+                            parts.append("回弹 %d 次/%.1fMB" % (
+                                delta["deep_rebound_hits"], delta["deep_rebound_freed"] / (1 << 20)))
+                        if delta["deep_final_sweep"]:
+                            parts.append("深收尾 %d" % delta["deep_final_sweep"])
+                    elif mode == "full":
+                        if delta["final_sweep"]:
+                            parts.append("收尾 %d" % delta["final_sweep"])
+                        if delta["combine_calls"]:
+                            parts.append("combine %d/%.0f页" % (
+                                delta["combine_calls"], delta["combine_pages"]))
+                if delta["ws_all_rounds"]:
+                    parts.append("全清WS %d" % delta["ws_all_rounds"])
+                if delta["trim_rounds"]:
+                    parts.append("总趟数 %d" % delta["trim_rounds"])
+                try:
+                    _reasons = getattr(self.cleaner, "_cycle_reasons", {}) or {}
+                    _top = sorted(_reasons.items(), key=lambda kv: kv[1], reverse=True)[:3]
+                    if _top:
+                        parts.append("跳过[" + ",".join("%s %d" % (k, v) for k, v in _top) + "]")
+                except Exception:
+                    pass
+                if getattr(self.cleaner, "_trim_partial", False):
+                    parts.append("预算截断")
+                _log_write("诊断", "模式 %s%s · M9 专项: " % (mode, tag) + " · ".join(parts))
             self._mode_special_prev = cur
             self._mode_special_mode = mode
         except Exception:
