@@ -9,8 +9,6 @@ This file holds the technical appendices for the README. Each part stands alone,
 <a id="a"></a>
 ## 附录 A：机制细节 · *How It Works Internally*
 
-机制细节 · *Appendix A: How It Works Internally*
-
 ### 执行顺序
 
 一次完整优化按三层推进。系统层按你勾选的操作依次执行：卷缓存冲刷、脏页写回、待机页回收、文件缓存钳制、注册表缓存清理；deep 与 full 还会做一次系统级工作集全清。进程层对通过判定的进程调用 EmptyWorkingSet，只回收它们当前用不到的物理页。深度层再对已确认空闲的进程做一轮系统回收，避免遗漏。
@@ -92,8 +90,6 @@ A working-set cap limits physical usage rather than commit memory, with up to 32
 <a id="b"></a>
 ## 附录 B：决策与自适应 · *Decision Making and Adaptation*
 
-决策与自适应 · *Appendix B: Decision Making and Adaptation*
-
 每个进程都有一份画像，记录它的释放历史、代价与稳定性。清理一个进程之前，程序会依次判断：先过硬保护，再看它最近是否活跃、是否刚被清理过、上次清理是否划算、这次大概能拿回多少。
 
 学习部分由四块组成。Thompson 采样给出"值得一试"的概率，随成功与失败更新；Kalman 滤波维护释放量的预测基线，用来判断结果是否符合预期；分层先验让新进程不必从零起步；三棵策略树分别从收益、压力与反事实角度投票，票数不足就拒绝。normal 的投票阈值是 0，deep 是 -1，full 是 -2，全负分仍然拒绝。
@@ -165,8 +161,6 @@ Factor wording: when efficiency rises, the highest-scoring dimension among those
 <a id="c"></a>
 ## 附录 C：文件结构 · *File Structure*
 
-文件结构 · *Appendix C: File Structure*
-
 ```
 MemWise/
 ├─ MemWise.exe            程序本体（单文件）
@@ -196,8 +190,6 @@ MemWise/
 
 <a id="d"></a>
 ## 附录 D：构建与自检 · *Building and Self-Check*
-
-构建与自检 · *Appendix D: Building and Self-Check*
 
 运行期没有外部依赖，构建时才需要 Python 与 PyInstaller。打包命令是 python -m PyInstaller MemWise.spec --distpath dist --workpath build --noconfirm，产物为 dist 目录下的单文件 exe。代码自检用 scripts/test_regression.py，它覆盖清理梯度、判定门、界面文案与文档同步等静态与行为断言，改动前后都应当跑一遍。版本号以 core/backup.py 里的 APP_VERSION 为唯一来源，本地测试构建通过 BUILD_VERSION 追加 .beta 后缀，两者互不覆盖。
 
