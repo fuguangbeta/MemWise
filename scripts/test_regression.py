@@ -2899,6 +2899,18 @@ check("deep 尾段：仅系统收尾且 _run_deep 真的调用（回弹已按数
 check("deep 回弹通道已删除（无残留方法与统计键）",
       "_deep_rebound" not in _cl45f and "deep_rebound_hits" not in _cl45f
       and "deep_rebound_cand" not in _cl45f)
+_eg45f = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read()
+check("四模式专项统计键齐备（quick/normal/deep）",
+      all(k in _cl45f for k in ("quick_calls", "quick_noop", "quick_backoff_skip",
+                                    "normal_final_sweep", "normal_l3_extra",
+                                    "deep_final_sweep", "deep_final_freed")))
+check("quick 退避上限 300s 且手动优化豁免",
+      "min(300.0" in _cl45f and "if self._manual_run:" in _cl45f)
+check("normal 尾段 deadline 放宽（+2 而非 -2）",
+      "time.time() > deadline + 2.0" in _cl45f)
+check("T1 新增前台未变字段 F:", '"F:%s/%d"' in _eg45f)
+check("T1 deep 段为两字段（收尾次数/释放MB）",
+      '"%d/%.1f" % (_dl["deep_final_sweep"], _dl["deep_final_freed"]' in _eg45f)
 check("deep 尾段闸门只看停手/游戏/轻量，不看 deadline",
       "winapi.get_idle_seconds() >= _HEAVY_IDLE_OTHER" in _cl45f
       and "def _deep_tail_gate(self):" in _cl45f)
