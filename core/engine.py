@@ -1361,6 +1361,7 @@ class MemWiseEngine:
                 learned = len(self.learner.profiles)
 
                 self._cycle_log_groups = []  # 本周期末分组输出缓存（每项一个逻辑组，2026-08-30）
+                self._cycle_summary_extra = []   # 并入「周期汇总」组的附加行（元认知/泄漏提示，2026-11-22）
                 # 工作集硬上限施加（幂等 syscall；五守卫+降频见方法体；播报入周期批）
                 self._apply_ws_caps(snaps)
                 efis_msg = None  # 本周期 EFIS 调参消息（并入周期批输出）
@@ -1902,7 +1903,7 @@ class MemWiseEngine:
                         _log_write("异常", f"元认知异常: {e!r}")
                     if meta_findings:
                         for finding in meta_findings:
-                            self._cycle_log_groups.append([finding])
+                            self._cycle_summary_extra.append(finding)
 
                 # ── 收集并显示算法日志消息 ──
                 # 游戏检测消息改走批量通道，防被 _log_batch 清屏擦除
@@ -1911,9 +1912,9 @@ class MemWiseEngine:
                     # 会同条双行——同一条游戏启停消息在 memwise.log 出现两次）
                     self._cycle_log_groups.append([msg])
                 for msg in self.learner.pop_info():
-                    self._cycle_log_groups.append([msg])
+                    self._cycle_summary_extra.append(msg)
                 for msg in self.cleaner.pop_info():
-                    self._cycle_log_groups.append([msg])
+                    self._cycle_summary_extra.append(msg)
 
                 deep_triggered = self.cleaner.summary().get("layer3_ran", 0) > layer3_ran_start
                 # 合并压力+深度清理日志（与上一周期峰值比较，仅变化时输出）
@@ -1998,7 +1999,9 @@ class MemWiseEngine:
                 # 展示层逐组原子写入（组间 ≤7 接续 / >7 清屏；组内可超 7 完整呈现）。
                 # 曾见 summary 先入队、log_batch 后入队时被后者的清屏抹掉——分组化后同批
                 # 各组在同一事件内顺序写入，队列竞争不再可能
-                cycle_groups = [[summary_line]]
+                # 汇总组：汇总行 + 元认知/泄漏提示同组（组内可 >7，整组完整显示；
+                # 分组判定只在「组间」发生，这样提示不会把汇总挤掉）
+                cycle_groups = [[summary_line] + list(self._cycle_summary_extra)]
                 if efis_msg:
                     cycle_groups.append(["[EFIS] " + efis_msg])  # 周期成果同批（[调参] 已直写文件）
                 cycle_groups += self._cycle_log_groups
