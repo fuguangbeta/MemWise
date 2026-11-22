@@ -2910,8 +2910,9 @@ check("四模式专项统计键齐备（quick/normal/deep）",
                                     "deep_final_sweep", "deep_final_freed")))
 check("quick 退避上限 300s 且手动优化豁免",
       "min(300.0" in _cl45f and "if self._manual_run:" in _cl45f)
-check("normal 尾段 deadline 放宽（+2 而非 -2）",
-      "time.time() > deadline + 2.0" in _cl45f)
+check("两处尾段均在执行前补判周期门控，且不再按 deadline 降级",
+      _cl45f.count("self.refresh_cycle_gate()") >= 2
+      and "deadline + 5.0" not in _cl45f and "deadline + 2.0" not in _cl45f)
 check("T1 新增前台未变字段 F:", '"F:%s/%d"' in _eg45f)
 check("T1 deep 段为两字段（收尾次数/释放MB）",
       '"%d/%.1f" % (_dl["deep_final_sweep"], _dl["deep_final_freed"]' in _eg45f)

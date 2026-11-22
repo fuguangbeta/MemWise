@@ -1756,12 +1756,16 @@ class PareCleaner:
 
     def _normal_final_consolidation(self, ops_filter, deadline):
         """normal 轻收尾：停手期做一次 standby/modified 压实。
-        收尾跑在收割末段，此时 deadline 通常已过；以 deadline 早退会让合格窗口全灭
-        （实测修复前 35 个合格窗口只触发 11 次）。改为按超预算程度降级，而非直接放弃。"""
+
+        两处关键点（2026-11-22 实测后定稿）：
+        1) 收尾跑在收割末段，deadline 早已耗尽——不再以 deadline 降级或早退，
+           否则合格窗口被系统性浪费（修复前 35 个合格窗口仅触发 11 次）；
+        2) 周期门控是「周期开头」的判定，结尾可能已停手：此处按当前状态补判一次，
+           复用 refresh_cycle_gate（只 False→True、不动 defer），补上真实覆盖缺口。
+        """
+        self.refresh_cycle_gate()
         ops = self._layer1_ops(ops_filter)
         use = set(ops or set()) & {"standby", "standby_low", "modified"}
-        if deadline is not None and time.time() > deadline + 5.0:
-            use &= {"standby_low"}
         if not use:
             return
         self._layer1_memreduct(full=False, game_mode=False, ops=use, clean_self=False)
@@ -1779,13 +1783,14 @@ class PareCleaner:
             return False
 
     def _deep_final_consolidation(self, ops_filter, deadline):
-        """deep 有界收尾：停手期按勾选做一次系统级压实；超预算时降级为仅 standby_low。"""
+        """deep 有界收尾：停手期按勾选做一次系统级压实。
+
+        与 normal 同理：deadline 在收尾时通常已耗尽，不再据此降级；
+        改为按当前停手状态补判周期门控（refresh_cycle_gate），避免 deep 尾段
+        因「周期开头活跃」而空转——实测中位释放仅 9.6MB 即有此成分。"""
+        self.refresh_cycle_gate()
         ops = self._layer1_ops(ops_filter)
         use = set(ops or set()) & {"standby", "standby_low", "modified"}
-        if deadline is not None and time.time() > deadline + 2.0:
-            use.discard("modified")
-        if deadline is not None and time.time() > deadline + 5.0:
-            use &= {"standby_low"}
         if not use:
             return
         _fb = int(self.stats.get("freed_bytes", 0) or 0)
