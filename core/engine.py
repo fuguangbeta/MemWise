@@ -889,6 +889,9 @@ class MemWiseEngine:
         self._chart_data = deque(maxlen=60)
         # ── D1–D6 只读诊断（2026-11-08）：仅统计与日志，不参与任何判定 ──
         self._snap_dts = deque(maxlen=200)   # D4 快照间隔（秒）
+        self._fg_pid = None                  # 前台进程跟踪（C 方案量化：前台未变时长）
+        self._fg_since = 0.0
+        self._fg_name = ""
         self._last_snap_t = 0.0
         self._snap_n = 0
         self._chart_last_freed = 0.0
@@ -1425,6 +1428,14 @@ class MemWiseEngine:
                         # 快照降频：每3s采集一次（节省~20% CPU/功耗，进程列表在gap期间变化极小）
                         if snap_skip <= 0:
                             snaps = self._snap()
+                            try:
+                                _fpid = winapi.get_foreground_pid()
+                                if _fpid != self._fg_pid:
+                                    self._fg_pid = _fpid
+                                    self._fg_since = time.time()
+                                    self._fg_name = next((s.name for s in snaps if s.pid == _fpid), "")
+                            except Exception:
+                                pass
                             # D4 专项（2026-11-21）：full 模式快照 3s→2s，把每周期快照
                             # 从 ~11 提到 ~16；其他模式保持 3s，避免无谓开销。
                             snap_skip = 4 if mode == "full" else 6
@@ -2284,6 +2295,11 @@ class MemWiseEngine:
                     _ef.get("cpu_gate", ""), _ef.get("io_gate", "")))
             except Exception:
                 _parts.append("P:")
+            try:
+                _age = int(max(0.0, time.time() - float(getattr(self, "_fg_since", 0.0) or 0.0)))
+                _parts.append("F:%s/%d" % ((getattr(self, "_fg_name", "") or "-")[:12], _age))
+            except Exception:
+                _parts.append("F:-/-")
             _log_write("诊断", "|".join(_parts), raw=True)
             if _s:
                 self._snap_dts.clear()
