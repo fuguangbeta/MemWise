@@ -1499,6 +1499,16 @@ try:
     check("F6 quick 只勾 ws/filecache/volume ⇒ 零系统调用", _q_inert == [], str(_q_inert))
     check("F6 quick 勾 standby/modified/registry ⇒ 低优先待机+注册表",
           _q_act == ["clear_registry_cache", "purge_low_priority_standby"], str(_q_act))
+    # quick 专项（2026-11-22）：空转退避 + 零感知成本统计 + T1 指标
+    _qc_src = open(os.path.join(_ROOT34, "core", "cleaner.py"), encoding="utf-8").read()
+    _qe_src = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read()
+    check("quick 空转退避：失败/零释放指数退避，手动优化不受限",
+          "_quick_backoff" in _qc_src and "self._manual_run" in _qc_src
+          and "quick_backoff_skip" in _qc_src)
+    check("quick 成本统计入 stats（调用/空转/耗时/释放）",
+          all(k in _qc_src for k in ("quick_calls", "quick_noop", "quick_ms", "quick_freed")))
+    check("T1 的 quick 段输出 调用/空转/退避/释放MB",
+          "quick_backoff_skip" in _qe_src and "quick_freed" in _qe_src)
 
     _orig34b = {n: getattr(_w34, n) for n in _OPS34}
     _calls34b = []

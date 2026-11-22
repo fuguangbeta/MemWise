@@ -2215,7 +2215,8 @@ class MemWiseEngine:
             _keys = ("layer3_ran", "layer3_extra", "deepen_cnt", "deepen_extra",
                      "ws_all_rounds", "trim_rounds", "normal_final_sweep", "normal_l3_extra",
                      "deep_rebound_hits", "deep_rebound_freed", "deep_final_sweep",
-                     "final_sweep", "combine_calls", "combine_pages", "standby", "modified")
+                     "final_sweep", "combine_calls", "combine_pages", "standby", "modified",
+                     "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed")
             _cur = {k: _st.get(k, 0) for k in _keys}
             _dl = {k: max(0, _cur.get(k, 0) - _prev.get(k, 0)) for k in _keys}
             _tr = int(_cs.get("trimmed_cnt") or 0)

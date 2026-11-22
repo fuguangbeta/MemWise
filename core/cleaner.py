@@ -94,6 +94,7 @@ class PareCleaner:
         self._heavy_defer = {}     # {op: 连续被跳过的轮数}（择时门，2026-11-11）
         self._heavy_last_ms = {}   # {op: 上次实测耗时 ms}（磁盘忙闲的代理信号）
         self._heavy_allow = {}     # {op: 本轮是否允许}（每轮判定一次，轮内复用——见 _decide_heavy）
+        self._quick_backoff = {}   # quick 空转退避：{op: 下次允许的 monotonic 时刻}
         self._lock = threading.Lock()
         self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
         self._max_workers = min(os.cpu_count() or 2, 8)
@@ -112,6 +113,9 @@ class PareCleaner:
             "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
             "deep_rebound_freed": 0, "deep_rebound_hits": 0, "deep_final_freed": 0, "deep_final_sweep": 0,
             "normal_final_sweep": 0, "normal_l3_extra": 0,
+            # quick 专项（2026-11-22）：零感知成本量化 + 空转退避
+            "quick_calls": 0, "quick_noop": 0, "quick_backoff_skip": 0,
+            "quick_ms": 0.0, "quick_freed": 0,
         }
         self._info_msgs = []
         self._last_mode = None   # 最近一次 optimize 的**真实模式**（ERIS 按模式分桶取真值）；None ⇒
@@ -1648,12 +1652,40 @@ class PareCleaner:
         # 不应反复清缓存（“几乎无感知”承诺）。
         if not allow_layer3:
             use = use & {"registry"}
-        if use:
-            # game_mode 透传：游戏中 quick 只保留 registry。
-            # 注（2026-11-19 审核订正）：早前注释称"standby_low 同样跳过"，但 2026-11-09 的定论是
-            # 低优先待机属零磁盘操作、游戏期保留 —— 实际行为以 _layer1_memreduct 为准（不判 game_mode）。
-            self._layer1_memreduct(full=False, ops=use, game_mode=self.game_mode,
-                                   clean_self=allow_layer3)   # gap-fill 不自清，harvest 才清
+        if not use:
+            return
+        # ── 空转退避（2026-11-22 quick 专项）──
+        # 本机实测：注册表清缓存常返回 0MB/失败，quick 只剩这一条路时每 12–20s 空转一次。
+        # 失败或零释放 ⇒ 指数退避（30s→60s→…上限 300s）；有释放 ⇒ 立即复位。
+        # 手动优化（用户显式点击）不受退避限制。
+        _now = time.monotonic()
+        if self._manual_run:
+            _eff = set(use)
+        else:
+            _eff = {op for op in use if _now >= self._quick_backoff.get(op, 0.0)}
+            _skipped = len(use) - len(_eff)
+            if _skipped:
+                self._stats_inc("quick_backoff_skip", _skipped)
+        if not _eff:
+            return
+        _freed_before = int(self.stats.get("freed_bytes", 0) or 0)
+        _t0 = time.perf_counter()
+        self._layer1_memreduct(full=False, ops=_eff, game_mode=self.game_mode,
+                               clean_self=allow_layer3)   # gap-fill 不自清，harvest 才清
+        _el = (time.perf_counter() - _t0) * 1000.0
+        _freed = max(0, int(self.stats.get("freed_bytes", 0) or 0) - _freed_before)
+        self._stats_inc("quick_calls")
+        self._stats_inc("quick_ms", _el)
+        if _freed > 0:
+            self._stats_inc("quick_freed", _freed)
+            for _op in _eff:
+                self._quick_backoff.pop(_op, None)
+        else:
+            self._stats_inc("quick_noop")
+            for _op in _eff:
+                _prev = self._quick_backoff.get(_op, 0.0)
+                _wait = 30.0 if _prev <= _now else min(300.0, max(30.0, (_prev - _now) * 2.0))
+                self._quick_backoff[_op] = _now + _wait
 
     def _run_normal(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
         """normal 模式主体：进程 trim + 按开关映射的系统级清理 + EFIS 门控深度聚合。"""
