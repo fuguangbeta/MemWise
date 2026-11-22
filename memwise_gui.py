@@ -2003,6 +2003,31 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    def _schedule_present_flush(self):
+        """呈现期间收到日志/图表时挂一次延迟补齐（幂等）：淡入结束后若仍有暂存，写出并补画。"""
+        if getattr(self, "_present_flush_id", None) is not None:
+            return
+        try:
+            self._present_flush_id = self.root.after(500, self._flush_present_pending)
+        except Exception:
+            self._present_flush_id = None
+
+    def _flush_present_pending(self):
+        self._present_flush_id = None
+        if getattr(self, "_presenting", False):
+            self._schedule_present_flush()
+            return
+        try:
+            self._append_present_pending()
+        except Exception:
+            pass
+        if getattr(self, "_chart_dirty", False):
+            self._chart_dirty = False
+            try:
+                self._draw_chart()
+            except Exception:
+                pass
+
     def _present_done(self):
         self._presenting = False
         try:
@@ -3966,6 +3991,7 @@ class MemWiseGUI:
             return
         # 呈现期间到达的新日志先暂存，避免在淡入过程中触发清屏/重排
         if getattr(self, "_presenting", False) and not getattr(self, "_suppress_typewriter", False):
+            self._schedule_present_flush()
             if getattr(self, "_panel_msgs", None) is None:
                 self._panel_msgs = []
             self._log_history.extend(msgs)
@@ -4737,7 +4763,10 @@ class MemWiseGUI:
                     self._write_groups(args)   # 仅显示：内容已有 [清理]/[调参] 直写落盘
                 elif action == 'chart':
                     if getattr(self, "_presenting", False):
-                        self._chart_dirty = True   # 呈现期间不画：显示后再由下一次自然刷新覆盖
+                        self._chart_dirty = True
+                        # 呈现期间到达的图表数据必须在淡入结束后补画；旧实现只置脏，
+                        # 若消息晚于 _present_done 到达，就要等到下一轮才显示（2026-11-22 实测卡空白）。
+                        self._schedule_present_flush()
                         continue
                     self._drawing_chart = False  # 异常恢复：防止标志永锁
                     if self._chart_redraw_id is not None:
@@ -5116,7 +5145,7 @@ class MemWiseGUI:
         """显示占位文本（无数据时）"""
         c = self.chart_canvas
         cw = c.winfo_width() or 400
-        c.create_text(cw//2, 70, text=tr("启动守护模式后显示实时优化图表"),
+        c.create_text(cw//2, 70, text=tr("守护运行一轮后显示实时图表"),
                       fill="#888", font=("微软雅黑", 10))
         _chart_delete_items(c, old_ids)
 

@@ -183,7 +183,7 @@ _EN = {
     "--%": "--%",
         "守护运行中": "Guarding",
         "🟢 守护中": "🟢 Guarding",
-    "启动守护模式后显示实时优化图表": "Start Guard mode to see the live chart",
+    "守护运行一轮后显示实时图表": "The live chart appears after one guard cycle",
     "（未勾选 = 不执行对应系统清理）": "(unchecked = skip the corresponding system cleanup)",
 
     # ── 主界面 tooltip（27 个，按原文全文）──
