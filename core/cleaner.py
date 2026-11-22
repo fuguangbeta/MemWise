@@ -1745,9 +1745,9 @@ class PareCleaner:
                 return False
         except Exception:
             return False
-        # 收割预算通常在此之前就用尽；尾段代价小，允许小幅超预算（否则恒不触发）
-        if deadline is not None and time.time() > deadline + 2.0:
-            return False
+        # 收割 deadline 在收割开始时通常只剩数秒，而 L2/L3 往往超出它；
+        # 若以 deadline 为闸，实测 87 轮 normal 中 36 个合格停手窗口只有 6 次触发。
+        # 尾段仅做 standby/modified（低于 1 秒），改为只看停手与游戏/轻量，不再看 deadline。
         return True
 
     def _normal_final_consolidation(self, ops_filter, deadline):
