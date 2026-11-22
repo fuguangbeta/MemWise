@@ -664,7 +664,7 @@ for _k in ("  · quick — 仅系统级清理，几秒完成，几乎无感知\n
            "               适合：内存告急，需要立刻腾出最多空间\n"):
     check(f"B1 键存在:{_k.strip()[:18]}", _k in _EN_A or _k.rstrip("\n") in _EN_A)
 check("B8 是/否键", "是" in _EN_A and "否" in _EN_A)
-check("B9 守护异常键", "❌ 守护异常，详见下方错误信息" in _EN_A)
+check("B9 守护异常键", "守护异常，详见下方错误信息" in _EN_A)
 # ── B1 翻译实证：补键后 tooltip 行完整英文无中文 ──
 set_language("en")
 _line_d = tr("  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n")
@@ -1178,7 +1178,7 @@ check("engine 启动信息打包", "'log_batch', start_lines" in _eng26_src)
 print("\n[28] 周期批分组化 + 同批修复（2026-08-30）")
 check("周期批分组化", "'display_groups', cycle_groups" in _eng26_src
       and "_cycle_log_groups" in _eng26_src and "_cycle_log_buffer" not in _eng26_src)
-check("紧急消息统一入批", 'self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])' in _eng26_src)
+check("紧急消息统一入批", 'self._cycle_log_groups.append(["紧急触发清理(full模式)"])' in _eng26_src)
 check("EFIS 并入周期批", 'cycle_groups.append(["[EFIS] " + efis_msg])' in _eng26_src
       and "('display', ['[EFIS] ' + efis_msg])" not in _eng26_src)
 check("display 事件分组载荷", "elif action == 'display_groups':" in _gui26_src
@@ -1199,7 +1199,7 @@ _vis30 = _stub30.log.get('1.0', 'end').rstrip(chr(10)).splitlines()
 check("周期大整体完整可见", len(_vis30) == 3 and any("周期汇总" in l for l in _vis30)
       and any("[EFIS]" in l for l in _vis30) and any("内存 70%" in l for l in _vis30))
 _root30.destroy()
-check("守护异常同批", '["❌ 守护异常，详见下方错误信息", f"🔍 {err}"]' in _gui26_src)
+check("守护异常同批", '["守护异常，详见下方错误信息", f"{err}"]' in _gui26_src)
 check("崩溃恢复单条", _gui26_src.count("🔄 从崩溃中恢复 — 守护模式已自动继续") == 1
       and 'log_msg or "守护模式启动"' in _gui26_src)
 check("热键只报变更键", 'changed={hk["key"]} if spec != old else set()' in _gui26_src
@@ -1266,7 +1266,7 @@ check("F5 T10 定稿文案", "「所有进程当前的排行」" in _gui26_src a
       and "「所有进程当前的排行」" in _EN_A)
 # ── 英文适配全量扫描补键（事件日志/终止确认尾段/tr_msg 对称）──
 # （对运行时 _EN 字典断言：键中 \n 经解释为真实换行，与源码字面转义形态无关）
-for _k in ("⚠ 图表异常: ", "GUI 优化: ", "MB 释放, ", "优化完成: ",
+for _k in ("图表异常: ", "GUI 优化: ", "MB 释放, ", "优化完成: ",
            "服务模式已安装 (Scheduled Task)", ") 吗？\n\n该操作会强制结束进程，未保存的数据可能丢失。",
            "收益高", "收益中", "内存紧张", "内存充足", "内存上升中", "预测优势"):
     check(f"EN 补键:{_k.strip()[:14]}", _k in _EN_A)
@@ -1842,7 +1842,7 @@ check("F53 引擎两处候选预览均按同口径调用", _eng53.count("can_tri
 
 # ── F54 结果卡信息结构：系统缓存 / 进程分列（2026-09-11 用户定稿）+ 候选行口径 ──
 check("F54 候选行文案改为「本次将评估」",
-      _eng53.count('f"📋 本次将评估 {len(preview)} 个进程：{shown}"') == 2
+      _eng53.count('f"本次将评估 {len(preview)} 个进程：{shown}"') == 2
       and "📋 将清理" not in _eng53)
 class _Snap54:
     def __init__(self, name, pid):

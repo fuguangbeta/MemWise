@@ -450,7 +450,7 @@ def _apply_update(argv):
             if winapi.replace_file_atomic(bak, target):
                 _upd_log(base, "已回滚到旧版")
                 return True
-            _upd_log(base, "⚠ 回滚失败：请手动把 %s 改名为 %s" % (os.path.basename(bak), os.path.basename(target)))
+            _upd_log(base, "回滚失败：请手动把 %s 改名为 %s" % (os.path.basename(bak), os.path.basename(target)))
             return False
         try:
             shutil.copy2(target, bak)
@@ -1606,20 +1606,20 @@ class MemWiseGUI:
         self._log(_APP_TITLE + tr(" 启动· ") + tr("当前是否管理员权限:") + adm, priority=True)
         if not winapi.is_elevated():
             # 全局必要提示（2026-09-11 审查 F32）：标准权限下缓存类清理不可用，必须让用户看见
-            self._log("⚠ 当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
+            self._log("当前为标准权限运行，系统缓存类清理不可用（需以管理员身份启动）")
         # 启动自检提示（2026-10-15 P4/P2）：只读安装目录或缺少配置读写组件时，配置与学习数据
         # 会静默失效（实测：save 返回 False / 只写 devnull，用户毫无感知）——必须让用户看见，
         # 并告知怎么修（移动位置 / 重新下载）。日志行即时可见，弹窗延迟到主循环后一次弹出。
         if not getattr(self, "_writable", True):
             # ⚠ F51：写进日志历史的必须是**中文原文**（显示层再翻译），此处不得包 tr()
-            self._log("⚠ 程序所在目录不可写，配置与学习数据无法保存")
+            self._log("程序所在目录不可写，配置与学习数据无法保存")
             self.root.after(1200, lambda: self._dark_message(
                 tr("程序所在目录不可写"),
                 tr("程序所在目录不可写，配置与学习数据都无法保存。请把程序移动到有写入权限的位置（例如用户目录）后重新启动。")))
         if self._elev_declined_now:
             self.root.after(1400, self._ask_elevate_again)
         if getattr(_config_mod, "yaml", None) is None:
-            self._log("⚠ 缺少配置读写组件，设置与学习数据将无法保存")
+            self._log("缺少配置读写组件，设置与学习数据将无法保存")
             self.root.after(1600, lambda: self._dark_message(
                 tr("缺少配置读写组件"),
                 tr("程序缺少配置读写组件，设置与学习数据都无法保存。请重新下载或重新安装程序。")))
@@ -1630,7 +1630,7 @@ class MemWiseGUI:
         else:
             # 崩溃恢复提示（2026-09-11 审查 F31）：补上"如何彻底退出"，避免用户用任务管理器
             # 结束进程后被自动恢复、误以为程序无法关闭
-            self._log("🔄 检测到上次崩溃，已自动恢复（如需彻底退出，请用托盘右键菜单的「退出」）")
+            self._log("检测到上次崩溃，已自动恢复（如需彻底退出，请用托盘右键菜单的「退出」）")
             # 恢复守护模式（仅当崩溃前守护运行中；否则保持空闲，尊重用户意图）
             # 延迟触发，让窗口完全初始化后再启动
             self.root.after(800, self._maybe_restore_daemon)
@@ -1757,7 +1757,7 @@ class MemWiseGUI:
         self._tray_icon_handle = hIcon
         ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, tr("MemWise — 智能内存看护"))
         if not ok:
-            self._log("⚠ 托盘图标添加失败，重试...")
+            self._log("托盘图标添加失败，重试...")
             time.sleep(0.5)
             ok = winapi.tray_add(hwnd, TRAY_UID, hIcon, tr("MemWise — 智能内存看护"))
 
@@ -1777,14 +1777,14 @@ class MemWiseGUI:
                 spec = CFG.get(hk["key"], hk["default"])
                 mods, vk, err = _parse_hotkey(spec)
                 if err:
-                    self._log(f"⚠ {hk['name']}热键配置无效（{err}），本次使用默认 {hk['default']}")
+                    self._log(f"{hk['name']}热键配置无效（{err}），本次使用默认 {hk['default']}")
                     mods, vk, _ = _parse_hotkey(hk["default"])
                 pairs.append([hk, mods, vk])
             # 冲突检测（后注册者本次用默认）
             for i in range(len(pairs)):
                 for j in range(i + 1, len(pairs)):
                     if pairs[i][1] == pairs[j][1] and pairs[i][2] == pairs[j][2]:
-                        self._log(f"⚠ {pairs[j][0]['name']}热键与{pairs[i][0]['name']}冲突，本次使用默认 {pairs[j][0]['default']}")
+                        self._log(f"{pairs[j][0]['name']}热键与{pairs[i][0]['name']}冲突，本次使用默认 {pairs[j][0]['default']}")
                         pairs[j][1], pairs[j][2], _ = _parse_hotkey(pairs[j][0]["default"])
             # 逐个注册
             for hk, mods, vk in pairs:
@@ -1792,7 +1792,7 @@ class MemWiseGUI:
                     if not initial and hk["key"] in changed:
                         self._log(f"{hk['name']}热键已设为 {CFG.get(hk['key'], hk['default'])}")
                 else:
-                    self._log(f"⚠ {hk['name']}热键注册失败（可能被其他程序占用）: {CFG.get(hk['key'], hk['default'])}")
+                    self._log(f"{hk['name']}热键注册失败（可能被其他程序占用）: {CFG.get(hk['key'], hk['default'])}")
                     dm, dv, _ = _parse_hotkey(hk["default"])
                     winapi.register_hotkey(hwnd, hk["id"], dm, dv)
         except Exception:
@@ -2084,9 +2084,9 @@ class MemWiseGUI:
                 pass
         _log_write("决策", f"游戏模式手动{'启用' if game else '关闭'}")
         if game:
-            self._log("🎮 游戏模式已手动启用 · 游戏进程受保护")
+            self._log("游戏模式已手动启用 · 游戏进程受保护")
         else:
-            self._log("🎮 游戏模式已手动关闭 · 恢复正常清理")
+            self._log("游戏模式已手动关闭 · 恢复正常清理")
             self.cleaner.judger._game_pid_set.clear()
     # ---- UI 构建 ----
 
@@ -3857,7 +3857,7 @@ class MemWiseGUI:
         del caps[norm]
         _save_cfg()
         self.engine.ws_cap_rule_removed(norm)
-        self._log(f"⛨ 已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
+        self._log(f"已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
         # 目标未在运行时 disable 无从下手——如实提示残留边界（设计 §七）
         if not any(getattr(s, "path", None) and s.path.lower().replace("/", "\\") == norm
                    for s in self.sniffer.snapshot()):
@@ -3909,7 +3909,7 @@ class MemWiseGUI:
             caps.pop(path, None)
             _save_cfg()
             self.engine.ws_cap_rule_removed(path)
-            self._log(f"⛨ 已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
+            self._log(f"已解除 {os.path.basename(path)} 的工作集硬上限（学习数据已重置）")
             # 目标未在运行时 disable 无从下手（无簿记 pid）——如实提示残留边界（设计 §七）
             if not any(getattr(s, "path", None) and s.path.lower().replace("/", "\\") == norm
                        for s in self.sniffer.snapshot()):
@@ -5139,7 +5139,7 @@ class MemWiseGUI:
             print(f"[MemWise] 图表渲染异常: {e}", file=_ERR)
             # 同时输出到日志面板，便于 EXE 环境下诊断
             try:
-                self._log(f"⚠ 图表异常: {e}")
+                self._log(f"图表异常: {e}")
             except Exception:
                 pass
         finally:
@@ -5411,7 +5411,7 @@ class MemWiseGUI:
                 return
             self._once_optimizing = True  # 防连点排队多轮即时优化（_opt_done 统一复位）
             # 即时反馈（2026-08-30）：守护分支原点击后零提示，完成前数秒界面无响应痕迹
-            self._log_op(f"⚡ 即时优化（{CFG.get('clean_mode', 'normal')}）已启动")
+            self._log_op(f"即时优化（{CFG.get('clean_mode', 'normal')}）已启动")
             self.lbl_st["text"] = tr("⚡ 即时优化中…")  # 下一守护周期 upd_ui 自动恢复
             self.engine.optimize_manual_once(CFG.get("clean_mode", "normal"),
                                              CFG.get("clean_operations"))
@@ -5445,7 +5445,7 @@ class MemWiseGUI:
         for snap, _ok, freed, _reason in by_freed[:4]:
             card.append(f"  ✓ {snap.name} (PID={snap.pid}) {freed / (1 << 20):.0f} MB")
         if len(by_freed) > 4:
-            card.append(f"✓ 其余 {len(by_freed) - 4} 个进程")
+            card.append(f"其余 {len(by_freed) - 4} 个进程")
         elif not by_freed:
             card.append("没有找到值得清理的进程（全部受保护或无闲置内存）")
         self._log_batch(card, to_file=True)
@@ -5507,7 +5507,7 @@ class MemWiseGUI:
             self.lbl_st["text"] = tr("⚠ 守护异常")
             # 同批原子输出（2026-08-30 分组语义）：头行+详情一组——拆散时边界下面板
             # 恰满 6 行会让 ❌ 头行被滚动清掉、只剩详情
-            self._log_batch(["❌ 守护异常，详见下方错误信息", f"🔍 {err}"])
+            self._log_batch(["守护异常，详见下方错误信息", f"{err}"])
             del self.engine._dae_error
         else:
             self.lbl_st["text"] = tr("就绪 · ") + self._hk_display(); self._log_op("守护已停止")
@@ -5566,7 +5566,7 @@ class MemWiseGUI:
         """显式提权重启：拉起副本 → 释放互斥 → 退出；失败留在原地并提示（托盘/启动提示共用）。"""
         try:
             if not _relaunch_elevated():
-                self._log("⚠ 提权未完成（可能取消了 UAC 提示）")
+                self._log("提权未完成（可能取消了 UAC 提示）")
                 return
             try:
                 ctypes.windll.kernel32.CloseHandle(self._mutex)
@@ -5592,10 +5592,10 @@ class MemWiseGUI:
         try:
             _st = self.engine.ensure_watchdog(self.engine.daemon_running)
             if _st == "restarted":
-                self._log("🛡 崩溃保护未在运行，已自动重新启用")
+                self._log("崩溃保护未在运行，已自动重新启用")
             elif _st == "failed" and not getattr(self, "_wd_warned", False):
                 self._wd_warned = True
-                self._log("⚠ 崩溃保护启用失败；若程序意外退出，需要手动重新打开")
+                self._log("崩溃保护启用失败；若程序意外退出，需要手动重新打开")
         except Exception:
             pass
         try:
@@ -5625,7 +5625,7 @@ class MemWiseGUI:
         except Exception:
             pass
         try:
-            self._log("⚠ 界面回调异常，现场已写入崩溃日志")
+            self._log("界面回调异常，现场已写入崩溃日志")
         except Exception:
             pass
 

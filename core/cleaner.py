@@ -931,13 +931,13 @@ class PareCleaner:
                 self.judger._game_pid_set.clear()
                 self._game_tree_mem = {}
         elif game_on and not self.game_mode:
-            self._info_msgs.append("🎮 检测到游戏运行 · 启用 游戏模式")
+            self._info_msgs.append("检测到游戏运行 · 启用 游戏模式")
             self.game_mode = True
             self.judger.game_mode = True
         elif not game_on and self.game_mode:
             # 实时退出（2026-09-06 用户定稿：实时监测，游戏模式随游戏启停即时生效，
             # 无确认周期——与 engine gap 快照检测同口径，消除双计数节奏差）
-            self._info_msgs.append("🎮 游戏已退出 · 恢复正常模式")
+            self._info_msgs.append("游戏已退出 · 恢复正常模式")
             self.game_mode = False
             self.judger.game_mode = False
             self.judger._game_pid_set.clear()

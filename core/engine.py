@@ -1115,7 +1115,7 @@ class MemWiseEngine:
         if not ok and not getattr(self, "_save_warned", False):
             self._save_warned = True
             try:
-                self.events.put(('log', "⚠ 数据无法保存（程序所在目录可能不可写），本次运行的学习与设置不会落盘"))
+                self.events.put(('log', "数据无法保存（程序所在目录可能不可写），本次运行的学习与设置不会落盘"))
             except Exception:
                 pass
         return ok
@@ -1180,7 +1180,7 @@ class MemWiseEngine:
             threading.Thread(target=target, args=(mode, ops), daemon=True).start()
             return True
         except Exception:
-            self.events.put(('log', "⚠ 无法启动优化线程，请稍后重试"))
+            self.events.put(('log', "无法启动优化线程，请稍后重试"))
             self.events.put(('opt_done', {"mode": mode, "layer2": [], "probe": [],
                                           "released": 0.0, "net": 0, "pct0": None, "pct1": None}))
             return False
@@ -1218,7 +1218,7 @@ class MemWiseEngine:
                     preview = [s.name for s in snaps if self.judger.can_trim(s, manual=True, guard=mode)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
-                        start_lines.append(f"📋 本次将评估 {len(preview)} 个进程：{shown}")
+                        start_lines.append(f"本次将评估 {len(preview)} 个进程：{shown}")
                 except Exception:
                     pass
                 self.events.put(('log_batch', start_lines))
@@ -1250,7 +1250,7 @@ class MemWiseEngine:
                     "pct0": m0['pct'] if m0 else None, "pct1": m1['pct'] if m1 else None}))
             except Exception:
                 import traceback; traceback.print_exc(file=_ERR)
-                self.events.put(('log', "⚠ 手动优化异常，已自动恢复"))
+                self.events.put(('log', "手动优化异常，已自动恢复"))
                 self.events.put(('opt_done', {
                     "mode": mode, "layer2": [], "probe": [],
                     "released": 0.0, "net": 0, "pct0": None, "pct1": None}))
@@ -1276,7 +1276,7 @@ class MemWiseEngine:
                     preview = [s.name for s in snaps if self.judger.can_trim(s, manual=True, guard=mode)[0]]
                     if preview:
                         shown = '、'.join(preview[:5]) + ('…' if len(preview) > 5 else '')
-                        self.events.put(('log', f"📋 本次将评估 {len(preview)} 个进程：{shown}"))
+                        self.events.put(('log', f"本次将评估 {len(preview)} 个进程：{shown}"))
                 except Exception:
                     pass
                 m0 = winapi.get_memory_status()
@@ -1293,7 +1293,7 @@ class MemWiseEngine:
                     "pct0": m0['pct'] if m0 else None, "pct1": m1['pct'] if m1 else None}))
             except Exception:
                 import traceback; traceback.print_exc(file=_ERR)
-                self.events.put(('log', "⚠ 即时优化异常，已自动恢复"))
+                self.events.put(('log', "即时优化异常，已自动恢复"))
                 self.events.put(('opt_done', {
                     "mode": mode, "layer2": [], "probe": [],
                     "released": 0.0, "net": 0, "pct0": None, "pct1": None}))
@@ -1366,7 +1366,7 @@ class MemWiseEngine:
                 efis_msg = None  # 本周期 EFIS 调参消息（并入周期批输出）
                 # 启动观察消息即时输出（用户定稿：及时反馈，不打包延迟）
                 if not startup_logged:
-                    self.events.put(('log', f"🧠 观察到 {len(snaps)} 个进程 · 已有 {learned} 个画像"))
+                    self.events.put(('log', f"观察到 {len(snaps)} 个进程 · 已有 {learned} 个画像"))
                     startup_logged = True
                 self._refill_cycle = False  # 周期内触发标记（周期末状态机判定）
                 agg_first = self.judger.aggressiveness
@@ -1401,7 +1401,7 @@ class MemWiseEngine:
                     if _saved_efis is not None:
                         self.judger.cfg["efis_params"] = _saved_efis
                     self.cleaner._heavy_allow = _gate_bak   # 紧急轮不污染本周期余下阶段的判定
-                    self._cycle_log_groups.append(["⚠ 紧急触发清理(full模式)"])
+                    self._cycle_log_groups.append(["紧急触发清理(full模式)"])
                     self._emergency_done_cycle = True
                 # 周期级择时判定（2026-11-19 决策 B）：gap 与 harvest 共用同一次判定
                 self.cleaner.begin_cycle(mode)
@@ -1455,7 +1455,7 @@ class MemWiseEngine:
                                 self.cleaner.game_mode = True
                                 self.cleaner.judger.game_mode = True
                                 self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
-                                self._cycle_log_groups.append(["🎮 检测到游戏运行 · 启用 游戏模式"])
+                                self._cycle_log_groups.append(["检测到游戏运行 · 启用 游戏模式"])
                             elif self.cleaner.game_mode and not game_now:
                                 # 实时退出（2026-09-06 用户定稿：实时监测，游戏模式随游戏
                                 # 启停即时生效，无确认周期；原"连续 2 周期确认"在 gap 快照
@@ -1464,7 +1464,7 @@ class MemWiseEngine:
                                 self.cleaner.judger.game_mode = False
                                 self.cleaner.judger._game_pid_set.clear()
                                 self.cleaner._game_tree_mem = {}
-                                self._cycle_log_groups.append(["🎮 游戏已退出 · 恢复正常模式"])
+                                self._cycle_log_groups.append(["游戏已退出 · 恢复正常模式"])
                             # 高频压制梯度：registry 零磁盘干扰，游戏模式同样执行（游戏流畅只禁磁盘类操作）；
                             # deep/full 追加系统级持续清（standby/脏页零 PF 成本——缓存重建后立即回收，
                             # 可用内存持续高位，抑制"压缩后回弹"）；游戏模式恒 registry（流畅优先）
@@ -1521,7 +1521,7 @@ class MemWiseEngine:
                             # 周期内紧急即时响应：内存飙到阈值立即 full 清理（不等下一周期），每周期至多一次
                             if _emergency_active(m2) and not self._emergency_done_cycle:
                                 self._emergency_done_cycle = True
-                                self._cycle_log_groups.append(["⚠ 周期内紧急触发清理(full模式)"])
+                                self._cycle_log_groups.append(["周期内紧急触发清理(full模式)"])
                                 _saved_efis = self.judger.cfg.get("efis_params")
                                 _gate_bak2 = dict(getattr(self.cleaner, "_heavy_allow", {}))
                                 self.judger.cfg["efis_params"] = self.efis.get_params("full")  # 紧急 full 用 full 组参数（审查 P5）
@@ -1602,7 +1602,7 @@ class MemWiseEngine:
                         self._refill_announced = True
                 if (not self._refill_cycle) and self._refill_hot:
                     if self._refill_announced and self._refill_cool_streak >= 10 and _rnow - self._refill_msg_ts >= 600:
-                        self._cycle_log_groups.append(["↻ 内存回涨已放缓，试探性恢复正常收割节奏"])
+                        self._cycle_log_groups.append(["内存回涨已放缓，试探性恢复正常收割节奏"])
                         self._refill_msg_ts = _rnow
                         self._refill_announced = False
                 self._refill_hot = self._refill_cycle

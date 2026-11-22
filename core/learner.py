@@ -167,7 +167,7 @@ class Profile:
                     if self.leak_tick_count >= 2:
                         self.leak_suspect = True
                         if self.leak_tick_count == 2:
-                            self._info_msgs.append(f"🕳️ {self.name} 疑似内存持续增长，建议关注")
+                            self._info_msgs.append(f"{self.name} 疑似内存持续增长，建议关注")
                 elif rel_slope > 0.002 and z > 1.5:
                     # 轻度泄漏：同样标记为疑似（保持 bool 类型；无需单独档位——无消费方区分）
                     self.leak_suspect = True
