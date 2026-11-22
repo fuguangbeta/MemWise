@@ -42,7 +42,7 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ---
 
-## 30 秒了解 · *In 30 Seconds*
+## 概述 · *Overview*
 
 MemWise 的定位很明确：在内存压力形成之前，回收暂时不用的进程页面与可重建的系统缓存，为正在运行的程序留出余量。它不建立独立的内存体系，也不改变 Windows 的内存管理策略，只是把回收的时机提前、过程纳入控制。
 
@@ -100,7 +100,7 @@ Switch in the Mode dropdown; the change applies from the next cycle. Manual opti
 
 ---
 
-## 守护模式怎么用 · *Using Guard*
+## 守护模式 · *Guard Mode*
 
 点击「守护」启动，点击「停止」结束。启动后关闭窗口不会退出程序，程序保留在托盘，托盘图标显示当前内存档位。
 
@@ -116,7 +116,7 @@ No daily intervention is required. Adding your games under Settings, Game Mode l
 
 ---
 
-## 它会清什么，不会动什么 · *What It Reclaims, and What It Leaves Alone*
+## 清理范围与保护边界 · *Scope and Protections*
 
 执行范围：回收暂时不用的进程页面；清理可重建的系统缓存，包括待机缓存、文件缓存、卷缓存与注册表缓存；在 deep 与 full 下，对长期无活动的进程执行额外回收。
 
