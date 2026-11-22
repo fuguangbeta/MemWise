@@ -1745,7 +1745,8 @@ class PareCleaner:
                 return False
         except Exception:
             return False
-        if deadline is not None and time.time() > deadline - 2.0:
+        # 收割预算通常在此之前就用尽；尾段代价小，允许小幅超预算（否则恒不触发）
+        if deadline is not None and time.time() > deadline + 2.0:
             return False
         return True
 
@@ -1758,6 +1759,71 @@ class PareCleaner:
             return
         self._layer1_memreduct(full=False, game_mode=False, ops=use, clean_self=False)
         self._stats_inc("normal_final_sweep")
+
+    def _deep_tail_gate(self):
+        """deep 尾段闸门：仅「用户停手 ≥5s + 非游戏 + 非轻量轮」。
+        不再依赖收割 deadline——实测 310 轮里 idle≥5 有 78 次、deadline 却恒已耗尽，
+        以 deadline 为闸会让该能力永不触发（2026-11-22 修订）。"""
+        if self.game_mode or getattr(self, "_lite", False):
+            return False
+        try:
+            return winapi.get_idle_seconds() >= _HEAVY_IDLE_OTHER
+        except Exception:
+            return False
+
+    def _deep_rebound(self, snaps, learner, agg, pipeline_ctx):
+        """deep 有界回弹：只对本轮已 trim、WS≥64MB、θ≥0.3 的进程补一次 WS 清空。"""
+        trimmed = pipeline_ctx.get("layer2_trimmed") or set()
+        if not trimmed:
+            return
+        never = self.judger.cfg.get("never", []) or []
+        game_pids = getattr(self.judger, "_game_pid_set", set()) if self.game_mode else set()
+        for s in snaps:
+            if s.pid not in trimmed or s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
+                continue
+            if getattr(s, "ws", 0) < (64 << 20):
+                continue
+            name_l = s.name.lower()
+            if _is_system_core(name_l) or name_l in never:
+                continue
+            if getattr(s, "fg", False) and agg < 0.35:
+                continue
+            if self.judger.ws_cap_blocked(getattr(s, "path", None)):
+                continue
+            try:
+                theta = learner.thompson_score(s.name)
+            except Exception:
+                continue
+            if theta < 0.3:
+                continue
+            if self.judger.is_system_dir_low_theta(getattr(s, "path", None), theta, "deep"):
+                continue
+            try:
+                pre = winapi.get_process_memory(s.pid)
+                if not pre:
+                    continue
+                if winapi.empty_ws(s.pid):
+                    post = winapi.get_process_memory(s.pid)
+                    if post:
+                        freed = max(0, pre["ws"] - post["ws"])
+                        self._stats_inc("deep_rebound_freed", freed)
+                        self._stats_inc("deep_rebound_hits")
+                        self._stats_inc("freed_bytes", freed)
+            except Exception:
+                pass
+
+    def _deep_final_consolidation(self, ops_filter, deadline):
+        """deep 有界收尾：停手期按勾选做一次系统级压实；超预算时降级为仅 standby_low。"""
+        ops = self._layer1_ops(ops_filter)
+        use = set(ops or set()) & {"standby", "standby_low", "modified"}
+        if deadline is not None and time.time() > deadline + 2.0:
+            use.discard("modified")
+        if deadline is not None and time.time() > deadline + 5.0:
+            use &= {"standby_low"}
+        if not use:
+            return
+        self._layer1_memreduct(full=False, game_mode=False, ops=use, clean_self=False)
+        self._stats_inc("deep_final_sweep")
 
     def _run_deep(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
         """deep 模式主体：normal 基础 + 全清 WS（使用率门控）+ 强制深度聚合。"""
@@ -1775,6 +1841,10 @@ class PareCleaner:
         self._layer1_memreduct(full=True, game_mode=self.game_mode,
                                ops=l1_ops)
         self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
+        # deep 专项（2026-11-22）：停手期有界回弹 + 系统收尾
+        if self._deep_tail_gate():
+            self._deep_rebound(snaps, learner, agg, pipeline_ctx)
+            self._deep_final_consolidation(ops_filter, deadline)
         return l2_results, probe_results
 
     def _run_full(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
