@@ -2212,10 +2212,9 @@ class MemWiseGUI:
             "  · 试探成功 / 失败 — 试探性清理的成败次数")
 
         # 状态文字单独放一行，避免按钮被挤出
-        # 右对齐：与右上角百分比、统计栏「已学习」同一条右边线（两者内边距合计 20px）
-        self.lbl_st = ttk.Label(bf, text=tr("就绪 · ") + self._hk_display(),
-                                anchor="e", justify="right")
-        self.lbl_st.pack(side="bottom", fill="x", padx=(0, 8))
+        # 状态文字不再显示（2026-11-22 用户定稿：该位置多余且影响观感）。
+        # 控件保留但**不 pack**：所有既有赋值路径无需改动，也不会占布局空间。
+        self.lbl_st = ttk.Label(bf, text=tr("就绪 · ") + self._hk_display())
 
         # 模式选择
         mf = ttk.Frame(self.root); mf.pack(fill="x", padx=12, pady=(0,6))
