@@ -2003,6 +2003,26 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    def _ensure_chart_drawn(self):
+        """恢复/启动后的自愈：图表应显示真实数据却为空或全是零高柱（入场动画被打断）时，
+        强制按最终状态重绘一次。只在异常态触发，不影响正常入场动画。"""
+        try:
+            data = self.engine.chart_snapshot()[0]
+            if not data:
+                return
+            c = self.chart_canvas
+            ids = c.find_withtag("chart_bar")
+            if not ids:
+                self._draw_chart(force=True)
+                return
+            for _i in list(ids)[:8]:
+                xy = c.coords(_i)
+                if len(xy) == 4 and abs(xy[3] - xy[1]) > 2:
+                    return          # 已有可见柱：动画在进行或已完成
+            self._draw_chart(force=True)
+        except Exception:
+            pass
+
     def _present_done(self):
         self._presenting = False
         try:
@@ -2011,6 +2031,11 @@ class MemWiseGUI:
             pass
         try:
             self._append_present_pending()
+        except Exception:
+            pass
+        try:
+            self._ensure_chart_drawn()
+            self.root.after(1200, self._ensure_chart_drawn)
         except Exception:
             pass
         pend = getattr(self, "_pending_stats", None)
@@ -5208,12 +5233,15 @@ class MemWiseGUI:
                 ratio = v / max_val
                 color = "#4caf50" if ratio < 0.3 else ("#ff9800" if ratio < 0.7 else "#f44336")
                 if ANIM_ENABLED and _intro:
-                    rid = c.create_rectangle(x0, py1, x1, py1, fill=color, outline="", width=0)
+                    rid = c.create_rectangle(x0, py1, x1, py1, fill=color, outline="",
+                                             width=0, tags="chart_bar")
                 else:
-                    rid = c.create_rectangle(x0, y0, x1, py1, fill=color, outline="", width=0)
+                    rid = c.create_rectangle(x0, y0, x1, py1, fill=color, outline="",
+                                             width=0, tags="chart_bar")
                 _bars.append((rid, x0, x1, py1, y0, color, i))
             else:
-                c.create_rectangle(x0, py1 - 1, x1, py1, fill="#555", outline="", width=0)
+                c.create_rectangle(x0, py1 - 1, x1, py1, fill="#555", outline="",
+                                   width=0, tags="chart_bar")
 
         # ── 效率折线（钢蓝色，叠加在柱状图上方）──
         # 计算异常轮在 _eff_data 里是 None（不再伪造 80%）：只连接相邻的有效点，
