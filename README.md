@@ -44,147 +44,147 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## 概述 · *Overview*
 
-MemWise 的定位很明确：在内存压力形成之前，回收暂时不用的进程页面与可重建的系统缓存，为正在运行的程序留出余量。它不建立独立的内存体系，也不改变 Windows 的内存管理策略，只是把回收的时机提前、过程纳入控制。
+MemWise 是运行于 Windows 用户态的内存回收工具。其通过系统公开接口回收进程暂未使用的物理页与可重建的系统缓存，以缓解内存压力；不改变操作系统的内存管理机制，仅调整回收的时机与可控程度。
 
-程序提供四档清理强度。quick 仅处理低优先待机页与注册表缓存，介入程度最低；normal 在此基础上回收进程闲置页，并随压力升高逐步加深；deep 在用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此带来的短暂重载延迟。默认使用 normal。
+程序提供四档清理强度，差异体现为介入深度与代价。quick 仅处理低优先待机页与注册表缓存，不介入进程；normal 在此基础上回收进程闲置页，并依据内存压力逐步加深；deep 于用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此产生的短暂重载延迟。默认档位为 normal。
 
-守护模式以固定周期运行，默认 60 秒；当内存占用达到设定阈值时，立即执行一次 full，不等待下一周期。程序为单个可执行文件，无第三方依赖，默认不联网、不安装驱动、不常驻系统服务；不终止进程、不挂起线程、不注入代码，系统核心进程、排除项与程序自身始终不参与清理。
+守护模式以固定周期运行，默认周期 60 秒；内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。系统核心进程、排除项与程序自身不参与清理。
 
-MemWise has a clear scope: reclaim process pages that are not in use and caches that can be rebuilt before memory pressure builds up, leaving headroom for the programs you are running. It does not introduce a separate memory subsystem or change how Windows manages memory; it moves reclamation earlier and keeps it under control.
+MemWise is a user-mode memory reclamation tool for Windows. It reclaims physical pages not currently in use and caches that can be rebuilt through public system interfaces, relieving memory pressure without altering the operating system's memory management or its policies; it changes only the timing and the degree of control.
 
-Four levels of intensity are available. quick handles only low-priority standby pages and registry caches, with the least intervention; normal also reclaims idle process pages and deepens as pressure rises; deep performs additional deep reclamation while the user is idle; full prioritises release volume and accepts a brief reload delay. The default is normal.
+Four levels of cleaning intensity are provided, differing in intervention depth and cost. quick handles only low-priority standby pages and registry caches, without process intervention; normal additionally reclaims idle process pages and deepens as memory pressure rises; deep performs extra reclamation while the user is idle; full prioritises release volume and accepts the resulting brief reload delay. The default level is normal.
 
-Guard runs on a fixed cycle, 60 seconds by default. When memory usage reaches the configured threshold, a full pass runs immediately rather than waiting for the next cycle. MemWise is a single executable with no third-party dependencies: offline by default, no driver, no system service. It terminates no processes, suspends no threads and injects no code, and system-critical processes, exclusions and MemWise itself are never trimmed.
+Guard mode operates on a fixed cycle, 60 seconds by default. When memory usage reaches the configured threshold it executes a full pass immediately rather than waiting for a later cycle. The program is a single executable with no third-party dependencies; it is offline by default, installs no driver and registers no system service. During operation it terminates no process, suspends no thread and injects no code. System-critical processes, exclusions and MemWise itself are excluded from reclamation.
 
 ---
 
 ## 快速开始 · *Quick Start*
 
-1. 从 [Releases](https://github.com/fuguangbeta/MemWise/releases) 下载 MemWise.exe，约 9.9 MB。
-2. 放置于可写目录（例如 D:/MemWise/）。目录不可写时，程序会提示配置与学习数据无法保存。
-3. 双击运行。建议以管理员身份启动：待机缓存、脏页写回、文件缓存、卷缓存与注册表缓存等系统级操作需要管理员权限；以标准权限运行时程序仍可使用，但上述能力不可用。
-4. 托盘图标出现后程序进入常驻状态。需要立即释放内存时，点击「优化」或使用全局热键（默认 Ctrl+Shift+M），程序按当前模式执行一次完整优化（三轮深度执行）；需要持续维护时，点击「守护」。
-5. 其余参数在「设置」中调整：清理模式、守护周期、紧急阈值、开机自启、托盘行为、语言、日志与更新。
+1. 自 [Releases](https://github.com/fuguangbeta/MemWise/releases) 获取 MemWise.exe，体积约 9.9 MB。
+2. 将其置于可写目录（例如 D:/MemWise/）。目录不可写时，程序将提示配置与学习数据无法持久化。
+3. 以管理员权限运行。待机缓存、脏页写回、文件缓存、卷缓存与注册表缓存等系统级操作需要管理员权限；标准权限下程序仍可运行，但上述能力不可用。
+4. 托盘图标出现后程序进入常驻状态。需立即释放内存时，点击「优化」或使用全局热键（默认 Ctrl+Shift+M），程序按当前档位执行一次完整优化（三轮深度执行）；需持续维护时，点击「守护」。
+5. 其余参数于「设置」中调整：清理模式、守护周期、紧急阈值、开机自启、托盘行为、语言、日志与更新。
 
-1. Download MemWise.exe from Releases; it is about 9.9 MB.
-2. Place it in a writable folder, for example D:/MemWise/. If the folder is read-only, the program reports that settings and learning data cannot be saved.
-3. Run it. Administrator rights are recommended: standby purging, dirty-page flushing, file-cache clamping, volume flushing and registry cache clearing are system-level operations. Under standard rights the program still runs, with those capabilities unavailable.
-4. Once the tray icon appears, the program is resident. To free memory immediately, press Optimize or the global hotkey (Ctrl+Shift+M by default); it runs one complete optimization in the current mode, three deep rounds. For continuous maintenance, press Guard.
-5. The remaining parameters are in Settings: cleaning mode, guard cycle, emergency threshold, autostart, tray behaviour, language, logging and updates.
+1. Obtain MemWise.exe from Releases; the binary is about 9.9 MB.
+2. Place it in a writable directory, for example D:/MemWise/. If the directory is read-only, the program reports that settings and learning data cannot be persisted.
+3. Run it with administrator rights. System-level operations such as standby purging, dirty-page write-back, file-cache clamping, volume flushing and registry cache clearing require administrator privileges; under standard privileges the program still runs, with those capabilities unavailable.
+4. Once the tray icon appears the program is resident. To release memory immediately, select Optimize or use the global hotkey (Ctrl+Shift+M by default), and the program performs one complete optimization in the current mode, three deep rounds. For continuous maintenance, select Guard.
+5. All remaining parameters are adjusted in Settings: cleaning mode, guard cycle, emergency threshold, autostart, tray behaviour, language, logging and updates.
 
 ---
 
 ## 四种模式怎么选 · *Choosing a Mode*
 
-四档模式在介入深度与代价之间取舍。回收的页面在再次访问时需要重新读入，这是固有的代价；模式决定该代价出现的频率与幅度。
+四档模式在介入深度与代价之间取舍。被回收的页面在再次访问时需重新读入，这是固有的代价；模式决定该代价出现的频率与幅度。
 
 | 模式 | 行为特征 | 适用场景 |
 |---|---|---|
-| **quick** | 仅回收低优先待机页与注册表缓存，不介入进程 | 常驻运行、不希望被打断，或硬件资源有限 |
-| **normal**（默认） | 回收进程闲置页与所选系统缓存，用户活跃时保持克制 | 日常使用；首次使用建议从该档开始 |
-| **deep** | 在用户空闲时增加一轮深度回收，释放量更高 | 内存长期偏紧，且不希望频繁手动优化 |
+| **quick** | 仅回收低优先待机页与注册表缓存，不介入进程 | 常驻运行、不希望被中断，或硬件资源有限 |
+| **normal**（默认） | 回收进程闲置页与所选系统缓存，用户活跃时保持克制 | 日常使用；首次使用建议自该档开始 |
+| **deep** | 于用户空闲时增加一轮深度回收，释放量更高 | 内存长期偏紧，且不宜频繁手动优化 |
 | **full** | 以释放量为优先，每轮执行完整流程，代价为短暂重载延迟 | 启动大型程序前，或内存已接近上限 |
 
-在「清理模式」下拉框中切换，下一周期生效。手动优化按当前档位执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式激活期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
+档位于「清理模式」下拉框中切换，下一周期生效。手动优化按当前档位执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
 
-The four levels trade intervention depth against cost. Reclaimed pages must be read back on the next access, which is the inherent cost; the mode determines how often and how deeply it is paid.
+The four levels trade intervention depth against cost. Reclaimed pages must be read back on their next access, which is the inherent cost; the mode determines how often and how deeply it is paid.
 
 | Mode | Behaviour | Suitable for |
 |---|---|---|
-| **quick** | Reclaims only low-priority standby pages and registry caches; does not touch processes | Always-on use, no interruptions desired, or limited hardware |
-| **normal** (default) | Reclaims idle process pages and the selected system caches; restrained while the user is active | Everyday use; recommended starting point |
-| **deep** | Adds a deep pass while the user is idle, with higher release | Memory stays tight and manual optimization is undesirable |
-| **full** | Prioritises release volume and runs the complete pipeline every cycle, at the cost of a brief reload delay | Before a large program, or when memory is close to the limit |
+| **quick** | Reclaims only low-priority standby pages and registry caches; no process intervention | Always-on operation, no interruption desired, or limited hardware |
+| **normal** (default) | Reclaims idle process pages and the selected system caches; restrained while the user is active | Everyday use; recommended as the initial level |
+| **deep** | Adds a deep pass while the user is idle, with higher release | Memory remains tight and frequent manual optimization is impractical |
+| **full** | Prioritises release volume and runs the complete pipeline every cycle, at the cost of a brief reload delay | Before a large application, or when memory is close to its limit |
 
-Switch in the Mode dropdown; the change applies from the next cycle. Manual optimization runs in the current mode; when memory reaches the emergency threshold the program runs a full pass automatically. While Game Mode is active, disk-oriented system operations are suppressed and game smoothness takes priority.
+The level is switched in the Mode dropdown and takes effect from the next cycle. Manual optimization uses the current level; when memory reaches the emergency threshold the program runs a full pass automatically. While Game Mode is enabled, disk-oriented system operations are suppressed and game smoothness takes priority.
 
 ---
 
 ## 守护模式 · *Guard Mode*
 
-点击「守护」启动，点击「停止」结束。启动后关闭窗口不会退出程序，程序保留在托盘，托盘图标显示当前内存档位。
+点击「守护」启动，点击「停止」终止。启动后关闭窗口不终止程序，程序驻留托盘，托盘图标指示当前内存档位。
 
-程序在用户空闲时执行回收；内存达到设定阈值时立即执行一次 full，不等待下一周期。状态可从三处观察：统计行的累计值（系统操作次数、进程清理次数、累计释放）、日志区的最近事件，以及图表中逐轮的释放柱与效率折线。
+回收于用户空闲时执行；内存达到设定阈值时立即执行一次 full，不等待后续周期。状态可通过三处观察：统计行（系统操作次数、进程清理次数、累计释放）、日志区的最近事件，以及图表中逐轮的释放柱与效率折线。
 
-日常无需干预。建议将常用游戏进程名加入「设置 → 游戏模式」，游戏运行期间程序会自动降低介入；守护周期、紧急阈值与关窗行为均可配置。机制细节见 [附录 A](docs/appendix.md#a)。
+日常无需干预。建议将常用游戏进程名加入「设置 → 游戏模式」，游戏运行期间程序自动降低介入；守护周期、紧急阈值与关窗行为均可配置。机制细节见 [附录 A](docs/appendix.md#a)。
 
-Press Guard to start and Stop to finish. Closing the window does not exit the program; it remains in the tray, where the icon shows the current memory tier.
+Guard is started with Guard and terminated with Stop. After startup, closing the window does not terminate the program; it remains in the tray, where the icon indicates the current memory tier.
 
-Reclamation runs while the user is idle, and a full pass runs immediately when memory reaches the configured threshold rather than waiting for the next cycle. State is visible in three places: the statistics row (system operations, process trims, cumulative release), the recent events in the log area, and the per-cycle release bars and efficiency line in the chart.
+Reclamation runs while the user is idle; when memory reaches the configured threshold a full pass executes immediately rather than waiting for a later cycle. State is observable in three places: the statistics row (system operations, process trims, cumulative release), the recent events in the log area, and the per-cycle release bars and efficiency line in the chart.
 
-No daily intervention is required. Adding your games under Settings, Game Mode lets the program reduce its activity automatically while they run; cycle length, emergency threshold and close behaviour are configurable. Implementation details are in [Appendix A](docs/appendix.md#a).
+No routine intervention is required. Adding frequently used game process names under Settings, Game Mode causes the program to reduce its intervention automatically while those games run; guard cycle, emergency threshold and close behaviour are configurable. Implementation details are given in [Appendix A](docs/appendix.md#a).
 
 ---
 
 ## 清理范围与保护边界 · *Scope and Protections*
 
-执行范围：回收暂时不用的进程页面；清理可重建的系统缓存，包括待机缓存、文件缓存、卷缓存与注册表缓存；在 deep 与 full 下，对长期无活动的进程执行额外回收。
+执行范围：回收暂未使用的进程页面；清理可重建的系统缓存，包括待机缓存、文件缓存、卷缓存与注册表缓存；在 deep 与 full 下，对长期无活动的进程执行额外回收。
 
-明确不执行：终止进程、挂起线程、注入代码、修改系统设置或注册表策略、安装驱动、常驻系统服务。
+明确不执行：终止进程、挂起线程、注入代码、修改系统设置或注册表策略、安装驱动、注册系统服务。
 
-保护范围：系统核心进程、排除列表中的程序、运行中的游戏及其子进程、程序自身。normal 与 deep 还会避让当前活跃或刚切换走的程序；full 不判断活跃性，但上述保护仍然有效。
+保护范围：系统核心进程、排除列表中的程序、运行中的游戏及其子进程、程序自身。normal 与 deep 另避让当前活跃或刚切换走的程序；full 不判断活跃性，但上述保护仍然有效。
 
-What it does: reclaims process pages that are not in use; clears caches that can be rebuilt, including standby, file, volume and registry caches; and under deep and full, performs additional reclamation on processes that have been idle for a long time.
+Scope of execution: reclaiming process pages not currently in use; clearing caches that can be rebuilt, including standby, file, volume and registry caches; and under deep and full, additional reclamation of processes that have been inactive for a long period.
 
-What it never does: terminate processes, suspend threads, inject code, change system settings or registry policy, install drivers, or run a system service.
+Explicitly excluded: terminating processes, suspending threads, injecting code, modifying system settings or registry policy, installing drivers, and registering a system service.
 
-What is protected: system-critical processes, programs in the exclusion list, a running game and its child processes, and the program itself. normal and deep also avoid currently active programs and those recently switched away from; full does not judge activity, but the protections above still apply.
+Protected scope: system-critical processes, programs in the exclusion list, a running game and its child processes, and the program itself. normal and deep additionally avoid currently active programs and those recently switched away from; full does not assess activity, but the protections above remain in force.
 
 ---
 
 ## 界面导览 · *Interface Tour*
 
-主窗口由四个区域组成。
+主窗口由四个区域构成。
 
 顶部为内存状态条，显示当前占用百分比，颜色随档位变化，右侧为对应数值。
 
-其下为按钮行：优化（按当前模式执行一次完整优化）、守护与停止（后台常驻开关）、排除、设置、学习日志、游戏模式、进程排行。
+其下为按钮行：优化（按当前档位执行一次完整优化）、守护与停止（后台常驻开关）、排除、设置、学习日志、游戏模式、进程排行。
 
 再下为模式与统计：左侧为清理模式选择，右侧为本次运行以来的累计值（系统操作次数、进程清理次数、累计释放），最右为已学习进程数；该行按周期刷新。
 
 底部为日志与图表。日志区显示最近事件，组内完整显示，组间仅保留最近一组；图表区每轮一根柱，柱高为该轮释放量，折线为效率评分，悬停可查看该轮数值与主导因素，图表下方为平均释放、峰值释放与平均效率。
 
-进程排行列出当前进程的内存占用、CPU 用量与学习状态，支持排序；右键可设置工作集上限。学习日志提供更细的画像数据：样本量、可信度、收益比、偏差、趋势、泄漏标记、清理次数与试探成败。设置面板分十二栏：语言、显示、启动、窗口与托盘、清理、游戏模式、守护、日志、更新、重置、配置传输、全局热键。
+进程排行窗口列出当前进程的内存占用、CPU 用量与学习状态，支持排序；右键可为指定进程设置工作集上限。学习日志窗口提供更细的画像数据：样本量、可信度、收益比、偏差、趋势、泄漏标记、清理次数与试探成败。设置面板分为十二栏：语言、显示、启动、窗口与托盘、清理、游戏模式、守护、日志、更新、重置、配置传输、全局热键。
 
-The main window consists of four areas.
+The main window comprises four regions.
 
-At the top, the memory bar shows current usage in percent, with colour following the tier and the matching number on the right.
+At the top, the memory status bar displays current usage as a percentage, with colour following the tier and the corresponding value on the right.
 
 Below it, the button row: Optimize (one complete optimization in the current mode), Guard and Stop (the background switch), Exclusions, Settings, Learning Log, Game Mode, and Process Ranking.
 
-Next, mode and statistics: the cleaning mode selector on the left and, on the right, cumulative values since launch (system operations, process trims, cumulative release), with the number of learned processes at the far right. The row refreshes per cycle.
+Next, mode and statistics: the cleaning-mode selector on the left, and on the right the cumulative values since launch (system operations, process trims, cumulative release), with the number of learned processes at the far right. The row refreshes per cycle.
 
-At the bottom, logging and charting. The log area shows recent events, with each group displayed in full and only the most recent group retained between groups. The chart draws one bar per cycle, its height being that cycle's release, and a line for the efficiency score; hovering reveals the values and dominant factors for that round, with average release, peak release and average efficiency below.
+At the bottom, logging and charting. The log area displays recent events, each group in full and only the most recent group retained between groups. The chart draws one bar per cycle, its height being that cycle's release, and a line for the efficiency score; hovering reveals the values and dominant factors for that round, with average release, peak release and average efficiency below.
 
-Process Ranking lists current processes with memory usage, CPU usage and learning state, sortable as needed; right-clicking sets a working-set cap. Learning Log provides detailed profile data: sample count, confidence, benefit ratio, deviation, trend, leak flag, trim count and probe outcomes. Settings has twelve sections: Language, Display, Startup, Window and Tray, Cleaning, Game Mode, Guard, Logging, Update, Reset, Config Transfer, and Global Hotkeys.
+The Process Ranking window lists current processes with memory usage, CPU usage and learning state, and supports sorting; right-clicking sets a working-set cap for the selected process. The Learning Log window provides more detailed profile data: sample count, confidence, benefit ratio, deviation, trend, leak flag, trim count and probe outcomes. Settings comprises twelve sections: Language, Display, Startup, Window and Tray, Cleaning, Game Mode, Guard, Logging, Update, Reset, Config Transfer, and Global Hotkeys.
 
 ---
 
 ## 日志 · *Logging*
 
-文件日志默认关闭。可在「设置 → 日志」中开启，记录写入 data/memwise.log；文件达到上限后自动轮转并保留上一份。崩溃现场单独写入 data/memwise_crash.log。
+文件日志默认关闭。于「设置 → 日志」中开启后，记录写入 data/memwise.log；文件达到容量上限后自动轮转，保留上一份历史。崩溃信息单独写入 data/memwise_crash.log。
 
-通常无需关注；需要确认执行情况或反馈问题时查阅即可。反馈时建议附最近一两百行日志、当时的清理模式，以及可复现问题的操作步骤。日志仅保存在本机，程序不会上传。文件中的高密度短行是压缩记录格式，字段含义见 [附录 A](docs/appendix.md#a)。
+通常无需关注；需确认执行情况或反馈问题时查阅。反馈时建议附最近一两百行日志、当时的清理模式与可复现问题的操作步骤。日志仅存储于本机，程序不上传任何内容。文件中的高密度短行采用压缩记录格式，字段含义见 [附录 A](docs/appendix.md#a)。
 
-File logging is disabled by default. Enable it under Settings, Logging; records are written to data/memwise.log, which rotates automatically once full, keeping the previous file. Crash details are written separately to data/memwise_crash.log.
+File logging is disabled by default. When enabled under Settings, Logging, records are written to data/memwise.log; the file rotates automatically once its capacity is reached, retaining the previous file. Crash information is written separately to data/memwise_crash.log.
 
-It normally requires no attention; consult it to confirm what ran or when reporting a problem. A useful report includes the last one or two hundred lines, the cleaning mode in use, and reproducible steps. Logs remain on this machine and are never uploaded. The dense short lines in the file are a compact record format, explained in [Appendix A](docs/appendix.md#a).
+It normally requires no attention; consult it to confirm what executed or when reporting an issue. A report should include the last one or two hundred lines, the cleaning mode in use, and reproducible steps. Logs are stored locally and nothing is uploaded. The dense short lines in the file are a compact record format, explained in [Appendix A](docs/appendix.md#a).
 
 ---
 
 ## 游戏模式 · *Game Mode*
 
-在「设置 → 游戏模式」中添加游戏进程名后自动生效；也可在主界面手动开启，手动状态持续到手动关闭。
+于「设置 → 游戏模式」中添加游戏进程名后自动启用；亦可于主界面手动启用，手动状态持续至手动关闭。
 
-激活期间：游戏进程树不参与清理；磁盘类系统操作跳过，避免磁盘竞争；非游戏进程仍按当前模式回收闲置页；守护节奏放慢，降低干扰。
+启用期间：游戏进程树不参与清理；磁盘类系统操作跳过，以避免磁盘竞争；游戏之外的进程仍按当前档位回收闲置页；守护节奏放慢，以降低干扰。
 
 识别以进程名为准，同名进程全部覆盖，配置一次即可；游戏启动与退出实时识别，无需等待周期。
 
-Adding a game's process name under Settings, Game Mode activates the mode automatically; it can also be enabled manually from the main window, and manual activation persists until disabled.
+Adding a game's process name under Settings, Game Mode enables the mode automatically; it may also be enabled manually from the main window, and manual activation persists until disabled.
 
-While active: the game process tree is not trimmed; disk-oriented system operations are skipped to avoid disk contention; processes outside the game still have their idle pages reclaimed in the current mode; and the guard rhythm slows to reduce interference.
+While enabled: the game process tree is not trimmed; disk-oriented system operations are skipped to avoid disk contention; processes outside the game still have their idle pages reclaimed in the current mode; and the guard rhythm slows to reduce interference.
 
-Detection is by process name and covers every process with the same name, so it is configured once. Game start and exit are recognised in real time, without waiting for a cycle.
+Detection is by process name and covers every process of the same name, so configuration is performed once. Game start and exit are recognised in real time, without waiting for a cycle.
 
 ---
 
@@ -194,19 +194,21 @@ Detection is by process name and covers every process with the same name, so it 
 
 系统核心进程不参与清理，无论是否出现在排除列表中。排除列表中的程序及其同名进程不参与清理。游戏运行期间，游戏进程树完全保护。程序不清理自身。
 
-normal 与 deep 会避让当前活跃的程序：刚切换走的程序在一段时间内不处理，存在可见窗口时延长，内存压力升高时放宽；正在占用 CPU 或磁盘的程序同样避让。full 不判断活跃性，但硬保护仍然有效。
+normal 与 deep 避让当前活跃的程序：刚切换走的程序在一段时间内不处理，存在可见窗口时延长，内存压力升高时放宽；正在占用 CPU 或磁盘的程序同样避让。full 不判断活跃性，但硬保护仍然有效。
 
 工作集上限仅限制物理占用，不改变提交内存；系统目录下的进程不允许设置。连续失败的任务进入递增冷却，成功后逐步恢复。
 
 The following boundaries do not change with the mode.
 
-System-critical processes are never trimmed, whether or not they appear in the exclusions. Programs in the exclusion list, together with processes of the same name, are never trimmed. While a game runs, its process tree is fully protected. The program never trims itself.
+System-critical processes are excluded from reclamation, whether or not they appear in the exclusion list. Programs in the exclusion list, together with processes of the same name, are excluded. While a game runs, its process tree is fully protected. The program does not trim itself.
 
-normal and deep avoid currently active programs: one recently switched away from is left alone for a period, longer when it has a visible window and relaxed under memory pressure; programs actively using CPU or disk are likewise avoided. full does not judge activity, but the hard protections still apply.
+normal and deep avoid currently active programs: a program recently switched away from is left unprocessed for a period, extended while it has a visible window and relaxed under memory pressure; programs actively using CPU or disk are likewise avoided. full does not assess activity, but the hard protections remain in force.
 
-A working-set cap limits physical usage only and does not change commit memory; processes under the system directory cannot be capped. Consecutively failing tasks enter an escalating cooldown and recover after success.
+A working-set cap limits physical usage only and does not change commit memory; processes under the system directory cannot be capped. Consecutively failing tasks enter an escalating cooldown and recover progressively after success.
 
 ---
+
+
 
 ## 命令行与自动化 · *Command Line and Automation*
 
@@ -308,17 +310,17 @@ The configuration file is config/config.yaml. It is read at startup, so manual e
 
 **效率评分一开始显示"分析中"，或者长期在 50 分上下。** 评分用本机自己的分位做刻度，需要先预热再标定一段周期，之后才稳定；这是设计使然，不是异常。
 
-**清理后内存占用再次上升。** 这是系统的正常工作方式：被回收的页面在你再次使用某个程序时会被重新读入，缓存也会重建。程序的判断依据是"这次回收划不划算"，不追求把占用压到某个数字。
+**清理后内存占用再次上升。** 这是系统的正常工作方式：被回收的页面在对应程序再次访问时将被重新读入，缓存亦会重建。程序的判断依据是"这次回收划不划算"，不追求把占用压到某个数字。
 
 **日志区仅显示少量条目。** 面板按组显示：一组内完整显示，组与组之间按 7 行判定，新组放不下就先清旧内容。这样最近的一整组信息总是完整的，而不是无限滚动堆积。
 
-**Autostart does not seem to work.** Autostart uses an administrator logon scheduled task, which requires having run MemWise as administrator at least once. Afterwards you can find the entry in Task Scheduler and confirm it points at the current executable.
+**Autostart does not seem to work.** Autostart uses an administrator logon scheduled task, which requires MemWise to have been run as administrator at least once. The resulting entry can be located in Task Scheduler and confirmed to reference the current executable.
 
-**It says the folder is not writable.** MemWise stores settings and learning data in its own folder. Move it somewhere writable, such as your user directory or a non-system drive.
+**It says the folder is not writable.** MemWise stores settings and learning data in its own folder. The program should be placed in a writable location, such as the user directory or a non-system drive.
 
 **The efficiency score starts as "analysing", or hovers around 50 for a while.** The scale is built from this machine's own percentiles and needs a warm-up plus a calibration period before it settles. That is by design, not a fault.
 
-**Memory climbs back after cleaning.** That is how the system works: reclaimed pages are read back when you use a program again, and caches rebuild. MemWise asks whether reclaiming is worthwhile; it does not try to hold usage at a particular number.
+**Memory climbs back after cleaning.** This follows from normal system behaviour: reclaimed pages are read back when the corresponding program accesses them again, and caches rebuild. MemWise evaluates whether reclamation is worthwhile rather than attempting to hold usage at a fixed number.
 
 **The log area only shows a few lines.** The panel writes in groups: each group is shown in full, while the space between groups follows a seven-line rule, so a new group clears the old content first instead of scrolling endlessly.
 
@@ -334,11 +336,11 @@ Windows 10 20H1 or later, or Windows 11, 64-bit. Administrator rights are needed
 
 ## 隐私与数据 · *Privacy and Data*
 
-默认不联网，也不做任何统计：程序里没有遥测、没有设备标识、没有账号。只有在你打开"检查更新"之后，它才会向 GitHub 读取版本号与更新包信息；开启后每次启动都会检查一次。请求由 GitHub 接收，对方能看到你的 IP，这是任何联网检查都无法回避的。
+默认不联网，也不做任何统计：程序里没有遥测、没有设备标识、没有账号。仅在启用"检查更新"后，程序才向 GitHub 读取版本号与更新包信息；启用后每次启动检查一次。请求由 GitHub 接收，对方能看到你的 IP，这是任何联网检查都无法回避的。
 
 日志、配置与学习数据都保存在程序目录下的 data 目录，不会离开这台机器。更新包下载后会做 SHA-256 校验，校验不通过就放弃本次更新并保留当前版本。
 
-Nothing goes online by default, and nothing is measured: no telemetry, no device identifier, no account. Only after you enable "Check for updates" does MemWise read version and package information from GitHub, and then it checks once per startup. The request is received by GitHub, which can see your IP; that is unavoidable for any online check.
+Nothing goes online by default, and nothing is measured: no telemetry, no device identifier, no account. Only after "Check for updates" is enabled does MemWise read version and package information from GitHub, once per startup. The request is received by GitHub, which can observe the client IP address; this is inherent to any online check.
 
 Logs, settings and learning data live in the data folder next to the program and never leave the machine. Downloaded update packages are verified with SHA-256; a failed check abandons the update and keeps the current version.
 
