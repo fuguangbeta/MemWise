@@ -110,7 +110,7 @@ class PareCleaner:
             "trim_rounds": 0,   # 进程实际执行轮数累加（5.2：区分"名义趟数"与"实际趟数"）
             "layer3_ran": 0, "layer3_extra": 0,
             # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
-            "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
+            "final_sweep": 0, "full_rebound_cand": 0, "full_rebound_hits": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
             "deep_final_freed": 0, "deep_final_sweep": 0,
             "normal_final_sweep": 0, "normal_l3_extra": 0,
             # quick 专项（2026-11-22）：零感知成本量化 + 空转退避
@@ -286,11 +286,16 @@ class PareCleaner:
 
     @staticmethod
     def _final_ops(ops_filter):
-        """full 收尾的系统操作子集——与 _layer1_ops 共用同一映射（防两处手工表漂移）。"""
+        """full 收尾的系统操作子集：只补低优先待机页。
+
+        2026-11-23 实测：原实现把 ws_all/modified/standby 也带上，与同轮 L1 完全重复——
+        O 行可见 ws:2、fmp:2（每次 8s，合计 16s/周期），而释放量仍为 0 量级。
+        收尾的增量只剩下「进程动作结束后新产生的低优先待机页」，故只保留 standby_low。
+        """
         m = PareCleaner._layer1_ops(ops_filter)
         if m is None:
-            return {"ws_all", "modified", "standby", "standby_low"}
-        return {k for k in ("ws_all", "modified", "standby", "standby_low") if k in m}
+            return {"standby_low"}
+        return {"standby_low"} if "standby_low" in m else set()
 
     def _heavy_need(self, kind):
         """该操作当前需要的最短停手时长（秒）：full 按实测耗时自适应，非 full 固定 5s。"""
@@ -414,15 +419,14 @@ class PareCleaner:
         """
         if self.game_mode or self._lite:
             return
-        if deadline is not None and time.time() > deadline - 2.0:
-            return
+        # 收尾跑在周期末段，deadline 通常已耗尽；旧实现在此直接 return，
+        # 使收尾与 combine 实际从不执行（2026-11-23 实测）。改为按当前状态补判门控。
+        self.refresh_cycle_gate()
         # combine 与六项开关解耦：full 即可；final 本身只执行用户授权的操作。
         use = self._final_ops(ops_filter)
         if use:
             self._layer1_memreduct(full=True, ops=use, clean_self=False)
             self._stats_inc("final_sweep")
-        if deadline is not None and time.time() > deadline - 1.0:
-            return
         if ((ops_filter is None or "combine" in ops_filter)
                 and self._combine_eligible() and self._heavy_allowed("combine")):
             ok, pages, ms, _status = winapi.combine_physical_memory()
@@ -1851,6 +1855,8 @@ class PareCleaner:
         # 游戏 PID 树/系统核心/黑名单/自身/前台(低压力) 一律跳过：防御纵深，
         # 不依赖 Layer2 过滤的时序正确性，防未来逻辑变化致保护界限被破解）
         if pipeline_ctx["layer2_trimmed"] and not self._lite:
+            _rb_cand = 0
+            _rb_hits = 0
             never = self.judger.cfg.get("never", []) or []
             game_pids = getattr(self.judger, '_game_pid_set', set()) if self.game_mode else set()
             _agg = agg  # 局部 agg（daemon 传参模式下 judger.aggressiveness 是上一轮旧值）
@@ -1866,16 +1872,24 @@ class PareCleaner:
                 if getattr(s, 'fg', False) and _agg < 0.35:
                     continue  # 前台进程低压力不碰（与 can_trim 同规则）
                 if s.pid in pipeline_ctx["layer2_trimmed"] and s.ws >= (10 << 20):
+                    # 预算：单轮最多 40 个候选，避免大机群下几百次 empty_ws 拖长周期
+                    if _rb_cand >= 40:
+                        continue
+                    _rb_cand += 1
                     try:
                         # 二轮释放量计入统计（2026-08-14 审查：原裸清不计，full 模式"释放"低估）
                         _pre = winapi.get_process_memory(s.pid)
                         if _pre and winapi.empty_ws(s.pid):
                             _post = winapi.get_process_memory(s.pid)
                             if _post:
+                                _f = max(0, _pre["ws"] - _post["ws"])
                                 with self._lock:
-                                    self.stats["freed_bytes"] += max(0, _pre["ws"] - _post["ws"])
+                                    self.stats["freed_bytes"] += _f
+                                _rb_hits += 1
                     except Exception:
                         pass
+            self._stats_inc("full_rebound_cand", _rb_cand)
+            self._stats_inc("full_rebound_hits", _rb_hits)
         # full + 六区全开：所有 process 动作结束后再系统压实 + 可选 combine
         if allow_layer3:
             try:

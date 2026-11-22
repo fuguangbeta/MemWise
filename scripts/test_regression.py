@@ -2912,10 +2912,15 @@ check("quick 退避上限 300s 且手动优化豁免",
       "min(300.0" in _cl45f and "if self._manual_run:" in _cl45f)
 check("呈现期日志/图表延迟补齐（防卡片空白）",
       "_schedule_present_flush" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
+check("full 收尾不再按 deadline 早退，且只补 standby_low",
+      "deadline - 2.0" not in _cl45f and '"standby_low"} if "standby_low" in m' in _cl45f)
+check("full 回弹二轮有预算与计数",
+      "_rb_cand >= 40" in _cl45f and "full_rebound_cand" in _cl45f
+      and "full_rebound_hits" in _cl45f)
 check("N2 与 N1 同用周期级裁剪标记",
       'not _l3_done and getattr(self, "_cycle_any_trim", False)' in _cl45f)
 check("两处尾段均在执行前补判周期门控，且不再按 deadline 降级",
-      _cl45f.count("self.refresh_cycle_gate()") >= 2
+      _cl45f.count("self.refresh_cycle_gate()") >= 3
       and "deadline + 5.0" not in _cl45f and "deadline + 2.0" not in _cl45f)
 check("T1 新增前台未变字段 F:", '"F:%s/%d"' in _eg45f)
 check("T1 deep 段为两字段（收尾次数/释放MB）",
@@ -3882,25 +3887,25 @@ try:
     _game56 = list(_calls56)
 finally:
     _W56.combine_physical_memory = _real_c56
-check("P2 full 收尾顺序：ws_all + 高压 modified/standby + low → combine",
-      _all56 and _all56[0][1] == {"ws_all", "modified", "standby", "standby_low"}
+check("P2 full 收尾只补 standby_low（系统级操作已在 L1 完成），随后 combine",
+      _all56 and _all56[0][1] == {"standby_low"}
       and _pages_all56 == 7)
 check("P2 部分勾选仍执行 final/combine",
-      _part56 and _part56[0][1] == {"ws_all", "standby", "standby_low"})
+      _part56 and _part56[0][1] == {"standby_low"})
 check("P2 默认五项 + combine 也执行 final/combine",
-      _default56 and _default56[0][1] == {"ws_all", "modified", "standby", "standby_low"}
+      _default56 and _default56[0][1] == {"standby_low"}
       and _c56.stats["combine_pages"] == 21)
 _c56.game_mode = False
 _calls56.clear(); _c56._final_consolidation({"ws", "standby"})
 check("P2 未勾选 combine 时只做 final 不做合并",
-      _calls56 and _calls56[0][1] == {"ws_all", "standby", "standby_low"}
+      _calls56 and _calls56[0][1] == {"standby_low"}
       and _c56.stats["combine_pages"] == 21)
 check("P2 游戏不进入 full 收尾", not _game56)
 _c56._manual_run = False; _c56.game_mode = False
 _c56.judger = type("J56b", (), {"_high_pressure": lambda self: False})()
 _calls56.clear(); _c56._final_consolidation(_ops56)
-check("P2 full final 不因低压降级（仍 modified/standby）",
-      _calls56 and _calls56[0][1] == {"ws_all", "modified", "standby", "standby_low"})
+check("P2 full final 不因低压降级（仍执行 standby_low）",
+      _calls56 and _calls56[0][1] == {"standby_low"})
 check("P2 full 分支接入最终压实", "self._final_consolidation(ops_filter, deadline=deadline)" in _src47("core/cleaner.py"))
 _order56 = []
 _l56b = PareLearner(); _j56b = PareJudger(_l56b, {"never": [], "clean_passes": 4, "efis_params": {}})

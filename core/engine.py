@@ -2227,6 +2227,7 @@ class MemWiseEngine:
                      "ws_all_rounds", "trim_rounds", "normal_final_sweep", "normal_l3_extra",
                      "deep_final_sweep",
                      "final_sweep", "combine_calls", "combine_pages", "standby", "modified",
+                     "full_rebound_cand", "full_rebound_hits",
                      "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed",
                      "deep_final_freed")
             _cur = {k: _st.get(k, 0) for k in _keys}
@@ -2277,7 +2278,10 @@ class MemWiseEngine:
             elif _mode == "normal":
                 _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
             elif _mode == "full":
-                _parts.append("%d/%d/%d" % (_dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"]))
+                # 收尾次数/combine次数/combine页/回弹候选/回弹命中
+                _parts.append("%d/%d/%d/%d/%d" % (_dl["final_sweep"], _dl["combine_calls"],
+                                                  _dl["combine_pages"], _dl["full_rebound_cand"],
+                                                  _dl["full_rebound_hits"]))
             else:
                 _parts.append("M:%d/%d" % (_dl["standby"], _dl["modified"]))
             try:
