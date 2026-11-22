@@ -76,182 +76,147 @@ Guard runs in cycles, 60 seconds by default. When memory reaches the emergency t
 
 ## 四种模式怎么选 · *Choosing a Mode*
 
-四种模式的差别只在代价大小。回收的页面被再次访问时要重新读回内存，这份延迟躲不开；模式决定它出现得多频繁、有多深。
+模式决定它多久动手一次、动多深。用起来的感觉大致是这样的：
 
-| 模式 | 做什么 | 代价 | 适合 |
-|---|---|---|---|
-| **quick** | 低优先待机页与注册表缓存，不碰进程 | 几乎为零 | 常驻办公、低配机、不希望被打断 |
-| **normal**（默认） | 进程闲置页，加上你勾选的系统操作；压力升高时加深；停手 5 秒做一次轻收尾 | 小 | 绝大多数日常场景 |
-| **deep** | 强制深度聚合；内存中高压时做系统级全清；停手期做系统收尾 | 中等，且有界 | 内存偏紧但仍在用电脑 |
-| **full** | 每轮跑完整流程：不等活跃门、每进程最大轮数、回弹二轮、系统收尾与页合并 | 较高，表现为短暂重载延迟 | 开大程序之前，或内存长期不够 |
+| 模式 | 用起来是什么感觉 | 适合什么时候 |
+|---|---|---|
+| **quick** | 后台几乎不动手，只在系统本来就要丢缓存时顺手收一点 | 一直开着、不想被打扰，或机器配置不高 |
+| **normal**（默认） | 平时该清的清，你在用程序时不动 | 日常使用，第一次用就从这里开始 |
+| **deep** | 你离开键盘的间隙会多收一轮，力度更大 | 内存长期偏紧，又不想每次手动点优化 |
+| **full** | 一次拿回最多，代价是随后打开程序可能慢一拍 | 开大程序之前，或内存已经告急 |
 
-在"清理模式"下拉框里切换，下一周期生效。手动优化按你当前选的模式执行，紧急清理则始终是 full。游戏模式激活时，涉及磁盘的系统操作会被抑制，力度自动降低，先把流畅让出来。
+在「清理模式」下拉框里切换，下一轮生效。点「优化」时按当前选中的模式跑一次；内存达到紧急阈值时，程序会自己用 full 处理一次，不等下一轮。游戏模式激活期间它会主动让路，把流畅留给你正在玩的游戏。
 
-The four modes differ only in how much cost they accept. Reclaimed pages have to be read back when they are used again, and that delay cannot be avoided; the mode decides how often and how deeply it is paid.
+The mode decides how often and how deeply it acts. In practice they feel like this:
 
-| Mode | What it does | Cost | Best for |
-|---|---|---|---|
-| **quick** | Low-priority standby pages and registry caches, no process work | Practically zero | Always-on office work, low-end machines, no interruptions |
-| **normal** (default) | Idle process pages plus the system operations you enable; deeper under pressure; a light wrap-up after 5 s idle | Small | The vast majority of everyday use |
-| **deep** | Forced deep aggregation; system-wide flush at moderate-to-high usage; system wrap-up while idle | Moderate and bounded | Memory is tight but you still use the PC |
-| **full** | The complete pipeline every cycle: no activity waiting, maximum rounds per process, a rebound second pass, system wrap-up and page combining | Higher, felt as a brief reload delay | Before a large program, or when memory stays tight |
+| Mode | What it feels like | When to use it |
+|---|---|---|
+| **quick** | It barely acts in the background, only taking cache the system was going to drop anyway | Keep it running without being disturbed, or on modest hardware |
+| **normal** (default) | It cleans as needed and stays out of the way while you use your programs | Everyday use; start here on your first run |
+| **deep** | It takes one more pass while you are away from the keyboard | Memory stays tight and you would rather not press Optimize yourself |
+| **full** | It takes back the most it can, at the cost of a slightly slower next launch of your apps | Before opening something large, or when memory is already short |
 
-Switch modes in the Mode dropdown and the change applies from the next cycle. Manual optimization uses the mode you have selected; emergency cleaning always runs full. While Game Mode is active, disk-oriented system operations are suppressed and intensity drops, giving smoothness priority.
-
----
-
-## 守护模式怎么跑 · *How Guard Runs*
-
-守护按周期工作，周期默认 60 秒，可在设置中调到 10 至 3600 秒。一个周期分两段：前半段是间隔式轻压制，后半段是一次完整收割。
-
-| 阶段 | 内容 |
-|---|---|
-| gap 段（8 到 20 秒自适应） | 只做轻量系统操作，不碰进程。默认清注册表缓存；内存高压时追加待机页与脏页写回。游戏模式整体乘 1.5，最长约 30 秒。 |
-| 收割段 | 按当前模式跑完整流程：进程闲置页、你勾选的系统操作、深度聚合，以及停手期的收尾。 |
-
-触发与保护都在这一层：内存达到紧急阈值（默认 80%）时立即跑一次 full；如果配置了可用内存绝对兜底（默认关闭），可用内存过低时同样触发。连续两轮出现明显回涨时，周期会缩短到 min(设定值, max(15, 设定值乘 0.6))，回涨放缓后自动恢复。检测到你连续 5 秒没有输入，normal 会补一次轻收尾、deep 会做一次系统收尾，通常不到一秒。
-
-主进程意外退出时，看门狗会在数秒内把它拉起来，并恢复崩溃前的守护状态；单实例互斥保证不会同时跑两个实例。关闭窗口默认进入托盘，也可以在设置里改成询问或直接退出。
-
-Guard works in cycles, 60 seconds by default and adjustable from 10 to 3600 seconds. Each cycle has two halves: intermittent light suppression first, then one full harvest.
-
-| Phase | What happens |
-|---|---|
-| Gap (adaptive, 8 to 20 s) | Lightweight system work only, no process work. Registry caches by default, plus standby pages and dirty-page flushing under high pressure. Game Mode multiplies it by 1.5, up to about 30 s. |
-| Harvest | The full pipeline in the current mode: idle process pages, the system operations you enabled, deep aggregation, and the idle-time wrap-up. |
-
-Triggering and protection live here: at the emergency threshold (80% by default) a full pass runs immediately; if the optional absolute available-memory floor is configured, it triggers on that too. After two consecutive heavy-refill rounds the cycle shortens to min(configured, max(15, configured times 0.6)) and recovers when refill slows. After 5 seconds without input, normal adds a light wrap-up and deep performs a system wrap-up, usually in under a second.
-
-If the main process exits unexpectedly, the watchdog restarts it within seconds and restores the previous Guard state; a single-instance mutex prevents two copies from running. Closing the window sends it to the tray by default, and Settings can change that to asking or exiting.
+Switch in the Mode dropdown and it applies from the next cycle. Pressing Optimize runs one pass in the mode you selected; when memory reaches the emergency threshold MemWise runs a full pass on its own instead of waiting. While Game Mode is active it steps back and leaves smoothness to the game.
 
 ---
 
-## 它清什么，不清什么 · *What It Reclaims, and What It Leaves Alone*
+## 守护模式怎么用 · *Using Guard*
 
-所有动作都走 Windows 公开接口，分三层。第一层是系统级：清空低优先待机列表、写回已修改页、钳制文件缓存、冲刷卷缓存、清注册表缓存，以及（在 deep/full 下）系统级清空所有进程的工作集。第二层是进程级：对筛选后的进程调用 EmptyWorkingSet，只回收它当前用不到的物理页。第三层是深度聚合：在内存偏紧时，对已经确认空闲的进程再做一轮系统性回收。
+点「守护」开始，点「停止」结束。开启后窗口关掉也不会退出，它会留在托盘里继续工作，托盘图标显示当前内存档位。
 
-会做的事：回收闲置物理页、清掉可重建的缓存、在你不用电脑时做更彻底的一轮。
-不会做的事：结束进程、挂起线程、注入代码、修改系统设置或注册表策略、安装驱动、常驻系统服务。
+它在你不用电脑的空隙里回收内存；内存达到你在设置里定的阈值时，会立刻处理一次，不等下一轮。你能看到的是三处：统计行在涨（系统操作次数、进程清理次数、累计释放），日志区显示最近发生了什么，图表每轮多一根柱子，柱高是这一轮拿回的释放量。
 
-六个系统操作可以逐个开关，取消勾选即完全不执行。页合并是独立开关，与这六项解耦。所有进程操作都受同一组安全门约束：系统核心进程、你的排除列表、游戏进程树、本程序自身、前台正在使用的程序，都不会被处理。
+需要你做的事很少。把常玩的游戏进程名加进「设置 → 游戏模式」，玩游戏时它会自动让路；周期长短、紧急阈值、关窗行为都在设置里。它自己的机制细节（间隔怎么定、两段节奏怎么排）放在附录 A。
 
-Everything goes through public Windows interfaces and is organised in three layers. The system layer empties low-priority standby lists, flushes modified pages, clamps the file cache, flushes volumes, clears registry caches and, under deep and full, flushes every process working set system-wide. The process layer calls EmptyWorkingSet on selected processes, reclaiming only pages they are not using right now. The deep layer runs a further systematic pass over processes already confirmed idle when memory is tight.
+Press Guard to start and Stop to finish. With Guard running, closing the window keeps it alive in the tray, where the icon shows the current memory tier.
 
-What it does: reclaims idle physical pages, clears caches that can be rebuilt, and goes further while you are away from the keyboard. What it never does: end processes, suspend threads, inject code, change system settings or registry policy, install drivers, or run a background service.
+It reclaims memory in the gaps while you are not using the PC, and when memory reaches the threshold you set it acts immediately instead of waiting for the next round. Three places show what it is doing: the statistics row grows (system operations, process trims, cumulative release), the log area shows what just happened, and the chart gains one bar per cycle whose height is that cycle's release.
 
-Each of the six system operations can be toggled independently; unchecking one means it is never performed. Page combining has its own switch, independent of the six. Every process action passes the same safety gates: system-critical processes, your exclusion list, game process trees, MemWise itself, and the program you are currently using are left alone.
+There is very little for you to do. Add the games you play under Settings, Game Mode, so it steps aside while you play; cycle length, emergency threshold and close behaviour all live in Settings. The mechanics behind it (how the interval is set, how the two phases are arranged) are in Appendix A.
+
+---
+
+## 它会清什么，不会动什么 · *What It Reclaims, and What It Leaves Alone*
+
+会做的：把暂时用不到的进程页面还给系统；清掉可以重建的系统缓存，比如待机缓存、文件缓存、卷缓存和注册表缓存；在 deep 和 full 下，对一段时间没有活动的程序再多收一轮。
+
+不会做的：结束进程、挂起线程、注入代码、修改系统设置或注册表策略、安装驱动、常驻系统服务。
+
+不会碰的：系统核心进程、你在排除列表里写下的程序、正在玩的游戏及其子进程、MemWise 自己。normal 和 deep 下还会避开你正在使用、或刚切走的程序；full 不判断活跃，但上面那些硬保护照旧。
+
+What it does: hands pages back to the system when a process is not using them; clears caches that can be rebuilt, such as standby, file, volume and registry caches; and under deep and full, takes one more pass over programs that have been quiet for a while.
+
+What it never does: end processes, suspend threads, inject code, change system settings or registry policy, install drivers, or run a background service.
+
+What it never touches: system-critical processes, the programs you listed as exclusions, the game you are playing and its child processes, and MemWise itself. Under normal and deep it also avoids programs you are using or have just switched away from; full skips the activity check but keeps every hard protection above.
 
 ---
 
 ## 界面导览 · *Interface Tour*
 
-主窗口只有四块：内存状态条、按钮行（优化、守护、停止、排除、设置、学习日志、游戏模式、进程排行）、清理模式与统计行、日志与图表区域。统计行从左到右是系统操作次数、进程清理次数、累计释放量，右端是已学习进程数；它按周期更新，因为这几个数字本身就是周期增量。
+主窗口从上到下是几块固定的东西。
 
-日志区每条消息固定占一个图标位，正文从同一列开始；图标统一使用程序自绘的默认图标，正文里的文字原样保留。面板按"组"写入：一组内的多行完整显示，不会截断；组与组之间按 7 行判定，新的一组装不下就先清旧内容，不会把新组接在旧组后面越堆越多。
+最上面是内存状态条，显示当前占用百分比，颜色随档位变化，右边还有一枚醒目的数字。
 
-图表区每根柱子对应一个守护周期，柱高是本轮释放量；折线是效率评分，悬停可看到当轮真实数值与主导因素。图表下方是平均释放、峰值释放与平均效率。
+按钮行依次是：优化（按当前模式跑一次完整优化）、守护与停止（后台常驻的开关）、排除（不想被清理的程序名单）、设置、学习日志、游戏模式（手动开关）、进程排行。
 
-进程排行窗口打开时即时采集一次，之后每 10 秒刷新；守护运行中直接复用守护线程的快照，不额外采样。右键可给某个程序设置工作集硬上限，把它持续钉在你设定的物理占用之下，随时可解除，最多 32 条。学习日志窗口按进程列出学习数据：样本量、可信度、收益比、偏差、趋势、泄漏标记、清理次数与试探成败。
+再往下左边是清理模式下拉框，右边是统计行：系统操作次数、进程清理次数、累计释放量，右端是已学习进程数。这三个数字是本次运行以来的累计值，按周期刷新。
+
+日志区显示最近发生的事，一组内完整显示，组与组之间只保留最近的一组，所以它看起来总是"当前这几条"，而不是无限滚动。
+
+图表区每根柱子对应一轮，柱高是本轮释放量；折线是效率评分，鼠标悬停能看到当轮的真实数值和主导因素；图表下方是平均释放、峰值释放与平均效率。
+
+进程排行会列出当前所有进程的占用、CPU 与学习情况，按需排序，右键可以对某个程序设置工作集上限。学习日志则更细：样本量、可信度、收益比、偏差、趋势、是否疑似泄漏、清理次数与试探成败。
 
 设置面板分十二栏：语言、显示、启动、窗口与托盘、清理、游戏模式、守护、日志、更新、重置、配置传输、全局热键。
 
-The main window has four parts: the memory bar, the button row (Optimize, Guard, Stop, Exclusions, Settings, Learning Log, Game Mode, Process Ranking), the mode and statistics row, and the log and chart area. The statistics row reads, from left to right, system operation count, process trim count and cumulative release, with the number of learned processes at the right end; it updates per cycle, because those numbers are per-cycle increments.
+The main window is a few fixed blocks, top to bottom.
 
-Every log line reserves one icon slot and the text starts in the same column; icons always use the program-drawn default icon, while text inside the message is left exactly as written. The panel writes in groups: a group of several lines is shown in full and never truncated, while the space between groups follows a seven-line rule, so a new group clears the old content first instead of piling up behind it.
+At the top is the memory bar: current usage in percent, with a colour that follows the tier, and a matching number on the right.
 
-In the chart, each bar is one guard cycle and its height is the release of that cycle; the line is the efficiency score, with tooltips showing the true values and dominant factors. Below the chart are average release, peak release and average efficiency.
+The button row reads Optimize (one complete pass in the current mode), Guard and Stop (the background switch), Exclusions (programs you do not want touched), Settings, Learning Log, Game Mode (a manual switch) and Process Ranking.
 
-The Process Ranking window samples once on open and refreshes every 10 seconds; while Guard runs it reuses the daemon snapshots and adds no sampling cost. Right-clicking a program sets a working-set hard cap that keeps its physical usage below a value you choose, can be cleared at any time, and supports up to 32 rules. The Learning Log window lists per-process learning data: sample count, confidence, benefit ratio, deviation, trend, leak flag, trim count and probe outcomes.
+Below that, the mode dropdown sits on the left and the statistics row on the right: system operations, process trims and cumulative release, with the number of learned processes at the far right. Those three numbers accumulate since this run started and refresh per cycle.
+
+The log area shows what just happened. A group of lines appears in full, and only the most recent group is kept between groups, so it always reads as "these few lines right now" rather than an endless scroll.
+
+In the chart, each bar is one cycle and its height is that cycle's release; the line is the efficiency score, and hovering shows the true values and dominant factors for that round. Below the chart are average release, peak release and average efficiency.
+
+Process Ranking lists every process with its memory, CPU and learning state, sortable as needed, and right-clicking a program lets you set a working-set cap. Learning Log goes deeper: sample count, confidence, benefit ratio, deviation, trend, suspected leak, trim count and probe outcomes.
 
 Settings has twelve sections: Language, Display, Startup, Window and Tray, Cleaning, Game Mode, Guard, Logging, Update, Reset, Config Transfer, and Global Hotkeys.
 
-### 图表与效率评分 · *Charting and Efficiency Scoring*
-
-效率评分取五个维度、各维 0–140 分：**净优化量**（本轮内存净下降 ÷ 本轮总释放，衡量释放量里净留存下来的比例）、**优化代价**（进程清理释放量 ÷ 缺页代价，衡量划不划算）、**优化通畅**（整理成功 ÷ 尝试总数）、**试探命中**（试探合格 ÷ 试探总数）、**优化量**（本轮释放 ÷ 本机基线释放量）。**quick 模式只参与「净优化量」与「优化量」两维**——该模式不做进程清理，另三维没有作用面，按中性 50 计入以免单维独大（见下段）。各维原始值先取最近三轮的中位数平滑，再按**本机自标定后冻结的基线**换算：本机该维的 5%/25%/50%/75%/90% 分位分别对应 **20/35/50/65/80 分**，两端按斜率线性外推、上下限 0–140。因此 **50 分 = 本机该维常态中位**、**80 分 = 本机该维九成位**；效率值 = 有效维均分折算值 ÷ K × 100%，K 取自标定窗口自身的高分位——**100% 恒等于「本机典型高位」**，与机器型号、使用时段无关；某一维偏低时只要其他维更高，合计仍可过 100%。
-
-每种清理模式各有一套标尺与自校准数据（同一维度在各模式间的口径与量级差异很大，例如「优化代价」与「优化量」在四种模式里并不在同一水平），校准数据按模式分别积累、互不污染。
-
-**自标定基线（冻结后不再漂移）**：每台机器、每种清理模式在用满一段（跳过预热期约 200 轮、再积累约 300 轮）后，用**自己的分位**建立基线并**冻结**——因此同一个表现**永远得到同一个分数**，读数不随使用时段或当天做什么而变；标定期间先以出厂基准起步、随本机实测逐步收敛（不会出现极端读数），冻结后即稳定在本机水平。基线存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即重新自标定。**长期偏离自检**：若近 200 轮的读数中位与冻结时的期望值相差超过 15 个百分点（说明基线不再描述这台机器），自动重标一次并在日志诊断行留痕。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与冻结基线数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
-
-影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 1 个百分点显示"相对平稳"；同一维度的正反两面不会在相邻两轮接连出现，避免同一信息正着说反着说来回复读。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
-
-A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing, keeping logs, the status bar, and the chart in lockstep. The X axis shows recent cycles (one bar per daemon cycle; the covered time span follows the adjustable cycle length).
-
-The efficiency score spans five dimensions, each scored 0–140: **net optimization** (net memory drop ÷ total released this cycle — how much of what was freed stayed freed), **optimization cost** (process release ÷ page-fault cost — whether the round was worth it), **unobstructedness** (successful trims ÷ attempts), **probe hit rate** (qualified probes ÷ probes), and **optimization volume** (this cycle's release relative to this machine's baseline). **Under quick mode only net optimization and volume participate**, because quick mode trims no processes; the other three count as a neutral 50 so no single dimension dominates. Each raw value is first smoothed by a three-cycle median, then mapped against **this machine's own frozen baseline**, measured during self-calibration: the machine's 5th/25th/50th/75th/90th percentiles map to **20/35/50/65/80 points**, with linear tails clamped to 0–140. So **50 = this machine's normal median** and **80 = its 90th percentile**; the final score = the effective-dimension average ÷ K × 100%, where K is a high percentile of the calibration window itself — **100% always means this machine's typical high level**, independent of machine model or time of day. A weak dimension can be compensated by stronger ones; when only one dimension has data, the missing ones count as neutral 50 (a single dimension never decides the whole score alone).
-
-Each cleaning mode has its own baseline and calibration data (the same dimension's scale differs markedly between modes — optimization cost and optimization volume are not on the same level across the four modes), so calibration accumulates per mode without cross-contamination.
-
-Self-calibrated baseline (frozen, no drift) — after a mode has run enough cycles (skipping the about 200-cycle warm-up, then accumulating about 300 cycles), the program builds that mode's baseline from **this machine's own measured quantiles** and freezes it: the same behaviour **always** scores the same, unaffected by time of day or by what else you were doing. During calibration readings start from the factory baseline and converge to this machine's own measurements; no extreme readings appear, and the scale settles once frozen. The baseline lives in `memwise_eris_calib.json`: excluded from config packages (machine-specific) and cleared by factory reset — deleting that file triggers a fresh self-calibration. **Drift check**: if the median of the last 200 cycles deviates from the value recorded at freeze time by more than 15 points (the baseline no longer describes this machine), the program re-calibrates once and records it in the diagnostic log line. **The four cleaning modes are independent**: each keeps its own baseline, participating dimensions and smoothing windows. Switching modes never pulls one mode's values into another, and never discards what another mode has accumulated (the first cycle after a switch only reports "analysing", and comparisons resume from the next cycle).
-
-Factor wording: when efficiency rises, the highest-scoring dimension among those that also rose this round reports its positive word; when it falls, the lowest-scoring dimension among those that also fell reports its negative word; a change under 1 point shows "relatively steady"; the two sides of the same dimension never appear on adjacent rounds, so the same fact is not restated in reverse right after being reported. Three consecutive same-direction rounds append a 🔥 sustained-improvement / ⚠ sustained-decline tag (within the 50–100% band only). The first 3 rounds show "analysing factors…"; ≥100% marks gold dots with 🚀 exceptional efficiency, ≤50% coral-red dots with ⚠ efficiency anomaly. Hover tooltips reveal true values and the dominant factors; below the chart: average efficiency and key statistics.
-
 ---
 
-## 日志与可观测性 · *Logs and Observability*
+## 日志 · *Logging*
 
-文件日志默认关闭，在"设置 → 日志"里打开后写入 data/memwise.log；单文件写满会自动轮转，旧的保存为 memwise.log.1，只保留一份，不会无限增长。崩溃现场单独写入 data/memwise_crash.log。
+文件日志默认关闭。在「设置 → 日志」里打开后，它会把运行过程写进 data/memwise.log，文件写满后自动轮转，只保留上一份，不会一直变大。崩溃现场单独写在 data/memwise_crash.log。
 
-文件里的高频行是编码行，不是给人读的散文，这是刻意的：同样的字节能装下更多周期，出问题时能回溯更久。读懂它只需要知道首字段：
+平时不用管它。想确认它究竟做了什么、或者要反馈问题时再打开看一眼就够。需要反馈时，附上最近一两百行日志、当时用的模式、以及能复现问题的操作步骤，通常就能定位。
 
-| 首字段 | 含义 |
-|---|---|
-| T1 | 每周期一行：时间、模式、内存、可用、耗时、整理进程、失败、试探、净释放、压力值、深度聚合、采样与投票、模式专属尾段、拦截原因、用户空闲秒数、前台进程与未变时长 |
-| C | 每周期一行：本轮清理汇总、系统操作分项、释放最多的进程、拦截原因、内存与可用、效率五维原始值 |
-| O | full 轮的系统操作明细：次数、合计释放、末次释放、耗时（同轮重复调用可据此判定） |
-| S | 启动时的设置快照：模式、周期、间隔、紧急阈值、深度、操作集、日志、语言 |
-| R / L / P | 回涨状态、学习状态、试探统计 |
+日志只写在这台机器上，程序不会上传任何内容。日志文件里那些看起来像乱码的短行是刻意压缩过的记录格式，字段含义放在附录 A。
 
-拦截原因用短码表示，例如 core 是系统核心进程、dir 是系统目录概率不足、small 是工作集太小、fg 是刚切走、cool 是失败冷却、io 是磁盘活跃、rb 是回涨不足。
+File logging is off by default. Enable it under Settings, Logging, and it writes to data/memwise.log, rotating once the file is full so it never grows without bound. Crash details go to data/memwise_crash.log.
 
-需要反馈问题时，附上最近一两百行日志、当时用的模式，以及能复现的操作即可。日志只写在本机，程序不会上传任何内容。
+Normally you can ignore it. Open it when you want to confirm what happened or when you are reporting a problem. For a report, include the last one or two hundred lines, the mode you were using, and the steps that reproduce the issue, which is usually enough to pin it down.
 
-File logging is off by default. When enabled in Settings, MemWise writes to data/memwise.log and rotates automatically once the file is full, keeping one previous file as memwise.log.1, so it never grows without bound. Crash details go to data/memwise_crash.log.
-
-The high-frequency lines in the file are encoded rather than prose, deliberately: the same bytes hold more cycles, which means more history when something goes wrong. Reading them only requires knowing the first field:
-
-| Field | Meaning |
-|---|---|
-| T1 | One line per cycle: time, mode, memory, availability, duration, trimmed processes, failures, probes, net release, pressure, deep aggregation, sampling and voting, mode-specific tail, block reasons, user idle seconds, foreground process and how long it has been unchanged |
-| C | One line per cycle: the cycle summary, per-operation system counts, top releasing processes, block reasons, memory and availability, and the five raw efficiency dimensions |
-| O | System operation detail for full rounds: call count, total release, last release, elapsed time |
-| S | Settings snapshot at startup: mode, cycle, gap, emergency threshold, depth, operation set, logging, language |
-| R / L / P | Refill state, learning state, probe statistics |
-
-Block reasons use short codes: core for system-critical processes, dir for insufficient system-directory probability, small for a working set below the floor, fg for recently switched away, cool for failure cooldown, io for active disk I/O, rb for insufficient refill.
-
-When reporting a problem, include the last one or two hundred log lines, the mode you were using, and steps that reproduce it. Logs stay on your machine; nothing is uploaded.
+Logs stay on this machine; nothing is uploaded. The terse, code-like lines in the file are a deliberately compact record format, and their fields are explained in Appendix A.
 
 ---
 
 ## 游戏模式 · *Game Mode*
 
-游戏模式由你配置的进程名触发，程序没有内置任何游戏名单。名单匹配的是进程名，同名进程会全部受到保护；每个游戏进程树内的子进程同样受保护。也可以在界面上手动开启，手动开启后一直有效，直到你手动关闭。
+在「设置 → 游戏模式」里填上游戏进程名就会自动生效，也可以在主界面手动开关，手动开启后一直有效，直到你关掉它。
 
-开启期间做四件事：游戏进程树完全不清理；文件缓存、卷冲刷、系统级全清这类涉及磁盘的系统操作跳过；对非游戏进程仍按当前模式做正常的闲置页回收，让游戏之外的背景程序把内存让出来；守护节奏整体放慢 1.5 倍，降低磁盘与 CPU 竞争。游戏启动和退出的检测是实时的，没有确认周期。
+开启后的表现：游戏本身和它的子进程完全不清理；涉及磁盘的系统操作跳过，不抢磁盘；游戏之外的背景程序照常把闲置内存让出来；整体节奏放慢一些，减少干扰。
 
-Game Mode is triggered by process names you configure; no game list is built in. Matching is by process name, and every process sharing that name is protected, as is every child process inside that game's process tree. You can also switch it on manually, and manual activation stays in effect until you turn it off.
+它按进程名识别，同名的进程都会受保护，所以填一次即可，不必每次开局都设置。游戏的启动与退出是实时识别的，不需要等一个周期。
 
-While it is active, four things happen: the game process trees are never trimmed; disk-oriented system operations such as file-cache clamping, volume flushing and system-wide flushes are skipped; other processes are still trimmed in the current mode so background programs give memory back to the game; and the guard rhythm slows by a factor of 1.5 to reduce disk and CPU contention. Game start and exit are detected in real time, with no confirmation period.
+Add the process names of your games under Settings, Game Mode, and it activates automatically; you can also toggle it manually from the main window, and manual activation stays until you turn it off.
+
+While active: the game and its child processes are never trimmed; disk-oriented system operations are skipped so the disk is not contended; background programs outside the game still hand back their idle memory; and the overall rhythm slows down to reduce interference.
+
+Detection is by process name, and every process sharing that name is protected, so you configure it once rather than before each session. Game start and exit are recognised in real time, with no cycle to wait for.
 
 ---
 
 ## 安全边界 · *Safety Boundaries*
 
-有几条边界是不随模式变化的。
+有几条边界不随模式变化。
 
-系统核心进程不会被清理，无论它是否出现在你的排除列表里。你在排除列表里写下的程序名不会被清理，同名进程全部生效。游戏进程树在游戏模式期间完全保护。MemWise 自身的进程永远不会清理自己。工作集小于 1 MB 的进程不参与。
+系统核心进程永远不清理，无论它在不在你的排除列表里。你写进排除列表的程序不清理，同名的全部生效。游戏运行期间，游戏进程树完全保护。MemWise 不会清理自己。
 
-前台正在使用的程序受额外保护：normal 与 deep 下，刚切走的程序在一段时间内不清理，有可见窗口时更久，内存高压时自动放宽；正在占用 CPU 或磁盘的程序在这两个模式下也不会被清理。full 跳过活跃判断，但仍然受上面那些硬保护约束。
+normal 与 deep 还会避开你正在使用的程序：刚切走的程序在一段时间内不动，有可见窗口时更久，内存高压时自动放宽；正在占用 CPU 或磁盘的程序也不动。full 跳过活跃判断，但上面那些硬保护依然有效。
 
-工作集硬上限只作用于物理占用，不改变提交内存；系统目录下的进程不允许设置。失败的任务会进入递增冷却（最多四倍间隔），成功恢复后自动衰减。
+工作集上限只限制物理占用，不改变提交内存，系统目录下的进程不允许设置。反复失败的任务会进入递增冷却，成功后自动衰减。
 
-Some boundaries do not change with the mode.
+Some boundaries never change with the mode.
 
-System-critical processes are never trimmed, whether or not they appear in your exclusion list. Process names in your exclusion list are never trimmed, and the rule covers every process with that name. Game process trees are fully protected while Game Mode is active. MemWise never trims itself. Processes with a working set below 1 MB are not touched.
+System-critical processes are never trimmed, whether or not they appear in your exclusions. Programs in your exclusion list are never trimmed, and every process with the same name is covered. While a game runs, its process tree is fully protected. MemWise never trims itself.
 
-The program you are using gets extra protection: in normal and deep, a program you just switched away from is left alone for a while, longer when it still has a visible window and relaxed under memory pressure; programs actively using CPU or disk are also left alone in those two modes. full skips the activity judgement but still obeys every hard protection above.
+normal and deep also avoid the program you are using: one you just switched away from is left alone for a while, longer when it still has a visible window and relaxed under memory pressure, and programs actively using CPU or disk are left alone too. full skips the activity check but every hard protection above still applies.
 
-A working-set hard cap affects physical usage only and never changes commit memory; processes under the system directory cannot be capped. Repeated failures enter an escalating cooldown, up to four times the base interval, and decay after a successful recovery.
+A working-set cap limits physical usage only and never changes commit memory; processes under the system directory cannot be capped. Repeatedly failing tasks enter an escalating cooldown that decays after a success.
 
 ---
 
@@ -391,7 +356,85 @@ Logs, settings and learning data live in the data folder next to the program and
 
 ---
 
-## 附录 A：决策与自适应 · *Appendix A: Decision Making and Adaptation*
+## 附录 A：机制细节 · *Appendix A: How It Works Internally*
+
+### 执行顺序
+
+一次完整优化按三层推进。系统层按你勾选的操作依次执行：卷缓存冲刷、脏页写回、待机页回收、文件缓存钳制、注册表缓存清理；deep 与 full 还会做一次系统级工作集全清。进程层对通过判定的进程调用 EmptyWorkingSet，只回收它们当前用不到的物理页。深度层再对已确认空闲的进程做一轮系统回收，避免遗漏。
+
+### 守护节奏
+
+| 阶段 | 内容 |
+|---|---|
+| gap 段（8 到 20 秒自适应） | 只做轻量系统操作：默认注册表缓存，内存高压时追加待机页与脏页写回；不碰进程。游戏模式整体乘 1.5，最长约 30 秒。 |
+| 收割段 | 按当前模式跑完整流程：进程闲置页、系统操作、深度聚合，以及 normal/deep 的停手期收尾。 |
+
+连续两轮明显回涨时，周期缩短为 min(设定值, max(15, 设定值乘 0.6))；回涨放缓后恢复。检测到用户停手 5 秒，normal 补一次轻收尾、deep 做一次系统收尾，通常不到一秒。紧急阈值触发时立即插入一次 full，不等下一轮。
+
+主进程意外退出后，看门狗会在数秒内重启并恢复崩溃前的守护状态；单实例互斥保证不会同时存在两个实例。
+
+### 日志字段
+
+高频行是编码行，首字段标识类型：
+
+| 首字段 | 含义 |
+|---|---|
+| T1 | 每周期一行：时间、模式、内存、可用、耗时、整理进程、失败、试探、净释放、压力值、深度聚合、采样与投票、模式专属尾段、拦截原因、用户空闲秒数、前台进程与未变时长 |
+| C | 每周期一行：本轮清理汇总、系统操作分项、释放最多的进程、拦截原因、内存与可用、效率五维原始值 |
+| O | full 轮的系统操作明细：次数、合计释放、末次释放、耗时 |
+| S | 启动时的设置快照 |
+| R / L / P | 回涨状态、学习状态、试探统计 |
+
+拦截原因用短码：core 系统核心进程、dir 系统目录概率不足、small 工作集太小、fg 刚切走、cool 失败冷却、io 磁盘活跃、rb 回涨不足。
+
+### 界面实现口径
+
+日志区每条消息固定占一个图标位，图标统一使用程序自绘的默认图标，正文原样保留。面板按组写入：组内完整显示，组与组之间按 7 行判定，新组放不下就先清旧内容，这也是它只显示"最近一组"的原因。
+
+进程排行打开时即时采集一次，之后每 10 秒刷新；守护运行中直接复用守护线程的快照，不产生额外采样开销。图表与日志、统计栏同源，都用同一个释放累加器按轮次做差值，所以三处数字始终一致。
+
+工作集上限作用于物理占用而非提交内存，规则最多 32 条；系统目录下的进程不允许设置。
+
+### Execution order
+
+One complete pass moves through three layers. The system layer runs the operations you enabled in order: volume cache flushing, dirty-page write-back, standby purging, file-cache clamping and registry cache clearing; deep and full also flush every process working set once. The process layer calls EmptyWorkingSet on processes that passed the checks, reclaiming only pages they are not using. The deep layer runs one more systematic pass over processes already confirmed idle.
+
+### Guard rhythm
+
+| Phase | Content |
+|---|---|
+| Gap (adaptive, 8 to 20 s) | Lightweight system work only: registry caches by default, plus standby and dirty pages under high pressure; no process work. Game Mode multiplies it by 1.5, up to about 30 s. |
+| Harvest | The full pipeline in the current mode: idle process pages, system operations, deep aggregation, and the idle-time wrap-up for normal and deep. |
+
+After two consecutive heavy-refill rounds the cycle shortens to min(configured, max(15, configured times 0.6)) and recovers when refill slows. After 5 seconds without input, normal adds a light wrap-up and deep a system wrap-up, usually under a second. An emergency threshold inserts an immediate full pass instead of waiting.
+
+If the main process exits unexpectedly the watchdog restarts it within seconds and restores the previous Guard state; a single-instance mutex prevents duplicates.
+
+### Log fields
+
+High-frequency lines are encoded, and the first field identifies the type:
+
+| Field | Meaning |
+|---|---|
+| T1 | One line per cycle: time, mode, memory, availability, duration, trimmed processes, failures, probes, net release, pressure, deep aggregation, sampling and voting, mode-specific tail, block reasons, idle seconds, foreground process and how long it has been unchanged |
+| C | One line per cycle: cycle summary, per-operation system counts, top releasing processes, block reasons, memory and availability, five raw efficiency dimensions |
+| O | System operation detail for full rounds: call count, total release, last release, elapsed time |
+| S | Settings snapshot at startup |
+| R / L / P | Refill state, learning state, probe statistics |
+
+Block reasons use short codes: core for system-critical processes, dir for insufficient system-directory probability, small for a working set below the floor, fg for recently switched away, cool for failure cooldown, io for active disk I/O, rb for insufficient refill.
+
+### Interface internals
+
+Every log line reserves one icon slot; icons always use the program-drawn default icon and the text is kept as written. The panel writes in groups: a group appears in full, while the space between groups follows a seven-line rule, so a new group clears the old content first, which is why it shows only the most recent group.
+
+Process Ranking samples once on open and refreshes every 10 seconds; while Guard runs it reuses the daemon snapshots and adds no sampling cost. The chart shares the same release accumulator as the log and the statistics row, using per-cycle differences, so the three always agree.
+
+A working-set cap limits physical usage rather than commit memory, with up to 32 rules; processes under the system directory cannot be capped.
+
+---
+
+## 附录 B：决策与自适应 · *Appendix B: Decision Making and Adaptation*
 
 每个进程都有一份画像，记录它的释放历史、代价与稳定性。清理一个进程之前，程序会依次判断：先过硬保护，再看它最近是否活跃、是否刚被清理过、上次清理是否划算、这次大概能拿回多少。
 
@@ -437,7 +480,29 @@ EFIS adjusts nine threshold-type parameters from each cycle's outcome, within fi
 
 ---
 
-## 附录 B：文件结构 · *Appendix B: File Structure*
+### 效率评分 · *Efficiency Scoring*
+
+效率评分取五个维度、各维 0–140 分：**净优化量**（本轮内存净下降 ÷ 本轮总释放，衡量释放量里净留存下来的比例）、**优化代价**（进程清理释放量 ÷ 缺页代价，衡量划不划算）、**优化通畅**（整理成功 ÷ 尝试总数）、**试探命中**（试探合格 ÷ 试探总数）、**优化量**（本轮释放 ÷ 本机基线释放量）。**quick 模式只参与「净优化量」与「优化量」两维**——该模式不做进程清理，另三维没有作用面，按中性 50 计入以免单维独大（见下段）。各维原始值先取最近三轮的中位数平滑，再按**本机自标定后冻结的基线**换算：本机该维的 5%/25%/50%/75%/90% 分位分别对应 **20/35/50/65/80 分**，两端按斜率线性外推、上下限 0–140。因此 **50 分 = 本机该维常态中位**、**80 分 = 本机该维九成位**；效率值 = 有效维均分折算值 ÷ K × 100%，K 取自标定窗口自身的高分位——**100% 恒等于「本机典型高位」**，与机器型号、使用时段无关；某一维偏低时只要其他维更高，合计仍可过 100%。
+
+每种清理模式各有一套标尺与自校准数据（同一维度在各模式间的口径与量级差异很大，例如「优化代价」与「优化量」在四种模式里并不在同一水平），校准数据按模式分别积累、互不污染。
+
+**自标定基线（冻结后不再漂移）**：每台机器、每种清理模式在用满一段（跳过预热期约 200 轮、再积累约 300 轮）后，用**自己的分位**建立基线并**冻结**——因此同一个表现**永远得到同一个分数**，读数不随使用时段或当天做什么而变；标定期间先以出厂基准起步、随本机实测逐步收敛（不会出现极端读数），冻结后即稳定在本机水平。基线存放在 `memwise_eris_calib.json`：不随配置包导出（机器相关）、恢复默认时清除；删除该文件即重新自标定。**长期偏离自检**：若近 200 轮的读数中位与冻结时的期望值相差超过 15 个百分点（说明基线不再描述这台机器），自动重标一次并在日志诊断行留痕。**四种清理模式彼此独立**：各自持有刻度锚点、参与合成的维度、平滑窗口与冻结基线数据——切换模式不会把上一模式的数值带进新模式，也不会破坏另一个模式已积累的窗口（切换后的第一轮只提示"分析中"，从下一轮起用新模式自己的数据比较）。
+
+影响因素（词条）判定：效率上升时，在"本轮分数也上升"的维度中取分数最高者报正面词条；效率下降时，在"本轮分数也下降"的维度中取分数最低者报负面词条；两轮变化不足 1 个百分点显示"相对平稳"；同一维度的正反两面不会在相邻两轮接连出现，避免同一信息正着说反着说来回复读。连续三轮同向时追加"🔥持续改善"/"⚠持续下滑"标签（仅在 50–100% 区间内）。前 3 轮为收敛期，显示"影响因素分析中…"；效率 ≥100% 折点显示金色并标注"🚀效率超常"，≤50% 显示珊瑚红并标注"⚠效率异常"。鼠标悬浮可查看真实数值及当轮主导因素；图表区域下方标注平均效率与关键统计指标。
+
+A single unified freed-bytes accumulator feeds all displays. Per-cycle deltas are computed via cumulative differencing, keeping logs, the status bar, and the chart in lockstep. The X axis shows recent cycles (one bar per daemon cycle; the covered time span follows the adjustable cycle length).
+
+The efficiency score spans five dimensions, each scored 0–140: **net optimization** (net memory drop ÷ total released this cycle — how much of what was freed stayed freed), **optimization cost** (process release ÷ page-fault cost — whether the round was worth it), **unobstructedness** (successful trims ÷ attempts), **probe hit rate** (qualified probes ÷ probes), and **optimization volume** (this cycle's release relative to this machine's baseline). **Under quick mode only net optimization and volume participate**, because quick mode trims no processes; the other three count as a neutral 50 so no single dimension dominates. Each raw value is first smoothed by a three-cycle median, then mapped against **this machine's own frozen baseline**, measured during self-calibration: the machine's 5th/25th/50th/75th/90th percentiles map to **20/35/50/65/80 points**, with linear tails clamped to 0–140. So **50 = this machine's normal median** and **80 = its 90th percentile**; the final score = the effective-dimension average ÷ K × 100%, where K is a high percentile of the calibration window itself — **100% always means this machine's typical high level**, independent of machine model or time of day. A weak dimension can be compensated by stronger ones; when only one dimension has data, the missing ones count as neutral 50 (a single dimension never decides the whole score alone).
+
+Each cleaning mode has its own baseline and calibration data (the same dimension's scale differs markedly between modes — optimization cost and optimization volume are not on the same level across the four modes), so calibration accumulates per mode without cross-contamination.
+
+Self-calibrated baseline (frozen, no drift) — after a mode has run enough cycles (skipping the about 200-cycle warm-up, then accumulating about 300 cycles), the program builds that mode's baseline from **this machine's own measured quantiles** and freezes it: the same behaviour **always** scores the same, unaffected by time of day or by what else you were doing. During calibration readings start from the factory baseline and converge to this machine's own measurements; no extreme readings appear, and the scale settles once frozen. The baseline lives in `memwise_eris_calib.json`: excluded from config packages (machine-specific) and cleared by factory reset — deleting that file triggers a fresh self-calibration. **Drift check**: if the median of the last 200 cycles deviates from the value recorded at freeze time by more than 15 points (the baseline no longer describes this machine), the program re-calibrates once and records it in the diagnostic log line. **The four cleaning modes are independent**: each keeps its own baseline, participating dimensions and smoothing windows. Switching modes never pulls one mode's values into another, and never discards what another mode has accumulated (the first cycle after a switch only reports "analysing", and comparisons resume from the next cycle).
+
+Factor wording: when efficiency rises, the highest-scoring dimension among those that also rose this round reports its positive word; when it falls, the lowest-scoring dimension among those that also fell reports its negative word; a change under 1 point shows "relatively steady"; the two sides of the same dimension never appear on adjacent rounds, so the same fact is not restated in reverse right after being reported. Three consecutive same-direction rounds append a 🔥 sustained-improvement / ⚠ sustained-decline tag (within the 50–100% band only). The first 3 rounds show "analysing factors…"; ≥100% marks gold dots with 🚀 exceptional efficiency, ≤50% coral-red dots with ⚠ efficiency anomaly. Hover tooltips reveal true values and the dominant factors; below the chart: average efficiency and key statistics.
+
+---
+
+## 附录 C：文件结构 · *Appendix C: File Structure*
 
 ```
 MemWise/
@@ -464,9 +529,7 @@ MemWise/
 └─ assets/                图标
 ```
 
----
-
-## 附录 C：构建与自检 · *Appendix C: Building and Self-Check*
+## 附录 D：构建与自检 · *Appendix D: Building and Self-Check*
 
 运行期没有外部依赖，构建时才需要 Python 与 PyInstaller。打包命令是 python -m PyInstaller MemWise.spec --distpath dist --workpath build --noconfirm，产物为 dist 目录下的单文件 exe。代码自检用 scripts/test_regression.py，它覆盖清理梯度、判定门、界面文案与文档同步等静态与行为断言，改动前后都应当跑一遍。版本号以 core/backup.py 里的 APP_VERSION 为唯一来源，本地测试构建通过 BUILD_VERSION 追加 .beta 后缀，两者互不覆盖。
 
@@ -475,8 +538,6 @@ There are no runtime dependencies; Python and PyInstaller are only needed to bui
 ---
 
 > [GitHub Releases](https://github.com/fuguangbeta/MemWise/releases) — 下载最新版本 · *Download Latest Release*
-
----
 
 ## 支持与赞赏 · *Support & Appreciation*
 
