@@ -39,6 +39,7 @@
 4. **测试禁写真实状态文件**：`config/config.yaml`、`memwise_state.json`、`memwise_efis_state.json`、`memwise_eris_ewma.json`、`memwise_eris_calib.json`；验证用临时路径
 5. **构建 exe 前确认 config 状态**（`MemWise.spec` 的 `datas=[]` 冷启动，不打包本机配置）
 6. **发布新版本不动旧版本**：旧 tag / release / exe 资产原样保留，只建新 tag + release + 新 exe
+7. **禁留死残留**：功能下线就整块删干净（控件、字段、渲染方法、调用点、i18n 键、测试断言、文档描述一并清）；不留隐藏控件、注释掉的旧实现、`if False` 分支、"留着也许有用"的字段。**不许用"隐藏/不打包/改名兼容"逃避删除责任**；防御性代码必须写明收益且有测试守护，否则删。
 
 完整红线、工作伦理与删码/删配置「证明记录六问」见 `red-lines-and-work-ethics.md`。
 
