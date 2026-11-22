@@ -2917,8 +2917,9 @@ check("呈现期日志/图表延迟补齐（防卡片空白）",
       "_schedule_present_flush" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
 check("full 收尾不再按 deadline 早退，且只补 standby_low",
       "deadline - 2.0" not in _cl45f and '"standby_low"} if "standby_low" in m' in _cl45f)
-check("full gap 全清改为压力/留存驱动",
+check("full gap 全清改为压力/留存驱动（档位顺序：充裕 26s < 偏紧 12s < 短缺 6s）",
       "def _pressure_tier" in _eg45f and "tier = self._pressure_tier()" in _eg45f
+      and "(26.0, 12.0, 6.0)[tier]" in _eg45f
       and "get_commit_info" in open(os.path.join(_ROOT34, "core", "winapi.py"), encoding="utf-8").read())
 check("full 回弹二轮有预算与计数",
       "_rb_cand >= 40" in _cl45f and "full_rebound_cand" in _cl45f
@@ -4886,8 +4887,15 @@ check("动态周期：未回涨不变", _e64._effective_interval(60) == 60)
 _e64._refill_hot_streak = 2
 check("动态周期：回涨连续 2 轮 → 60→36（下限 15）", _e64._effective_interval(60) == 36 and _e64._effective_interval(10) == 10)
 _e64._gap_wsall_ts = 1000.0
-check("gap ws_all 20s 节流且仅 full", _e64._gap_wsall_due("full", 1005) is False
-      and _e64._gap_wsall_due("full", 1021) is True and _e64._gap_wsall_due("normal", 9999) is False)
+_e64._ws_retention = None
+_e64._pressure_tier = lambda: 2   # 短缺：6s
+_due_short = (_e64._gap_wsall_due("full", 1005) is False and _e64._gap_wsall_due("full", 1007) is True)
+_e64._pressure_tier = lambda: 1   # 偏紧：12s
+_due_mid = (_e64._gap_wsall_due("full", 1010) is False and _e64._gap_wsall_due("full", 1013) is True)
+_e64._pressure_tier = lambda: 0   # 充裕：26s
+_due_ample = (_e64._gap_wsall_due("full", 1021) is False and _e64._gap_wsall_due("full", 1027) is True)
+check("gap ws_all 按压力分档节流且仅 full",
+      _due_short and _due_mid and _due_ample and _e64._gap_wsall_due("normal", 9999) is False)
 check("gap 调用 full 标志随模式", 'self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap' in _en64)
 check("内存条 300ms 独立刷新 + 退出停链",
       "self.root.after(300, self._tick_mem_bar)" in _g64 and "self._stop_mem_bar()" in _g64

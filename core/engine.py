@@ -2204,7 +2204,8 @@ class MemWiseEngine:
         if mode != "full":
             return False
         tier = self._pressure_tier()
-        base = (6.0, 12.0, 26.0)[tier] if tier in (0, 1, 2) else 20.0
+        # 顺序必须与档位语义一致：0=充裕(26s)、1=偏紧(12s)、2=短缺(6s)
+        base = (26.0, 12.0, 6.0)[tier] if tier in (0, 1, 2) else 20.0
         r = getattr(self, "_ws_retention", None)
         if r is not None:
             if r < 0.25:
