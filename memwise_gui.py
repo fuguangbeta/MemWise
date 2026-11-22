@@ -96,6 +96,17 @@ def _log_is_icon(ch):
     return unicodedata.category(ch) in ("So", "Sk", "Sm", "Sc")
 
 
+def _strip_lead_icon(s):
+    """去掉字符串开头的图标/组合符（状态栏文字用：该处不显示任何图标）。"""
+    i = 0
+    while i < len(s) and (_log_is_icon(s[i]) or ord(s[i]) in (0xFE0E, 0xFE0F, 0x200D)
+                          or unicodedata.category(s[i]) == "Mn"):
+        i += 1
+    while i < len(s) and s[i] == " ":
+        i += 1
+    return s[i:]
+
+
 def _log_slot_px(text_widget):
     """图标位宽（像素）= max(下限, 最宽图标 + 最小间隙)；按面板实际字体实测，随字体/DPI 自适应"""
     try:
@@ -5505,11 +5516,7 @@ class MemWiseGUI:
         try:
             _ov = getattr(self, "_st_override", None)
             if _ov:
-                _p = getattr(self, "_mem_pct", None)
-                if _p is None:
-                    _p = fallback_pct or 0
-                _icon = "🟢" if _p < 60 else ("🟡" if _p < 75 else ("🟠" if _p < 90 else "🔴"))
-                self.lbl_st["text"] = f"{_icon} {tr(_ov)}"
+                self.lbl_st["text"] = _strip_lead_icon(tr(_ov))
                 return
             _eng = getattr(self, "engine", None)
             if _eng is not None and not _eng.daemon_running:
@@ -5520,12 +5527,9 @@ class MemWiseGUI:
             if pct is None:
                 self.lbl_st["text"] = tr("守护运行中")
                 return
-            # 四档与内存条/托盘口径一致（60/75/90，2026-08-15 审查）
-            icon = "🟢" if pct < 60 else ("🟡" if pct < 75 else ("🟠" if pct < 90 else "🔴"))
-            _body = tr(getattr(self, "_st_txt", None) or "🟢 守护中")
-            if _body and _log_is_icon(_body[0]):
-                _body = _body[1:].lstrip()
-            self.lbl_st["text"] = f"{icon} {_body} {pct}%"
+            # 该位置不显示任何图标（2026-11-22 用户定稿）：只留文字与百分比
+            _body = _strip_lead_icon(tr(getattr(self, "_st_txt", None) or "🟢 守护中"))
+            self.lbl_st["text"] = f"{_body} {pct}%"
         except Exception:
             pass
 
@@ -5539,7 +5543,7 @@ class MemWiseGUI:
         self.btn_dae.configure(state="normal"); self.btn_stop.configure(state="disabled")
         err = getattr(self.engine, '_dae_error', None)
         if err:
-            self.lbl_st["text"] = tr("⚠ 守护异常")
+            self.lbl_st["text"] = _strip_lead_icon(tr("⚠ 守护异常"))
             # 同批原子输出（2026-08-30 分组语义）：头行+详情一组——拆散时边界下面板
             # 恰满 6 行会让 ❌ 头行被滚动清掉、只剩详情
             self._log_batch(["守护异常，详见下方错误信息", f"{err}"])

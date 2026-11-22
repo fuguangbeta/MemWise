@@ -2675,11 +2675,11 @@ _s44 = {"standby": 1, "modified": 2, "filecache": 3, "registry": 4, "volume": 5,
 _m44 = {"pct": 70}
 set_language("zh_CN")
 _stub44._upd_dae_ui(_s44, _m44)
-check("F2 中文态单图标（四档图标 + 原文，无 🟢 残留）",
-      _stub44.lbl_st.text == "🟡 守护中 70%", repr(_stub44.lbl_st.text))
+check("F2 中文态状态栏无图标（只留文字 + 百分比）",
+      _stub44.lbl_st.text == "守护中 70%", repr(_stub44.lbl_st.text))
 set_language("en")
 _stub44._upd_dae_ui(_s44, _m44)
-check("F2 英文态单图标", _stub44.lbl_st.text == "🟡 Guarding 70%", repr(_stub44.lbl_st.text))
+check("F2 英文态状态栏无图标", _stub44.lbl_st.text == "Guarding 70%", repr(_stub44.lbl_st.text))
 set_language("zh_CN")
 _root44.destroy()
 # ── F3 导入结果检查（失败有提示且不重启；backup 层零改动）──
