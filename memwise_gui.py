@@ -4845,6 +4845,7 @@ class MemWiseGUI:
         pct = float(m["pct"])
         self._mem_pct = m["pct"]
         self._update_mem_labels(m)   # 标签用真实值即时刷新（不参与动画，防重定向时停更）
+        self._render_status(m["pct"])  # 状态栏与内存条共用 300ms 高频链，同帧更新
         if not animate:
             self._mem_shown = pct
             self._apply_mem_bar(pct, m)
@@ -4916,7 +4917,6 @@ class MemWiseGUI:
                     self._update_tray_status(pct)
                     self._last_tray_update = now_ts
                 self._render_mem_bar(m, animate=animate)
-                self._render_status(pct)   # 状态文字与内存条同源同刻，消除数字不同步
         except Exception as e:
             import sys; print(f"[MemWise] _refresh_mem 异常: {e}", file=_ERR)
         finally:
