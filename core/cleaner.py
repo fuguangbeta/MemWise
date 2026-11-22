@@ -114,6 +114,7 @@ class PareCleaner:
             "deep_rebound_freed": 0, "deep_rebound_hits": 0, "deep_final_freed": 0, "deep_final_sweep": 0,
             "normal_final_sweep": 0, "normal_l3_extra": 0,
             # quick 专项（2026-11-22）：零感知成本量化 + 空转退避
+            "deep_rebound_cand": 0,
             "quick_calls": 0, "quick_noop": 0, "quick_backoff_skip": 0,
             "quick_ms": 0.0, "quick_freed": 0,
         }
@@ -1781,7 +1782,9 @@ class PareCleaner:
         for s in snaps:
             if s.pid not in trimmed or s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
                 continue
-            if getattr(s, "ws", 0) < (64 << 20):
+            # 门槛与 deep 自身 L2 价值底线对齐（θ≥0.12、WS≥16MB）：用 64MB/0.3 时
+            # 实测 54 轮 0 命中——deep 的 L2 本就按 0.12 放行，回弹再用 0.3 等于自我否决。
+            if getattr(s, "ws", 0) < (16 << 20):
                 continue
             name_l = s.name.lower()
             if _is_system_core(name_l) or name_l in never:
@@ -1794,10 +1797,11 @@ class PareCleaner:
                 theta = learner.thompson_score(s.name)
             except Exception:
                 continue
-            if theta < 0.3:
+            if theta < 0.12:
                 continue
             if self.judger.is_system_dir_low_theta(getattr(s, "path", None), theta, "deep"):
                 continue
+            self._stats_inc("deep_rebound_cand")
             try:
                 pre = winapi.get_process_memory(s.pid)
                 if not pre:

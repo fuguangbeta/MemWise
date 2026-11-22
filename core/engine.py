@@ -2227,7 +2227,8 @@ class MemWiseEngine:
                      "ws_all_rounds", "trim_rounds", "normal_final_sweep", "normal_l3_extra",
                      "deep_rebound_hits", "deep_rebound_freed", "deep_final_sweep",
                      "final_sweep", "combine_calls", "combine_pages", "standby", "modified",
-                     "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed")
+                     "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed",
+                     "deep_rebound_cand")
             _cur = {k: _st.get(k, 0) for k in _keys}
             _dl = {k: max(0, _cur.get(k, 0) - _prev.get(k, 0)) for k in _keys}
             _tr = int(_cs.get("trimmed_cnt") or 0)
@@ -2271,7 +2272,9 @@ class MemWiseEngine:
                 _bs.append("%d/%d" % (_r, _n))
             _parts.append(",".join(_bs))
             if _mode == "deep":
-                _parts.append("%d/%.1f/%d" % (_dl["deep_rebound_hits"], _dl["deep_rebound_freed"]/(1<<20), _dl["deep_final_sweep"]))
+                # 候选/命中/释放MB/收尾（候选为 0 说明门槛仍偏严）
+                _parts.append("%d/%d/%.1f/%d" % (_dl["deep_rebound_cand"], _dl["deep_rebound_hits"],
+                                                 _dl["deep_rebound_freed"]/(1<<20), _dl["deep_final_sweep"]))
             elif _mode == "normal":
                 _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
             elif _mode == "full":
