@@ -1751,10 +1751,13 @@ class PareCleaner:
         return True
 
     def _normal_final_consolidation(self, ops_filter, deadline):
-        if deadline is not None and time.time() > deadline - 2.0:
-            return
+        """normal 轻收尾：停手期做一次 standby/modified 压实。
+        收尾跑在收割末段，此时 deadline 通常已过；以 deadline 早退会让合格窗口全灭
+        （实测修复前 35 个合格窗口只触发 11 次）。改为按超预算程度降级，而非直接放弃。"""
         ops = self._layer1_ops(ops_filter)
         use = set(ops or set()) & {"standby", "standby_low", "modified"}
+        if deadline is not None and time.time() > deadline + 5.0:
+            use &= {"standby_low"}
         if not use:
             return
         self._layer1_memreduct(full=False, game_mode=False, ops=use, clean_self=False)
