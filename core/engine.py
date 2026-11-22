@@ -945,6 +945,9 @@ class MemWiseEngine:
         self._self_pids = {os.getpid()}   # 自身实例 PID 集（主进程 + 看门狗；9.2）
         self._gap_wsall_ts = 0.0           # gap 段 ws_all 上次执行时间（A4 节流）
         self._gap_wsall_hits = 0           # 本周期 gap 全清次数（D8 诊断）
+        # 净留存反馈（2026-11-23）：按压后记录 gross，5 秒后回采净留存，防 churn
+        self._ws_press = None              # {"t":..., "before":..., "gross":...}
+        self._ws_retention = None          # 最近一次净留存率（0..1）
         self._refill_hot = False   # 跨周期：是否处于回涨快状态（状态翻转去重，2026-08-14）
         self._refill_cycle = False # 本周期是否触发过回涨快（周期末判定）
         # GUI 播报闸（2026-11-20）：动作仍按单轮判定，播报需持续/冷却，抖动期静默
@@ -1409,6 +1412,7 @@ class MemWiseEngine:
                     self._emergency_done_cycle = True
                 # 周期级择时判定（2026-11-19 决策 B）：gap 与 harvest 共用同一次判定
                 self.cleaner.begin_cycle(mode)
+                self._gap_wsall_hits = 0   # 本周期 gap 全清次数（T1 full 段取增量口径）
                 self._refresh_self_pids()
                 interval = self._effective_interval(CFG.get("interval", 60))  # A7：回涨持续时动态缩短
                 deadline = time.time() + interval - 3 - overtime_debt
@@ -1493,8 +1497,22 @@ class MemWiseEngine:
                                 ops_gap = {"registry", "standby", "modified"}
                             else:
                                 ops_gap = {"registry"}
+                            self._ws_retention_tick(time.time())
                             self.cleaner.refresh_cycle_gate()
+                            _ws_before = None
+                            if "ws_all" in ops_gap:
+                                try:
+                                    _ws_before = float((winapi.get_memory_status() or {}).get("avail") or 0)
+                                except Exception:
+                                    _ws_before = None
                             self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap, clean_self=False)
+                            if _ws_before is not None:
+                                try:
+                                    _av_after = float((winapi.get_memory_status() or {}).get("avail") or 0)
+                                    self._ws_press = {"t": time.time(), "before": _ws_before,
+                                                      "gross": max(0.0, _av_after - _ws_before)}
+                                except Exception:
+                                    pass
                             if mode != "quick":
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；
                                 # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢。
@@ -2151,11 +2169,64 @@ class MemWiseEngine:
             return min(b, max(15, int(b * 0.6)))
         return b
 
+    def _pressure_tier(self):
+        """压力分级（2026-11-23）：0=充裕 1=偏紧 2=短缺。
+
+        avail 含待机页，单看它会把可复用缓存误判为宽松；因此叠加提交压力：
+        commit/limit >0.85 视为短缺，>0.72 视为偏紧。
+        """
+        try:
+            m = winapi.get_memory_status() or {}
+            total = float(m.get("total") or 0)
+            avail = float(m.get("avail") or 0)
+            frac = (avail / total) if total > 0 else 0.5
+        except Exception:
+            frac = 0.5
+        ratio = 0.0
+        try:
+            ci = winapi.get_commit_info() or {}
+            ratio = float(ci.get("ratio") or 0.0)
+        except Exception:
+            ratio = 0.0
+        if frac < 0.12 or ratio > 0.85:
+            return 2
+        if frac < 0.22 or ratio > 0.72:
+            return 1
+        return 0
+
     def _gap_wsall_due(self, mode, now):
-        """A4（2026-11-20）：full 的 gap 段每 ≥20s 做一次 ws_all（约每周期 2-3 次，light 0.3-0.6s）。"""
+        """full 的 gap 段全清节拍（2026-11-23 改为压力/留存驱动）。
+
+        旧实现固定 20s，与真实回填速率无关；实测第二次全清仍能释放 372MB（20s 回填），
+        折算约 18MB/s。故按压力分级给基准间隔，再用净留存反馈修正：
+        留存 <25%（白清）放慢 1.8 倍，留存 >60%（划算）加快 0.7 倍。
+        """
         if mode != "full":
             return False
-        return (now - getattr(self, "_gap_wsall_ts", 0.0)) >= 20.0
+        tier = self._pressure_tier()
+        base = (6.0, 12.0, 26.0)[tier] if tier in (0, 1, 2) else 20.0
+        r = getattr(self, "_ws_retention", None)
+        if r is not None:
+            if r < 0.25:
+                base *= 1.8
+            elif r > 0.60:
+                base *= 0.7
+        return (now - getattr(self, "_gap_wsall_ts", 0.0)) >= base
+
+    def _ws_retention_tick(self, now):
+        """按压后 5 秒回采净留存率（防 churn 的唯一可信判据）。"""
+        p = getattr(self, "_ws_press", None)
+        if not p or now - p["t"] < 5.0:
+            return
+        self._ws_press = None
+        try:
+            m = winapi.get_memory_status() or {}
+            avail_now = float(m.get("avail") or 0)
+            gross = max(1.0, float(p.get("gross") or 1.0))
+            retained = max(0.0, avail_now - float(p.get("before") or 0))
+            self._ws_retention = min(1.0, retained / gross)
+        except Exception:
+            self._ws_retention = None
 
     def _refresh_self_pids(self):
         """自身实例 PID 集（主进程 + 看门狗）：路径不可读时按 PID 精确排除自身（9.2）。"""
@@ -2278,10 +2349,13 @@ class MemWiseEngine:
             elif _mode == "normal":
                 _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
             elif _mode == "full":
-                # 收尾次数/combine次数/combine页/回弹候选/回弹命中
-                _parts.append("%d/%d/%d/%d/%d" % (_dl["final_sweep"], _dl["combine_calls"],
-                                                  _dl["combine_pages"], _dl["full_rebound_cand"],
-                                                  _dl["full_rebound_hits"]))
+                # 收尾次数/combine次数/combine页/回弹候选/回弹命中/gap全清次数/净留存%
+                _ret = getattr(self, "_ws_retention", None)
+                _parts.append("%d/%d/%d/%d/%d/%d/%s" % (
+                    _dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"],
+                    _dl["full_rebound_cand"], _dl["full_rebound_hits"],
+                    int(getattr(self, "_gap_wsall_hits", 0)),
+                    ("%.0f" % (_ret * 100)) if _ret is not None else "-"))
             else:
                 _parts.append("M:%d/%d" % (_dl["standby"], _dl["modified"]))
             try:

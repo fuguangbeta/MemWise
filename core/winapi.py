@@ -133,6 +133,27 @@ def enum_processes():
     finally:
         CloseHandle(snap)
 
+def get_commit_info():
+    """提交压力：CommitTotal/CommitLimit（GetPerformanceInfo）。
+
+    avail 包含待机页，单看 avail 会把「可复用缓存」误判为宽松；
+    提交压力反映真实缺口（应用申请了但物理装不下的量）。
+    失败返回 None，调用方按可用内存口径回退。
+    """
+    try:
+        pi = PERFORMANCE_INFORMATION()
+        pi.cb = ctypes.sizeof(PERFORMANCE_INFORMATION)
+        if GetPerformanceInfo(ctypes.byref(pi), pi.cb):
+            ps = max(1, int(pi.PageSize))
+            total = int(pi.CommitTotal) * ps
+            limit = int(pi.CommitLimit) * ps
+            if total > 0 and limit > 0:
+                return {"commit": total, "limit": limit, "ratio": total / float(limit)}
+    except Exception:
+        pass
+    return None
+
+
 def get_memory_status():
     ms = MEMORYSTATUSEX(); ms.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
     if GlobalMemoryStatusEx(ctypes.byref(ms)):

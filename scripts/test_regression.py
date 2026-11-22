@@ -2914,6 +2914,9 @@ check("呈现期日志/图表延迟补齐（防卡片空白）",
       "_schedule_present_flush" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
 check("full 收尾不再按 deadline 早退，且只补 standby_low",
       "deadline - 2.0" not in _cl45f and '"standby_low"} if "standby_low" in m' in _cl45f)
+check("full gap 全清改为压力/留存驱动",
+      "def _pressure_tier" in _eg45f and "tier = self._pressure_tier()" in _eg45f
+      and "get_commit_info" in open(os.path.join(_ROOT34, "core", "winapi.py"), encoding="utf-8").read())
 check("full 回弹二轮有预算与计数",
       "_rb_cand >= 40" in _cl45f and "full_rebound_cand" in _cl45f
       and "full_rebound_hits" in _cl45f)
