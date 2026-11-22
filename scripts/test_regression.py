@@ -1292,7 +1292,8 @@ check("上极性 ≥100 不动（v7：阈值常量）",
       "elif round(eff) >= E.SUPER_TH:" in _eng32_src and "SUPER_TH = 100.0" in _eris_v7_src
       and "over_100 = round(r_eff) >= 100" in _gui32_src)
 # README 双语同步（v7 口径：五维标尺 + 阈值语义 + 词条规则）
-_readme32 = open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
+_readme32 = (open(os.path.join(_ROOT26, "README.md"), encoding="utf-8").read()
+              + "\n" + open(os.path.join(_ROOT26, "docs", "appendix.md"), encoding="utf-8").read())
 for _frag in ("50 分 = 本机该维常态中位",
               "≥100% 折点显示金色并标注",
               "≤50% 显示珊瑚红并标注",
@@ -1302,6 +1303,9 @@ for _frag in ("50 分 = 本机该维常态中位",
               "≤50% coral-red dots",
               "within the 50–100% band only"):
     check(f"README 同步:{_frag[:16]}", _frag in _readme32)
+check("README 附录拆分为独立文件并可从 README 点开",
+      os.path.isfile(os.path.join(_ROOT26, "docs", "appendix.md"))
+      and "docs/appendix.md#a" in _readme32 and "docs/appendix.md#d" in _readme32)
 check("README 旧口径清零", "80 + 40" not in _readme32 and "IQR 分位数归一化" not in _readme32
       and "trimmed-IQR" not in _readme32 and "（60-100）" not in _readme32)
 
