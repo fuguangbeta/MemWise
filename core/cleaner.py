@@ -365,6 +365,8 @@ class PareCleaner:
         return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
 
     def begin_cycle(self, mode):
+        # 周期内是否发生过进程裁剪（gap/harvest 合并计），供 normal 尾段判定
+        self._cycle_any_trim = False
         """守护周期开头判定一次重操作放行（gap 与 harvest 共用同一结果，见 9.1）。"""
         _mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
         _prev = getattr(self, "_last_mode", None)
@@ -1692,6 +1694,8 @@ class PareCleaner:
         # 完整进程 trim + 系统级清理（按用户开关映射；无文件缓存），游戏横扫
         l2_results, probe_results = self._layer2_process(snaps, learner, deadline=deadline) if run_ws else ([], [])
         pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
+        if pipeline_ctx["layer2_trimmed"]:
+            self._cycle_any_trim = True
         # full=False：normal 不做系统级全清 WS（ws_all 仅 deep/full 启用）
         l1_ops = self._layer1_ops(ops_filter)
         if l1_ops is not None and not allow_layer3:
@@ -1733,7 +1737,7 @@ class PareCleaner:
                     self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
                     _l3_done = True
                     self._stats_inc("normal_l3_extra")
-        if allow_layer3 and pipeline_ctx.get("layer2_trimmed") and self._normal_tail_ok(deadline):
+        if allow_layer3 and getattr(self, "_cycle_any_trim", False) and self._normal_tail_ok(deadline):
             self._normal_final_consolidation(ops_filter, deadline)
         return l2_results, probe_results
 
@@ -1796,6 +1800,8 @@ class PareCleaner:
         # normal 基础 + 系统级全清 WS + 强制 Layer3（文件缓存/各操作按用户开关）
         l2_results, probe_results = self._layer2_process(snaps, learner, deadline=deadline) if run_ws else ([], [])
         pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
+        if pipeline_ctx["layer2_trimmed"]:
+            self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
         if l1_ops is not None and "ws_all" in l1_ops and not self._manual_run:
             # 深度模式的系统级全清按使用率门控（2026-08-14 梯度修复：原用 agg<0.4 豁免，
@@ -1823,6 +1829,8 @@ class PareCleaner:
         self.judger.aggressiveness = max(self.judger.aggressiveness, agg)
         l2_results, probe_results = self._layer2_process(snaps, learner, deadline=deadline) if run_ws else ([], [])
         pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
+        if pipeline_ctx["layer2_trimmed"]:
+            self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
         # full 无条件 ws_all（agg 已在上方 max(agg,0.8) 强制，原 agg<0.4 豁免为恒假死分支）
         self._layer1_memreduct(full=True, game_mode=self.game_mode,
