@@ -96,6 +96,18 @@ def _log_is_icon(ch):
     return unicodedata.category(ch) in ("So", "Sk", "Sm", "Sc")
 
 
+_LOG_DECO_RANGES = ((0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF),
+                    (0x2300, 0x23FF), (0x2710, 0x2718))
+
+
+def _log_is_deco(ch):
+    """正文里应移除的装饰图标（emoji/杂项符号）。刻意不含 → ← ↑ ↓ ≥ ≤ ≠ × ÷ 等文本连接符与数学符。"""
+    if not ch or ord(ch) < 128:
+        return False
+    o = ord(ch)
+    return any(a <= o <= b for a, b in _LOG_DECO_RANGES)
+
+
 def _log_slot_px(text_widget):
     """图标位宽（像素）= max(下限, 最宽图标 + 最小间隙)；按面板实际字体实测，随字体/DPI 自适应"""
     try:
@@ -262,9 +274,8 @@ def _insert_log_lines(text_widget, ts, msg, tag):
         rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
         # 正文中残留的任何图标字形一律移除：日志面板只保留默认图标位，不显示额外符号
         rest = "".join(ch for ch in rest
-                       if not _log_is_icon(ch)
-                       and ord(ch) not in (0xFE0E, 0xFE0F, 0x200D)
-                       and unicodedata.category(ch) not in ("Mn", "Cf", "Sk"))
+                       if not _log_is_deco(ch)
+                       and ord(ch) not in (0xFE0E, 0xFE0F, 0x200D))
         text_widget.insert("end", head, tag)
         if not icon:
             if img is not None:
