@@ -1138,10 +1138,11 @@ check("旧键已清理", "📊 三轮优化合计释放" not in _i18n26_src
 print("\n[27] 日志面板分组写入语义（2026-08-30）")
 import memwise_gui as _mg29
 check("面板阈值常量", _mg29.PANEL_MAX_LINES == 7)
-check("实际行数计数", _mg29._msg_lines(["a", "b\nc", "d\ne\nf"]) == 6)
-check("组间≤7接续", _mg29._panel_needs_clear(4, 2) is False and _mg29._panel_needs_clear(0, 7) is False)
-check("组间>7清屏", _mg29._panel_needs_clear(6, 3) is True and _mg29._panel_needs_clear(7, 1) is True
-      and _mg29._panel_needs_clear(0, 10) is True)
+check("面板硬不变量：写入路径含行数裁剪（超 7 行删最旧行，不整屏清空）",
+      "self.log.delete(\"1.0\", \"%d.0\" % (_over + 1))" in _gui26_src
+      and "_sync_panel_mirror" in _gui26_src)
+check("长消息截断提示（保留头部 + 另 N 行未显示）",
+      "…另有 %d 行未显示" in _gui26_src)
 # 真实面板端到端（Tk Text + 桩 self，走真实 _write_group 原语）
 import tkinter as _tk29
 from collections import deque as _dq29
@@ -1158,16 +1159,21 @@ check("组1=4行", _panel29() == 4)
 _stub29._write_group(["事件 A", "事件 B"])
 check("组2=2行接续(6≤7)", _panel29() == 6)
 _stub29._write_group(["汇总", "x", "y"])
-check("组3=3行清屏(9>7)", _panel29() == 3)
+check("组3=3行→裁最旧2行，恒定7行（不再整屏清空）", _panel29() == 7
+      and any("汇总" in l for l in _stub29.log.get('1.0', 'end').splitlines()))
 _stub29._write_group([f"卡行 {i}" for i in range(1, 11)])
-check("大组10行完整呈现", _panel29() == 10)
+_vis29 = _stub29.log.get('1.0', 'end').rstrip(chr(10)).splitlines()
+check("大组10行截断为7行（6 行 + 省略提示）", _panel29() == 7
+      and any("另有" in l for l in _vis29) and any("卡行 1" in l for l in _vis29))
 _stub29._write_group(["新事件"])
-check("下一组清屏恢复", _panel29() == 1)
+check("下一组：追加并裁到7行", _panel29() == 7
+      and any("新事件" in l for l in _stub29.log.get('1.0', 'end').splitlines()))
 for _i in range(6):
     _stub29._write_group([f"单行 {_i}"])
-check("单行逐条接续至7行", _panel29() == 7)
-_stub29._write_group(["多行\n消息"])  # 实际 2 行：7+2=9>7 → 清屏（若按 1 条计会接续成 8 行）
-check("多行消息按实际行计", _panel29() == 2)
+check("单行连续写入恒定7行", _panel29() == 7)
+_stub29._write_group(["多行\n消息"])
+check("多行消息按实际行计数并裁剪", _panel29() == 7
+      and any("多行" in l for l in _stub29.log.get('1.0', 'end').splitlines()))
 check("历史缓存累积", len(_stub29._log_history) == 4 + 2 + 3 + 10 + 1 + 6 + 1)
 _root29.destroy()
 check("三路径统一委托", _gui26_src.count("_write_group([m]") == 2
@@ -1195,7 +1201,8 @@ for _i in range(6):
 _groups30 = [["周期汇总"], ["[EFIS] 调整pid_kp: 0.60→0.50"], ["📈 内存 70%·清理强度：维持高"]]
 _stub30._write_group([m for g in _groups30 for m in g], to_file=False)
 _vis30 = _stub30.log.get('1.0', 'end').rstrip(chr(10)).splitlines()
-check("周期大整体完整可见", len(_vis30) == 3 and any("周期汇总" in l for l in _vis30)
+check("周期大整体整批可见（≤7 行，含全部三条）", len(_vis30) == 7
+      and any("周期汇总" in l for l in _vis30)
       and any("[EFIS]" in l for l in _vis30) and any("内存 70%" in l for l in _vis30))
 _root30.destroy()
 check("守护异常同批", '["守护异常，详见下方错误信息", f"{err}"]' in _gui26_src)

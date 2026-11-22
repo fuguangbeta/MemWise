@@ -593,15 +593,6 @@ def _align_log_line(s):
 
 
 
-def _msg_lines(msgs):
-    """一组消息的实际渲染行数（内嵌换行的消息按多行计——"实际多少行就多少行"）"""
-    return sum(m.count("\n") + 1 for m in msgs)
-
-def _panel_needs_clear(cur_lines, group_lines):
-    """组间刷新判定：累计 ≤7 接续显示；>7 清屏后整组输出"""
-    return cur_lines + group_lines > PANEL_MAX_LINES
-
-
 def _tree_font():
     """Treeview 实际使用的字体（取不到则退回 Tk 默认字体）——列宽实测用"""
     import tkinter.font as _tkf
@@ -1997,6 +1988,15 @@ class MemWiseGUI:
             for m in msgs:
                 _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
+            try:
+                _cur = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
+                _over = _cur - PANEL_MAX_LINES
+                if _over > 0:
+                    self.log.delete("1.0", "%d.0" % (_over + 1))
+            except Exception:
+                pass
+            self._panel_msgs.extend(msgs)
+            self._sync_panel_mirror()
             self.log.see("end")
             self.log.configure(state="disabled")
             self._typewriter(start, "end-1c", len(msgs))
@@ -4001,34 +4001,41 @@ class MemWiseGUI:
         if len(msgs) == 1 and msgs[0] == self._last_msg:
             return
         displays = [self._log_display(m) for m in msgs]
+        # 展开为物理行；单个消息超过面板容量时截断（保留头部 + 省略行提示），
+        # 保证「面板可见行数恒 ≤ PANEL_MAX_LINES」这一硬不变量（2026-11-22 重写）。
+        lines = []
+        for _d in displays:
+            lines.extend(str(_d).split("\n"))
+        if len(lines) > PANEL_MAX_LINES:
+            _hidden = len(lines) - (PANEL_MAX_LINES - 1)
+            lines = lines[:PANEL_MAX_LINES - 1] + ["…另有 %d 行未显示" % _hidden]
         for m in msgs:
             self._log_history.append(m)
-        self.log.configure(state="normal")
-        try:
-            # Tk Text 末尾恒有隐式终止行：end-1c 比可见行数大 1——减 1 得真实可见行数
-            # （旧三路径各自带此偏置判断，阈值实际漂移 1 行；2026-08-30 统一修正）
-            cur_lines = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
-        except Exception:
-            cur_lines = 0
-        if _panel_needs_clear(cur_lines, _msg_lines(displays)):
-            self.log.delete("1.0", "end")
-            self._panel_msgs = []
-            self._animated_count = 0
         self._finish_typewriter()
+        self.log.configure(state="normal")
+        # 先裁掉最旧的行，保证插入后不超限（不整屏清空 ⇒ 无清空闪烁）
+        try:
+            _cur = max(0, int(self.log.index('end-1c').split('.')[0]) - 1)
+            _over = _cur + len(lines) - PANEL_MAX_LINES
+            if _over > 0:
+                self.log.delete("1.0", "%d.0" % (_over + 1))
+        except Exception:
+            pass
         try:
             _flash_start = self.log.index("end-1c")
         except Exception:
             _flash_start = None
-        for _d in displays:
-            _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(_d), _LOG_TAG)
+        _ts = time.strftime('%H:%M:%S')
+        for _ln in lines:
+            _insert_log_lines(self.log, _ts, _align_log_line(_ln), _LOG_TAG)
         try:
             _flash_end = self.log.index("end-1c")
         except Exception:
             _flash_end = None
         if getattr(self, "_panel_msgs", None) is None:
             self._panel_msgs = []
-        _before = len(self._panel_msgs)
         self._panel_msgs.extend(msgs)
+        self._sync_panel_mirror()
         self.log.see("end")
         if (_flash_start is not None and _flash_end is not None
                 and not getattr(self, "_suppress_typewriter", False) and ANIM_ENABLED):
@@ -4040,6 +4047,22 @@ class MemWiseGUI:
         if to_file and CFG.get("log_to_file"):
             for m in msgs:
                 _log_write("界面", m[0] if isinstance(m, tuple) else m)
+
+    def _sync_panel_mirror(self):
+        """镜像与面板对齐：_panel_msgs 只保留「能完整落在 7 行内」的尾部消息，
+        供托盘恢复时静态重建使用；裁剪后不重复播放已消失的动画。"""
+        try:
+            keep, used = [], 0
+            for m in reversed(self._log_history[-60:]):
+                n = str(self._log_display(m)).count("\n") + 1
+                if used + n > PANEL_MAX_LINES:
+                    break
+                keep.append(m)
+                used += n
+            self._panel_msgs = list(reversed(keep))
+            self._animated_count = len(self._panel_msgs)
+        except Exception:
+            pass
 
     def _flush_startup_logs(self):
         msgs = list(getattr(self, "_startup_priority_msgs", None) or []) + list(getattr(self, "_startup_msgs", None) or [])
