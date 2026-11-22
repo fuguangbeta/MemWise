@@ -4916,6 +4916,7 @@ class MemWiseGUI:
                     self._update_tray_status(pct)
                     self._last_tray_update = now_ts
                 self._render_mem_bar(m, animate=animate)
+                self._render_status(pct)   # 状态文字与内存条同源同刻，消除数字不同步
         except Exception as e:
             import sys; print(f"[MemWise] _refresh_mem 异常: {e}", file=_ERR)
         finally:
@@ -5473,7 +5474,7 @@ class MemWiseGUI:
                 self._log_op("上一守护线程仍在收尾，请稍候再试")
             return
         self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
-        self.lbl_st["text"] = tr("守护运行中")
+        self._render_status()
         self._log_op(log_msg or "守护模式启动")  # 崩溃恢复路径传恢复文案（单条不重复；均为中文原文）
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
 
@@ -5486,14 +5487,31 @@ class MemWiseGUI:
         self._num_tween("tr", self.lbl_tr, tr("进程: "), s['ws_trim'])
         self._num_tween("fr", self.lbl_fr, tr("释放: "), s['freed_mb'], unit="mb")
         self._upd_learned()  # 守护中持续学习新进程，已学习数随周期刷新
-        pct = m["pct"]
-        # 四档与内存条/托盘口径一致（60/75/90，2026-08-15 审查：原三档 70/90 与托盘不一致）
-        icon = "🟢" if pct < 60 else ("🟡" if pct < 75 else ("🟠" if pct < 90 else "🔴"))
-        # 引擎载荷恒带图标前缀（历史格式）：剥掉后再前置四档图标，避免同屏双图标
-        _body = tr(txt)
-        if _body and _log_is_icon(_body[0]):
-            _body = _body[1:].lstrip()
-        self.lbl_st["text"] = f"{icon} {_body} {pct}%"
+        self._st_txt = txt
+        # 百分比一律取实时值（与内存条同源）：引擎载荷里的 m 是周期开始时刻的旧值，
+        # 用它会让状态文字比内存条慢一整轮（实测 60s 周期下差 1~3 个百分点）
+        self._render_status(m.get("pct"))
+
+    def _render_status(self, fallback_pct=None):
+        """状态栏文字与百分比：百分比优先取 5s 内存刷新的实时值，与内存条同源同刻。"""
+        try:
+            _eng = getattr(self, "engine", None)
+            if _eng is not None and not _eng.daemon_running:
+                return
+            pct = getattr(self, "_mem_pct", None)
+            if pct is None:
+                pct = fallback_pct
+            if pct is None:
+                self.lbl_st["text"] = tr("守护运行中")
+                return
+            # 四档与内存条/托盘口径一致（60/75/90，2026-08-15 审查）
+            icon = "🟢" if pct < 60 else ("🟡" if pct < 75 else ("🟠" if pct < 90 else "🔴"))
+            _body = tr(getattr(self, "_st_txt", None) or "🟢 守护中")
+            if _body and _log_is_icon(_body[0]):
+                _body = _body[1:].lstrip()
+            self.lbl_st["text"] = f"{icon} {_body} {pct}%"
+        except Exception:
+            pass
 
     def _stop_daemon(self):
         if not self.engine.daemon_running: return
