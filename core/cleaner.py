@@ -1727,7 +1727,9 @@ class PareCleaner:
             if agg >= _l3_gate or _l3_usage:
                 self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
                 _l3_done = True
-            if (not _l3_done and pipeline_ctx.get("layer2_trimmed")
+            # N2 与 N1 同源：判定用周期级裁剪标记（gap 已消化裁剪时 harvest 的 L2 常为空集，
+            # 以 pipeline_ctx 判定会让 N2 只在收割真裁到进程时才触发——实测 14 个合格窗口仅 6 次）
+            if (not _l3_done and getattr(self, "_cycle_any_trim", False)
                     and self._normal_tail_ok(deadline)):
                 try:
                     _target = float(self.judger.cfg.get("efis_params", {}).get("target_usage", 45))

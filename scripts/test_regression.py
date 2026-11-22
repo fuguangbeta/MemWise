@@ -2912,6 +2912,8 @@ check("quick 退避上限 300s 且手动优化豁免",
       "min(300.0" in _cl45f and "if self._manual_run:" in _cl45f)
 check("呈现期日志/图表延迟补齐（防卡片空白）",
       "_schedule_present_flush" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
+check("N2 与 N1 同用周期级裁剪标记",
+      'not _l3_done and getattr(self, "_cycle_any_trim", False)' in _cl45f)
 check("两处尾段均在执行前补判周期门控，且不再按 deadline 降级",
       _cl45f.count("self.refresh_cycle_gate()") >= 2
       and "deadline + 5.0" not in _cl45f and "deadline + 2.0" not in _cl45f)
