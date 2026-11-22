@@ -2216,7 +2216,7 @@ class MemWiseEngine:
             _cur = {k: _st.get(k, 0) for k in _keys}
             _dl = {k: max(0, _cur.get(k, 0) - _prev.get(k, 0)) for k in _keys}
             _tr = int(_cs.get("trimmed_cnt") or 0)
-            _freed = float(_cs.get("cycle_freed") or 0) / (1 << 20)
+            _freed = float(_cs.get("cycle_freed") or 0)   # stats 里已是 MB，勿再除 1<<20
             _dur = float(_cs.get("cycle_duration") or 0)
             _agg = _cs.get("agg")
             _probe = getattr(self, "_cycle_probe", (0, 0))
