@@ -5413,18 +5413,22 @@ class MemWiseGUI:
             self._once_optimizing = True  # 防连点排队多轮即时优化（_opt_done 统一复位）
             # 即时反馈（2026-08-30）：守护分支原点击后零提示，完成前数秒界面无响应痕迹
             self._log_op(f"即时优化（{CFG.get('clean_mode', 'normal')}）已启动")
-            self.lbl_st["text"] = tr("⚡ 即时优化中…")  # 下一守护周期 upd_ui 自动恢复
+            self._st_override = "⚡ 即时优化中…"   # 保持到 _opt_done，避免被刷新链瞬间覆盖
+            self._render_status()
             self.engine.optimize_manual_once(CFG.get("clean_mode", "normal"),
                                              CFG.get("clean_operations"))
             return
         self._optimizing = True
-        self.btn_opt.configure(state="disabled"); self.lbl_st["text"] = tr("优化中...")
+        self.btn_opt.configure(state="disabled")
+        self._st_override = "优化中..."
+        self._render_status()
         self._log_op(f"开始优化（{CFG.get('clean_mode', 'normal')}·三轮）…")
         self.engine.optimize_manual_async(CFG.get("clean_mode", "normal"),
                                           CFG.get("clean_operations"))
 
     def _opt_done(self, result):
         self._once_optimizing = False  # 即时优化完成/异常均发 opt_done，此处统一复位
+        self._st_override = None
         s = self.cleaner.summary()
         trimmed = [t for t in result.get("layer2", []) if t[1]]
         released = result.get("released", 0.0)
@@ -5454,7 +5458,8 @@ class MemWiseGUI:
         winapi.report_event("MemWise", tr_msg(f"GUI 优化: {s['freed_mb']}MB 释放, {len(trimmed)} 进程"))
         self._upd_stats()
         if self.engine.daemon_running:
-            # 守护运行中的即时优化：按钮/状态栏由守护周期维护，只更新统计与日志
+            # 守护运行中的即时优化：恢复常规守护态显示（同帧、无闪烁）
+            self._render_status()
             return
         self._optimizing = False
         self.btn_opt.configure(state="normal")
@@ -5474,6 +5479,7 @@ class MemWiseGUI:
                 self._log_op("上一守护线程仍在收尾，请稍候再试")
             return
         self.btn_dae.configure(state="disabled"); self.btn_stop.configure(state="normal")
+        self._st_override = None
         self._render_status()
         self._log_op(log_msg or "守护模式启动")  # 崩溃恢复路径传恢复文案（单条不重复；均为中文原文）
         _update_watchdog_daemon(True)  # 崩溃恢复时据此续守护
@@ -5493,8 +5499,18 @@ class MemWiseGUI:
         self._render_status(m.get("pct"))
 
     def _render_status(self, fallback_pct=None):
-        """状态栏文字与百分比：百分比优先取 5s 内存刷新的实时值，与内存条同源同刻。"""
+        """状态栏文字与百分比：百分比取 300ms 高频链的实时值，与内存条同帧。
+        _st_override 非空时显示临时状态（如「即时优化中…」），直到显式清除——
+        避免临时状态被 300ms 刷新链立刻覆盖造成的闪烁。"""
         try:
+            _ov = getattr(self, "_st_override", None)
+            if _ov:
+                _p = getattr(self, "_mem_pct", None)
+                if _p is None:
+                    _p = fallback_pct or 0
+                _icon = "🟢" if _p < 60 else ("🟡" if _p < 75 else ("🟠" if _p < 90 else "🔴"))
+                self.lbl_st["text"] = f"{_icon} {tr(_ov)}"
+                return
             _eng = getattr(self, "engine", None)
             if _eng is not None and not _eng.daemon_running:
                 return
@@ -5518,6 +5534,7 @@ class MemWiseGUI:
         self._log_op("停止守护中..."); self.engine.stop_daemon()
 
     def _dae_stopped(self):
+        self._st_override = None
         _update_watchdog_daemon(False)  # 守护已停止：崩溃恢复不应续守护
         self.btn_dae.configure(state="normal"); self.btn_stop.configure(state="disabled")
         err = getattr(self.engine, '_dae_error', None)
