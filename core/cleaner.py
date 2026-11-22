@@ -365,9 +365,9 @@ class PareCleaner:
         return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
 
     def begin_cycle(self, mode):
+        """守护周期开头判定一次重操作放行（gap 与 harvest 共用同一结果，见 9.1）。"""
         # 周期内是否发生过进程裁剪（gap/harvest 合并计），供 normal 尾段判定
         self._cycle_any_trim = False
-        """守护周期开头判定一次重操作放行（gap 与 harvest 共用同一结果，见 9.1）。"""
         _mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
         _prev = getattr(self, "_last_mode", None)
         self._last_mode = _mode
