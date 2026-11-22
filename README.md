@@ -85,7 +85,7 @@ Guard mode operates on a fixed cycle, 60 seconds by default. When memory usage r
 | **deep** | 于用户空闲时增加一轮深度回收，释放量更高 | 内存长期偏紧，且不宜频繁手动优化 |
 | **full** | 以释放量为优先，每轮执行完整流程，代价为短暂重载延迟 | 启动大型程序前，或内存已接近上限 |
 
-档位于「清理模式」下拉框中切换，下一周期生效。手动优化按当前档位执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
+档位由「清理模式」下拉框切换，下一周期生效。手动优化按当前档位执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
 
 The four levels trade intervention depth against cost. Reclaimed pages must be read back on their next access, which is the inherent cost; the mode determines how often and how deeply it is paid.
 
