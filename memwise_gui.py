@@ -1583,7 +1583,13 @@ class MemWiseGUI:
         self._upd_cancel = False
         self._upd_downloading = False
         self._log_history = deque(maxlen=300)  # 日志原文缓存（语言切换时按新语言重渲染）
+        # 时间戳与消息并行保存（2026-11-23）：日志时间必须固定为播报时刻，
+        # 不能在被恢复/重渲染时用当前时间重盖章（用户实测恢复后所有行变成打开时间）
+        self._log_history_ts = deque(maxlen=300)
         self._panel_msgs = []                  # 当前日志面板实际承载的消息（恢复时整体重建）
+        self._panel_ts = []                    # 与 _panel_msgs 一一对应的时间戳
+        self._present_ts = []                  # 与 _present_log_pending 一一对应
+        self._startup_ts = []                   # 与启动暂存消息一一对应
         self._animated_count = 0               # 这些消息中已经播完打印动画的数量
         self._present_log_pending = []         # 呈现期间到达的新日志暂存，淡入后再追加
         self._last_msg = None  # 连续重复消息去重（2026-08-30：启动观察消息实测重复）
@@ -1991,11 +1997,14 @@ class MemWiseGUI:
         if not msgs:
             return
         self._present_log_pending = []
+        _tsl = list(getattr(self, "_present_ts", None) or [])
+        self._present_ts = []
         try:
             self.log.configure(state="normal")
             start = self.log.index("end-1c")
-            for m in msgs:
-                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+            for _i, m in enumerate(msgs):
+                _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
+                _insert_log_lines(self.log, _ts,
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
@@ -3968,7 +3977,7 @@ class MemWiseGUI:
             return tr_msg(_raw)
         return tr_msg(item)
 
-    def _write_group(self, msgs, to_file=True, priority=False):
+    def _write_group(self, msgs, to_file=True, priority=False, ts_list=None):
         """分组原子写入日志面板（2026-08-30 分组语义，三种写入路径统一走此原语）：
         · 组 = 逻辑上同批的消息集合，一次清屏判断后整组输出，绝不逐行判断
           （防组内前半截被清屏自食——原逐行 _log 输出名单实测只剩最后 1-2 个）
@@ -3980,24 +3989,35 @@ class MemWiseGUI:
         （周期摘要/EFIS 消息已有 [清理]/[调参] 直写，避免双通道重复落盘）"""
         # 启动淡入期间先暂存，完成后统一写入并打印（避免先完整显示再动画）
         if getattr(self, "_startup_anim_active", False):
+            _ts0 = time.strftime('%H:%M:%S')
             if priority:
                 if not hasattr(self, "_startup_priority_msgs"):
                     self._startup_priority_msgs = []
                 self._startup_priority_msgs.extend(msgs)
+                if not hasattr(self, "_startup_priority_ts"):
+                    self._startup_priority_ts = []
+                self._startup_priority_ts.extend([_ts0] * len(msgs))
             else:
                 if not hasattr(self, "_startup_msgs"):
                     self._startup_msgs = []
                 self._startup_msgs.extend(msgs)
+                if not hasattr(self, "_startup_ts"):
+                    self._startup_ts = []
+                self._startup_ts.extend([_ts0] * len(msgs))
             return
         # 呈现期间到达的新日志先暂存，避免在淡入过程中触发清屏/重排
         if getattr(self, "_presenting", False) and not getattr(self, "_suppress_typewriter", False):
             self._schedule_present_flush()
             if getattr(self, "_panel_msgs", None) is None:
                 self._panel_msgs = []
+            _ts1 = time.strftime('%H:%M:%S')
             self._log_history.extend(msgs)
+            self._log_history_ts.extend([_ts1] * len(msgs))
             self._panel_msgs.extend(msgs)
+            self._panel_ts.extend([_ts1] * len(msgs))
             if not hasattr(self, "_present_log_pending"):
                 self._present_log_pending = []
+            self._present_ts.extend([_ts1] * len(msgs))
             self._present_log_pending.extend(msgs)
             if to_file and CFG.get("log_to_file"):
                 for m in msgs:
@@ -4007,8 +4027,13 @@ class MemWiseGUI:
         if len(msgs) == 1 and msgs[0] == self._last_msg:
             return
         displays = [self._log_display(m) for m in msgs]
+        _ts = time.strftime('%H:%M:%S')
+        _tsl = list(ts_list) if ts_list else None
+        if not hasattr(self, "_log_history_ts"):
+            self._log_history_ts = deque(maxlen=300)
         for m in msgs:
             self._log_history.append(m)
+            self._log_history_ts.append(_ts)
         self.log.configure(state="normal")
         try:
             # Tk Text 末尾恒有隐式终止行：end-1c 比可见行数大 1——减 1 得真实可见行数
@@ -4019,14 +4044,16 @@ class MemWiseGUI:
         if _panel_needs_clear(cur_lines, _msg_lines(displays)):
             self.log.delete("1.0", "end")
             self._panel_msgs = []
+            self._panel_ts = []
             self._animated_count = 0
         self._finish_typewriter()
         try:
             _flash_start = self.log.index("end-1c")
         except Exception:
             _flash_start = None
-        for _d in displays:
-            _insert_log_lines(self.log, time.strftime('%H:%M:%S'), _align_log_line(_d), _LOG_TAG)
+        for _i, _d in enumerate(displays):
+            _ts_i = _tsl[_i] if (_tsl and _i < len(_tsl)) else _ts
+            _insert_log_lines(self.log, _ts_i, _align_log_line(_d), _LOG_TAG)
         try:
             _flash_end = self.log.index("end-1c")
         except Exception:
@@ -4035,6 +4062,12 @@ class MemWiseGUI:
             self._panel_msgs = []
         _before = len(self._panel_msgs)
         self._panel_msgs.extend(msgs)
+        if not hasattr(self, "_panel_ts"):
+            self._panel_ts = []
+        if _tsl:
+            self._panel_ts.extend([(_tsl[_i] if _i < len(_tsl) else _ts) for _i in range(len(msgs))])
+        else:
+            self._panel_ts.extend([_ts] * len(msgs))
         self.log.see("end")
         if (_flash_start is not None and _flash_end is not None
                 and not getattr(self, "_suppress_typewriter", False) and ANIM_ENABLED):
@@ -4070,10 +4103,14 @@ class MemWiseGUI:
         msgs = list(getattr(self, "_startup_priority_msgs", None) or []) + list(getattr(self, "_startup_msgs", None) or [])
         if not msgs:
             return
+        _tsl = (list(getattr(self, "_startup_priority_ts", None) or [])
+                + list(getattr(self, "_startup_ts", None) or []))
         self._startup_priority_msgs = []
         self._startup_msgs = []
+        self._startup_priority_ts = []
+        self._startup_ts = []
         try:
-            self._write_group(msgs, to_file=True)
+            self._write_group(msgs, to_file=True, ts_list=_tsl if len(_tsl) == len(msgs) else None)
         except Exception:
             pass
 
@@ -4084,18 +4121,21 @@ class MemWiseGUI:
             msgs = list(getattr(self, "_panel_msgs", None) or [])
             if not msgs:
                 return
+            _tsl = list(getattr(self, "_panel_ts", None) or [])
             self._present_log_pending = []
             animated = min(getattr(self, "_animated_count", 0), len(msgs))
             self._finish_typewriter()
             self._animated_count = animated
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
-            for m in msgs[:animated]:
-                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+            for _i, m in enumerate(msgs[:animated]):
+                _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
+                _insert_log_lines(self.log, _ts,
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
             tail_start = self.log.index("end-1c")
-            for m in msgs[animated:]:
-                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+            for _i, m in enumerate(msgs[animated:], start=animated):
+                _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
+                _insert_log_lines(self.log, _ts,
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
@@ -4233,13 +4273,16 @@ class MemWiseGUI:
             if cur_lines <= 0:
                 return
             msgs = list(self._log_history)[-cur_lines:]
+            _tsl = list(getattr(self, "_log_history_ts", None) or [])[-cur_lines:]
             self._finish_typewriter()
             self._panel_msgs = list(msgs)
+            self._panel_ts = list(_tsl) if _tsl else [time.strftime('%H:%M:%S')] * len(msgs)
             self._animated_count = len(msgs)
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
-            for m in msgs:
-                _insert_log_lines(self.log, time.strftime('%H:%M:%S'),
+            for _i, m in enumerate(msgs):
+                _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
+                _insert_log_lines(self.log, _ts,
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
