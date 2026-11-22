@@ -111,10 +111,9 @@ class PareCleaner:
             "layer3_ran": 0, "layer3_extra": 0,
             # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
             "final_sweep": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
-            "deep_rebound_freed": 0, "deep_rebound_hits": 0, "deep_final_freed": 0, "deep_final_sweep": 0,
+            "deep_final_freed": 0, "deep_final_sweep": 0,
             "normal_final_sweep": 0, "normal_l3_extra": 0,
             # quick 专项（2026-11-22）：零感知成本量化 + 空转退避
-            "deep_rebound_cand": 0,
             "quick_calls": 0, "quick_noop": 0, "quick_backoff_skip": 0,
             "quick_ms": 0.0, "quick_freed": 0,
         }
@@ -1772,50 +1771,6 @@ class PareCleaner:
         except Exception:
             return False
 
-    def _deep_rebound(self, snaps, learner, agg, pipeline_ctx):
-        """deep 有界回弹：只对本轮已 trim、WS≥64MB、θ≥0.3 的进程补一次 WS 清空。"""
-        trimmed = pipeline_ctx.get("layer2_trimmed") or set()
-        if not trimmed:
-            return
-        never = self.judger.cfg.get("never", []) or []
-        game_pids = getattr(self.judger, "_game_pid_set", set()) if self.game_mode else set()
-        for s in snaps:
-            if s.pid not in trimmed or s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
-                continue
-            # 门槛与 deep 自身 L2 价值底线对齐（θ≥0.12、WS≥16MB）：用 64MB/0.3 时
-            # 实测 54 轮 0 命中——deep 的 L2 本就按 0.12 放行，回弹再用 0.3 等于自我否决。
-            if getattr(s, "ws", 0) < (16 << 20):
-                continue
-            name_l = s.name.lower()
-            if _is_system_core(name_l) or name_l in never:
-                continue
-            if getattr(s, "fg", False) and agg < 0.35:
-                continue
-            if self.judger.ws_cap_blocked(getattr(s, "path", None)):
-                continue
-            try:
-                theta = learner.thompson_score(s.name)
-            except Exception:
-                continue
-            if theta < 0.12:
-                continue
-            if self.judger.is_system_dir_low_theta(getattr(s, "path", None), theta, "deep"):
-                continue
-            self._stats_inc("deep_rebound_cand")
-            try:
-                pre = winapi.get_process_memory(s.pid)
-                if not pre:
-                    continue
-                if winapi.empty_ws(s.pid):
-                    post = winapi.get_process_memory(s.pid)
-                    if post:
-                        freed = max(0, pre["ws"] - post["ws"])
-                        self._stats_inc("deep_rebound_freed", freed)
-                        self._stats_inc("deep_rebound_hits")
-                        self._stats_inc("freed_bytes", freed)
-            except Exception:
-                pass
-
     def _deep_final_consolidation(self, ops_filter, deadline):
         """deep 有界收尾：停手期按勾选做一次系统级压实；超预算时降级为仅 standby_low。"""
         ops = self._layer1_ops(ops_filter)
@@ -1826,8 +1781,12 @@ class PareCleaner:
             use &= {"standby_low"}
         if not use:
             return
+        _fb = int(self.stats.get("freed_bytes", 0) or 0)
         self._layer1_memreduct(full=False, game_mode=False, ops=use, clean_self=False)
+        _fa = int(self.stats.get("freed_bytes", 0) or 0)
         self._stats_inc("deep_final_sweep")
+        if _fa > _fb:
+            self._stats_inc("deep_final_freed", _fa - _fb)
 
     def _run_deep(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
         """deep 模式主体：normal 基础 + 全清 WS（使用率门控）+ 强制深度聚合。"""
@@ -1845,9 +1804,10 @@ class PareCleaner:
         self._layer1_memreduct(full=True, game_mode=self.game_mode,
                                ops=l1_ops)
         self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
-        # deep 专项（2026-11-22）：停手期有界回弹 + 系统收尾
+        # deep 专项（2026-11-22 定稿）：停手期系统收尾。
+        # 回弹通道已删除——实测 18 轮仅 47MB、与 L2 重复且受同一系统目录 θ 守卫，
+        # 收益是噪音级；价值全部来自这里的 standby 压实（每轮 200~300MB）。
         if self._deep_tail_gate():
-            self._deep_rebound(snaps, learner, agg, pipeline_ctx)
             self._deep_final_consolidation(ops_filter, deadline)
         return l2_results, probe_results
 

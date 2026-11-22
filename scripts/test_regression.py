@@ -2891,16 +2891,19 @@ _ok45b, _r45b = _j45g.can_trim(_s45b)
 check("W3 未钉路径不触发第八道门（对照）", "已设硬上限" not in _r45b, _r45b)
 # W4 绕行通道补齐（2026-10-15 强化）：旧实现只补 2 处，桩实验实测 quick_retrim 与 _trim_process
 # 仍会对被钉进程执行 EmptyWorkingSet ⇒ 现改为统一判定方法 ws_cap_blocked，清理侧全部入口都走它
-# （2026-11-22 增到 6 个：deep 停手期回弹）
-check("deep 尾段：实现存在且 _run_deep 真的调用（2026-11-22 曾被编辑误删）",
-      all(k in _cl45f for k in ("def _deep_tail_gate", "def _deep_rebound", "def _deep_final_consolidation"))
-      and "_deep_tail_gate()" in _cl45f and "self._deep_rebound(snaps, learner, agg, pipeline_ctx)" in _cl45f,
+
+check("deep 尾段：仅系统收尾且 _run_deep 真的调用（回弹已按数据删除）",
+      "def _deep_tail_gate" in _cl45f and "def _deep_final_consolidation" in _cl45f
+      and "_deep_tail_gate()" in _cl45f and "self._deep_final_consolidation(ops_filter, deadline)" in _cl45f,
       "deep tail missing")
+check("deep 回弹通道已删除（无残留方法与统计键）",
+      "_deep_rebound" not in _cl45f and "deep_rebound_hits" not in _cl45f
+      and "deep_rebound_cand" not in _cl45f)
 check("deep 尾段闸门只看停手/游戏/轻量，不看 deadline",
       "winapi.get_idle_seconds() >= _HEAVY_IDLE_OTHER" in _cl45f
       and "def _deep_tail_gate(self):" in _cl45f)
-check("W4 第八道门统一判定（cleaner 6 处 / judger 3 处；deep 尾段回弹为第 6 个入口）",
-      _cl45f.count("ws_cap_blocked(") == 6 and _jd45f.count("ws_cap_blocked(") == 3
+check("W4 第八道门统一判定（cleaner 5 处 / judger 3 处）",
+      _cl45f.count("ws_cap_blocked(") == 5 and _jd45f.count("ws_cap_blocked(") == 3
       and "def ws_cap_blocked(self, path):" in _jd45f
       and "if not self._capped_paths or not path:" in _jd45f)
 # W5 引擎接线：施加/簿记/守卫（mock syscall；FakeSniffer 桩）
