@@ -1125,7 +1125,6 @@ check("三轮启动文案", tr_msg("开始优化（full·三轮）…") == "Star
 check("轮次节拍文案", tr_msg("第 2/3 轮完成 · 本轮释放 152 MB") == "Round 2/3 done · this round freed 152 MB")
 check("余量聚合行", tr_msg("✓ 其余 21 个进程") == "✓ plus 21 processes")
 check("零结果明示键", tr("没有找到值得清理的进程（全部受保护或无闲置内存）") == "No processes worth cleaning found (all protected or no idle memory)")
-check("状态栏临时提示键", tr("⚡ 即时优化中…") == "⚡ Instant optimizing…")
 set_language("zh_CN")
 # 接线静态断言（结果卡整卡输出/过程节拍/载荷扩展/旧重复摘要移除）
 check("结果卡整卡输出", "_log_batch(card, to_file=True)" in _gui26_src and "by_freed" in _gui26_src)
@@ -1233,7 +1232,6 @@ check("F3 engine tmp 隔离×5（含 ② 校准文件与 watchdog 原子写）",
 check("F6 游戏退出即时化", "game_gone_count" not in _eng26_src and "game_gone_count" not in _cl26_src)
 check("F6 实时退出注释接线", "实时退出" in _eng26_src and "实时退出" in _cl26_src)
 # ── F7 双语残留清零 ──
-check("F7 守护异常状态栏键", "⚠ 守护异常" in _EN_A and 'tr("⚠ 守护异常")' in _gui26_src)
 check("F7 CLI reason 翻译", "tr_msg(reason)" in _mw26_src)
 # ── F8 docstring 与实现一致（quick 零进程清理）──
 check("F8 quick 零进程清理描述", "零进程清理" in _cl26_src and "layer2(full probe+trim)" not in _cl26_src)
@@ -2669,17 +2667,14 @@ _stub44 = _mg29.MemWiseGUI.__new__(_mg29.MemWiseGUI)
 class _L44:
     def __init__(self): self.text = ""
     def __setitem__(self, k, v): self.text = v
-_stub44.lbl_sb = _L44(); _stub44.lbl_tr = _L44(); _stub44.lbl_fr = _L44(); _stub44.lbl_st = _L44()
+_stub44.lbl_sb = _L44(); _stub44.lbl_tr = _L44(); _stub44.lbl_fr = _L44()
 _stub44._upd_learned = lambda: None
 _s44 = {"standby": 1, "modified": 2, "filecache": 3, "registry": 4, "volume": 5, "ws_trim": 6, "freed_mb": 7.0}
 _m44 = {"pct": 70}
 set_language("zh_CN")
 _stub44._upd_dae_ui(_s44, _m44)
-check("F2 中文态状态栏无图标（只留文字 + 百分比）",
-      _stub44.lbl_st.text == "守护中 70%", repr(_stub44.lbl_st.text))
 set_language("en")
 _stub44._upd_dae_ui(_s44, _m44)
-check("F2 英文态状态栏无图标", _stub44.lbl_st.text == "Guarding 70%", repr(_stub44.lbl_st.text))
 set_language("zh_CN")
 _root44.destroy()
 # ── F3 导入结果检查（失败有提示且不重启；backup 层零改动）──

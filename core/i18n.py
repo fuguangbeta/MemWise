@@ -181,10 +181,8 @@ _EN = {
     "进程: ": "Processes: ",
     "释放: ": "Freed: ",
     "--%": "--%",
-    "就绪 · ": "Ready · ",
-    "守护运行中": "Guarding",
-    "优化中...": "Optimizing...",
-    "🟢 守护中": "🟢 Guarding",
+        "守护运行中": "Guarding",
+        "🟢 守护中": "🟢 Guarding",
     "启动守护模式后显示实时优化图表": "Start Guard mode to see the live chart",
     "（未勾选 = 不执行对应系统清理）": "(unchecked = skip the corresponding system cleanup)",
 
@@ -531,13 +529,11 @@ _EN = {
 
     # ── 2026-09-06 全量审查批次补键（守护互斥/状态栏/自启最小化联动）──
     "命令行守护模式运行中，无法开启界面守护": "Command-line guard is running — cannot start Guard here",
-    "⚠ 守护异常": "⚠ Guard error",
-    "开机自启动已按新的最小化设置更新": "Auto-start task updated with the new minimize setting",
+        "开机自启动已按新的最小化设置更新": "Auto-start task updated with the new minimize setting",
 
     # ── 2026-08-30 手动优化播报批次补键（点击反馈/过程节拍/结果卡）──
     "）已启动": ") started",
-    "⚡ 即时优化中…": "⚡ Instant optimizing…",
-    "开始优化（": "Start optimization (",
+        "开始优化（": "Start optimization (",
     "·三轮）…": " · three rounds)…",
     "第 ": "Round ",
     "/3 轮完成 · 本轮释放 ": "/3 done · this round freed ",
