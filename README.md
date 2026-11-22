@@ -466,6 +466,14 @@ MemWise/
 
 ---
 
+## 附录 C：构建与自检 · *Appendix C: Building and Self-Check*
+
+运行期没有外部依赖，构建时才需要 Python 与 PyInstaller。打包命令是 python -m PyInstaller MemWise.spec --distpath dist --workpath build --noconfirm，产物为 dist 目录下的单文件 exe。代码自检用 scripts/test_regression.py，它覆盖清理梯度、判定门、界面文案与文档同步等静态与行为断言，改动前后都应当跑一遍。版本号以 core/backup.py 里的 APP_VERSION 为唯一来源，本地测试构建通过 BUILD_VERSION 追加 .beta 后缀，两者互不覆盖。
+
+There are no runtime dependencies; Python and PyInstaller are only needed to build. The packaging command is python -m PyInstaller MemWise.spec --distpath dist --workpath build --noconfirm, producing a single executable in dist. Self-checks run through scripts/test_regression.py, which covers cleaning gradients, decision gates, interface wording and documentation sync as both static and behavioural assertions, and is worth running before and after any change. The version number has a single source of truth, APP_VERSION in core/backup.py; local test builds append a .beta suffix through BUILD_VERSION, and the two never overwrite each other.
+
+---
+
 > [GitHub Releases](https://github.com/fuguangbeta/MemWise/releases) — 下载最新版本 · *Download Latest Release*
 
 ---
