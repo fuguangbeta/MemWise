@@ -2914,6 +2914,9 @@ check("日志时间戳按播报时刻固定（恢复/重渲染不重盖章）",
       "_panel_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
       and "_log_history_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
 _g45f = open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
+check("附录周期描述与实现一致（恒为设定值，不回涨缩短）",
+      "周期长度恒为设定值" in open(os.path.join(_ROOT34, "docs", "appendix.md"), encoding="utf-8").read()
+      and "min(设定值, max(15" not in open(os.path.join(_ROOT34, "docs", "appendix.md"), encoding="utf-8").read())
 check("看门狗重启前检查单实例互斥（防双守护/T1 双时间线）",
       "SINGLE_MUTEX_NAME" in _eg45f and "_mx_err in (0xB7, 5):" in _eg45f
       and "避免双守护" in _eg45f)
