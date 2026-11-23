@@ -4100,17 +4100,42 @@ class MemWiseGUI:
             pass
 
     def _flush_startup_logs(self):
+        """把启动期暂存日志并入面板。
+
+        若面板里已经有更晚的周期日志（最小化启动、首次开窗较晚），必须按时间序**前置合并**，
+        直接 append 会让 12:19 的启动行排在 12:20 的周期行之后（2026-11-23 用户实测）。
+        """
         msgs = list(getattr(self, "_startup_priority_msgs", None) or []) + list(getattr(self, "_startup_msgs", None) or [])
         if not msgs:
             return
         _tsl = (list(getattr(self, "_startup_priority_ts", None) or [])
                 + list(getattr(self, "_startup_ts", None) or []))
+        if len(_tsl) != len(msgs):
+            _tsl = [time.strftime('%H:%M:%S')] * len(msgs)
         self._startup_priority_msgs = []
         self._startup_msgs = []
         self._startup_priority_ts = []
         self._startup_ts = []
         try:
-            self._write_group(msgs, to_file=True, ts_list=_tsl if len(_tsl) == len(msgs) else None)
+            if getattr(self, "_panel_msgs", None):
+                # 已有内容：与现存面板合并后按时间重排，保持整块原子写入
+                _pm = list(self._panel_msgs)
+                _pt = list(getattr(self, "_panel_ts", None) or [])
+                if len(_pt) != len(_pm):
+                    _pt = [time.strftime('%H:%M:%S')] * len(_pm)
+                merged = sorted([(_tsl[_i], 0, msgs[_i]) for _i in range(len(msgs))]
+                                + [(_pt[_i], 1, _pm[_i]) for _i in range(len(_pm))],
+                                key=lambda x: (x[0], x[1]))
+                self.log.configure(state="normal")
+                self.log.delete("1.0", "end")
+                self.log.configure(state="disabled")
+                self._panel_msgs = []
+                self._panel_ts = []
+                self._animated_count = 0
+                self._write_group([m[2] for m in merged], to_file=False,
+                                  ts_list=[m[0] for m in merged])
+            else:
+                self._write_group(msgs, to_file=True, ts_list=_tsl)
         except Exception:
             pass
 
@@ -5246,8 +5271,9 @@ class MemWiseGUI:
         old_ids = c.find_all()
         data, meta_list, eff_data_view, eff_factors_view = self.engine.chart_snapshot()
         if not data:
-            # 呈现/入场期间的空快照不得清空可见图表；留给下一轮自然刷新
-            if not prepare_only and (getattr(self, "_presenting", False) or self._chart_intro_id is not None):
+            # 呈现/入场期间的空快照不得清空**已有**图表；但画布本来就是空的时候，
+            # 必须画占位文字，否则开屏会留一块纯黑区域（2026-11-23 用户实测）。
+            if old_ids and (getattr(self, "_presenting", False) or self._chart_intro_id is not None):
                 self._chart_dirty = True
                 return
             self._draw_chart_placeholder(old_ids)
@@ -5753,7 +5779,13 @@ class MemWiseGUI:
         if not self._minimized_to_tray:
             self._present_window()   # 启动与恢复共用同一呈现管线（先构建、后显示）
         else:
+            # 最小化启动：动画不存在，必须立即把启动日志写进面板，
+            # 否则它们会滞留到首次开窗才被冲涮，落在后续周期日志之后（2026-11-23 实测错位）
             self._startup_anim_active = False
+            try:
+                self._flush_startup_logs()
+            except Exception:
+                pass
         self.root.mainloop()
 
 if __name__ == "__main__":

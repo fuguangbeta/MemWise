@@ -2913,6 +2913,12 @@ check("quick 退避上限 300s 且手动优化豁免",
 check("日志时间戳按播报时刻固定（恢复/重渲染不重盖章）",
       "_panel_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
       and "_log_history_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
+_g45f = open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
+check("启动日志按时间序前置合并（最小化启动不再错位）",
+      "merged = sorted(" in _g45f and "_flush_startup_logs()" in _g45f
+      and _g45f.count("self._flush_startup_logs()") >= 2)
+check("无数据时开屏画占位而非黑框",
+      "if old_ids and (getattr(self, \"_presenting\", False) or self._chart_intro_id is not None)" in _g45f)
 check("呈现期日志/图表延迟补齐（防卡片空白）",
       "_schedule_present_flush" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
 check("full 收尾不再按 deadline 早退，且只补 standby_low",
