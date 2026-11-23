@@ -944,6 +944,7 @@ class MemWiseEngine:
         self._last_snaps = []
         self._self_pids = {os.getpid()}   # 自身实例 PID 集（主进程 + 看门狗；9.2）
         self._gap_wsall_ts = 0.0           # gap 段 ws_all 上次执行时间（A4 节流）
+        self._gap_cheap_ts = 0.0           # gap 段廉价压缩上次执行时间（6s 节拍）
         self._gap_wsall_hits = 0           # 本周期 gap 全清次数（D8 诊断）
         # 净留存反馈（2026-11-23）：按压后记录 gross，5 秒后回采净留存，防 churn
         self._ws_press = None              # {"t":..., "before":..., "gross":...}
@@ -1487,12 +1488,21 @@ class MemWiseEngine:
                             if self.cleaner.game_mode:
                                 ops_gap = {"registry"}
                             elif mode == "full":
-                                ops_gap = {"registry", "standby", "standby_low", "modified"}
-                                # A4：gap 段持续压 WS（harvest 之间不再放任回涨）；20s 节流
-                                if self._gap_wsall_due(mode, time.time()):
-                                    ops_gap.add("ws_all")
-                                    self._gap_wsall_ts = time.time()
+                                _now_gap = time.time()
+                                ops_gap = set()
+                                # 廉价压缩节拍（2026-11-23）：全清未到期时也保持每 6 秒
+                                # 一次 registry + standby_low——两项合计 <0.1s、无 PF 代价，
+                                # 保证 full 在 gap 段不出现"大段什么都不做"。
+                                if _now_gap - getattr(self, "_gap_cheap_ts", 0.0) >= 6.0:
+                                    ops_gap |= {"registry", "standby_low"}
+                                    self._gap_cheap_ts = _now_gap
+                                # 全清到期：连同 standby/modified（择时门放行时生效）
+                                if self._gap_wsall_due(mode, _now_gap):
+                                    ops_gap |= {"registry", "standby", "standby_low", "modified", "ws_all"}
+                                    self._gap_wsall_ts = _now_gap
                                     self._gap_wsall_hits += 1
+                                if not ops_gap:
+                                    ops_gap = {"registry"}
                             elif mode == "deep":
                                 ops_gap = {"registry", "standby", "modified"}
                             else:
@@ -2160,13 +2170,23 @@ class MemWiseEngine:
                 self._ws_cap_applied.setdefault(path, {})[pid] = (create, orig_max)
 
     def _effective_interval(self, base):
-        """A7（2026-11-20）：回涨连续 2 轮 → 动态缩短周期到 ×0.6（不低于 15s、不超过设定值）。"""
+        """A7（2026-11-20）：回涨连续 2 轮 → 动态缩短周期到 ×0.6（不低于 15s、不超过设定值）。
+
+        2026-11-23 增压力闸：回涨快不等于内存紧张——桌面静默实测内存 16% 时，
+        回涨来自系统用空闲内存做缓存，此时缩短周期只会制造 churn（净留存 29%）。
+        故仅在压力档 ≥1（偏紧/短缺）时允许缩短；充裕档保持设定周期。
+        """
         try:
             b = max(10, min(3600, int(base or 60)))
         except Exception:
             b = 60
         if getattr(self, "_refill_hot_streak", 0) >= 2 and b > 20:
-            return min(b, max(15, int(b * 0.6)))
+            try:
+                _tier = self._pressure_tier()
+            except Exception:
+                _tier = 1
+            if _tier >= 1:
+                return min(b, max(15, int(b * 0.6)))
         return b
 
     def _pressure_tier(self):
@@ -2204,8 +2224,9 @@ class MemWiseEngine:
         if mode != "full":
             return False
         tier = self._pressure_tier()
-        # 顺序必须与档位语义一致：0=充裕(26s)、1=偏紧(12s)、2=短缺(6s)
-        base = (26.0, 12.0, 6.0)[tier] if tier in (0, 1, 2) else 20.0
+        # 顺序必须与档位语义一致：0=充裕(32s)、1=偏紧(12s)、2=短缺(6s)
+        # 充裕档实测单次全清边际已降至约 150MB，放慢一档提高单次收益；紧张档不变。
+        base = (32.0, 12.0, 6.0)[tier] if tier in (0, 1, 2) else 20.0
         r = getattr(self, "_ws_retention", None)
         if r is not None:
             if r < 0.25:
