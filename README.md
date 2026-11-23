@@ -48,13 +48,13 @@ MemWise 是运行于 Windows 用户态的内存回收工具。其通过系统公
 
 程序提供四档清理强度，差异体现为介入深度与代价。quick 仅处理低优先待机页与注册表缓存，不介入进程；normal 在此基础上回收进程闲置页，并依据内存压力逐步加深；deep 于用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此产生的短暂重载延迟。默认档位为 normal。
 
-守护模式以固定周期运行，默认周期 60 秒；内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。系统核心进程、排除项与程序自身不参与清理。
+守护模式以固定周期运行，默认周期 60 秒，周期长度不受内存波动影响——你在设置里填 60 秒，日志、图表与统计就都按 60 秒输出；周期内部再按内存压力调整动作密度。内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。系统核心进程、排除项与程序自身不参与清理。
 
 MemWise is a user-mode memory reclamation tool for Windows. It reclaims physical pages not currently in use and caches that can be rebuilt through public system interfaces, relieving memory pressure without altering the operating system's memory management or its policies; it changes only the timing and the degree of control.
 
 Four levels of cleaning intensity are provided, differing in intervention depth and cost. quick handles only low-priority standby pages and registry caches, without process intervention; normal additionally reclaims idle process pages and deepens as memory pressure rises; deep performs extra reclamation while the user is idle; full prioritises release volume and accepts the resulting brief reload delay. The default level is normal.
 
-Guard mode operates on a fixed cycle, 60 seconds by default. When memory usage reaches the configured threshold it executes a full pass immediately rather than waiting for a later cycle. The program is a single executable with no third-party dependencies; it is offline by default, installs no driver and registers no system service. During operation it terminates no process, suspends no thread and injects no code. System-critical processes, exclusions and MemWise itself are excluded from reclamation.
+Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle length does not move with memory fluctuations — set 60 seconds and logs, chart and statistics all follow that beat; work density inside the cycle adapts to memory pressure. When memory usage reaches the configured threshold it executes a full pass immediately rather than waiting for a later cycle. The program is a single executable with no third-party dependencies; it is offline by default, installs no driver and registers no system service. During operation it terminates no process, suspends no thread and injects no code. System-critical processes, exclusions and MemWise itself are excluded from reclamation.
 
 ---
 
