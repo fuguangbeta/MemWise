@@ -4893,11 +4893,13 @@ _e64 = MemWiseEngine.__new__(MemWiseEngine)
 _e64._refill_hot_streak = 0
 check("动态周期：未回涨不变", _e64._effective_interval(60) == 60)
 _e64._refill_hot_streak = 2
-_e64._pressure_tier = lambda: 2
-check("动态周期：压力档≥1 时回涨连续 2 轮 → 60→36（下限 15）",
-      _e64._effective_interval(60) == 36 and _e64._effective_interval(10) == 10)
-_e64._pressure_tier = lambda: 0
-check("动态周期：充裕档不缩短（避免无压低价值内存）", _e64._effective_interval(60) == 60)
+check("周期恒为设定值（用户层节拍不漂移，回涨靠周期内多轮消化）",
+      _e64._effective_interval(60) == 60 and _e64._effective_interval(17) == 17)
+_e64._refill_hot_streak = 0
+_p_calm = _e64._cycle_passes(4)
+_e64._refill_hot_streak = 3
+_p_hot = _e64._cycle_passes(4)
+check("回涨快时周期内深清轮数 4→6（周期长度不变）", _p_calm == 4 and _p_hot == 6)
 _e64._gap_wsall_ts = 1000.0
 _e64._ws_retention = None
 _e64._pressure_tier = lambda: 2   # 短缺：6s

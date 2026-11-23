@@ -1415,6 +1415,18 @@ class MemWiseEngine:
                 self.cleaner.begin_cycle(mode)
                 self._gap_wsall_hits = 0   # 本周期 gap 全清次数（T1 full 段取增量口径）
                 self._refresh_self_pids()
+                # 周期内多轮（2026-11-23 用户定稿）：周期长度恒为设定值，回涨快时只在
+                # **同一周期内**提高每进程深清轮数（4→6），用户看到的日志/图表节拍不变。
+                _passes_bak = None
+                if mode == "full":
+                    try:
+                        _want = self._cycle_passes(CFG.get("clean_passes", 4))
+                        _cur = int(self.judger.cfg.get("clean_passes", 4) or 4)
+                        if _want > _cur:
+                            _passes_bak = self.judger.cfg.get("clean_passes")
+                            self.judger.cfg["clean_passes"] = _want
+                    except Exception:
+                        _passes_bak = None
                 interval = self._effective_interval(CFG.get("interval", 60))  # A7：回涨持续时动态缩短
                 deadline = time.time() + interval - 3 - overtime_debt
                 # P26：债务不得把本周期压到“连一次 gap 都没有”；至少保留 0.5s 轻量压制段
@@ -2070,6 +2082,11 @@ class MemWiseEngine:
             self._dae_error = f"{e}\n{traceback.format_exc()}"
         finally:
             try:
+                if _passes_bak is not None:
+                    self.judger.cfg["clean_passes"] = _passes_bak
+            except Exception:
+                pass
+            try:
                 self.cleaner.end_cycle()
             except Exception:
                 pass
@@ -2180,14 +2197,19 @@ class MemWiseEngine:
             b = max(10, min(3600, int(base or 60)))
         except Exception:
             b = 60
-        if getattr(self, "_refill_hot_streak", 0) >= 2 and b > 20:
-            try:
-                _tier = self._pressure_tier()
-            except Exception:
-                _tier = 1
-            if _tier >= 1:
-                return min(b, max(15, int(b * 0.6)))
+        # 2026-11-23 用户定稿：**用户层周期恒为设定值**（日志、图表、统计都按这个节拍输出），
+        # 回涨快时改为"同一周期内多轮收割"，不再缩短周期——否则用户看到的节奏会漂移。
         return b
+
+    def _cycle_passes(self, base_passes):
+        """周期内深清轮数：回涨连续 2 轮时在 full 下提到 6 轮（同一周期内多轮，周期不变）。"""
+        try:
+            n = int(base_passes or 4)
+        except Exception:
+            n = 4
+        if getattr(self, "_refill_hot_streak", 0) >= 2:
+            n = max(n, 6)
+        return max(2, min(6, n))
 
     def _pressure_tier(self):
         """压力分级（2026-11-23）：0=充裕 1=偏紧 2=短缺。
