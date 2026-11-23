@@ -2914,6 +2914,11 @@ check("日志时间戳按播报时刻固定（恢复/重渲染不重盖章）",
       "_panel_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
       and "_log_history_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
 _g45f = open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
+check("看门狗重启前检查单实例互斥（防双守护/T1 双时间线）",
+      "SINGLE_MUTEX_NAME" in _eg45f and "_mx_err in (0xB7, 5):" in _eg45f
+      and "避免双守护" in _eg45f)
+check("周期恒定：_effective_interval 不再按回涨缩短",
+      "不随回涨缩短" in _eg45f)
 check("呈现卡死自愈：2 秒未结束则强制收尾并冲刷",
       "_presenting_since" in _g45f and "_stuck = (time.time() - float(getattr(self, \"_presenting_since\", 0) or 0)) > 2.0" in _g45f)
 check("启动日志按时间序前置合并（最小化启动不再错位）",

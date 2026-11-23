@@ -1396,7 +1396,7 @@ class ToolTip:
 # ═══ 看门狗入口 — 无 GUI，纯监控 + 崩溃重启 ═══
 
 
-SINGLE_MUTEX_NAME = "Global\\MemWise_SingleInstance"
+from core.engine import SINGLE_MUTEX_NAME  # 单一来源（看门狗重启前也用它判重）
 
 
 def _activate_existing_instance():

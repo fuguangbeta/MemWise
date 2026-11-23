@@ -132,7 +132,8 @@ if base not in sys.path:
     sys.path.insert(0, base)
 
 # ═══ 看门狗（进程级，UI 无关）：崩溃自动重启 + 守护状态记录 ═══
-DAEMON_MUTEX_NAME = "Global\\MemWise_Daemon"  # 守护本体互斥（2026-09-06 审查 F3：
+DAEMON_MUTEX_NAME = "Global\\MemWise_Daemon"
+SINGLE_MUTEX_NAME = "Global\\MemWise_SingleInstance"   # 单实例互斥（GUI 与看门狗共用）  # 守护本体互斥（2026-09-06 审查 F3：
 # 防 CLI daemon 与 GUI 守护并发——双进程同时写同一状态文件，进程内锁不跨进程会交错
 # 损坏画像唯一副本；GUI 查看与手动优化不受影响，mutex 仅在守护运行期间持有）
 
@@ -290,6 +291,18 @@ if "--watchdog" in sys.argv:
             # 重启前再次确认文件仍在（防止 wndproc 在检测死亡和重启之间删除）
             if not os.path.exists(wd_path):
                 break
+            # 重启前确认没有别的 GUI 实例在跑（2026-11-23 加固）：
+            # 安装/更新脚本先 taskkill 再 Start-Process 时，旧看门狗可能与本机新实例竞态，
+            # 双方各拉一个 GUI ⇒ 两套守护并行、T1 出现两套时间线、净释放一侧恒 0（实测）。
+            try:
+                _mx_probe = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_MUTEX_NAME)
+                _mx_err = ctypes.windll.kernel32.GetLastError()
+                if _mx_probe:
+                    ctypes.windll.kernel32.CloseHandle(_mx_probe)
+                if _mx_err in (0xB7, 5):
+                    break   # 已有实例持有单实例互斥 ⇒ 放弃重启，避免双守护
+            except Exception:
+                pass
             # 重启
             try:
                 si = subprocess.STARTUPINFO()
@@ -2214,7 +2227,9 @@ class MemWiseEngine:
                 self._ws_cap_applied.setdefault(path, {})[pid] = (create, orig_max)
 
     def _effective_interval(self, base):
-        """A7（2026-11-20）：回涨连续 2 轮 → 动态缩短周期到 ×0.6（不低于 15s、不超过设定值）。
+        """周期长度（2026-11-23 定稿：恒为设定值，不随回涨缩短）。
+        回涨快改为"同一周期内追加收割"，用户层节拍保持稳定。
+
 
         2026-11-23 增压力闸：回涨快不等于内存紧张——桌面静默实测内存 16% 时，
         回涨来自系统用空闲内存做缓存，此时缩短周期只会制造 churn（净留存 29%）。
