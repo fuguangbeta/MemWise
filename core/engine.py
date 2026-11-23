@@ -1444,13 +1444,20 @@ class MemWiseEngine:
                             # D4 专项（2026-11-21）：full 模式快照 3s→2s，把每周期快照
                             # 从 ~11 提到 ~16；其他模式保持 3s，避免无谓开销。
                             snap_skip = 4 if mode == "full" else 6
-                            # 回弹驱动（C 方案，2026-08-14）：full 模式回填率 >60% → gap 立即收紧，
-                            # 提前进入收割（回弹越猛压得越密；net_freed≤32MB 的微小轮跳过判断）
+                            # 回弹驱动（C 方案，2026-08-14；2026-11-23 叠 A 方案）：
+                            # 回填量超过上轮释放的一定比例 → gap 收紧、提前进入收割。
+                            # 比例按压力分档：偏紧/短缺放宽到 35%（用尽手段），充裕维持 60%
+                            # （充裕时长回来的多是系统缓存，压得太密只会 churn）。
                             if mode == "full" and self._last_harvest_freed > (32 << 20) \
                                     and self._last_harvest_ws is not None:
                                 _ws_now = sum(getattr(s, 'ws', 0) for s in snaps)
                                 _refill = max(0, _ws_now - self._last_harvest_ws)
-                                if _refill > self._last_harvest_freed * 0.6:
+                                try:
+                                    _tier_r = self._pressure_tier()
+                                except Exception:
+                                    _tier_r = 0
+                                _rthr = 0.35 if _tier_r >= 1 else 0.6
+                                if _refill > self._last_harvest_freed * _rthr:
                                     gap = max(8.0, gap - 4)
                                     self._refill_cycle = True  # 周期内触发标记
                                     self._refill_total = _refill  # 最新回涨量
