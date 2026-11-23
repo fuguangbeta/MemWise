@@ -1,21 +1,35 @@
-# Security Policy
+# 安全策略
 
-## Supported Versions
+## 支持的版本
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+只对**最新发布版本**提供安全更新。旧版本不再修补，请先升级（升级只需替换 exe，配置与学习数据自动沿用）。
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| 版本 | 支持 |
+|---|---|
+| 5.7.x | ✅ |
+| 5.6.x 及更早 | ❌ |
 
-## Reporting a Vulnerability
+## 报告安全问题
 
-Use this section to tell people how to report a vulnerability.
+请**不要**用公开 issue 报告安全漏洞，改用以下任一渠道：
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+1. 仓库 **Security → Report a vulnerability**（私有安全通告，推荐）；
+2. 若该入口不可用，用 issue 说明"需要私下沟通安全问题"，维护者会提供联系方式。
+
+请在报告中包含：受影响的版本、复现步骤、可能的影响范围，以及（如方便）你建议的修复方向。**不要**附带真实凭据、个人文件或完整内存转储。
+
+## 处理预期
+
+- 确认收到：一般在 7 天内；
+- 修复与发布：视严重程度，通常在确认后的下一个补丁版本；
+- 公开披露：修复发布后由维护者与报告者协商时间。
+
+## 范围说明
+
+MemWise 是用户态程序，只通过 Windows 公开 API 回收内存：
+
+- **不安装驱动、不注册系统服务、不注入其它进程**；
+- 默认不联网；仅当你开启「检查更新」后访问 GitHub 读取版本信息；
+- 更新包做 SHA-256 校验，校验不通过会放弃本次更新并保留当前版本。
+
+以下问题视为**设计内行为**，不属于安全漏洞：回收后程序首次访问出现轻微延迟、缓存重建、日志与配置以明文保存在程序目录。
