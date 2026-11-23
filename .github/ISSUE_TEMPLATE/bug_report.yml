@@ -1,0 +1,42 @@
+name: 问题反馈
+description: 报告一个可复现的问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量附上日志片段（设置 → 日志 打开后位于 data/memwise.log），以及当时的清理模式。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 窗口标题或启动日志里的版本号
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 清理模式
+      options: [quick, normal, deep, full, 未开启守护]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 发生了什么，期望是什么
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 1. ... 2. ... 3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段
+      description: 最近一两百行即可，注意先检查是否含个人信息
+      render: text
