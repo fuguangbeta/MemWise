@@ -1714,30 +1714,40 @@ class MemWiseEngine:
                 # 周期内追加收割（2026-11-23 用户定稿）：用户层周期恒为设定值，
                 # 回涨连续 2 轮时在**同一周期内**再跑一次完整收割（真正多干活，
                 # 不是改配置——full 的每进程轮数本就恒为 6，见 cleaner 的 max_p 硬化）。
-                if (mode == "full" and not harvest_partial
-                        and getattr(self, "_refill_hot_streak", 0) >= 2):
+                # 触发判据（2026-11-23 用户定稿 B 方案）：full 用尽手段——
+                # 只要「距周期结束 ≥20 秒」且「内存比周期初上涨（avail 下降）」，
+                # 就在同一周期内追加一次完整收割；回涨连续 2 轮作为备用判据。
+                _remain2 = 0.0
+                try:
+                    _remain2 = interval - (time.time() - cycle_start)
+                except Exception:
+                    _remain2 = 0.0
+                _avail_now = None
+                try:
+                    _avail_now = float((winapi.get_memory_status() or {}).get("avail") or 0)
+                except Exception:
+                    _avail_now = None
+                _rose = bool(_avail_now is not None and self._cycle_avail_start is not None
+                             and _avail_now < float(self._cycle_avail_start))
+                if (mode == "full" and not harvest_partial and _remain2 >= 20.0
+                        and (_rose or getattr(self, "_refill_hot_streak", 0) >= 2)):
                     try:
-                        _remain2 = interval - (time.time() - cycle_start)
+                        time.sleep(min(4.0, max(1.5, _remain2 * 0.15)))
+                        self.cleaner.refresh_cycle_gate()
+                        _fut2 = self._harvest_executor.submit(
+                            self.cleaner.optimize, self._snap(), self.learner, mode,
+                            operations=ops, aggressiveness=agg, lite=_lite,
+                            deadline=time.time() + max(6.0, _remain2 - 8.0))
+                        _r2 = _fut2.result(timeout=max(8.0, _remain2 - 4.0))
+                        if _r2 and not _r2.get("_partial"):
+                            l2_all.extend(_r2.get("layer2", []))
+                            probe_all.extend(_r2.get("probe", []))
+                            try:
+                                self.cleaner._stats_inc("extra_harvests")
+                            except Exception:
+                                pass
                     except Exception:
-                        _remain2 = 0.0
-                    if _remain2 >= 14.0:
-                        try:
-                            time.sleep(min(4.0, max(1.5, _remain2 * 0.15)))
-                            self.cleaner.refresh_cycle_gate()
-                            _fut2 = self._harvest_executor.submit(
-                                self.cleaner.optimize, self._snap(), self.learner, mode,
-                                operations=ops, aggressiveness=agg, lite=_lite,
-                                deadline=time.time() + max(6.0, _remain2 - 8.0))
-                            _r2 = _fut2.result(timeout=max(8.0, _remain2 - 4.0))
-                            if _r2 and not _r2.get("_partial"):
-                                l2_all.extend(_r2.get("layer2", []))
-                                probe_all.extend(_r2.get("probe", []))
-                                try:
-                                    self.cleaner._stats_inc("extra_harvests")
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                        pass
                 self.judger.aggressiveness = agg  # 同步入 judger，下一周期 agg_first 正确
                 if self.cleaner.game_mode:
                     game_seen = True  # 收割期 _layer2_process 可能翻转游戏态（冻结判定覆盖）
