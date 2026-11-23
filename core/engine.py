@@ -1736,7 +1736,6 @@ class MemWiseEngine:
                                     self.cleaner._stats_inc("extra_harvests")
                                 except Exception:
                                     pass
-                                self._cycle_log_groups.append(["回涨快 · 周期内追加一次收割"])
                         except Exception:
                             pass
                 self.judger.aggressiveness = agg  # 同步入 judger，下一周期 agg_first 正确
@@ -2343,7 +2342,7 @@ class MemWiseEngine:
                      "ws_all_rounds", "trim_rounds", "normal_final_sweep", "normal_l3_extra",
                      "deep_final_sweep",
                      "final_sweep", "combine_calls", "combine_pages", "standby", "modified",
-                     "full_rebound_cand", "full_rebound_hits",
+                     "full_rebound_cand", "full_rebound_hits", "extra_harvests",
                      "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed",
                      "deep_final_freed")
             _cur = {k: _st.get(k, 0) for k in _keys}
@@ -2394,13 +2393,14 @@ class MemWiseEngine:
             elif _mode == "normal":
                 _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
             elif _mode == "full":
-                # 收尾次数/combine次数/combine页/回弹候选/回弹命中/gap全清次数/净留存%
+                # 收尾/combine次数/combine页/回弹候选/回弹命中/gap全清次数/净留存%/追加收割
                 _ret = getattr(self, "_ws_retention", None)
-                _parts.append("%d/%d/%d/%d/%d/%d/%s" % (
+                _parts.append("%d/%d/%d/%d/%d/%d/%s/%d" % (
                     _dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"],
                     _dl["full_rebound_cand"], _dl["full_rebound_hits"],
                     int(getattr(self, "_gap_wsall_hits", 0)),
-                    ("%.0f" % (_ret * 100)) if _ret is not None else "-"))
+                    ("%.0f" % (_ret * 100)) if _ret is not None else "-",
+                    _dl["extra_harvests"]))
             else:
                 _parts.append("M:%d/%d" % (_dl["standby"], _dl["modified"]))
             try:

@@ -4897,8 +4897,9 @@ check("周期恒为设定值（用户层节拍不漂移，回涨靠周期内多�
       _e64._effective_interval(60) == 60 and _e64._effective_interval(17) == 17)
 check("full 每进程轮数恒为 6（cleaner 硬化为 max(max_p,6)，不再靠改配置）",
       "max_p = max(max_p, 6)" in _cl45f)
-check("回涨快改为周期内追加收割（不是改轮数配置）",
-      "周期内追加收割" in _eg45f and "_cycle_passes" not in _eg45f)
+check("回涨快改为周期内追加收割（界面不出声，只进 T1 与文件诊断）",
+      "_cycle_passes" not in _eg45f and "extra_harvests" in _eg45f
+      and "追加一次收割" not in _eg45f)
 _e64._gap_wsall_ts = 1000.0
 _e64._ws_retention = None
 _e64._pressure_tier = lambda: 2   # 短缺：6s
