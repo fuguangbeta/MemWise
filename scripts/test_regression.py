@@ -2914,6 +2914,8 @@ check("日志时间戳按播报时刻固定（恢复/重渲染不重盖章）",
       "_panel_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
       and "_log_history_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
 _g45f = open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
+check("呈现卡死自愈：2 秒未结束则强制收尾并冲刷",
+      "_presenting_since" in _g45f and "_stuck = (time.time() - float(getattr(self, \"_presenting_since\", 0) or 0)) > 2.0" in _g45f)
 check("启动日志按时间序前置合并（最小化启动不再错位）",
       "merged = sorted(" in _g45f and "_flush_startup_logs()" in _g45f
       and _g45f.count("self._flush_startup_logs()") >= 2)

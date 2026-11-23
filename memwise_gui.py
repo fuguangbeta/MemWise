@@ -1912,6 +1912,7 @@ class MemWiseGUI:
         """统一呈现管线：隐藏态完成全部内容 → 单次映射（alpha 0）→ 同一回调启动淡入与图表入场。
         关键：内容绘制后必须再做一次 update_idletasks，保证首个 alpha>0 帧不是旧 surface。"""
         self._presenting = True
+        self._presenting_since = time.time()
         try:
             self._drawing_chart = False
             for _id_name in ("_chart_redraw_id", "_chart_intro_id"):
@@ -2024,8 +2025,22 @@ class MemWiseGUI:
     def _flush_present_pending(self):
         self._present_flush_id = None
         if getattr(self, "_presenting", False):
-            self._schedule_present_flush()
-            return
+            # 呈现卡死自愈（2026-11-23 实测：一批日志被扣住近 60 秒，直到下一批才一起出现）。
+            # 淡入回调在窗口被隐藏/最小化等路径上可能永不触发，_presenting 长期为 True
+            # ⇒ 所有日志与图表都被暂存。超过 2 秒即认定卡死，强制收尾并冲刷。
+            try:
+                _stuck = (time.time() - float(getattr(self, "_presenting_since", 0) or 0)) > 2.0
+            except Exception:
+                _stuck = True
+            if _stuck:
+                self._presenting = False
+                try:
+                    self.root.attributes("-alpha", 1.0)
+                except Exception:
+                    pass
+            else:
+                self._schedule_present_flush()
+                return
         try:
             self._append_present_pending()
         except Exception:
