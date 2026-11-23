@@ -4900,6 +4900,9 @@ check("full 每进程轮数恒为 6（cleaner 硬化为 max(max_p,6)，不再靠
 check("回涨快改为周期内追加收割（界面不出声，只进 T1 与文件诊断）",
       "_cycle_passes" not in _eg45f and "extra_harvests" in _eg45f
       and "追加一次收割" not in _eg45f)
+check("T1 full 段按「高熵常驻 + 低熵例外」压缩",
+      '"%d/%s" % (int(getattr(self, "_gap_wsall_hits", 0))' in _eg45f
+      and "_c%d" in _eg45f and "_r%dh%d" in _eg45f and "_e%d" in _eg45f)
 _e64._gap_wsall_ts = 1000.0
 _e64._ws_retention = None
 _e64._pressure_tier = lambda: 2   # 短缺：6s

@@ -2393,14 +2393,21 @@ class MemWiseEngine:
             elif _mode == "normal":
                 _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
             elif _mode == "full":
-                # 收尾/combine次数/combine页/回弹候选/回弹命中/gap全清次数/净留存%/追加收割
+                # full 段按「高熵常驻 + 低熵例外」压缩（2026-11-23 定稿）：
+                # 常驻只有 gap 全清次数与净留存%（每轮都变、信息量最高）；
+                # combine 页数、回弹候选/命中、追加收割、收尾缺省只在非默认时追加短标签。
                 _ret = getattr(self, "_ws_retention", None)
-                _parts.append("%d/%d/%d/%d/%d/%d/%s/%d" % (
-                    _dl["final_sweep"], _dl["combine_calls"], _dl["combine_pages"],
-                    _dl["full_rebound_cand"], _dl["full_rebound_hits"],
-                    int(getattr(self, "_gap_wsall_hits", 0)),
-                    ("%.0f" % (_ret * 100)) if _ret is not None else "-",
-                    _dl["extra_harvests"]))
+                _mseg = "%d/%s" % (int(getattr(self, "_gap_wsall_hits", 0)),
+                                   ("%.0f" % (_ret * 100)) if _ret is not None else "-")
+                if _dl["combine_pages"] > 0:
+                    _mseg += "_c%d" % _dl["combine_pages"]
+                if _dl["full_rebound_cand"] > 0:
+                    _mseg += "_r%dh%d" % (_dl["full_rebound_cand"], _dl["full_rebound_hits"])
+                if _dl["extra_harvests"] > 0:
+                    _mseg += "_e%d" % _dl["extra_harvests"]
+                if _dl["final_sweep"] == 0:
+                    _mseg += "_s0"
+                _parts.append(_mseg)
             else:
                 _parts.append("M:%d/%d" % (_dl["standby"], _dl["modified"]))
             try:
