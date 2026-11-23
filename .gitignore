@@ -18,6 +18,7 @@ build/
 build_*/
 dist/
 dist_test/
+dist_*/
 /MemWise.exe
 nul
 
