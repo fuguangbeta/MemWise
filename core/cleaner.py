@@ -110,7 +110,7 @@ class PareCleaner:
             "trim_rounds": 0,   # 进程实际执行轮数累加（5.2：区分"名义趟数"与"实际趟数"）
             "layer3_ran": 0, "layer3_extra": 0,
             # 仅 full 收尾：不进入 UI 播报，供诊断/后续基准使用
-            "final_sweep": 0, "full_rebound_cand": 0, "full_rebound_hits": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
+            "extra_harvests": 0, "final_sweep": 0, "full_rebound_cand": 0, "full_rebound_hits": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
             "deep_final_freed": 0, "deep_final_sweep": 0,
             "normal_final_sweep": 0, "normal_l3_extra": 0,
             # quick 专项（2026-11-22）：零感知成本量化 + 空转退避

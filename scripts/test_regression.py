@@ -4895,11 +4895,10 @@ check("动态周期：未回涨不变", _e64._effective_interval(60) == 60)
 _e64._refill_hot_streak = 2
 check("周期恒为设定值（用户层节拍不漂移，回涨靠周期内多轮消化）",
       _e64._effective_interval(60) == 60 and _e64._effective_interval(17) == 17)
-_e64._refill_hot_streak = 0
-_p_calm = _e64._cycle_passes(4)
-_e64._refill_hot_streak = 3
-_p_hot = _e64._cycle_passes(4)
-check("回涨快时周期内深清轮数 4→6（周期长度不变）", _p_calm == 4 and _p_hot == 6)
+check("full 每进程轮数恒为 6（cleaner 硬化为 max(max_p,6)，不再靠改配置）",
+      "max_p = max(max_p, 6)" in _cl45f)
+check("回涨快改为周期内追加收割（不是改轮数配置）",
+      "周期内追加收割" in _eg45f and "_cycle_passes" not in _eg45f)
 _e64._gap_wsall_ts = 1000.0
 _e64._ws_retention = None
 _e64._pressure_tier = lambda: 2   # 短缺：6s
