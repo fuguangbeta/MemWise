@@ -3157,6 +3157,9 @@ check("版本一致性：CHANGELOG 标题与 APP_VERSION 一致（且只有一�
       len(_clhead) == 1 and bool(_re_ver.fullmatch(
           r"## v" + _re_ver.escape(_bkver.APP_VERSION) + r" \(\d{4}·\d{2}\)", _clhead[0])),
       str(_clhead))
+check("BUILD_VERSION 只允许为空或 x.y.z.beta（正式发布必须置空）",
+      (_bkver.BUILD_VERSION == "") or (_bkver.BUILD_VERSION.endswith(".beta")
+                                        and _bkver.BUILD_VERSION.count(".") == 3))
 check("版本一致性：README 标题与 APP_VERSION 一致",
       ("# MemWise v" + _bkver.APP_VERSION) in open(os.path.join(_ROOT34, "README.md"), encoding="utf-8").read())
 _readme52 = open(os.path.join(_ROOT34, "README.md"), encoding="utf-8").read()
