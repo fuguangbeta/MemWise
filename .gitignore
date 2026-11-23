@@ -55,3 +55,4 @@ config/.write_test*
 .dsh/
 # 挂载清单插件交接（本机）
 .dsh-mounts/
+dist_rc/

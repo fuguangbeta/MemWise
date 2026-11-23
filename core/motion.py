@@ -102,11 +102,3 @@ class Animator:
     def cancel(self, key):
         self._jobs.pop(key, None)
 
-    def cancel_all(self):
-        self._jobs.clear()
-        if self._timer_id is not None and self._cancel:
-            try:
-                self._cancel(self._timer_id)
-            except Exception:
-                pass
-        self._timer_id = None

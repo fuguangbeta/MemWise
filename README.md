@@ -1,4 +1,4 @@
-# MemWise v5.6.045
+# MemWise v5.7.019
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -44,13 +44,9 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## 概述 · *Overview*
 
-MemWise 是运行于 Windows 用户态的内存回收工具。其通过系统公开接口回收进程暂未使用的物理页与可重建的系统缓存，以缓解内存压力；不改变操作系统的内存管理机制，仅调整回收的时机与可控程度。
-
 程序提供四档清理强度，差异体现为介入深度与代价。quick 仅处理低优先待机页与注册表缓存，不介入进程；normal 在此基础上回收进程闲置页，并依据内存压力逐步加深；deep 于用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此产生的短暂重载延迟。默认档位为 normal。
 
 守护模式以固定周期运行，默认周期 60 秒，周期长度不受内存波动影响——你在设置里填 60 秒，日志、图表与统计就都按 60 秒输出；周期内部再按内存压力调整动作密度。内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。系统核心进程、排除项与程序自身不参与清理。
-
-MemWise is a user-mode memory reclamation tool for Windows. It reclaims physical pages not currently in use and caches that can be rebuilt through public system interfaces, relieving memory pressure without altering the operating system's memory management or its policies; it changes only the timing and the degree of control.
 
 Four levels of cleaning intensity are provided, differing in intervention depth and cost. quick handles only low-priority standby pages and registry caches, without process intervention; normal additionally reclaims idle process pages and deepens as memory pressure rises; deep performs extra reclamation while the user is idle; full prioritises release volume and accepts the resulting brief reload delay. The default level is normal.
 
@@ -208,8 +204,6 @@ A working-set cap limits physical usage only and does not change commit memory; 
 
 ---
 
-
-
 ## 命令行与自动化 · *Command Line and Automation*
 
 同一个 exe 也提供命令行入口。常用子命令：
@@ -253,7 +247,7 @@ The command line and the window share one set of settings and learning data, and
 | clean_mode | normal | 清理模式：quick / normal / deep / full |
 | interval | 60 | 守护周期，10 到 3600 秒 |
 | gap_seconds | 12 | 周期内的压制间隔，8 到 20 秒 |
-| clean_passes | 4 | 单个进程最多深清轮数，2 到 6 |
+| clean_passes | 4 | 单个进程最多深清轮数，2 到 6；full 固定 6 轮 |
 | clean_operations | ws、standby、modified、volume、registry | 六个系统操作开关；filecache 可另行勾选 |
 | combine_enabled | true | 页合并开关，与六项解耦 |
 | emergency_threshold | 80 | 紧急清理的使用率阈值，50 到 99 |
@@ -280,7 +274,7 @@ The configuration file is config/config.yaml. It is read at startup, so manual e
 | clean_mode | normal | Cleaning mode: quick, normal, deep or full |
 | interval | 60 | Guard cycle, 10 to 3600 seconds |
 | gap_seconds | 12 | Suppression interval inside a cycle, 8 to 20 seconds |
-| clean_passes | 4 | Maximum deep rounds per process, 2 to 6 |
+| clean_passes | 4 | Maximum deep rounds per process, 2 to 6; full uses 6 |
 | clean_operations | ws, standby, modified, volume, registry | The six system operation switches; filecache can be added |
 | combine_enabled | true | Page combining, independent of the six |
 | emergency_threshold | 80 | Usage threshold for emergency cleaning, 50 to 99 |

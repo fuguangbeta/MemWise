@@ -1107,55 +1107,6 @@ _COM_INITIALIZED = False  # 标记 COM 是否已初始化
 # IPersistFile vtbl: QI=0, AddRef=1, Release=2, GetClassID=3,
 # IsDirty=4, Load=5, Save=6, SaveCompleted=7, GetCurFile=8
 
-def set_auto_start(name, target_path, arguments="", work_dir=""):
-    """通过 IShellLink 创建启动文件夹快捷方式（纯 Win32 API，无脚本引擎）。
-    ⚠ 2026-08-15 起无调用方（普通权限自启功能已移除，仅保留管理员自启）——
-    定义保留不删（红线：不草率弃用，未来如需恢复普通自启零成本）"""
-    global _COM_INITIALIZED
-    if not _COM_INITIALIZED:
-        ret = _ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
-        if ret not in (0, 1):  # S_OK or S_FALSE
-            return False
-        _COM_INITIALIZED = True
-    try:
-        startup = os.path.join(os.environ['APPDATA'],
-            'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        os.makedirs(startup, exist_ok=True)
-        lnk = os.path.join(startup, f'{name}.lnk')
-
-        clsid = _guid_from_bytes(_CLSID_ShellLink)
-        iid = _guid_from_bytes(_IID_IShellLinkW)
-
-        psl = ctypes.c_void_p()
-        hr = _ole32.CoCreateInstance(ctypes.byref(clsid), None, 1,
-                                     ctypes.byref(iid), ctypes.byref(psl))
-        if hr != 0 or not psl: return False
-
-        # SetPath (vtbl 20)
-        _com_vtbl_call(psl.value, 20, w.HRESULT, [w.LPCWSTR], target_path)
-        # SetArguments (vtbl 11)
-        _com_vtbl_call(psl.value, 11, w.HRESULT, [w.LPCWSTR], arguments)
-        if work_dir:
-            _com_vtbl_call(psl.value, 9, w.HRESULT, [w.LPCWSTR], work_dir)
-
-        # Query IPersistFile
-        iid_pf = _guid_from_bytes(_IID_IPersistFile)
-        ppf = ctypes.c_void_p()
-        _com_vtbl_call(psl.value, 0, w.HRESULT,  # QueryInterface
-                       [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)],
-                       ctypes.byref(iid_pf), ctypes.byref(ppf))
-        if not ppf: return False
-
-        # Save (vtbl 6) — IPersistFile::Save(file, fRemember)
-        _com_vtbl_call(ppf.value, 6, w.HRESULT, [w.LPCWSTR, w.BOOL], lnk, True)
-
-        # Release both interfaces
-        _com_vtbl_call(ppf.value, 2, w.HRESULT, [])
-        _com_vtbl_call(psl.value, 2, w.HRESULT, [])
-        return True
-    except Exception:
-        return False
-
 def remove_auto_start(name):
     """移除启动文件夹中的快捷方式"""
     try:
