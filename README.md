@@ -1,4 +1,4 @@
-# MemWise v5.6.025
+# MemWise v5.6.045
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -83,7 +83,7 @@ Guard mode operates on a fixed cycle, 60 seconds by default. When memory usage r
 | **quick** | 仅回收低优先待机页与注册表缓存，不介入进程 | 常驻运行、不希望被中断，或硬件资源有限 |
 | **normal**（默认） | 回收进程闲置页与所选系统缓存，用户活跃时保持克制 | 日常使用；首次使用建议自该档开始 |
 | **deep** | 于用户空闲时增加一轮深度回收，释放量更高 | 内存长期偏紧，且不宜频繁手动优化 |
-| **full** | 以释放量为优先，每轮执行完整流程，代价为短暂重载延迟 | 启动大型程序前，或内存已接近上限 |
+| **full** | 以释放量为优先，每轮执行完整流程；内存紧张时自动加密，宽裕时克制 | 启动大型程序前，或内存已接近上限 |
 
 档位由「清理模式」下拉框切换，下一周期生效。手动优化按当前档位执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
 
@@ -94,7 +94,7 @@ The four levels trade intervention depth against cost. Reclaimed pages must be r
 | **quick** | Reclaims only low-priority standby pages and registry caches; no process intervention | Always-on operation, no interruption desired, or limited hardware |
 | **normal** (default) | Reclaims idle process pages and the selected system caches; restrained while the user is active | Everyday use; recommended as the initial level |
 | **deep** | Adds a deep pass while the user is idle, with higher release | Memory remains tight and frequent manual optimization is impractical |
-| **full** | Prioritises release volume and runs the complete pipeline every cycle, at the cost of a brief reload delay | Before a large application, or when memory is close to its limit |
+| **full** | Prioritises release volume and runs the complete pipeline every cycle; denser under pressure, restrained when memory is ample | Before a large application, or when memory is close to its limit |
 
 The level is switched in the Mode dropdown and takes effect from the next cycle. Manual optimization uses the current level; when memory reaches the emergency threshold the program runs a full pass automatically. While Game Mode is enabled, disk-oriented system operations are suppressed and game smoothness takes priority.
 
@@ -104,13 +104,13 @@ The level is switched in the Mode dropdown and takes effect from the next cycle.
 
 点击「守护」启动，点击「停止」终止。启动后关闭窗口不终止程序，程序驻留托盘，托盘图标指示当前内存档位。
 
-回收于用户空闲时执行；内存达到设定阈值时立即执行一次 full，不等待后续周期。状态可通过三处观察：统计行（系统操作次数、进程清理次数、累计释放）、日志区的最近事件，以及图表中逐轮的释放柱与效率折线。
+回收在设定的周期内完成，周期长度始终等于你在设置里填写的值，日志与图表也按这个节拍输出。周期内部按内存压力调整动作密度：宽裕时克制，紧张时加密；距周期结束仍有余量且内存又涨回来时，会在同一周期内追加一轮。内存达到紧急阈值时立即执行一次 full，不等后续周期。状态可通过三处观察：统计行（系统操作次数、进程清理次数、累计释放）、日志区的最近事件，以及图表中逐轮的释放柱与效率折线。
 
 日常无需干预。建议将常用游戏进程名加入「设置 → 游戏模式」，游戏运行期间程序自动降低介入；守护周期、紧急阈值与关窗行为均可配置。机制细节见 [附录 A](docs/appendix.md#a)。
 
 Guard is started with Guard and terminated with Stop. After startup, closing the window does not terminate the program; it remains in the tray, where the icon indicates the current memory tier.
 
-Reclamation runs while the user is idle; when memory reaches the configured threshold a full pass executes immediately rather than waiting for a later cycle. State is observable in three places: the statistics row (system operations, process trims, cumulative release), the recent events in the log area, and the per-cycle release bars and efficiency line in the chart.
+Reclamation completes inside the configured cycle, and the cycle length always equals the value in Settings; logs and the chart follow the same beat. Inside a cycle the density of work follows memory pressure: restrained when memory is ample, denser when it is tight, with an extra pass added inside the same cycle when time remains and memory has climbed back. When memory reaches the configured threshold a full pass executes immediately rather than waiting for a later cycle. State is observable in three places: the statistics row (system operations, process trims, cumulative release), the recent events in the log area, and the per-cycle release bars and efficiency line in the chart.
 
 No routine intervention is required. Adding frequently used game process names under Settings, Game Mode causes the program to reduce its intervention automatically while those games run; guard cycle, emergency threshold and close behaviour are configurable. Implementation details are given in [Appendix A](docs/appendix.md#a).
 
