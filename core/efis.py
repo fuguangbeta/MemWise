@@ -16,7 +16,7 @@ PARAMS = {
     "layer3_agg_gate":    {"min": 0.30, "max": 0.70, "default": 0.60, "step": 0.05},
     "pid_kp":             {"min": 0.45, "max": 2.00, "default": 0.60, "step": 0.10},  # min 0.45：防漂移触底（0.30 时高压峰值 agg 仅 0.38，稳态豁免失效）
     "pid_kd":             {"min": 0.05, "max": 0.35, "default": 0.10, "step": 0.05},  # max 0.35：防漂移触顶（0.50 的 D 项振荡尖峰，90 分位失真）
-    "target_usage":       {"min": 35,   "max": 65,   "default": 60,   "step": 2},
+    "target_usage":       {"min": 30,   "max": 65,   "default": 60,   "step": 2},
     "cooloff_base":       {"min": 60,   "max": 360,  "default": 360,  "step": 30},
     "learning_rate":      {"min": 0.10, "max": 0.90, "default": 0.50, "step": 0.05},  # EWMA 反馈学习率（λ）：接入 record_clean 的 gain/cost EWMA 主通道，fast/slow 趋势通道固定
     "composite_kalman_w": {"min": 0.10, "max": 0.50, "default": 0.30, "step": 0.05},
@@ -28,6 +28,16 @@ PARAMS = {
     "cpu_gate":           {"min": 3.0,  "max": 25.0, "default": 8.0,   "step": 1.0},   # CPU 活跃门（%，占全机算力口径）
     "io_gate":            {"min": 1.0,  "max": 16.0, "default": 4.0,   "step": 1.0},   # IO 活跃门（MB/s）
 }
+
+# target_usage 全局下限 30；extreme 允许下探到 20（仅该模式，防污染其他模式）
+MODE_TARGET_MIN = {"extreme": 20}
+
+def _param_bounds(mode, param):
+    cfg = PARAMS[param]
+    lo = cfg["min"]
+    if param == "target_usage":
+        lo = MODE_TARGET_MIN.get(mode or "normal", lo)
+    return lo, cfg["max"]
 
 WINDOW = 5
 EVAL_INTERVAL = 5
@@ -60,7 +70,7 @@ MODE_DEFAULTS = {
     # target_usage 仍取 35：本机实测保护后 floor 约 30%，压到 30 以下只会制造无效压力；
     # 真正的额外释放来自全局 WS，不靠把 setpoint 压穿物理下限。
     "extreme": {
-        "target_usage": 35, "cooloff_base": 60, "kalman_r": 2.0,
+        "target_usage": 20, "cooloff_base": 60, "kalman_r": 2.0,
         "learning_rate": 0.85, "pid_kp": 0.90, "pid_kd": 0.15,
         "cpu_gate": 4.0, "io_gate": 2.0,
     },
@@ -108,7 +118,7 @@ class EfisController:
         return g
 
     @staticmethod
-    def _merge_group(target, src):
+    def _merge_group(target, src, mode=None):
         """把载入的组数据并入目标组：参数按 PARAMS 边界钳制、症状只留非零数值。
         载入路径专用（v3/v4/v5 三条分支共用，避免三处重复钳制逻辑）；非法数值跳过该键
         （旧实现直接抛错会被外层 except 捕获而重置全部参数组）"""
@@ -118,7 +128,8 @@ class EfisController:
                 if k not in PARAMS:
                     continue
                 try:
-                    target["params"][k] = max(PARAMS[k]["min"], min(PARAMS[k]["max"], float(v)))
+                    _lo, _hi = _param_bounds(mode, k)
+                    target["params"][k] = max(_lo, min(_hi, float(v)))
                 except (TypeError, ValueError):
                     continue
         sym = src.get("symptoms", {})
@@ -175,7 +186,7 @@ class EfisController:
                             continue
                         if not isinstance(g.get("params"), dict):
                             continue
-                        self._merge_group(self._group(mode), g)
+                        self._merge_group(self._group(mode), g, mode)
                 else:
                     # v4 → v5 迁移（2026-09-26 删除场景维度）：每个模式保留"当前场景"那一组
                     # ——即重启后本应生效的那组，故迁移不改变当下实际行为；其余场景组丢弃
@@ -192,7 +203,7 @@ class EfisController:
                             g = next((x for x in scenes.values() if isinstance(x, dict)), None)
                         if not isinstance(g, dict) or not isinstance(g.get("params"), dict):
                             continue
-                        self._merge_group(self._group(mode), g)
+                        self._merge_group(self._group(mode), g, mode)
                 self.current_mode = efis.get("current_mode", "normal")
                 if self.current_mode not in MODE_TUNE_WHITELIST:
                     self.current_mode = "normal"
@@ -205,7 +216,7 @@ class EfisController:
                 self._adjust_log = efis.get("adjust_log", [])[-50:]
                 ng = self._group("normal")
                 self._merge_group(ng, {"params": efis.get("params", {}),
-                                       "symptoms": efis.get("symptoms", {})})
+                                       "symptoms": efis.get("symptoms", {})}, "normal")
             # 顶格症状清洗（沿用 v2.4 逻辑，逐模式组执行）
             for _m, g in self.mode_params.items():
                 syms = g.get("symptoms", {})
@@ -214,9 +225,10 @@ class EfisController:
                     if base not in PARAMS:
                         syms.pop(k, None)
                         continue
-                    if k.endswith("+") and g["params"].get(base, 0) >= PARAMS[base]["max"] - 1e-9:
+                    _lo, _hi = _param_bounds(_m, base)
+                    if k.endswith("+") and g["params"].get(base, 0) >= _hi - 1e-9:
                         syms.pop(k, None)
-                    elif k.endswith("-") and g["params"].get(base, 0) <= PARAMS[base]["min"] + 1e-9:
+                    elif k.endswith("-") and g["params"].get(base, 0) <= _lo + 1e-9:
                         syms.pop(k, None)
             # 旧结构迁移后立即按新结构落盘（幂等：v5 文件不会再触发）
             if version < 5:
@@ -390,6 +402,7 @@ class EfisController:
             if direction == 0:
                 continue
             cfg = PARAMS[param]
+            _lo, _hi = _param_bounds(self.current_mode, param)
             step = cfg["step"]
             cur = self.params[param]
             key = f"{param}{'+' if direction > 0 else '-'}"
@@ -402,7 +415,7 @@ class EfisController:
                 continue
             prev = self._symptoms.get(key, 0)
             # 参数已在该方向顶格：症状无调整空间，直接清除（防无界累积，曾见 pid_kd+ 涨到 264）
-            if (direction > 0 and cur >= cfg["max"] - 1e-9) or (direction < 0 and cur <= cfg["min"] + 1e-9):
+            if (direction > 0 and cur >= _hi - 1e-9) or (direction < 0 and cur <= _lo + 1e-9):
                 self._symptoms.pop(key, None)
                 continue
             if prev != 0 and (direction > 0) == (prev > 0):
@@ -413,7 +426,7 @@ class EfisController:
             if abs(self._symptoms[key]) < 2:
                 continue
             new_val = cur + direction * step
-            new_val = max(cfg["min"], min(cfg["max"], new_val))
+            new_val = max(_lo, min(_hi, new_val))
             if abs(new_val - cur) <= 0.001:
                 # 已到参数边界，症状无调整空间：清除防无界累积（曾见 pid_kd+ 涨到 264）
                 self._symptoms.pop(key, None)
