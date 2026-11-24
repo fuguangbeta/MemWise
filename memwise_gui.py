@@ -1534,7 +1534,7 @@ class MemWiseGUI:
         self._anim = _motion.Animator(self.root.after, self.root.after_cancel, frame_ms=8)
 
         self._build_ui()
-        self.root.after(120, self._ensure_extreme_startup)
+        self._extreme_startup_checked = False
         _hook_button_hover(self.root)
         self._refresh_mem()
         self._start_mem_bar()   # 内存条独立 300ms 实时刷新（2026-11-20）
@@ -2056,6 +2056,14 @@ class MemWiseGUI:
 
     def _present_done(self):
         self._finish_present()
+        # 启动确认必须晚于主界面淡入；只检查一次，恢复窗口/设置重建不重复弹。
+        if not getattr(self, "_extreme_startup_checked", False):
+            self._extreme_startup_checked = True
+            try:
+                if not getattr(self, "_minimized_to_tray", False):
+                    self.root.after(80, self._ensure_extreme_startup)
+            except Exception:
+                pass
 
     def _on_hotkey(self):
         """Ctrl+Shift+M → 执行一键优化"""
