@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""配置包：导出 / 导入 / 自动备份 / 恢复出厂（包格式 v1）
+"""配置包：导出 / 导入 / 自动备份 / 恢复出厂（包格式 v2，含 partial/contains_learning）
 
 单文件 ZIP 包（根目录平铺）：状态文件 + manifest.json 清单。
 manifest = {"format_version": 1, "app_version": ..., "source": "export"|"backup",
@@ -20,7 +20,7 @@ except ImportError:
 from core.i18n import tr, tr_msg
 
 PACKAGE_VERSION = 2   # v2：manifest 增加 partial（仅配置/不含学习数据的包）；旧版读 v2 会拒绝导入（安全方向）
-APP_VERSION = "5.7.019"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
+APP_VERSION = "5.7.036"  # 最近一次**正式发布**的版本号（README/CHANGELOG/manifest/发布断言以此为唯一源）
 # 本地临时构建标识（2026-11-11 用户规则）：正式发布前，本地构建的版本号一律加 ".beta"
 # （如 "5.4.014.beta"）；正式发布时把本行置空、并把 APP_VERSION 升到该正式号。
 # ⚠ 只有**运行时显示**（窗口标题/启动日志/单实例提示）用 display_version()；
@@ -33,6 +33,7 @@ def display_version():
     return BUILD_VERSION or APP_VERSION
 PACKAGE_FILE_MAX = 8 * 1024 * 1024    # 单个状态文件上限（2026-09-11 加固；2026-11-06 由 64MB 收紧：
                                        # 实际四文件约 1MB，64MB 只会让校验期多占 4×64MB 内存）
+PACKAGE_TOTAL_MAX = 16 * 1024 * 1024  # 四文件解压总量上限（7.1：四个单文件 8MB 合计正好 32MB，32MB 上限永远触发不了）
 
 _STATE_NAMES = ("config.yaml", "memwise_state.json",
                 "memwise_efis_state.json", "memwise_eris_ewma.json")
@@ -308,11 +309,13 @@ def validate_package(pkg_path):
             if unknown:
                 return manifest, [tr("配置包内容不符") + "（" + tr("含未知文件：")
                                    + "、".join(unknown) + "）"]
+            _total_sz = 0
             for name in expected:
                 try:
                     _sz = zf.getinfo(name).file_size
                 except Exception:
                     _sz = 0
+                _total_sz += _sz
                 if _sz > PACKAGE_FILE_MAX:
                     errors.append(tr("文件 ") + name + tr(" 过大，已拒绝导入")
                                   + "（%d MB）" % (_sz // (1 << 20)))
@@ -332,6 +335,9 @@ def validate_package(pkg_path):
                         ok = False
                 if not ok:
                     errors.append(tr_msg(f"文件 {name} 无法解析（可能已损坏）"))
+            if _total_sz > PACKAGE_TOTAL_MAX:
+                errors.append(tr("配置包解压总量过大，已拒绝导入")
+                              + "（%d MB）" % (_total_sz // (1 << 20)))
     except Exception:
         return None, [tr("配置包缺少清单文件或已损坏")]
     return manifest, errors
@@ -342,8 +348,8 @@ def _journal_path(base=None):
     return os.path.join(_data_root(base), "import.pending")
 
 
-def import_state(pkg_path, backup=True, base=None):
-    """导入配置包 → (True, "") 或 (False, 错误串)。
+def _import_state_core(pkg_path, backup=True, base=None):
+    """导入配置包核心 → (True, "") 或 (False, 错误串)。公开入口见 import_state。
     backup=True 先把当前状态打包为 Backup 包（可供再次导入恢复）。
     落位 = 按 manifest.files 写入 + 删除预期四文件中包内没有的
     （完整复刻导出方状态——导出方没有的文件，导入方也不保留）。
@@ -378,6 +384,11 @@ def import_state(pkg_path, backup=True, base=None):
         _local_lists = {}
     temps = {}
     journal = _journal_path(base)
+    done = journal + ".done"
+    try:
+        os.remove(done)
+    except Exception:
+        pass
     try:
         with zipfile.ZipFile(pkg_path) as zf:
             for name in manifest["files"]:
@@ -408,10 +419,24 @@ def import_state(pkg_path, backup=True, base=None):
                 if name not in manifest["files"] and os.path.isfile(target):
                     os.remove(target)
         if bak:
+            # 3.1（2026-11-24）：先把事务标记为完成，再清 journal；
+            # 清理失败时下次启动只清标记，不再用备份回滚已成功导入。
             try:
-                os.remove(journal)
+                with open(done, "w", encoding="utf-8") as f:
+                    f.write("done")
             except Exception:
                 pass
+            _removed = False
+            try:
+                os.remove(journal)
+                _removed = True
+            except Exception:
+                pass
+            if _removed:
+                try:
+                    os.remove(done)
+                except Exception:
+                    pass
         return True, ""
     except Exception as e:
         for tmp in temps.values():
@@ -420,27 +445,58 @@ def import_state(pkg_path, backup=True, base=None):
             except Exception:
                 pass
         _restored = False
+        _rb_err = ""
         if bak:
             try:
-                _restored = bool(import_state(bak, backup=False, base=base)[0])
-            except Exception:
+                _rb_ok, _rb_msg = _import_state_core(bak, backup=False, base=base)
+                _restored = bool(_rb_ok)
+                _rb_err = "" if _restored else str(_rb_msg or "")
+            except Exception as _re:
                 _restored = False
+                _rb_err = repr(_re)
         try:
             if _restored:
                 os.remove(journal)
+                if os.path.isfile(done):
+                    os.remove(done)
             elif os.path.isfile(journal):
                 # 回滚失败：保留证据但不阻塞下次启动（避免每次启动都重复恢复尝试）
                 os.replace(journal, journal + ".failed")
         except Exception:
             pass
-        return False, tr_msg("导入失败：%s" % e)
+        _msg = tr_msg("导入失败：%s" % e)
+        if _rb_err:
+            _msg += tr_msg("；回滚失败：%s" % _rb_err)
+        return False, _msg
+
+
+def import_state(pkg_path, backup=True, base=None):
+    """导入配置包公开入口（包装 _import_state_core，保留原签名）。"""
+    return _import_state_core(pkg_path, backup=backup, base=base)
 
 
 def recover_pending(base=None):
     """P18：启动时恢复未完成导入（有 journal 且备份包仍在）。返回可展示的提示串。"""
     journal = _journal_path(base)
+    done = journal + ".done"
     if not os.path.isfile(journal):
+        try:
+            if os.path.isfile(done):
+                os.remove(done)
+        except Exception:
+            pass
         return ""
+    # 3.1（2026-11-24）：已完成标记存在 ⇒ 上次导入已成功，只清事务，不回滚。
+    if os.path.isfile(done):
+        try:
+            os.remove(journal)
+        except Exception:
+            pass
+        try:
+            os.remove(done)
+        except Exception:
+            pass
+        return tr_msg("上次导入已完成，已清理事务标记")
     try:
         with open(journal, encoding="utf-8") as f:
             d = json.load(f)

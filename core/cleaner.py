@@ -47,7 +47,7 @@ COMPOSITE_WS_SCALE = int((500 << 20) * _S)      # 复合评分：WS 归一尺度
 LITE_TOP_K = 48            # 轻量轮候选上限（实测前 25%≈46 个进程占 96.7% 释放量）
 
 # full 专用收尾/页合并（不进入 normal/deep/gap/游戏）
-_COMBINE_MIN_INTERVAL = 900       # 15 分钟；手动 full 首次/间隔 ≥60s 可触发
+_COMBINE_MIN_INTERVAL = 900       # 非 full 默认 15 分钟；full 由 _combine_eligible 用 300s（5 分钟）
 _COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 
 # ── 重系统操作择时门（2026-11-11）──
@@ -410,7 +410,7 @@ class PareCleaner:
             self._combine_backoff = min(_COMBINE_MAX_BACKOFF,
                                         max(1800, int(self._combine_backoff) * 2))
 
-    def _final_consolidation(self, ops_filter, deadline=None):
+    def _final_consolidation(self, ops_filter):
         """full 的最后压实：按勾选清掉进程回填的 WS/待机，再合并页。
 
         只在 full 分支、process 动作全部完成之后调用；normal/deep/gap/游戏不进入。
@@ -611,7 +611,8 @@ class PareCleaner:
 
         interval = self._trim_interval(learner, name, getattr(self.judger, "_last_mem_pct", 50))
         t_wait = interval * 0.5
-        _st, _a, _b = self._trim_execute(pid, name, learner, ws_before, passes, t_wait, total_wait)
+        _st, _a, _b = self._trim_execute(pid, name, learner, ws_before, passes, t_wait, total_wait,
+                                          create=getattr(snap, "create", None))
         if _st == "early":
             return _a
         return self._trim_record(pid, name, snap, learner, ws_before, _a, _b, passes)
@@ -663,7 +664,7 @@ class PareCleaner:
             pass
         return True, ""
 
-    def _trim_execute(self, pid, name, learner, ws_before, passes, t_wait, total_wait):
+    def _trim_execute(self, pid, name, learner, ws_before, passes, t_wait, total_wait, create=None):
         """多轮 EWS + 轮间截断 + 等待/最终测量；返回 ("early", 结果) 或 ("ok", ws, pf)。"""
         rounds_done = 0
         round_freed = []  # 首轮实际释放（低效轮截断判定基准）
@@ -704,7 +705,7 @@ class PareCleaner:
                 # 2026-10-15 订正：返回值的 freed 同样记 0——旧实现返回 ws_before，桩实验实测结果卡会
                 # 显示「✓ xxx.exe 1200 MB」（其实是进程自己退出），归因虚高；理由串已如实注明退出原因。
                 learner.record_clean_result(name, True, freed=0, lr=self._efis_lr())
-                self.judger.mark_trimmed(name)
+                self.judger.mark_trimmed(name, create=create)
                 self.stats["ws_trim"] += 1
             self._stats_inc("trim_rounds", rounds_done)
             return "early", (True, 0, 0, "进程已退出·内存随之释放"), None
@@ -1027,7 +1028,8 @@ class PareCleaner:
         base = reason.split("(")[0]
         if base in ("稳态抑制", "回弹后退", "WS未填满"):
             slot = self._diag_supp.setdefault(base, [0, 0])
-            prev = self._diag_supp_prev.get(s.name.lower())
+            # 7.1：诊断样本按实例（name,pid,create），与判定粒度一致；同名多实例不再互相覆盖
+            prev = self._diag_supp_prev.get(self._diag_key(s))
             if prev and prev > 0:
                 slot[0] += 1
                 if (float(s.ws) - float(prev)) / float(prev) >= 0.6:
@@ -1051,11 +1053,17 @@ class PareCleaner:
         self._diag_vote[0] += 1
         self._diag_vote[1] += 1
 
+    @staticmethod
+    def _diag_key(s):
+        """D6 诊断键：与判定粒度一致的实例键。"""
+        return (str(getattr(s, "name", "")).lower(),
+                getattr(s, "pid", 0), getattr(s, "create", None))
+
     def _diag_finish_round(self, snaps):
         cur = {}
         for s in snaps:
             try:
-                cur[s.name.lower()] = s.ws
+                cur[self._diag_key(s)] = s.ws
             except Exception:
                 continue
         self._diag_supp_prev = cur
@@ -1430,6 +1438,8 @@ class PareCleaner:
                 _theta_d = {"deep": 0.12, "full": 0.06}.get(getattr(self.judger, "_mode_guard", "normal"), 0.5)
                 if theta > _theta_d:
                     d_candidates.append(s)
+        # 5.1（2026-11-24）：预算内按 WS 降序，高价值候选先提交（原为快照顺序截断）
+        d_candidates.sort(key=lambda x: x.ws, reverse=True)
         return d_candidates
 
     def _l3_submit(self, candidates, learner, deadline):
@@ -1744,7 +1754,7 @@ class PareCleaner:
                     _l3_done = True
                     self._stats_inc("normal_l3_extra")
         if allow_layer3 and getattr(self, "_cycle_any_trim", False) and self._normal_tail_ok(deadline):
-            self._normal_final_consolidation(ops_filter, deadline)
+            self._normal_final_consolidation(ops_filter)
         return l2_results, probe_results
 
     def _normal_tail_ok(self, deadline=None):
@@ -1760,7 +1770,7 @@ class PareCleaner:
         # 尾段仅做 standby/modified（低于 1 秒），改为只看停手与游戏/轻量，不再看 deadline。
         return True
 
-    def _normal_final_consolidation(self, ops_filter, deadline):
+    def _normal_final_consolidation(self, ops_filter):
         """normal 轻收尾：停手期做一次 standby/modified 压实。
 
         两处关键点（2026-11-22 实测后定稿）：
@@ -1788,7 +1798,7 @@ class PareCleaner:
         except Exception:
             return False
 
-    def _deep_final_consolidation(self, ops_filter, deadline):
+    def _deep_final_consolidation(self, ops_filter):
         """deep 有界收尾：停手期按勾选做一次系统级压实。
 
         与 normal 同理：deadline 在收尾时通常已耗尽，不再据此降级；
@@ -1828,7 +1838,7 @@ class PareCleaner:
         # 回弹通道已删除——实测 18 轮仅 47MB、与 L2 重复且受同一系统目录 θ 守卫，
         # 收益是噪音级；价值全部来自这里的 standby 压实（每轮 200~300MB）。
         if self._deep_tail_gate():
-            self._deep_final_consolidation(ops_filter, deadline)
+            self._deep_final_consolidation(ops_filter)
         return l2_results, probe_results
 
     def _run_full(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
@@ -1855,11 +1865,11 @@ class PareCleaner:
         # 游戏 PID 树/系统核心/黑名单/自身/前台(低压力) 一律跳过：防御纵深，
         # 不依赖 Layer2 过滤的时序正确性，防未来逻辑变化致保护界限被破解）
         if pipeline_ctx["layer2_trimmed"] and not self._lite:
-            _rb_cand = 0
             _rb_hits = 0
             never = self.judger.cfg.get("never", []) or []
             game_pids = getattr(self.judger, '_game_pid_set', set()) if self.game_mode else set()
             _agg = agg  # 局部 agg（daemon 传参模式下 judger.aggressiveness 是上一轮旧值）
+            _rb_list = []
             for s in snaps:
                 if s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
                     continue
@@ -1872,28 +1882,35 @@ class PareCleaner:
                 if getattr(s, 'fg', False) and _agg < 0.35:
                     continue  # 前台进程低压力不碰（与 can_trim 同规则）
                 if s.pid in pipeline_ctx["layer2_trimmed"] and s.ws >= (10 << 20):
-                    # 预算：单轮最多 40 个候选，避免大机群下几百次 empty_ws 拖长周期
-                    if _rb_cand >= 40:
+                    # 9.1（2026-11-24）：回弹二轮也是执行通道，必须走统一执行复检——
+                    # full 下 execution_allowed 只查失败冷却后放行，仍保留"刚失败别急着重试"。
+                    if not self.judger.execution_allowed(
+                            s, check_io=False, check_anchor=False, check_rebound=False)[0]:
                         continue
-                    _rb_cand += 1
-                    try:
-                        # 二轮释放量计入统计（2026-08-14 审查：原裸清不计，full 模式"释放"低估）
-                        _pre = winapi.get_process_memory(s.pid)
-                        if _pre and winapi.empty_ws(s.pid):
-                            _post = winapi.get_process_memory(s.pid)
-                            if _post:
-                                _f = max(0, _pre["ws"] - _post["ws"])
-                                with self._lock:
-                                    self.stats["freed_bytes"] += _f
-                                _rb_hits += 1
-                    except Exception:
-                        pass
+                    _rb_list.append(s)
+            # 5.1（2026-11-24）：预算固定时按 WS 降序（收益最大优先），
+            # 避免快照顺序把高价值进程截断在 40 之外。
+            _rb_list.sort(key=lambda x: x.ws, reverse=True)
+            _rb_cand = min(len(_rb_list), 40)
+            for s in _rb_list[:40]:
+                try:
+                    # 二轮释放量计入统计（2026-08-14 审查：原裸清不计，full 模式"释放"低估）
+                    _pre = winapi.get_process_memory(s.pid)
+                    if _pre and winapi.empty_ws(s.pid):
+                        _post = winapi.get_process_memory(s.pid)
+                        if _post:
+                            _f = max(0, _pre["ws"] - _post["ws"])
+                            with self._lock:
+                                self.stats["freed_bytes"] += _f
+                            _rb_hits += 1
+                except Exception:
+                    pass
             self._stats_inc("full_rebound_cand", _rb_cand)
             self._stats_inc("full_rebound_hits", _rb_hits)
         # full + 六区全开：所有 process 动作结束后再系统压实 + 可选 combine
         if allow_layer3:
             try:
-                self._final_consolidation(ops_filter, deadline=deadline)
+                self._final_consolidation(ops_filter)
             except Exception:
                 pass  # 收尾失败不得中断已完成的清理/统计
         return l2_results, probe_results

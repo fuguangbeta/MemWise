@@ -202,6 +202,17 @@ def load():
             d["clean_operations"] = [k for k in d["clean_operations"] if k in CLEAN_OPS_WHITELIST]
     except Exception as e:
         _warn_once("load_fail", f"配置加载失败，本次使用默认配置：{e!r}")
+    # 枚举键归一（2026-11-24 2.1）：必须在异常路径之后执行；未知模式曾走
+    # cleaner._run_fallback（normal 语义）而 ERIS/日志仍带原串，口径漂移。
+    try:
+        for _k, _allowed, _dflt in (("clean_mode", {"quick", "normal", "deep", "full"}, "normal"),
+                                    ("close_action", {"ask", "minimize", "exit"}, "ask"),
+                                    ("tray_left_action", {"show", "clean"}, "show")):
+            if d.get(_k) not in _allowed:
+                _warn_once("enum_" + _k, f"配置 {_k} 非法：{d.get(_k)!r}，已回退 {_dflt}")
+                d[_k] = _dflt
+    except Exception:
+        pass
     # 契约兜底：任何异常路径都不得让 efis_params 退化为非 dict（消费方直接下标访问）
     if not isinstance(d.get("efis_params"), dict):
         d["efis_params"] = {}

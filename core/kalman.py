@@ -21,6 +21,15 @@ class KalmanProfile:
         return max(0.0, self.x_freed), max(0.0, self.x_cost)
     
     def update(self, freed, pf_cost):
+        # 4.1（2026-11-24）：运行期与 from_dict 同口径；非法值不进入估计
+        try:
+            freed = float(freed)
+            pf_cost = float(pf_cost)
+        except (TypeError, ValueError):
+            return
+        if (not math.isfinite(freed) or not math.isfinite(pf_cost)
+                or freed < 0 or pf_cost < 0):
+            return
         now = time.time()
         dt = max(1.0, now - self.last_update) if self.last_update > 0 else 1.0
         self.last_update = now

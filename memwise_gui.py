@@ -66,6 +66,7 @@ def _normalize_proc_name(raw):
 # ── 日志面板分组写入语义（2026-08-30）：组间 ≤7 接续 / >7 清屏，组内可超 7 完整呈现 ──
 # 运行时显示用标题（含 .beta 本地构建标识；正式版显示 APP_VERSION）——见 core/backup.display_version
 _APP_TITLE = "MemWise v" + _display_version()
+MAIN_W, MAIN_H = 1060, 700   # 主窗默认尺寸（每次重开恢复默认；仅超屏时夹取）
 
 PANEL_MAX_LINES = 7  # 日志面板组间刷新阈值（行）
 
@@ -430,17 +431,28 @@ def _apply_update(argv):
         target, pid = os.path.abspath(rest[0]), int(rest[1])
         new_exe = sys.executable
         base = os.path.dirname(target)
+        _minimized = minimized
+
+        def _fail(code, msg):
+            """12.1：所有失败路径统一收口——写日志并拉起一个可运行实例，
+            绝不让用户“点更新后程序消失”。"""
+            try:
+                _upd_log(base, msg)
+            except Exception:
+                pass
+            try:
+                _launch_app(target, _minimized)
+            except Exception:
+                pass
+            return code
         if not os.path.isfile(target) or not os.path.isfile(new_exe):
             return 2
         _ok_t, _why_t = _validate_update_target(target, pid)
         if not _ok_t:
-            _upd_log(base, "目标校验失败（%s），拒绝替换：%s" % (_why_t, target))
-            return 8
+            return _fail(8, "目标校验失败（%s），拒绝替换并重启旧版：%s" % (_why_t, target))
         _upd_log(base, "更新助手启动：等待旧实例退出（PID %d）" % pid)
         if not _wait_pid_exit(pid, 120.0):     # 侧视补：守护/长清理周期下 60s 可能不够
-            _upd_log(base, "\u7b49\u5f85\u8d85\u65f6\uff0c\u653e\u5f03\u66f4\u65b0\uff08\u65e7\u7248\u672c\u672a\u52a8\uff09")
-            _launch_app(target, minimized)     # 关键：不能让用户"程序消失且没更新"
-            return 3
+            return _fail(3, "\u7b49\u5f85\u8d85\u65f6\uff0c\u653e\u5f03\u66f4\u65b0\uff08\u65e7\u7248\u672c\u672a\u52a8\uff09")
 
 
         bak = target + ".old"   # 侧视修正误删后补回（真机测试抓到：备份步骤 NameError）
@@ -455,9 +467,7 @@ def _apply_update(argv):
         try:
             shutil.copy2(target, bak)
         except Exception as _e:
-            _upd_log(base, "备份失败（%r），放弃更新" % _e)
-            _launch_app(target, minimized)
-            return 4
+            return _fail(4, "备份失败（%r），放弃更新并重启旧版" % _e)
         # 新版落地：**先复制到目标同目录**再"同卷一步换名"（2026-10-16 演练修正）：
         #   ① 直接 MoveFileEx(助手自身文件 → 目标) 会搬走运行中的镜像，且助手若在别的卷
         #      （%TEMP% 常在 C:，程序可能在 D:）时**跨卷 MoveFileEx 不是原子操作**；
@@ -470,8 +480,7 @@ def _apply_update(argv):
                 pass
             shutil.copy2(new_exe, stage)
         except Exception as _e:
-            _upd_log(base, "落盘新版本失败（%r），保留原版本" % _e)
-            return 4
+            return _fail(4, "落盘新版本失败（%r），保留原版本并重启旧版" % _e)
         # 侧视补：替换失败要重试——双杀软对"替换可执行文件"常有瞬时占用（曾见 Access denied 稍后即好）
         _ok_swap = False
         for _i in range(5):
@@ -481,29 +490,25 @@ def _apply_update(argv):
             _upd_log(base, "替换第 %d 次未成功，1 秒后重试" % (_i + 1))
             time.sleep(1.0)
         if not _ok_swap:
-            _upd_log(base, "替换失败（文件被占用或权限不足），保留原版本并重启旧版")
             try:
                 os.remove(stage)
             except Exception:
                 pass
-            _launch_app(target, minimized)     # 早期失败也要把旧版拉起来，不能留"无人看护"状态
-            return 5
+            return _fail(5, "替换失败（文件被占用或权限不足），保留原版本并重启旧版")
         _swapped = True
         _upd_log(base, "已替换为新版（来源：%s）" % os.path.basename(new_exe))
         proc = _launch_app(target, minimized)
         if proc is None:
             _upd_log(base, "启动新版失败，回滚")
             _rollback()
-            _launch_app(target, minimized)
-            return 6
+            return _fail(6, "启动新版失败，已回滚并重启旧版")
         time.sleep(10)
         if proc.poll() is None:
             _upd_log(base, "新版启动成功，更新完成")
             return 0
         _upd_log(base, "新版启动后立即退出（rc=%s），回滚到旧版" % proc.returncode)
         _rollback()
-        _launch_app(target, minimized)
-        return 7
+        return _fail(7, "新版启动后立即退出，已回滚并重启旧版")
     except Exception as _e:
         try:
             _upd_log(os.path.dirname(os.path.abspath(argv[2] if len(argv) > 2 else ".")), "更新助手异常：%r" % _e)
@@ -926,72 +931,6 @@ class _SafeToplevel(tk.Toplevel):
             pass
 
 
-class _PoolToplevel(_SafeToplevel):
-    """复用型子窗口：关闭时清空内容并隐藏，保留 native 窗口，避免每次打开新建窗口。"""
-    def __init__(self, master=None, **kw):
-        super().__init__(master, **kw)
-        try:
-            self.protocol("WM_DELETE_WINDOW", self._mw_pool_close)
-        except Exception:
-            pass
-
-    def _mw_pool_close(self):
-        _pool_log(self, "pool_close_begin")
-        try:
-            self.grab_release()
-        except Exception:
-            pass
-        try:
-            for _c in list(self.winfo_children()):
-                try:
-                    _c.destroy()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            # 关键：不 withdraw（Tk 会重建 native wrapper）；保持映射，仅透明+屏外
-            self.geometry("1x1+4000+4000")
-            self.attributes("-alpha", 0.0)
-        except Exception:
-            pass
-        self._mw_revealed = False
-        self._mw_target = None
-
-    def _mw_warm_map(self):
-        try:
-            self.geometry("1x1+4000+4000")
-            self.attributes("-alpha", 0.0)
-            self.deiconify()
-            self.update_idletasks()
-            self.attributes("-alpha", 0.0)
-            self._mw_revealed = False
-        except Exception:
-            pass
-
-    def destroy(self):
-        # 程序化 destroy 也走回收；只有应用退出才真正销毁
-        if getattr(self, "_mw_app_close", False):
-            return super().destroy()
-        self._mw_pool_close()
-
-
-def _pool_log(win, phase):
-    try:
-        with open(os.path.join(base, "data", "ui_pool_debug.log"), "a", encoding="utf-8") as f:
-            f.write("%s\t%s\tid=%s\thwnd=%s\texists=%s\trevealed=%s\tmapped=%s\tstate=%s\ttitle=%s\tchildren=%s\n" % (
-                time.strftime("%H:%M:%S"), phase, id(win),
-                win.winfo_id() if win is not None and win.winfo_exists() else "-",
-                win.winfo_exists() if win is not None else "-",
-                getattr(win, "_mw_revealed", "-"),
-                win.winfo_ismapped() if win is not None and win.winfo_exists() else "-",
-                win.state() if win is not None and win.winfo_exists() else "-",
-                win.title() if win is not None and win.winfo_exists() else "-",
-                len(win.winfo_children()) if win is not None and win.winfo_exists() else "-"))
-    except Exception:
-        pass
-
-
 class _HostToplevel(_SafeToplevel):
     """宿主窗口：启动即创建并保持映射；子界面内容装进它，不再新建 Toplevel。"""
     def __init__(self, master=None, **kw):
@@ -1053,30 +992,15 @@ class _HostToplevel(_SafeToplevel):
             pass
 
 
-def _prep_window_anim(win, content=False):
-    if not isinstance(win, tk.Toplevel):
-        return
-    if not ANIM_ENABLED or getattr(win, "_mw_anim", False):
-        return
-    win._mw_anim = True
-
-    def _shown(_e=None):
-        try:
-            win.unbind("<Map>")
-        except Exception:
-            pass
-
-    try:
-        win.bind("<Map>", _shown, add="+")
-    except Exception:
-        pass
-
-
-def _center_geometry(win, w, h, parent=None):
+def _center_geometry(win, w, h, parent=None, fit=False):
     """一次性定位窗口到父窗口中央（首次出现即居中，零闪烁），并钳制在屏幕内。
     替代"先默认位置弹出再移动"的两步 geometry，消除闪现与卡顿时不居中的问题"""
     parent = parent if parent is not None else win.master
     sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    if fit:
+        # 18.1：默认尺寸超屏时缩小（不记忆用户宽度；每次重开默认值）
+        w = max(320, min(int(w), int(sw)))
+        h = max(240, min(int(h), int(sh)))
     try:
         px, py = parent.winfo_x(), parent.winfo_y()
         pw, ph = parent.winfo_width(), parent.winfo_height()
@@ -1089,7 +1013,6 @@ def _center_geometry(win, w, h, parent=None):
     cx = max(0, min(cx, sw - w))
     cy = max(0, min(cy, sh - h))
     win.geometry(f"{w}x{h}+{cx}+{cy}")
-    _prep_window_anim(win, content=True)
 
 
 def _parse_hotkey(spec):
@@ -1517,6 +1440,11 @@ class MemWiseGUI:
         self._minimized_to_tray = False  # 显式初始化（--minimized 分支下方覆盖为 True）
 
         self.root = tk.Tk()
+        # 18.9：暗色底兜底——任何首帧/露底都不出现浅色闪屏
+        try:
+            self.root.configure(bg="#1c1c1c")
+        except Exception:
+            pass
         # P13：Tk 回调异常默认只写 sys.stderr（windowed 下为 devnull）⇒ 不进 sys.excepthook。
         # 挂到崩溃通道，保证设置面板/更新弹窗等回调崩溃有现场。
         self.root.report_callback_exception = self._tk_exception_hook
@@ -1530,7 +1458,7 @@ class MemWiseGUI:
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
         self.root.resizable(True, False)
-        _center_geometry(self.root, 1060, 700)
+        _center_geometry(self.root, MAIN_W, MAIN_H, fit=True)
 
         # 窗口图标 — 用 MemWise 自定义 HICON（直接内存创建，不走 .ico 文件）
         # winfo_id 是 Tk 的 client 窗口，标题栏图标必须发给 wrapper 顶层；
@@ -1705,6 +1633,11 @@ class MemWiseGUI:
                         top = fw
                 except Exception:
                     pass
+            # 18.7：同一 wrapper/HICON 下重复设置无收益，且 FRAMECHANGED 会让标题栏/任务栏闪
+            _applied = (top, wid, big_h, sml_h)
+            if getattr(self, "_icon_applied", None) == _applied:
+                return
+            self._icon_applied = _applied
             for t in (top, wid):
                 if not t:
                     continue
@@ -1828,6 +1761,11 @@ class MemWiseGUI:
         # 托盘图标 = 四档彩色圆盘 M（2026-10-25 用户裁定：不做百分比数字图标，保持既有形态；
         # 数字只在悬停提示里）。_get_colored_icon 自带 (档位名→HICON) 缓存，零重复创建。
         icon = self._get_colored_icon(_fb, _color)
+        _state = (_fb, tip, icon)
+        # 18.8：同档位/同 tip 不重复 MODIFY（部分 shell 会闪托盘图标）
+        if getattr(self, "_tray_state", None) == _state:
+            return
+        self._tray_state = _state
         self._tray_icon_handle = icon
         winapi.tray_modify(self.root.winfo_id(), TRAY_UID, icon, f"MemWise — {tip}")
 
@@ -1912,6 +1850,7 @@ class MemWiseGUI:
         """统一呈现管线：隐藏态完成全部内容 → 单次映射（alpha 0）→ 同一回调启动淡入与图表入场。
         关键：内容绘制后必须再做一次 update_idletasks，保证首个 alpha>0 帧不是旧 surface。"""
         self._presenting = True
+        self._chart_present_lock = True
         self._presenting_since = time.time()
         try:
             self._drawing_chart = False
@@ -1946,7 +1885,7 @@ class MemWiseGUI:
             self._chart_intro_pending = True
             # ① 先在**屏外**以 alpha 0 映射最终尺寸：让 Canvas 拿到真实宽度，同时保证任何
             #    "旧尺寸/旧 surface"帧都发生在屏幕外（Windows 恢复动画也看不到）。
-            self.root.geometry("1060x700+4000+4000")
+            self.root.geometry(f"{MAIN_W}x{MAIN_H}+4000+4000")
             try:
                 self.root.attributes("-alpha", 0.0)
             except Exception:
@@ -1965,11 +1904,17 @@ class MemWiseGUI:
                 payload = None
             self.root.update_idletasks()   # 屏外完成新内容绘制
             # ② 移到屏幕中央（仍 alpha 0）后再绘制一次：首个 alpha>0 帧必为最终位置/尺寸
-            _center_geometry(self.root, 1060, 700)
+            _center_geometry(self.root, MAIN_W, MAIN_H, fit=True)
             self.root.update_idletasks()
-            self.root.after_idle(lambda: self._present_start(payload))
+            # 18.9：先强制一帧真实绘制（expose/paint），再启动淡入；否则合成器仍显示隐藏前旧 surface。
+            try:
+                self.root.update()
+            except Exception:
+                pass
+            self.root.after(16, lambda: self._present_start(payload))
         except Exception as e:
             self._presenting = False
+            self._chart_present_lock = False
             try:
                 self.root.attributes("-alpha", 1.0)
             except Exception:
@@ -1977,7 +1922,25 @@ class MemWiseGUI:
             import sys; print(f"[MemWise] _present_window 异常: {e}", file=_ERR)
 
     def _present_start(self, payload):
+        self._chart_present_lock = False
         try:
+            try:
+                self.root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
+            # 18.4：prepare 与 intro 之间若发生重绘，payload 的 item id 已失效；先校验再播。
+            if payload:
+                try:
+                    _bars = payload[1] or []
+                    if not _bars or not self.chart_canvas.type(_bars[0][0]):
+                        payload = None
+                except Exception:
+                    payload = None
+                if payload is None:
+                    try:
+                        self._draw_chart(force=True)
+                    except Exception:
+                        pass
             self._set_main_window_icon()   # wrapper 已存在；必须在 alpha 抬升前
             try:
                 self.root.lift()
@@ -2033,11 +1996,8 @@ class MemWiseGUI:
             except Exception:
                 _stuck = True
             if _stuck:
-                self._presenting = False
-                try:
-                    self.root.attributes("-alpha", 1.0)
-                except Exception:
-                    pass
+                self._finish_present(force=True)
+                return
             else:
                 self._schedule_present_flush()
                 return
@@ -2046,14 +2006,23 @@ class MemWiseGUI:
         except Exception:
             pass
         if getattr(self, "_chart_dirty", False):
-            self._chart_dirty = False
+            # 18.11：intro 期间保留 dirty，由 intro 结束补画；否则现在画
+            if getattr(self, "_chart_intro_id", None) is None:
+                self._chart_dirty = False
+                try:
+                    self._draw_chart()
+                except Exception:
+                    pass
+
+    def _finish_present(self, force=False):
+        """统一呈现收尾（18.12）：正常淡入、2s 卡死自愈、异常恢复共用同一条路径。"""
+        self._presenting = False
+        self._chart_present_lock = False
+        if force:
             try:
-                self._draw_chart()
+                self.root.attributes("-alpha", 1.0)
             except Exception:
                 pass
-
-    def _present_done(self):
-        self._presenting = False
         try:
             self._flush_pending_type()
         except Exception:
@@ -2075,11 +2044,15 @@ class MemWiseGUI:
             except Exception:
                 pass
         if getattr(self, "_chart_dirty", False):
-            self._chart_dirty = False
-            try:
-                self.root.after(60, self._draw_chart)
-            except Exception:
-                pass
+            if getattr(self, "_chart_intro_id", None) is None:
+                self._chart_dirty = False
+                try:
+                    self.root.after(60, self._draw_chart)
+                except Exception:
+                    pass
+
+    def _present_done(self):
+        self._finish_present()
 
     def _on_hotkey(self):
         """Ctrl+Shift+M → 执行一键优化"""
@@ -3067,7 +3040,6 @@ class MemWiseGUI:
         cx = max(0, min(px + (pw - w) // 2, sw - w))
         cy = max(0, min(py + (ph - h) // 2, sh - h))
         win.geometry(f"{w}x{h}+{cx}+{cy}")
-        _prep_window_anim(win, content=True)
 
     def _dark_message(self, title, text, kind="info", extra=None):
         """暗色信息弹窗（单按钮"确定"；extra=(标签, 回调) 时在其左侧并行第二按钮，
@@ -3437,7 +3409,6 @@ class MemWiseGUI:
 
         win = self._host_win()
         self._dlgs["learn"] = win
-        _pool_log(win, "learn_open_chosen")
         if not win.winfo_ismapped():
             win.withdraw()
         else:
@@ -4155,32 +4126,33 @@ class MemWiseGUI:
             pass
 
     def _prepare_log_for_present(self):
-        """恢复前在隐藏态重建最终日志内容，并整批排队等待淡入后打印。
-        只取当前面板实际承载的消息（受原清屏规则约束），不追加未显示的积压。"""
+        """恢复前在隐藏态重建最终日志内容（18.5，2026-11-24）：
+        整组可见日志确定性重播，总时长有上限；不再只播未动画尾部，也不丢弃排队标签。"""
         try:
             msgs = list(getattr(self, "_panel_msgs", None) or [])
             if not msgs:
                 return
             _tsl = list(getattr(self, "_panel_ts", None) or [])
             self._present_log_pending = []
-            animated = min(getattr(self, "_animated_count", 0), len(msgs))
             self._finish_typewriter()
-            self._animated_count = animated
+            self._animated_count = 0
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
-            for _i, m in enumerate(msgs[:animated]):
-                _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
-                _insert_log_lines(self.log, _ts,
-                                  _align_log_line(self._log_display(m)), _LOG_TAG)
-            tail_start = self.log.index("end-1c")
-            for _i, m in enumerate(msgs[animated:], start=animated):
+            for _i, m in enumerate(msgs):
                 _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
                 _insert_log_lines(self.log, _ts,
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
             self.log.see("end")
             self.log.configure(state="disabled")
-            if len(msgs) > animated:
-                self._typewriter(tail_start, "end-1c", len(msgs) - animated)
+            try:
+                _chars = int(self.log.count("1.0", "end-1c", "chars")[0])
+            except Exception:
+                _chars = 0
+            # 800ms 上限：约 600 字符以内逐字；超过则整组静态显示，避免 7 行×百字拖 3 秒
+            if _chars and _chars <= 600:
+                self._typewriter("1.0", "end-1c", len(msgs))
+            else:
+                self._animated_count = len(msgs)
         except Exception:
             pass
 
@@ -4334,6 +4306,7 @@ class MemWiseGUI:
         复用已缓存的 HICON（零新增 GDI 对象），随后按当前内存状态刷新颜色与提示。"""
         try:
             hwnd = int(self.root.winfo_id())
+            self._tray_state = None   # 资源管理器重启后必须强制刷新一次
             if winapi.tray_add(hwnd, TRAY_UID, self._tray_icon_handle, tr("MemWise — 智能内存看护")):
                 self._update_tray_status(getattr(self, '_mem_pct', 0) or 50)
         except Exception:
@@ -5101,6 +5074,15 @@ class MemWiseGUI:
         self._chart_intro_id = None
         t0 = time.perf_counter()
         n = len(bars)
+        # 18.6（2026-11-24）：入场预算固定 ≤1.1s、最多 32 根错峰柱；
+        # 长跑后数据满 58–60 点时不再让动画时长/逐帧负载线性增长。
+        _MAX_BARS, _TARGET_MS = 32, 1100
+        anim_bars = bars[-_MAX_BARS:] if n > _MAX_BARS else list(bars)
+        for (_rid, _x0, _x1, _py1, _y0, _color, _i) in bars[:n - len(anim_bars)]:
+            try:
+                c.coords(_rid, _x0, _y0, _x1, _py1)
+            except Exception:
+                pass
         segs = list(lines)
         lens = []
         total = 0.0
@@ -5108,7 +5090,9 @@ class MemWiseGUI:
             L = max(1.0, ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
             lens.append(L)
             total += L
-        bar_end = ((n - 1) * stag + dur) / 1000.0 if n else 0.0
+        if len(anim_bars) > 1:
+            stag = min(stag, max(0, (_TARGET_MS - dur) // (len(anim_bars) - 1)))
+        bar_end = ((len(anim_bars) - 1) * stag + dur) / 1000.0 if anim_bars else 0.0
         path_dur = max(dur / 1000.0, bar_end)
         r = 0.12 if path_dur >= 0.8 else 0.08
         vmax = 1.0 / (1.0 - r)
@@ -5131,8 +5115,8 @@ class MemWiseGUI:
             except Exception:
                 return
             t = time.perf_counter() - t0
-            for (rid, x0, x1, _py1, y0, _color, i) in bars:
-                p = min(1.0, max(0.0, (t - i * stag / 1000.0) / (dur / 1000.0)))
+            for _idx, (rid, x0, x1, _py1, y0, _color, i) in enumerate(anim_bars):
+                p = min(1.0, max(0.0, (t - _idx * stag / 1000.0) / (dur / 1000.0)))
                 yy = int(round(py1 - (py1 - y0) * _motion.EASE_IN_OUT_COS(p)))
                 try:
                     c.coords(rid, x0, yy, x1, py1)
@@ -5190,10 +5174,21 @@ class MemWiseGUI:
                     except Exception:
                         pass
                 self._chart_suppress_until = time.time() + 0.25
+                # 18.11：intro 期间被丢弃的 Configure 在此补画一次
+                if getattr(self, "_chart_dirty", False):
+                    self._chart_dirty = False
+                    try:
+                        self.root.after(50, lambda: self._draw_chart(force=True))
+                    except Exception:
+                        pass
+                try:
+                    self.root.after(50, self._ensure_chart_drawn)
+                except Exception:
+                    pass
         step()
 
     def _anim_chart_bar(self, c, rid, x0, x1, py1, y0, color):
-        """最后一根柱从底部生长到目标高度（300ms，EASE_OUT；重绘时取消旧动画）。"""
+        """最后一根柱从底部生长到目标高度（500ms，EASE_IN_OUT_COS；重绘时取消旧动画）。"""
         try:
             if getattr(self, "_chart_bar_anim_id", None):
                 self.root.after_cancel(self._chart_bar_anim_id)
@@ -5240,6 +5235,8 @@ class MemWiseGUI:
     def _on_chart_configure(self, event):
         """防抖：合并短时间内的多次 Configure 事件；入场动画期间不得抢跑重绘。"""
         if self._chart_intro_id is not None or time.time() < getattr(self, "_chart_suppress_until", 0.0):
+            # 18.11：不能丢布局事件——标记待重绘，intro 结束后补画
+            self._chart_dirty = True
             return
         if self._chart_redraw_id is not None:
             self.root.after_cancel(self._chart_redraw_id)
@@ -5247,9 +5244,39 @@ class MemWiseGUI:
         self._drawing_chart = False
         self._chart_redraw_id = self.root.after(50, self._draw_chart)
 
+    def _ensure_chart_drawn(self):
+        """呈现后自愈（18.3）：有数据但画布无柱/柱全零时补画；不重播 intro。"""
+        try:
+            if getattr(self, "_drawing_chart", False):
+                return
+            if getattr(self, "_chart_intro_id", None) is not None:
+                return
+            data = self.engine.chart_snapshot()[0]
+            if not data:
+                return
+            c = self.chart_canvas
+            bars = c.find_withtag("chart_bar")
+            if bars:
+                for _iid in bars:
+                    try:
+                        _xy = c.coords(_iid)
+                    except Exception:
+                        continue
+                    if len(_xy) >= 4 and abs(float(_xy[3]) - float(_xy[1])) > 1.0:
+                        return
+            self._chart_intro_pending = False
+            self._draw_chart(force=True)
+        except Exception:
+            pass
+
     def _draw_chart(self, force=False, prepare_only=False):
         """在 Canvas 上绘制固定宽度滚动柱图 + 统计指标"""
         self._chart_redraw_id = None
+        # 18.4：呈现令牌——prepare 之后、present_start 之前禁止任何非 prepare 重绘，
+        # 否则 payload 的 item id 会被删除，柱子入场只剩少数/完全不动。
+        if getattr(self, "_chart_present_lock", False) and not (force and prepare_only):
+            self._chart_dirty = True
+            return
         if not force and (self._chart_intro_id is not None or time.time() < getattr(self, "_chart_suppress_until", 0.0)):
             return
         if not force and not self.root.winfo_viewable():
@@ -5294,8 +5321,17 @@ class MemWiseGUI:
             self._draw_chart_placeholder(old_ids)
             return
         cw = c.winfo_width()
-        if cw < 50:          # 首次/未映射时 winfo_width 为 1：用名义宽度，避免负坐标与空数据
-            cw = 1000
+        if cw < 50:          # 首次/未映射时 winfo_width 为 1：先冲一次布局，再按顶层宽度回退
+            try:
+                c.update_idletasks()
+                cw = c.winfo_width()
+            except Exception:
+                pass
+        if cw < 50:
+            try:
+                cw = max(400, int(c.winfo_toplevel().winfo_width()) - 40)
+            except Exception:
+                cw = 1000
         ch = 200
         pad_left = 50; pad_right = 10; pad_top = 20; pad_bottom = 46
         px0 = pad_left; px1 = cw - pad_right

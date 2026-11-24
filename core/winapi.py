@@ -1,4 +1,4 @@
-import ctypes, ctypes.wintypes as w, os, time, math
+import ctypes, ctypes.wintypes as w, os, time, math, threading, functools
 import sys
 
 TH32CS_SNAPPROCESS = 2
@@ -489,7 +489,17 @@ _SPI_LAYOUTS = (
     (0x68, 0x1C8, 0x1E0, 0x28, 0x30, 0x20),  # 更早版本
 )
 _spi_layout = None  # 模块级缓存：首次自校验后锁定；False = 已确认全候选不匹配（防每轮重复重试）
+_SPI_LOCK = threading.Lock()  # 11.1：多 Sniffer 并发首次解析只允许一个进入
 
+def _locked_spi(fn):
+    @functools.wraps(fn)
+    def _wrap(*a, **k):
+        with _SPI_LOCK:
+            return fn(*a, **k)
+    return _wrap
+
+
+@_locked_spi
 def _resolve_spi_layout(buf, ret_len):
     """用自身进程的已知 PID/WS/CPU 时间交叉校验，选定结构布局（失败返回 None，调用方有兜底）。
     单位口径（2026-09-11 审查 F42 修复）：缓冲区内的 KernelTime/UserTime 与 get_process_times()

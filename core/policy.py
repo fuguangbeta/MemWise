@@ -48,7 +48,7 @@ class PolicyVoter:
         except (TypeError, ValueError):
             return 80.0
 
-    def should_trim(self, name, ws, state, learner, threshold=0):
+    def should_trim(self, name, state, learner, threshold=0):
         """是否清理此进程 → (True/False, 理由, 各树贡献)
         threshold: 投票通过阈值（模式梯度：normal=0 标准 / deep=-1 略宽 / full=-2 大幅放宽但保留
         最低价值底线——全负分仍拒绝，防完全无意义清理）"""
@@ -110,7 +110,7 @@ class PolicyVoter:
         # threshold 由模式梯度传入（normal 0 / deep -1 / full -2）
         return sum(scores) >= threshold, "; ".join(reasons[:3]) if reasons else "", list(scores)
 
-    def should_probe(self, name, ws, state, learner):
+    def should_probe(self, name, state, learner):
         """是否试探此进程 → (True/False, 理由)"""
         score = 0
         reasons = []

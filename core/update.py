@@ -7,7 +7,7 @@
   （这些都在 MemWise.spec 的 excludes 里）；系统 TLS **证书校验默认开启**，默认自动使用
   系统代理，另可配置自定义代理。实测（本机）：HEAD 3.5s、API 0.5s、资产大小与线上逐字节一致。
 - **双通道降级**：
-    主 API  `/releases/latest` → tag + 资产 size + **digest(sha256)** + 更新说明（限流 60/时，7 天一次足够）
+    主 API  `/releases/latest` → tag + 资产 size + **digest(sha256)** + 更新说明（API 限流 60/时；应用每次启动检查，无节流）
     降 HEAD `/releases/latest`  → 从最终 URL 的 `/releases/tag/vX.Y.Z` 解析 tag（无哈希 ⇒ 只提示不自动装）
 - **校验**：下载后比对 SHA-256 与文件大小，任一不符即丢弃（HTTPS 只保证链路，哈希锚定发布时刻）。
 - **版本比较**：`v4.7.026` → (4,7,26) 数值元组；解析失败或本地≥远端 ⇒ 不更新（兼容开发态）。
@@ -450,8 +450,7 @@ def download(url, dest, sha256=None, size=None, proxy=None, progress=None, cance
             try: os.remove(tmp)
             except Exception: pass
             return False, "not_pe"
-        try: os.remove(dest)
-        except Exception: pass
+        # 2.4（2026-11-24）：直接原子替换；先删目标会让失败瞬间无文件
         os.replace(tmp, dest)
         return True, ""
     except Exception as e:

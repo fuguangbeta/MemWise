@@ -599,6 +599,8 @@ _EN = {
     "），请先升级程序": ") — please update the program first",
     "配置包缺少清单文件或已损坏": "Config package is missing its manifest or is corrupted",
     "配置包内容不符": "Config package content mismatch",
+    "配置包解压总量过大，已拒绝导入": "The package expands to too much data; import refused",
+    "上次导入已完成，已清理事务标记": "The last import already completed; its transaction marker was cleaned",
     "缺少：": "missing: ",
     "多出：": "extra: ",
     "含未知文件：": "unknown files: ",

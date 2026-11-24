@@ -347,6 +347,9 @@ def calibrate_and_score(raws, calib, update=True, skip=None, mode=None, game=Fal
       （recalib+1，诊断行可见）
     """
     _m = mode or "normal"
+    # 3.5（2026-11-24）：非法/缺失 calib 先重建，确保返回值是 dict 而不是原 None
+    if not isinstance(calib, dict):
+        calib = new_calib()
     bucket = _bucket(calib, _m)
     n_dim = min(len(raws), len(DIM_WORDS))
     nodata = [(bool(skip and j < len(skip) and skip[j])) or j >= n_dim or raws[j] is None
@@ -374,7 +377,7 @@ def calibrate_and_score(raws, calib, update=True, skip=None, mode=None, game=Fal
             if not isinstance(tot, list):
                 tot = []
                 bucket["tot"] = tot
-            tot.append(sum(scores))
+            tot.append(total_of(scores, valid=valid_dims(_m, nodata), mode=_m))
             if len(tot) > LONG_WIN:
                 del tot[0]
             # 自指检验（2026-09-26 修正）：与"冻结时的期望中位"比，不再用固定的 35~85 带——

@@ -138,10 +138,20 @@ SINGLE_MUTEX_NAME = "Global\\MemWise_SingleInstance"   # 单实例互斥（GUI �
 # 损坏画像唯一副本；GUI 查看与手动优化不受影响，mutex 仅在守护运行期间持有）
 
 
+def _runtime_data_dir():
+    """运行时数据目录（1.4）：状态路径的目录是唯一真源——迁移失败回退旧目录时，
+    看门狗/日志必须跟随，不能一半旧一半新。"""
+    try:
+        from core.config import get_state_path as _gsp
+        return os.path.dirname(_gsp())
+    except Exception:
+        return os.path.join(base, "data")
+
+
 def _watchdog_path():
     """看门狗状态文件路径：运行时数据统一在 data/ 目录（base/data，dist 部署时在项目根 data/；
     主进程与 watchdog 子进程同 exe → 同路径）"""
-    return os.path.join(base, "data", "watchdog.json")
+    return os.path.join(_runtime_data_dir(), "watchdog.json")
 
 
 def _clean_env():
@@ -249,7 +259,7 @@ def _migrate_state_location():
         return False
 
 
-if "--watchdog" in sys.argv:
+if "--watchdog" in sys.argv and os.environ.get("MEMWISE_WATCHDOG") == "1":
     wd_path = _watchdog_path()
     _ = __name__  # noqa
     def _watchdog_loop():
@@ -353,8 +363,10 @@ def _spawn_watchdog(daemon_flag=False):
             _cmd = [sys.executable, "--watchdog"]
         else:
             _cmd = [sys.executable, os.path.abspath(__file__), "--watchdog"]
+        _wd_env = _clean_env()
+        _wd_env["MEMWISE_WATCHDOG"] = "1"
         _proc = subprocess.Popen(_cmd,
-            startupinfo=si, creationflags=0x08000000, env=_clean_env())  # CREATE_NO_WINDOW
+            startupinfo=si, creationflags=0x08000000, env=_wd_env)  # CREATE_NO_WINDOW
         # 记录看门狗自身 pid（2026-11-06）：旧实现只写主程序 pid，无法自检“看门狗到底活没活”。
         # 写失败不影响看门狗运行，只是下次自检会再拉一个——为避免误判，这里失败也不抛。
         try:
@@ -550,7 +562,7 @@ def _log_open(announce=True):
     global _LOG_FD, _LOG_DIR, _ATEXIT_REGISTERED
     if _LOG_FD is not None or "--watchdog" in sys.argv:
         return
-    _LOG_DIR = os.environ.get("MEMWISE_LOG_DIR") or os.path.join(base, "data")
+    _LOG_DIR = os.environ.get("MEMWISE_LOG_DIR") or _runtime_data_dir()
     path = os.path.join(_LOG_DIR, "memwise.log")
     try:
         _migrate_old_logs(path)  # 旧 crash log 并入（若存在），旧 memwise.log 继续 append
@@ -1940,6 +1952,7 @@ class MemWiseEngine:
                     self._cycle_theta_mean, self._cycle_theta_above = _prof_theta_stats(self.learner)
                     stats = {
                         'mem_pct': m['pct'],
+                        'avail': m['avail'],
                         'mode': mode,
                         'game': game_seen,  # 游戏态冻结判定（efis.tick 据此清窗并跳过调参）
                         'trimmed_cnt': self._cycle_trimmed,
@@ -2170,6 +2183,14 @@ class MemWiseEngine:
             for _stale in [p for p in list(self._ws_cap_applied) if p not in rules]:
                 self.ws_cap_rule_removed(_stale)
             self.judger.set_capped_paths(rules.keys())
+            # 2026-11-24 审查 15.1：退出 PID 的簿记必须回收（快照为全量进程表，
+            # 不在其中即已退出）；否则 _ws_cap_applied 随重启次数无限增长。
+            for _path, _applied in list(self._ws_cap_applied.items()):
+                _live = {_pid for _pid, _c in (by_path.get(_path) or [])}
+                for _pid in [_p for _p in _applied if _p not in _live]:
+                    _applied.pop(_pid, None)
+                if not _applied:
+                    self._ws_cap_applied.pop(_path, None)
             for path, rule in rules.items():
                 pids = by_path.get(path) or []
                 if not pids:
@@ -2198,6 +2219,7 @@ class MemWiseEngine:
                     ok, reason, orig_max = winapi.set_ws_cap(pid, int(rule.get("mb", 0)) << 20)
                     if ok:
                         applied[pid] = (create, orig_max)
+                        fail = 0
                         self._ws_cap_fail.pop(path, None)
                         if path not in self._ws_cap_announced:
                             self._ws_cap_announced.add(path)
@@ -2205,8 +2227,10 @@ class MemWiseEngine:
                             self._cycle_log_groups.append(
                                 [f"⛨ 已设置工作集硬上限（{rule.get('mb')}MB）：{_bname}"])
                     else:
-                        self._ws_cap_fail[path] = fail + 1
-                        if fail + 1 == 3 and path not in self._ws_cap_announced:
+                        # 2026-11-24 审查 1.2：按实际失败次数累加（同周期多 PID 失败不能只记 1 次）
+                        fail += 1
+                        self._ws_cap_fail[path] = fail
+                        if fail == 3 and path not in self._ws_cap_announced:
                             self._ws_cap_announced.add(path)
                             _bname = path.rsplit("\\", 1)[-1]
                             self._cycle_log_groups.append(
@@ -2231,9 +2255,7 @@ class MemWiseEngine:
         回涨快改为"同一周期内追加收割"，用户层节拍保持稳定。
 
 
-        2026-11-23 增压力闸：回涨快不等于内存紧张——桌面静默实测内存 16% 时，
-        回涨来自系统用空闲内存做缓存，此时缩短周期只会制造 churn（净留存 29%）。
-        故仅在压力档 ≥1（偏紧/短缺）时允许缩短；充裕档保持设定周期。
+        2026-11-23 定稿：周期恒为设定值；回涨靠同一周期内追加收割消化，不缩短周期。
         """
         try:
             b = max(10, min(3600, int(base or 60)))

@@ -455,7 +455,7 @@ class PareJudger:
                     # （2026-08-14 接线：policy 早已支持 threshold 但调用处未传——设计意图补全）
                     _vote_thr = {"deep": -1, "full": -2}.get(_guard, 0)
                     ok, reason, _scores = self.learner.policy.should_trim(
-                        name, snap.ws, state, self.learner, threshold=_vote_thr)
+                        name, state, self.learner, threshold=_vote_thr)
                     snap._tree_scores = _scores  # 挂到快照上，供 _trim_process 评价
                 if not ok:
                     return False, f"策略否决({reason})"
@@ -563,7 +563,7 @@ class PareJudger:
         if hasattr(self, 'learner') and hasattr(self.learner, 'policy'):
             state = {"mem_pct": getattr(self, '_last_mem_pct', 50), "mem_trend": getattr(self, '_mem_trend', 0.0),
                      "probe_last_time": self._probe_last_time}
-            ok, _ = self.learner.policy.should_probe(name, snap.ws, state, self.learner)
+            ok, _ = self.learner.policy.should_probe(name, state, self.learner)
             boost = 0.3 if ok else 1.0
         # 零释放退避（2026-09-11 审查 F48）：连续多次"成功但零释放"= 该目标无收益，
         # 拉长间隔 20 倍（能力保留，只是不再空耗 0.2 s/次 + PF 抖动）
@@ -585,7 +585,7 @@ class PareJudger:
         if ws_after > 0:
             self.bl_set(name, create, ws_after, now)
         else:
-            self.bl_drop(name)
+            self.bl_drop(name, create)
         # 超时计数衰减：成功清理 1 次，timeout_count -1
         p = self.learner.get_profile(name)
         if p and hasattr(p, 'timeout_count') and p.timeout_count > 0:
@@ -728,19 +728,30 @@ class PareJudger:
 
     def _io_active(self, pid):
         """IO 活跃判定（按需采样：读一次累计计数与缓存差分速率；首轮无基线不拦截）。
-        实时安全门：与 CPU 活跃门一致，高压同样尊重——活跃进程清理无效且加剧卡顿"""
+        实时安全门：与 CPU 活跃门一致，高压同样尊重——活跃进程清理无效且加剧卡顿。
+        2026-11-24（14.1）：1s TTL 缓存判定结果，同一轮/同一秒内 can_trim、_trim_precheck、
+        quick_retrim 不再对同一 PID 重复 OpenProcess+GetProcessIoCounters。"""
+        now = time.time()
+        prev = self._io_cache.get(pid)
+        # 命中：已有有效判定且未过期 ⇒ 直接复用（IO 速率是秒级量，1s 内不改变语义）
+        if prev is not None and len(prev) >= 3 and prev[2] is not None and now - prev[1] < 1.0:
+            return bool(prev[2])
         io = winapi.get_process_io_counters(pid)
         if io is None:
             return False
-        now = time.time()
-        prev = self._io_cache.get(pid)
-        self._io_cache[pid] = (io, now)
         if prev is None:
+            self._io_cache[pid] = (io, now, None)
             return False
         dt = now - prev[1]
-        if dt <= 0.1 or io < prev[0]:
+        if dt <= 0.1:
+            # 采样间隔过短：保留旧基线，等下一次再算（避免 0.1s 内误判为不活跃）
             return False
-        return (io - prev[0]) / dt > (self._gate("io_gate", 4.0) * (1 << 20))
+        if io < prev[0]:
+            self._io_cache[pid] = (io, now, False)
+            return False
+        active = (io - prev[0]) / dt > (self._gate("io_gate", 4.0) * (1 << 20))
+        self._io_cache[pid] = (io, now, active)
+        return active
 
     def update_anchors(self, snaps, now=None):
         """喂锚点自然 WS 样本：排除清理后回填期（120s——回填不是自然稳态，防锚点被压低）；

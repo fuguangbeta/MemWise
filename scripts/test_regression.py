@@ -222,13 +222,13 @@ learner_v = PareLearner()
 pv_prof = learner_v.get("big.exe")
 pv_prof.kalman.x_freed = 300 << 20; pv_prof.kalman.x_cost = 30
 pv_prof.ws_deque.append(100 << 20); pv_prof.ws_deque.append(100 << 20)
-ok_h, _, _ = pv.should_trim("big.exe", 300 << 20, {"mem_pct": 90, "mem_trend": 0.05}, learner_v)
+ok_h, _, _ = pv.should_trim("big.exe", {"mem_pct": 90, "mem_trend": 0.05}, learner_v)
 check("压力高→投票通过", ok_h)
 # 树5 反事实 peers 排除自身（修复：含自身会抬高均值致优势低估）
 pv_b = learner_v.get("small.exe")
 pv_b.kalman.x_freed = 10 << 20; pv_b.kalman.x_cost = 5
 pv_b.ws_deque.append(50 << 20); pv_b.ws_deque.append(50 << 20)
-_, _, sc = pv.should_trim("big.exe", 300 << 20, {"mem_pct": 70, "mem_trend": 0.0}, learner_v)
+_, _, sc = pv.should_trim("big.exe", {"mem_pct": 70, "mem_trend": 0.0}, learner_v)
 check("peers 排除自身→优势分=2", sc[4] == 2, f"scores={sc}")
 
 print("\n[11] 终极审查修复回归（2026-08-12）")
@@ -472,9 +472,9 @@ _captured = {}
 for mode, expect in (("normal", 0), ("deep", -1), ("full", -2)):
     j = _mk_vote_j(mode)
     _orig_vote = j.learner.policy.should_trim
-    def _wrap(name, ws, state, learner, threshold=0, _m=mode):
+    def _wrap(name, state, learner, threshold=0, _m=mode):
         _captured[_m] = threshold
-        return _orig_vote(name, ws, state, learner, threshold)
+        return _orig_vote(name, state, learner, threshold)
     j.learner.policy.should_trim = _wrap
     sv = Snap(); sv.name="vote.exe"; sv.ws=200<<20; sv.path="d:\\app\\vote.exe"; sv.pid=9300; sv.pf=0; sv.priv=0; sv.fg=False
     j.can_trim(sv)
@@ -1696,9 +1696,9 @@ check("S5 阈值调高后 85% 不触发", _j5._high_pressure() is False)
 _j5._last_mem_pct = 90
 check("S5 阈值调高后 90% 触发", _j5._high_pressure() is True)
 _pv5 = PolicyVoter(); _l5 = PareLearner()
-_, _, _sc5 = _pv5.should_trim("x.exe", 10 << 20, {"mem_pct": 85, "mem_trend": 0, "emergency": 80}, _l5)
-_, _, _sc5b = _pv5.should_trim("x.exe", 10 << 20, {"mem_pct": 84, "mem_trend": 0, "emergency": 90}, _l5)
-_, _, _sc5c = _pv5.should_trim("x.exe", 10 << 20, {"mem_pct": 92, "mem_trend": 0, "emergency": 90}, _l5)
+_, _, _sc5 = _pv5.should_trim("x.exe", {"mem_pct": 85, "mem_trend": 0, "emergency": 80}, _l5)
+_, _, _sc5b = _pv5.should_trim("x.exe", {"mem_pct": 84, "mem_trend": 0, "emergency": 90}, _l5)
+_, _, _sc5c = _pv5.should_trim("x.exe", {"mem_pct": 92, "mem_trend": 0, "emergency": 90}, _l5)
 check("S5 树2 阈值随用户设定（80%@85=+2 / 90%@84=+1 / 90%@92=+2）",
       _sc5[1] == 2 and _sc5b[1] == 1 and _sc5c[1] == 2, "%r %r %r" % (_sc5[1], _sc5b[1], _sc5c[1]))
 
@@ -2901,7 +2901,7 @@ check("W3 未钉路径不触发第八道门（对照）", "已设硬上限" not 
 
 check("deep 尾段：仅系统收尾且 _run_deep 真的调用（回弹已按数据删除）",
       "def _deep_tail_gate" in _cl45f and "def _deep_final_consolidation" in _cl45f
-      and "_deep_tail_gate()" in _cl45f and "self._deep_final_consolidation(ops_filter, deadline)" in _cl45f,
+      and "_deep_tail_gate()" in _cl45f and "self._deep_final_consolidation(ops_filter)" in _cl45f,
       "deep tail missing")
 check("deep 回弹通道已删除（无残留方法与统计键）",
       "_deep_rebound" not in _cl45f and "deep_rebound_hits" not in _cl45f
@@ -2943,8 +2943,9 @@ check("full gap 全清改为压力/留存驱动（档位顺序：充裕 32s > �
       and "(32.0, 12.0, 6.0)[tier]" in _eg45f
       and "get_commit_info" in open(os.path.join(_ROOT34, "core", "winapi.py"), encoding="utf-8").read())
 check("full 回弹二轮有预算与计数",
-      "_rb_cand >= 40" in _cl45f and "full_rebound_cand" in _cl45f
-      and "full_rebound_hits" in _cl45f)
+      ("_rb_cand >= 40" in _cl45f or "_rb_cand = min(len(_rb_list), 40)" in _cl45f)
+      and "_rb_list[:40]" in _cl45f
+      and "full_rebound_cand" in _cl45f and "full_rebound_hits" in _cl45f)
 check("N2 与 N1 同用周期级裁剪标记",
       'not _l3_done and getattr(self, "_cycle_any_trim", False)' in _cl45f)
 check("两处尾段均在执行前补判周期门控，且不再按 deadline 降级",
@@ -3532,7 +3533,8 @@ check("侧视加固 A：更新退出必须走优雅收尾（否则丢未落盘�
 check("侧视加固 B：无校验信息/目录不可写 ⇒ 绝不自动装",
       'if not info.get("sha256"):' in _g54 and "_writable" in _g54.split("def _on_update_result")[1].split("def _update_prompt_text")[0])
 check("侧视加固 C：助手早期失败（等待超时/备份失败/替换失败）都要把旧版拉起来",
-      _g54.split("def _apply_update(argv):")[1].count("_launch_app(target, minimized)") >= 3)
+      _g54.split("def _apply_update(argv):")[1].count("_fail(") >= 5
+      and "_launch_app(target, _minimized)" in _g54)
 check("侧视加固 D/E：取消不算失败 + 替换重试 + 等待放宽到 120s",
       '== "cancelled"' in _g54 and "for _i in range(5):" in _g54 and "_wait_pid_exit(pid, 120.0)" in _g54)
 check("侧视加固 F/G/H：可写性门控 + 下载中锁 + 代理归一 + 体积上限",
@@ -3937,7 +3939,7 @@ _c56.judger = type("J56b", (), {"_high_pressure": lambda self: False})()
 _calls56.clear(); _c56._final_consolidation(_ops56)
 check("P2 full final 不因低压降级（仍执行 standby_low）",
       _calls56 and _calls56[0][1] == {"standby_low"})
-check("P2 full 分支接入最终压实", "self._final_consolidation(ops_filter, deadline=deadline)" in _src47("core/cleaner.py"))
+check("P2 full 分支接入最终压实", "self._final_consolidation(ops_filter)" in _src47("core/cleaner.py"))
 _order56 = []
 _l56b = PareLearner(); _j56b = PareJudger(_l56b, {"never": [], "clean_passes": 4, "efis_params": {}})
 _c56b = PareCleaner(_j56b)
@@ -4944,7 +4946,7 @@ _a64 = _AN64(lambda ms, fn: None)
 _a64.tween("k", 10, 100, _E64, lambda v: None, start=0)
 check("动效：单链重定向", len(_a64._jobs) == 1 and "ui_animation" in config_load())
 check("动效：GUI 接线（且无已停用的打印/闪烁死代码）",
-      "_prep_window_anim" in _g64 and "_anim_chart_bar" in _g64 and "界面动效" in _g64
+      "_anim_chart_bar" in _g64 and "界面动效" in _g64
       and not any(("def " + k) in _g64 for k in ("_flash_log", "_print_ui", "_print_prepare",
                                                   "_tree_reveal", "_anim_popdown", "_hide_text"))
       and "_mw_fast_print" not in _g64)
@@ -4970,6 +4972,46 @@ check("排行刷新为差量（不整表删除）",
       "差量刷新" in _g64 and 'for _iid in list(tree.get_children' in _g64
       and "_cur_hover = None   # 行已全删重建" not in _g64)
 
+print("\n[65] 2026-11-24 第5段修复接线（32 项）")
+_g65 = _src47("memwise_gui.py"); _c65 = _src47("core/cleaner.py")
+_j65s = _src47("core/judger.py"); _e65 = _src47("core/engine.py")
+_cfg65 = _src47("core/config.py"); _er65 = _src47("core/eris.py")
+_po65 = _src47("core/policy.py"); _bk65 = _src47("core/backup.py")
+# 2.1 基线按实例删除（行为）
+_l65 = PareLearner(); _j65 = PareJudger(_l65, {"never": [], "efis_params": {}})
+_j65.bl_set("m65.exe", 100, 100 << 20, time.time())
+_j65.bl_set("m65.exe", 200, 60 << 20, time.time())
+_j65.mark_trimmed("m65.exe", ws_after=0, create=100)
+check("2.1 mark_trimmed 按实例删基线", _j65.bl_get("m65.exe", 100)[0] == 0
+      and _j65.bl_get("m65.exe", 200)[0] == 60 << 20)
+check("2.2 clean_mode 枚举归一接线", "枚举键归一" in _cfg65 and 'd[_k] = _dflt' in _cfg65)
+check("4.1 T1 avail 已入 stats", "'avail': m['avail']," in _e65)
+check("7.2 should_trim 去 ws", "def should_trim(self, name, state, learner" in _po65
+      and "def _final_consolidation(self, ops_filter):" in _c65)
+check("7.3 ERIS tot 用 total_of", "tot.append(total_of(scores" in _er65)
+check("9.1 回弹二轮走 execution_allowed", "check_rebound=False)[0]" in _c65 and "_rb_list.sort" in _c65)
+check("12.1 更新失败统一 _fail", "def _fail(code, msg):" in _g65
+      and _g65.count("return _fail(") >= 5 and "_launch_app(target, _minimized)" in _g65)
+check("15.1 ws_cap 回收退出 PID", "_ws_cap_applied.items()" in _e65 and "_live = {_pid" in _e65)
+check("18.1 主窗默认尺寸常量/夹取", "MAIN_W, MAIN_H = 1060, 700" in _g65 and "fit=True" in _g65)
+check("18.3 图表自愈已实现", "def _ensure_chart_drawn" in _g65 and 'find_withtag("chart_bar")' in _g65)
+check("18.4 呈现令牌与载荷校验", "_chart_present_lock" in _g65 and "not self.chart_canvas.type" in _g65)
+check("18.5 日志整组重播", "_animated_count = 0" in _g65 and "_chars <= 600" in _g65)
+check("18.6 入场固定预算", "_MAX_BARS, _TARGET_MS = 32, 1100" in _g65)
+check("18.7 图标应用缓存", "_icon_applied" in _g65 and "if getattr(self, \"_icon_applied\"" in _g65)
+check("18.8 托盘状态缓存", "_tray_state" in _g65)
+check("18.9 首帧 update+延迟淡入", "self.root.update()" in _g65 and "after(16, lambda: self._present_start" in _g65)
+check("18.11 Configure 置 dirty", "self._chart_dirty = True" in _g65)
+check("18.12 统一 _finish_present", "def _finish_present" in _g65 and "_finish_present(force=True)" in _g65)
+check("18.13 柱子时长注释一致", "500ms，EASE_IN_OUT_COS" in _g65)
+check("16.1/16.2 死类/no-op 已删", "_PoolToplevel" not in _g65 and "_prep_window_anim" not in _g65)
+check("14.1 IO 判定 1s 缓存", "now - prev[1] < 1.0" in _j65s and "len(prev) >= 3" in _j65s)
+check("1.4 运行时数据目录同源", "def _runtime_data_dir" in _e65 and "_LOG_DIR = os.environ.get(\"MEMWISE_LOG_DIR\") or _runtime_data_dir()" in _e65)
+check("1.2 ws_cap 失败按次累加", "fail += 1" in _e65 and "self._ws_cap_fail[path] = fail" in _e65)
+check("11.1 导入核心与回滚错误", "def _import_state_core" in _bk65 and "回滚失败" in _bk65)
+check("8.1 backup 包格式 v2", "包格式 v2，含 partial/contains_learning" in _bk65)
+check("8.3 release token 仅环境变量", "或项目根 .gh_token" not in _src47("scripts/release_common.py")
+      and "不再读取 .gh_token" in _src47("scripts/release_common.py"))
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))
 
