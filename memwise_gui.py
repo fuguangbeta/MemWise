@@ -4917,41 +4917,53 @@ class MemWiseGUI:
             pass
 
     def _confirm_extreme(self):
-        """Extreme 二次确认；勾选“不再弹出”后持久化 ack。"""
+        """Extreme 二次确认；暗色程序风格，勾选“不再弹出”后持久化 ack。"""
         if CFG.get("extreme_warning_ack", False):
             return True
         result = {"ok": False}
-        top = tk.Toplevel(self.root)
-        top.title(tr("极限模式确认"))
-        top.transient(self.root)
-        top.resizable(False, False)
-        top.grab_set()
-        body = ttk.Frame(top, padding=16)
-        body.pack(fill="both", expand=True)
-        ttk.Label(body, text=tr("极限模式会强制全部清理操作，并清理 Windows 系统进程与自身工作集，以换取更低的已用内存。"),
-                  wraplength=460, justify="left").pack(anchor="w")
-        ttk.Label(body, text=tr("可能导致界面卡顿、游戏掉帧、磁盘活动增加；释放的内存会随使用逐步回填。本模式不承诺绝对稳定。"),
-                  wraplength=460, justify="left").pack(anchor="w", pady=(8, 0))
+        dlg = self._host_win()
+        dlg.withdraw()
+        self._apply_icon(dlg)
+        dlg.title(tr("极限模式确认"))
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.focus_set()
+        dlg.grab_set()
+        dlg.configure(bg="#1c1c1c")
+        ttk.Style().configure("DarkMsg.TFrame", background="#1c1c1c")
+        ttk.Style().configure("DarkExtreme.TCheckbutton", background="#1c1c1c", foreground="#ffb84d")
+        top = ttk.Frame(dlg, style="DarkMsg.TFrame")
+        top.pack(fill="x", padx=18, pady=(16, 2))
+        ttk.Label(top, text="⚠", font=("Segoe UI Emoji", 18),
+                  background="#1c1c1c", foreground="#ffb84d").pack(side="left", padx=(0, 12))
+        ttk.Label(top, text=tr("极限模式确认"), font=("微软雅黑", 11, "bold"),
+                  background="#1c1c1c", foreground="#e0e0e0").pack(side="left")
+        ttk.Label(dlg, text=tr("极限模式会强制全部清理操作，并清理 Windows 系统进程与自身工作集，以换取更低的已用内存。"),
+                  justify="left", wraplength=440, background="#1c1c1c",
+                  foreground="#aaa").pack(padx=18, pady=(2, 4))
+        ttk.Label(dlg, text=tr("可能导致界面卡顿、游戏掉帧、磁盘活动增加；释放的内存会随使用逐步回填。本模式不承诺绝对稳定。"),
+                  justify="left", wraplength=440, background="#1c1c1c",
+                  foreground="#aaa").pack(padx=18, pady=(0, 4))
         ack = tk.BooleanVar(value=False)
-        ttk.Checkbutton(body, text=tr("我已知情，不再弹出"), variable=ack).pack(anchor="w", pady=(12, 8))
-        btns = ttk.Frame(body); btns.pack(fill="x")
+        ttk.Checkbutton(dlg, text=tr("我已知情，不再弹出"), variable=ack,
+                        style="DarkExtreme.TCheckbutton").pack(anchor="w", padx=18, pady=(8, 4))
+        btns = ttk.Frame(dlg, style="DarkMsg.TFrame"); btns.pack(pady=14)
         def _ok():
             result["ok"] = True
             if ack.get():
                 CFG["extreme_warning_ack"] = True
                 _save_cfg()
-            top.destroy()
+            dlg.destroy()
         def _cancel():
-            top.destroy()
-        ttk.Button(btns, text=tr("取消"), command=_cancel).pack(side="right")
-        ttk.Button(btns, text=tr("继续"), command=_ok).pack(side="right", padx=(0, 8))
-        top.protocol("WM_DELETE_WINDOW", _cancel)
-        top.update_idletasks()
-        _w, _h = top.winfo_width(), top.winfo_height()
-        _x = max(0, (top.winfo_screenwidth() - _w) // 2)
-        _y = max(0, (top.winfo_screenheight() - _h) // 2)
-        top.geometry(f"+{_x}+{_y}")
-        top.wait_window()
+            dlg.destroy()
+        ttk.Button(btns, text=tr("取消"), command=_cancel).pack(side="left", padx=6)
+        ttk.Button(btns, text=tr("继续"), command=_ok).pack(side="left", padx=6)
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        dlg.bind("<Escape>", lambda _e: _cancel())
+        dlg.bind("<Return>", lambda _e: _ok())
+        self._center_fit(dlg, min_w=460)
+        dlg.deiconify()
+        dlg.wait_window()
         return result["ok"]
 
     def _sync_passes_widget(self, *_a):
