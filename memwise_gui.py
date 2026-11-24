@@ -5088,15 +5088,9 @@ class MemWiseGUI:
         self._chart_intro_id = None
         t0 = time.perf_counter()
         n = len(bars)
-        # 18.6（2026-11-24）：入场预算固定 ≤1.1s、最多 32 根错峰柱；
-        # 长跑后数据满 58–60 点时不再让动画时长/逐帧负载线性增长。
-        _MAX_BARS, _TARGET_MS = 32, 1100
-        anim_bars = bars[-_MAX_BARS:] if n > _MAX_BARS else list(bars)
-        for (_rid, _x0, _x1, _py1, _y0, _color, _i) in bars[:n - len(anim_bars)]:
-            try:
-                c.coords(_rid, _x0, _y0, _x1, _py1)
-            except Exception:
-                pass
+        # 2026-11-25 用户定稿：每次重开都让**所有可见柱**完整入场；
+        # 不再只补尾部，也不再用 32 根上限把前面的柱静态落下。
+        anim_bars = list(bars)
         segs = list(lines)
         lens = []
         total = 0.0
@@ -5104,8 +5098,6 @@ class MemWiseGUI:
             L = max(1.0, ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
             lens.append(L)
             total += L
-        if len(anim_bars) > 1:
-            stag = min(stag, max(0, (_TARGET_MS - dur) // (len(anim_bars) - 1)))
         bar_end = ((len(anim_bars) - 1) * stag + dur) / 1000.0 if anim_bars else 0.0
         path_dur = max(dur / 1000.0, bar_end)
         r = 0.12 if path_dur >= 0.8 else 0.08
