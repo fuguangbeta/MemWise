@@ -2341,8 +2341,10 @@ class MemWiseEngine:
             _st = getattr(self.cleaner, "stats", {}) or {}
             _prev = getattr(self, "_t1_prev", {}) or {}
             _keys = ("layer3_ran", "layer3_extra", "deepen_cnt", "deepen_extra",
-                     "ws_sweep_rounds", "trim_rounds", "normal_final_sweep", "normal_l3_extra",
-                     "deep_final_sweep",
+                     "ws_sweep_rounds", "ws_sweep_attempted", "ws_sweep_ok", "ws_sweep_no_effect",
+                     "ws_sweep_unmeasured", "ws_sweep_denied", "ws_sweep_gone", "ws_sweep_failed",
+                     "ws_sweep_skipped", "ws_sweep_freed", "trim_rounds",
+                     "normal_final_sweep", "normal_l3_extra", "deep_final_sweep",
                      "final_sweep", "combine_calls", "combine_pages", "standby", "modified",
                      "full_rebound_cand", "full_rebound_hits", "extra_harvests",
                      "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed",
