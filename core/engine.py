@@ -2398,7 +2398,9 @@ class MemWiseEngine:
                 # full 段按「高熵常驻 + 低熵例外」压缩（2026-11-23 定稿）：
                 # 常驻只有 gap 全清次数与净留存%（每轮都变、信息量最高）；
                 # combine 页数、回弹候选/命中、追加收割、收尾缺省只在非默认时追加短标签。
-                _mseg = "%d/-" % int(_dl.get("ws_sweep_rounds", 0))
+                _mseg = "%d/%d/%d/%d" % (
+                    int(_dl.get("ws_sweep_rounds", 0)), int(_dl.get("ws_sweep_ok", 0)),
+                    int(_dl.get("ws_sweep_no_effect", 0)), int(_dl.get("ws_sweep_denied", 0)))
                 if _dl["combine_pages"] > 0:
                     _mseg += "_c%d" % _dl["combine_pages"]
                 if _dl["full_rebound_cand"] > 0:

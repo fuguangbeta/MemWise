@@ -106,7 +106,10 @@ class PareCleaner:
             "skipped": 0, "failed_feedback": 0,
             "freed_bytes": 0,  # 新实例从 0 起（旧 prev_freed 依赖 hasattr(self,'stats') 恒 False，等价 0）
             "ws_sweep_rounds": 0,  # 全量受保护 WS 清扫阶段次数
-            "ws_sweep_ok": 0, "ws_sweep_denied": 0, "ws_sweep_gone": 0, "ws_sweep_failed": 0,
+            "ws_sweep_attempted": 0, "ws_sweep_ok": 0, "ws_sweep_no_effect": 0,
+            "ws_sweep_unmeasured": 0, "ws_sweep_denied": 0, "ws_sweep_gone": 0, "ws_sweep_failed": 0,
+            "ws_sweep_skipped": 0, "ws_sweep_skip_self": 0, "ws_sweep_skip_system": 0,
+            "ws_sweep_skip_never": 0, "ws_sweep_skip_game": 0, "ws_sweep_skip_small": 0,
             "ws_sweep_ms": 0.0, "ws_sweep_freed": 0,
             "deepen_cnt": 0, "deepen_extra": 0,
             "trim_rounds": 0,   # 进程实际执行轮数累加（5.2：区分"名义趟数"与"实际趟数"）
@@ -1821,35 +1824,48 @@ class PareCleaner:
         只清硬保护之外、WS>1MB 的进程；denied/gone 不计失败；sweep 统计与 ws_trim 分离。"""
         never = set(self.judger.cfg.get("never", []) or [])
         game_pids = getattr(self.judger, "_game_pid_set", set()) if self.game_mode else set()
+        skip = {"self": 0, "system": 0, "never": 0, "game": 0, "small": 0}
         targets = []
         for s in snaps:
-            if s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
-                continue
+            if s.pid == os.getpid() or _is_self_process(s):
+                skip["self"] += 1; continue
+            if s.pid in game_pids:
+                skip["game"] += 1; continue
             _n = str(getattr(s, "name", "") or "").lower()
-            if _n in never or _is_system_core(_n):
-                continue
+            if _n in never:
+                skip["never"] += 1; continue
+            if _is_system_core(_n):
+                skip["system"] += 1; continue
             if int(getattr(s, "ws", 0) or 0) <= (1 << 20):
-                continue
+                skip["small"] += 1; continue
             targets.append(s)
+        for _k, _v in skip.items():
+            self._stats_inc("ws_sweep_skip_" + _k, _v)
+        self._stats_inc("ws_sweep_skipped", sum(skip.values()))
         if not targets:
             return
         _t0 = time.perf_counter()
-        counts = {"ok": 0, "denied": 0, "gone": 0, "failed": 0}
+        counts = {"ok": 0, "no_effect": 0, "unmeasured": 0, "denied": 0, "gone": 0, "failed": 0}
         freed_total = 0
         def _one(s):
             try:
                 _ct = winapi.get_process_times(s.pid)
-                if not _ct or (getattr(s, "create", 0) and _ct.get("create") and
-                               _ct["create"] != getattr(s, "create", 0)):
+                if not _ct:
+                    return ("unmeasured", 0)
+                if (getattr(s, "create", 0) and _ct.get("create")
+                        and _ct["create"] != getattr(s, "create", 0)):
                     return ("gone", 0)
                 _pre = winapi.get_process_memory(s.pid)
+                if not _pre:
+                    return ("unmeasured", 0)
                 _st = winapi.empty_ws_ex(s.pid)[0]
-                _f = 0
-                if _st == "ok" and _pre:
-                    _post = winapi.get_process_memory(s.pid)
-                    if _post:
-                        _f = max(0, int(_pre.get("ws", 0) or 0) - int(_post.get("ws", 0) or 0))
-                return (_st, _f)
+                if _st != "ok":
+                    return (_st, 0)
+                _post = winapi.get_process_memory(s.pid)
+                if not _post:
+                    return ("unmeasured", 0)
+                _f = max(0, int(_pre.get("ws", 0) or 0) - int(_post.get("ws", 0) or 0))
+                return (("ok" if _f > 0 else "no_effect"), _f)
             except Exception:
                 return ("failed", 0)
         with concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers) as ex:
@@ -1862,7 +1878,8 @@ class PareCleaner:
         _el = (time.perf_counter() - _t0) * 1000.0
         _freed = max(0, freed_total)
         self._stats_inc("ws_sweep_rounds")
-        for _k in ("ok", "denied", "gone", "failed"):
+        self._stats_inc("ws_sweep_attempted", len(targets))
+        for _k in ("ok", "no_effect", "unmeasured", "denied", "gone", "failed"):
             self._stats_inc("ws_sweep_" + _k, counts[_k])
         self._stats_inc("ws_sweep_ms", _el)
         if _freed:

@@ -4918,7 +4918,7 @@ check("A 方案叠加：回涨阈值按压力分档 35%/60%",
 check("周期内追加收割用 B 判据（剩余≥20s 且内存上涨）",
       "_remain2 >= 20.0" in _eg45f and "_rose or getattr(self, \"_refill_hot_streak\", 0) >= 2" in _eg45f)
 check("T1 full 段使用 ws_sweep_rounds，且无 gap ws_all 残留",
-      "ws_sweep_rounds" in _eg45f and "ws_all" not in _eg45f
+      "ws_sweep_rounds" in _eg45f and "ws_sweep_no_effect" in _eg45f and "ws_all" not in _eg45f
       and "_c%d" in _eg45f and "_r%dh%d" in _eg45f and "_e%d" in _eg45f)
 check("gap 段不再执行全局 WS（sweep 只在 deep/full 周期层）",
       "_gap_wsall_due" not in _eg45f and "_gap_wsall_hits" not in _eg45f)
@@ -4996,8 +4996,9 @@ _cl65s = _src47("core/cleaner.py"); _w65s = _src47("core/winapi.py")
 check("ws_sweep 保护硬边界（系统/自身/never/游戏）",
       "_sweep_all_unprotected" in _cl65s and "_is_system_core" in _cl65s
       and "_is_self_process" in _cl65s and "game_pids" in _cl65s and "never" in _cl65s)
-check("ws_sweep 使用 empty_ws_ex 分类", "empty_ws_ex" in _cl65s
-      and "denied" in _cl65s and "gone" in _cl65s and "failed" in _cl65s)
+check("ws_sweep 六态分类（ok/no_effect/unmeasured/denied/gone/failed）",
+      "empty_ws_ex" in _cl65s and all(k in _cl65s for k in
+      ("ws_sweep_no_effect", "ws_sweep_unmeasured", "ws_sweep_denied", "ws_sweep_gone", "ws_sweep_failed")))
 check("全局 MemoryEmptyWorkingSets 已移除",
       "empty_all_working_sets" not in _cl65s and "empty_all_working_sets" not in _w65s)
 check("14.1 IO 判定 1s 缓存", "now - prev[1] < 1.0" in _j65s and "len(prev) >= 3" in _j65s)
