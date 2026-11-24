@@ -18,9 +18,9 @@ _S = winapi.memory_scale()
 # （launcher/ac/ds/mc 等）会被常驻程序误匹配触发游戏模式；用户配置什么就识别什么，零误触发）──
 GAME_PROCESSES = set()
 
-# 深度模式系统级全清的使用率门控（2026-08-14 梯度修复）：中高压（≥33%）执行深度清扫，
+# 深度模式受保护全量清扫的使用率门控（2026-08-14 梯度修复）：中高压（≥33%）执行深度清扫，
 # 低压不打扰（full 无条件——极限模式随时全力，梯度差异）
-DEEP_WSALL_PCT_GATE = 33
+DEEP_WSSWEEP_PCT_GATE = 33
 # Layer3「回涨再清」的收益闸（2026-09-26 实测定稿）：内存充裕时要求回涨量 ≥ 下限才算候选，
 # 占用达到阈值即不设下限（高压/紧急/深度需求下与旧版逐字一致）。
 # 依据：低压力机器实测两周——占用恒 20%、每轮清 246 进程、平均每进程只释放 4.4MB、
@@ -53,7 +53,7 @@ _COMBINE_MAX_BACKOFF = 3600       # 无收益/失败最大退避 1 小时
 # ── 重系统操作择时门（2026-11-11）──
 # 目标：消除"清理瞬间卡顿"，同时不取消任何操作（有 defer 兜底，最多延迟数轮）。
 # 三类操作的伤害机制不同，判据也不同：
-#   ws_all   = 系统级清空所有进程工作集 —— 会清掉 dwm/explorer 的工作集，拖动窗口时逐帧重绘变慢；
+#   ws_sweep = 受保护感知的全量逐进程工作集清扫；不再调用全局 MemoryEmptyWorkingSets；
 #              耗时短(0.2s)但副作用长 ⇒ **只认"用户停手"，不吃"上次快"快路径**。
 #   modified = 脏页写回磁盘 —— 磁盘 IO 饱和，与磁盘忙闲强相关 ⇒ 吃快路径。
 #   filecache= 文件缓存钳制（固定 ~0.85s 驻留轮询）⇒ 同 modified。
@@ -69,8 +69,8 @@ _HEAVY_DEFER_OTHER = 6      # 非 full：连续跳 6 轮强制（≈6 分钟上�
 _HEAVY_FAST_KINDS = ("modified", "filecache")
 # 「小动静」分级（2026-11-19 按四模式义务重划）：light = 单次 <0.5s 且无持续副作用
 # ⇒ full 的义务是"每轮都做"，不择时；heavy = 单次 ≥0.5s ⇒ full 也只择时。
-_HEAVY_LIGHT_OPS = ("ws_all", "standby")   # 允许"上次快"快路径的操作
-_HEAVY_TIME_KEY = {"empty_all_working_sets": "ws_all", "flush_modified_pages": "modified"}
+_HEAVY_LIGHT_OPS = ("standby",)   # 允许"上次快"快路径的操作
+_HEAVY_TIME_KEY = {"flush_modified_pages": "modified"}
 # 自适应门槛（2026-11-19）：full 下按"上次同类操作实测耗时"上调门槛——3s 的 flush 不该在
 # 50ms 停顿里放行；快操作（filecache/combine）仍接近基准。上限 0.3s，避免门槛反而把 full 锁死。
 _HEAVY_ADAPT_MAX = 0.3
@@ -105,7 +105,9 @@ class PareCleaner:
             "ws_trim": 0, "probe": 0,
             "skipped": 0, "failed_feedback": 0,
             "freed_bytes": 0,  # 新实例从 0 起（旧 prev_freed 依赖 hasattr(self,'stats') 恒 False，等价 0）
-            "ws_all_rounds": 0,  # P07：系统级全清次数（不再伪装成 N 次进程清理）
+            "ws_sweep_rounds": 0,  # 全量受保护 WS 清扫阶段次数
+            "ws_sweep_ok": 0, "ws_sweep_denied": 0, "ws_sweep_gone": 0, "ws_sweep_failed": 0,
+            "ws_sweep_ms": 0.0, "ws_sweep_freed": 0,
             "deepen_cnt": 0, "deepen_extra": 0,
             "trim_rounds": 0,   # 进程实际执行轮数累加（5.2：区分"名义趟数"与"实际趟数"）
             "layer3_ran": 0, "layer3_extra": 0,
@@ -266,12 +268,12 @@ class PareCleaner:
     @staticmethod
     def _layer1_ops(ops_filter):
         """用户清理操作开关 → Layer1 内核操作集（键映射；None=全量）。
-        开关优先：用户取消勾选的操作绝不执行；ws_all 仅由 full=True 调用方（deep/full）启用。"""
+        开关优先：用户取消勾选的操作绝不执行；ws_sweep 由 deep/full 调用方执行。"""
         if ops_filter is None:
             return None
         use = set()
         if "ws" in ops_filter:
-            use.add("ws_all")  # 系统级全清 WS（仅 full=True 时实际执行）
+            use.add("ws_sweep")  # 全量受保护 WS 清扫（deep/full）
         if "standby" in ops_filter:
             use.add("standby"); use.add("standby_low")
         if "modified" in ops_filter:
@@ -288,7 +290,7 @@ class PareCleaner:
     def _final_ops(ops_filter):
         """full 收尾的系统操作子集：只补低优先待机页。
 
-        2026-11-23 实测：原实现把 ws_all/modified/standby 也带上，与同轮 L1 完全重复——
+        2026-11-23 实测：原实现把 ws_sweep/modified/standby 也带上，与同轮 L1 完全重复——
         O 行可见 ws:2、fmp:2（每次 8s，合计 16s/周期），而释放量仍为 0 量级。
         收尾的增量只剩下「进程动作结束后新产生的低优先待机页」，故只保留 standby_low。
         """
@@ -364,7 +366,7 @@ class PareCleaner:
             return True
         if self._manual_run or self.game_mode:
             return True
-        # full 的"必须尽全力"：light（ws_all/standby）不择时、每轮必做；与 _decide_heavy 同口径
+        # full 的"必须尽全力"：light（standby）不择时、每轮必做；与 _decide_heavy 同口径
         if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
             return True
         return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
@@ -379,7 +381,7 @@ class PareCleaner:
         if _prev != _mode:
             self._heavy_defer.clear()
         self._heavy_allow = {_k: self._decide_heavy(_k)
-                             for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
+                             for _k in ("modified", "filecache", "standby", "combine")}
         self._in_cycle = True
 
     def end_cycle(self):
@@ -441,12 +443,12 @@ class PareCleaner:
         
         full=True  : 全量（含系统级 WS 全清）
         full=False : 轻量（跳过 WS 全清）
-        ops        : 启用的操作集合，None=全部。内核键: ws_all, filecache_ex, modified,
+        ops        : 启用的操作集合，None=全部。内核键: ws_sweep, filecache_ex, modified,
                      standby, standby_low, volume, registry（"filecache" 是用户键，
                      由 _layer1_ops 映射为 filecache_ex，本函数不直接消费）
         game_mode  : 游戏模式时跳过 WS全清+文件缓存+卷冲刷
         """
-        use = ops if ops is not None else {"ws_all","filecache_ex","modified","standby","standby_low","volume","registry"}
+        use = ops if ops is not None else {"filecache_ex","modified","standby","standby_low","volume","registry"}
         # 逐操作测量释放量：每个系统操作前后各读一次，标量累加（>0 计入）——
         # filecache 用 SystemCache 字节差（直接反映文件缓存缩减，不受其他进程分配干扰）；
         # 其余操作无分项公开 API，沿用 avail 差（物理可用提升口径）
@@ -461,10 +463,6 @@ class PareCleaner:
                 self._op_fail_note(kind or getattr(fn, "__name__", "?"))
             return _ok
         try:
-            if full and not game_mode and "ws_all" in use and self._heavy_allowed("ws_all"):
-                if _capture(winapi.empty_all_working_sets):
-                    # P07：一次内核调用只记一次“系统全清”，不再把进程数伪装成 N 次进程清理
-                    self._stats_inc("ws_all_rounds")
             if not game_mode and "filecache_ex" in use and self._heavy_allowed("filecache"):
                 # filecache 统计口径（2026-08-14 审查）：有效实现 clear_system_file_cache_ex
                 # （查询→PeakSize 强制→恢复；MAXSIZE 版 SetSystemFileCacheSize 返回 0xC000009A
@@ -1535,9 +1533,9 @@ class PareCleaner:
 
         mode 行为（各层按 operations 逐项授权执行；安全门全模式生效）：
             quick  = 仅低优先级待机 + 注册表缓存（∩ 勾选），零进程清理/零全量待机/零脏页写回
-            normal = 系统级（按勾选映射，无系统级全清）+ 进程清理 + 深度聚合（agg ≥ EFIS 门控）
-            deep   = 同上 + 系统级全清 WS（使用率 ≥ DEEP_WSALL_PCT_GATE 时）+ 深度聚合恒触发
-            full   = 同上 + 无条件全清 WS + agg 强制 ≥0.8 + 进程回弹二轮
+            normal = 系统级（按勾选映射，无全量清扫）+ 进程清理 + 深度聚合（agg ≥ EFIS 门控）
+            deep   = 同上 + 全量受保护 WS 清扫（使用率 ≥ DEEP_WSSWEEP_PCT_GATE 时）+ 深度聚合恒触发
+            full   = 同上 + 无条件受保护全量清扫 + agg 强制 ≥0.8 + 进程回弹二轮
                      （2026-10-20 起默认永不轻量降级；仅 MEMWISE_FULL_LITE=1 保留旧
                       LITE_TOP_K/is_lite_round 对比路径）
 
@@ -1562,7 +1560,7 @@ class PareCleaner:
                         _parts = []
                         _code = {"_flush_volume_cache": "fv", "flush_volume_cache": "fv2",
                                  "clean_modified_pages": "cmp", "clear_registry_cache": "crc",
-                                 "empty_all_working_sets": "ws", "empty_standby": "sb",
+                                 "ws_sweep": "ws", "empty_standby": "sb",
                                  "filecache": "fc", "flush_modified_pages": "fmp",
                                  "purge_low_priority_standby": "pls", "combine_physical_memory": "cb"}
                         for k, v in sorted(self._round_ops.items()):
@@ -1605,7 +1603,7 @@ class PareCleaner:
         # 紧急 full 由 engine 在调用前后备份/恢复本字典，不污染本周期余下阶段。
         if force_gate or (not getattr(self, "_in_cycle", False)) or (mode == "full" and _prev_mode != "full"):
             self._heavy_allow = {_k: self._decide_heavy(_k)
-                                 for _k in ("ws_all", "modified", "filecache", "standby", "combine")}
+                                 for _k in ("modified", "filecache", "standby", "combine")}
         mem_before_opt = winapi.get_memory_used_bytes()
         if aggressiveness is None:
             mem = winapi.get_memory_status()
@@ -1710,7 +1708,7 @@ class PareCleaner:
         pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
         if pipeline_ctx["layer2_trimmed"]:
             self._cycle_any_trim = True
-        # full=False：normal 不做系统级全清 WS（ws_all 仅 deep/full 启用）
+        # full=False：normal 不做全量 WS 清扫（ws_sweep 仅 deep/full 启用）
         l1_ops = self._layer1_ops(ops_filter)
         if l1_ops is not None and not allow_layer3:
             # P06：gap-fill 默认只 registry；仅高压（紧急阈值/agg≥0.8）才追加 standby/modified。
@@ -1723,6 +1721,8 @@ class PareCleaner:
             except Exception:
                 pass
             l1_ops = l1_ops & _gap_ops
+        if l1_ops is not None:
+            l1_ops = l1_ops - {"ws_sweep"}
         self._layer1_memreduct(full=False, game_mode=self.game_mode,
                                ops=l1_ops, clean_self=allow_layer3)
         # Layer3 门槛由 EFIS layer3_agg_gate 自适应控制（0.3 兜底仅测试/旧状态用；
@@ -1816,21 +1816,78 @@ class PareCleaner:
         if _fa > _fb:
             self._stats_inc("deep_final_freed", _fa - _fb)
 
+    def _sweep_all_unprotected(self, snaps, mode="full"):
+        """受保护感知的全量工作集清扫（替代全局 MemoryEmptyWorkingSets）。
+        只清硬保护之外、WS>1MB 的进程；denied/gone 不计失败；sweep 统计与 ws_trim 分离。"""
+        never = set(self.judger.cfg.get("never", []) or [])
+        game_pids = getattr(self.judger, "_game_pid_set", set()) if self.game_mode else set()
+        targets = []
+        for s in snaps:
+            if s.pid == os.getpid() or _is_self_process(s) or s.pid in game_pids:
+                continue
+            _n = str(getattr(s, "name", "") or "").lower()
+            if _n in never or _is_system_core(_n):
+                continue
+            if int(getattr(s, "ws", 0) or 0) <= (1 << 20):
+                continue
+            targets.append(s)
+        if not targets:
+            return
+        _t0 = time.perf_counter()
+        counts = {"ok": 0, "denied": 0, "gone": 0, "failed": 0}
+        freed_total = 0
+        def _one(s):
+            try:
+                _ct = winapi.get_process_times(s.pid)
+                if not _ct or (getattr(s, "create", 0) and _ct.get("create") and
+                               _ct["create"] != getattr(s, "create", 0)):
+                    return ("gone", 0)
+                _pre = winapi.get_process_memory(s.pid)
+                _st = winapi.empty_ws_ex(s.pid)[0]
+                _f = 0
+                if _st == "ok" and _pre:
+                    _post = winapi.get_process_memory(s.pid)
+                    if _post:
+                        _f = max(0, int(_pre.get("ws", 0) or 0) - int(_post.get("ws", 0) or 0))
+                return (_st, _f)
+            except Exception:
+                return ("failed", 0)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers) as ex:
+            for _st, _f in ex.map(_one, targets):
+                if _st in counts:
+                    counts[_st] += 1
+                else:
+                    counts["failed"] += 1
+                freed_total += int(_f or 0)
+        _el = (time.perf_counter() - _t0) * 1000.0
+        _freed = max(0, freed_total)
+        self._stats_inc("ws_sweep_rounds")
+        for _k in ("ok", "denied", "gone", "failed"):
+            self._stats_inc("ws_sweep_" + _k, counts[_k])
+        self._stats_inc("ws_sweep_ms", _el)
+        if _freed:
+            self._stats_inc("ws_sweep_freed", _freed)
+            self._stats_inc("freed_bytes", _freed)
+        self._round_time["ws_sweep"] = self._round_time.get("ws_sweep", 0.0) + _el / 1000.0
+        self._round_ops["ws_sweep"] = [1, _freed, _freed]
+
     def _run_deep(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
-        """deep 模式主体：normal 基础 + 全清 WS（使用率门控）+ 强制深度聚合。"""
-        # normal 基础 + 系统级全清 WS + 强制 Layer3（文件缓存/各操作按用户开关）
+        """deep 模式主体：normal 基础 + 受保护全量清扫（使用率门控）+ 强制深度聚合。"""
+        # normal 基础 + 受保护全量清扫 + 强制 Layer3（文件缓存/各操作按用户开关）
         l2_results, probe_results = self._layer2_process(snaps, learner, deadline=deadline) if run_ws else ([], [])
         pipeline_ctx["layer2_trimmed"] = {r[0].pid for r in l2_results if r[1]}
         if pipeline_ctx["layer2_trimmed"]:
             self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
-        if l1_ops is not None and "ws_all" in l1_ops and not self._manual_run:
-            # 深度模式的系统级全清按使用率门控（2026-08-14 梯度修复：原用 agg<0.4 豁免，
-            # 而 agg 受 target_usage 扭曲（36% 使用率时 agg≈0）——深度模式能力被永久锁死，
-            # 与 normal 无差别；改用使用率直判：中高压（≥33%）执行深度清扫，低压不打扰）
+        _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
+        if _do_sweep and not self._manual_run:
             _mp = winapi.get_memory_status()
-            if _mp and _mp["pct"] < DEEP_WSALL_PCT_GATE:
-                l1_ops = l1_ops - {"ws_all"}
+            if _mp and _mp["pct"] < DEEP_WSSWEEP_PCT_GATE:
+                _do_sweep = False
+        if _do_sweep:
+            self._sweep_all_unprotected(snaps, "deep")
+        if l1_ops is not None:
+            l1_ops = l1_ops - {"ws_sweep"}
         self._layer1_memreduct(full=True, game_mode=self.game_mode,
                                ops=l1_ops)
         self._layer3_deep(snaps, learner, ops_filter, deadline=deadline)
@@ -1853,7 +1910,11 @@ class PareCleaner:
         if pipeline_ctx["layer2_trimmed"]:
             self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
-        # full 无条件 ws_all（agg 已在上方 max(agg,0.8) 强制，原 agg<0.4 豁免为恒假死分支）
+        _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
+        if _do_sweep:
+            self._sweep_all_unprotected(snaps, "full")
+        if l1_ops is not None:
+            l1_ops = l1_ops - {"ws_sweep"}
         self._layer1_memreduct(full=True, game_mode=self.game_mode,
                                ops=l1_ops)
         if self._lite:

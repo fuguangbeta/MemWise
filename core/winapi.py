@@ -290,11 +290,26 @@ def get_system_times():
         return {"idle": _ft_to_ns(idle), "kernel": _ft_to_ns(kernel), "user": _ft_to_ns(user)}
     return None
 
+def empty_ws_ex(pid):
+    """EmptyWorkingSet + 状态分类：ok / denied / gone / failed。
+    最小权限优先，失败回退 QUERY_INFORMATION；denied/gone 不是真实失败。"""
+    h = OpenProcess(0x1000 | 0x0100, False, pid)  # QUERY_LIMITED | SET_QUOTA
+    if not h:
+        h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, pid)
+    if not h:
+        _e = ctypes.get_last_error()
+        return ("denied" if _e == 5 else "gone" if _e == 87 else "failed", _e)
+    try:
+        if EmptyWorkingSet(h):
+            return ("ok", 0)
+        _e = ctypes.get_last_error()
+        return ("denied" if _e == 5 else "gone" if _e == 87 else "failed", _e)
+    finally:
+        CloseHandle(h)
+
+
 def empty_ws(pid):
-    h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, pid)
-    if not h: return False
-    try: return bool(EmptyWorkingSet(h))
-    finally: CloseHandle(h)
+    return empty_ws_ex(pid)[0] == "ok"
 
 
 def terminate_process(pid, exit_code=1):
@@ -798,15 +813,6 @@ def close_handle(handle):
 # ============================================================
 # 新增: 拓展清理操作
 # ============================================================
-
-def empty_all_working_sets():
-    """MemoryEmptyWorkingSets — 系统级全进程 WS 清空（单次内核调用）"""
-    try:
-        _try_enable_privilege("SeIncreaseQuotaPrivilege")
-        info = w.ULONG(2)  # MemoryEmptyWorkingSets = 2 (PHNT standard)
-        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
-    except Exception:
-        return False
 
 def purge_low_priority_standby():
     """清空低优先级 Standby — MemoryPurgeLowPriorityStandbyList = 5 (PHNT standard)"""

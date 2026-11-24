@@ -694,8 +694,8 @@ j_f = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"
 j_f._mode_guard = "full"; j_f.aggressiveness = 0.1
 ok_f, _ = j_f.can_trim(sg)
 check("活动确认 full 跳过", ok_f)
-# ── ws_all 使用率门控：中高压(≥33%)执行 / 低压豁免（monkeypatch，不触碰真实系统操作）──
-from core.cleaner import PareCleaner, DEEP_WSALL_PCT_GATE
+# ── ws_sweep 使用率门控：中高压(≥33%)执行 / 低压豁免（monkeypatch，不触碰真实系统操作）──
+from core.cleaner import PareCleaner, DEEP_WSSWEEP_PCT_GATE
 import core.winapi as _wa
 def _run_deep_opt(pct):
     lr_o = PareLearner()
@@ -704,6 +704,7 @@ def _run_deep_opt(pct):
     captured = {}
     c_o._layer1_memreduct = lambda **kw: captured.update(ops=kw.get('ops'))
     c_o._layer3_deep = lambda *a, **k: None  # 防真实系统清理调用
+    c_o._sweep_all_unprotected = lambda *a, **k: captured.update(sweep=True)
     _orig_ms = _wa.get_memory_status
     _orig_mub = _wa.get_memory_used_bytes
     _wa.get_memory_status = lambda: {"pct": pct, "total": 16<<30, "avail": (16<<30)-int(pct/100*16)<<30, "used": int(pct/100*16)<<30}
@@ -713,12 +714,12 @@ def _run_deep_opt(pct):
     finally:
         _wa.get_memory_status = _orig_ms
         _wa.get_memory_used_bytes = _orig_mub
-    return captured.get('ops')
+    return captured
 ops_hi = _run_deep_opt(40)
-check("deep 使用率40% ws_all 执行", ops_hi is not None and "ws_all" in ops_hi, str(ops_hi))
+check("deep 使用率40% ws_sweep 执行", ops_hi.get("sweep") is True and "ws_sweep" not in (ops_hi.get("ops") or set()), str(ops_hi))
 ops_lo = _run_deep_opt(30)
-check("deep 使用率30% ws_all 豁免", ops_lo is not None and "ws_all" not in ops_lo, str(ops_lo))
-check("DEEP_WSALL_PCT_GATE=33", DEEP_WSALL_PCT_GATE == 33)
+check("deep 使用率30% ws_sweep 豁免", "sweep" not in ops_lo, str(ops_lo))
+check("DEEP_WSSWEEP_PCT_GATE=33", DEEP_WSSWEEP_PCT_GATE == 33)
 # ── fast_track 梯度：deep 350KB/s 档（normal 500 不进 / deep 400 进）──
 def _run_ft(mode, refill_kb):
     lr_f = PareLearner()
@@ -1475,7 +1476,7 @@ _j34 = {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis
 _ms34, _mu34 = _w34.get_memory_status, _w34.get_memory_used_bytes
 _w34.get_memory_status = lambda: {"pct": 40, "total": 16 << 30, "avail": 9 << 30, "used": 7 << 30}
 _w34.get_memory_used_bytes = lambda: 7 << 30
-_OPS34 = ("empty_all_working_sets", "clear_system_file_cache_ex", "flush_modified_pages",
+_OPS34 = ("clear_system_file_cache_ex", "flush_modified_pages",
           "empty_standby", "purge_low_priority_standby", "flush_volume_cache", "clear_registry_cache")
 try:
     _cap34 = {}; _l2c34 = []
@@ -2289,7 +2290,8 @@ _c39 = PareCleaner(PareJudger(PareLearner(),
 _calls39 = []
 _c39._layer3_deep = lambda *a, **k: _calls39.append("L3")
 _c39._layer1_memreduct = lambda *a, **k: _calls39.append("L1")
-_c39._layer1_ops = lambda *a, **k: {"standby", "modified", "registry", "ws_all"}
+_c39._layer1_ops = lambda *a, **k: {"standby", "modified", "registry", "ws_sweep"}
+_c39._sweep_all_unprotected = lambda *a, **k: None
 _c39._layer2_process = lambda *a, **k: ([(_Snap39(), True)], [])   # 有已修剪结果 ⇒ 二轮块可达
 _e39 = []
 _orig_gpm39, _orig_ews39 = _cl39.winapi.get_process_memory, _cl39.winapi.empty_ws
@@ -2938,9 +2940,8 @@ check("full 收尾不再按 deadline 早退，且只补 standby_low",
       "deadline - 2.0" not in _cl45f and '"standby_low"} if "standby_low" in m' in _cl45f)
 check("full gap 段廉价压缩节拍 6s（不留大段空转）",
       "_gap_cheap_ts" in _eg45f and ">= 6.0" in _eg45f and '{"registry", "standby_low"}' in _eg45f)
-check("full gap 全清改为压力/留存驱动（档位顺序：充裕 32s > 偏紧 12s > 短缺 6s（越充裕越慢））",
-      "def _pressure_tier" in _eg45f and "tier = self._pressure_tier()" in _eg45f
-      and "(32.0, 12.0, 6.0)[tier]" in _eg45f
+check("full gap 不再执行全局 WS 全清（sweep 只留周期层）",
+      "_gap_wsall_due" not in _eg45f and "_gap_wsall_hits" not in _eg45f
       and "get_commit_info" in open(os.path.join(_ROOT34, "core", "winapi.py"), encoding="utf-8").read())
 check("full 回弹二轮有预算与计数",
       ("_rb_cand >= 40" in _cl45f or "_rb_cand = min(len(_rb_list), 40)" in _cl45f)
@@ -3846,7 +3847,7 @@ def _rec55(nm):
         _c55calls.append(nm); return True
     return _f
 _old55 = {}
-for _n55 in ("empty_all_working_sets", "empty_ws", "empty_standby", "flush_modified_pages",
+for _n55 in ("empty_ws", "empty_standby", "flush_modified_pages",
              "clear_system_file_cache_ex", "flush_volume_cache", "clear_registry_cache",
              "purge_low_priority_standby"):
     _old55[_n55] = getattr(_C55.winapi, _n55)
@@ -4289,8 +4290,9 @@ def _mk62(mode, agg):
     _c62._layer2_process = lambda *a, **k: (_calls62.append(("l2",)), ([], []))[1]
     _c62._layer3_deep = lambda *a, **k: _calls62.append(("l3",))
     _c62._final_consolidation = lambda *a, **k: _calls62.append(("final",))
-    _c62._layer1_ops = lambda _ops: {"ws", "ws_all", "registry"}
-    # 环境无关（2026-11-08）：deep 的 ws_all 使用率门控（<33% 移除）依赖**真实**内存使用率，
+    _c62._layer1_ops = lambda _ops: {"ws_sweep", "registry"}
+    _c62._sweep_all_unprotected = lambda *a, **k: _calls62.append(("sweep",))
+    # 环境无关（2026-11-08）：deep 的 ws_sweep 使用率门控（<33% 移除）依赖**真实**内存使用率，
     # 低负载机器上 pct 在 32~34 抖动会让 J24c 随机失败（实测 pct=34 仍偶发）。固定 pct=50。
     import core.cleaner as _cm62x
     _orig_ms62 = _cm62x.winapi.get_memory_status
@@ -4306,13 +4308,13 @@ check("J24a quick 表征：仅 standby_low+registry，无进程/深度",
       _cq62 == [("l1", False, ("registry", "standby_low"), True)] and _rq62["layer2"] == [], str(_cq62))
 _cn62, _rn62 = _mk62("normal", 0.9)
 check("J24b normal 表征：layer2 → layer1(full=False) → layer3",
-      _cn62 == [("l2",), ("l1", False, ("registry", "ws", "ws_all"), True), ("l3",)], str(_cn62))
+      _cn62 == [("l2",), ("l1", False, ("registry",), True), ("l3",)], str(_cn62))
 _cd62, _rd62 = _mk62("deep", 0.5)
 check("J24c deep 表征：layer2 → layer1(full=True) → layer3",
-      _cd62 == [("l2",), ("l1", True, ("registry", "ws", "ws_all"), True), ("l3",)], str(_cd62))
+      _cd62 == [("l2",), ("sweep",), ("l1", True, ("registry",), True), ("l3",)], str(_cd62))
 _cf62, _rf62 = _mk62("full", 0.5)
 check("J24d full 表征：layer2 → layer1(full=True) → layer3 → final，agg 强制 0.8",
-      _cf62 == [("l2",), ("l1", True, ("registry", "ws", "ws_all"), True), ("l3",), ("final",)]
+      _cf62 == [("l2",), ("sweep",), ("l1", True, ("registry",), True), ("l3",), ("final",)]
       and abs(_rf62["aggressiveness"] - 0.8) < 1e-9, str(_cf62))
 # ── C12 表征：_trim_process 四场景（拆分前后逐项一致）──
 import time as _t62
@@ -4798,7 +4800,7 @@ check("K7 _upd_log 读 log_to_file 并分流到崩溃通道",
 check("K8 内存条/托盘刷新链 5s（原 2s）", "self.root.after(5000, self._refresh_mem)" in _gsrc62
       and "after(2000, self._refresh_mem)" not in _gsrc62)
 
-print("\n[63] 2026-11-11 重系统操作择时门（ws_all / modified / filecache）")
+print("\n[63] 2026-11-11 重系统操作择时门（ws_sweep / modified / filecache）")
 
 import core.winapi as _wa63
 import ctypes as _ct63
@@ -4815,7 +4817,7 @@ def _mk63(mode="full", idle=0.0, manual=False):
 _orig_idle63 = _wa63.get_idle_seconds
 try:
     _c63 = _mk63("full", 10.0)
-    check("K10 停手 ≥0.05s（full）⇒ 放行", _c63._decide_heavy("ws_all") is True)
+    check("K10 停手 ≥0.05s（full）⇒ 放行", _c63._decide_heavy("standby") is True)
     _c63 = _mk63("full", 0.0)
     check("K10b 活跃且无历史 ⇒ heavy 延后", _c63._decide_heavy("modified") is False)
     _c63 = _mk63("normal", 6.0)
@@ -4823,12 +4825,8 @@ try:
 
     _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 500.0
     check("K11 上次 ≤1s ⇒ 快路径放行", _c63._decide_heavy("modified") is True)
-    _c63 = _mk63("deep", 0.0); _c63._heavy_last_ms["ws_all"] = 500.0
-    check("K11b 非 full 下 ws_all 不吃快路径（副作用型）", _c63._decide_heavy("ws_all") is False)
-    _c63 = _mk63("full", 0.0)
-    check("K11c full 下 light(ws_all) 不择时（必须尽全力）", _c63._decide_heavy("ws_all") is True)
-    _c63 = _mk63("deep", 0.0)
-    check("K11d deep 下 ws_all 仍择时（尽力但不打扰）", _c63._decide_heavy("ws_all") is False)
+    _c63 = _mk63("deep", 0.0); _c63._heavy_last_ms["standby"] = 500.0
+    check("K11b 非 full 下 standby 不吃快路径（副作用型）", _c63._decide_heavy("standby") is False)
 
     _c63 = _mk63("full", 0.0); _c63._heavy_last_ms["modified"] = 3000.0
     check("K12 full 最多跳 1 轮后强制（0 1 0）",
@@ -4840,8 +4838,6 @@ try:
     _c63 = _mk63("full", 0.0); _c63._heavy_allow = {"modified": False}
     check("K13 查询只读不计数", _c63._heavy_allowed("modified") is False
           and _c63._heavy_defer.get("modified", 0) == 0)
-    _c63 = _mk63("full", 0.0)
-    check("K13b 未判定时放行（直接调用兜底）", _c63._heavy_allowed("ws_all") is True)
 
     _c63 = _mk63("full", 0.0, manual=True)
     check("K14 手动优化豁免", _c63._decide_heavy("modified") is True)
@@ -4872,9 +4868,8 @@ try:
 
     _cl63 = _src47("core/cleaner.py")
     check("K15 每轮判定一次并缓存", "self._heavy_allow = {_k: self._decide_heavy(_k)" in _cl63)
-    check("K15b 四处调用点全部接门",
-          'self._heavy_allowed("ws_all")' in _cl63
-          and 'and self._heavy_allowed("modified") and _capture(winapi.flush_modified_pages)' in _cl63
+    check("K15b 三处调用点全部接门",
+          'and self._heavy_allowed("modified") and _capture(winapi.flush_modified_pages)' in _cl63
           and 'self._heavy_allowed("filecache")' in _cl63
           and 'if not self._heavy_allowed("modified"):' in _cl63)
 finally:
@@ -4922,19 +4917,11 @@ check("A 方案叠加：回涨阈值按压力分档 35%/60%",
       "_rthr = 0.35 if _tier_r >= 1 else 0.6" in _eg45f)
 check("周期内追加收割用 B 判据（剩余≥20s 且内存上涨）",
       "_remain2 >= 20.0" in _eg45f and "_rose or getattr(self, \"_refill_hot_streak\", 0) >= 2" in _eg45f)
-check("T1 full 段按「高熵常驻 + 低熵例外」压缩",
-      '"%d/%s" % (int(getattr(self, "_gap_wsall_hits", 0))' in _eg45f
+check("T1 full 段使用 ws_sweep_rounds，且无 gap ws_all 残留",
+      "ws_sweep_rounds" in _eg45f and "ws_all" not in _eg45f
       and "_c%d" in _eg45f and "_r%dh%d" in _eg45f and "_e%d" in _eg45f)
-_e64._gap_wsall_ts = 1000.0
-_e64._ws_retention = None
-_e64._pressure_tier = lambda: 2   # 短缺：6s
-_due_short = (_e64._gap_wsall_due("full", 1005) is False and _e64._gap_wsall_due("full", 1007) is True)
-_e64._pressure_tier = lambda: 1   # 偏紧：12s
-_due_mid = (_e64._gap_wsall_due("full", 1010) is False and _e64._gap_wsall_due("full", 1013) is True)
-_e64._pressure_tier = lambda: 0   # 充裕：32s
-_due_ample = (_e64._gap_wsall_due("full", 1021) is False and _e64._gap_wsall_due("full", 1033) is True)
-check("gap ws_all 按压力分档节流且仅 full",
-      _due_short and _due_mid and _due_ample and _e64._gap_wsall_due("normal", 9999) is False)
+check("gap 段不再执行全局 WS（sweep 只在 deep/full 周期层）",
+      "_gap_wsall_due" not in _eg45f and "_gap_wsall_hits" not in _eg45f)
 check("gap 调用 full 标志随模式", 'self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap' in _en64)
 check("内存条 300ms 独立刷新 + 退出停链",
       "self.root.after(300, self._tick_mem_bar)" in _g64 and "self._stop_mem_bar()" in _g64
@@ -5005,6 +4992,14 @@ check("18.11 Configure 置 dirty", "self._chart_dirty = True" in _g65)
 check("18.12 统一 _finish_present", "def _finish_present" in _g65 and "_finish_present(force=True)" in _g65)
 check("18.13 柱子时长注释一致", "500ms，EASE_IN_OUT_COS" in _g65)
 check("16.1/16.2 死类/no-op 已删", "_PoolToplevel" not in _g65 and "_prep_window_anim" not in _g65)
+_cl65s = _src47("core/cleaner.py"); _w65s = _src47("core/winapi.py")
+check("ws_sweep 保护硬边界（系统/自身/never/游戏）",
+      "_sweep_all_unprotected" in _cl65s and "_is_system_core" in _cl65s
+      and "_is_self_process" in _cl65s and "game_pids" in _cl65s and "never" in _cl65s)
+check("ws_sweep 使用 empty_ws_ex 分类", "empty_ws_ex" in _cl65s
+      and "denied" in _cl65s and "gone" in _cl65s and "failed" in _cl65s)
+check("全局 MemoryEmptyWorkingSets 已移除",
+      "empty_all_working_sets" not in _cl65s and "empty_all_working_sets" not in _w65s)
 check("14.1 IO 判定 1s 缓存", "now - prev[1] < 1.0" in _j65s and "len(prev) >= 3" in _j65s)
 check("1.4 运行时数据目录同源", "def _runtime_data_dir" in _e65 and "_LOG_DIR = os.environ.get(\"MEMWISE_LOG_DIR\") or _runtime_data_dir()" in _e65)
 check("1.2 ws_cap 失败按次累加", "fail += 1" in _e65 and "self._ws_cap_fail[path] = fail" in _e65)

@@ -418,7 +418,7 @@ def main():
         except Exception:
             pass
     # 启用清理所需权限（2026-08-15 审查）：GUI 启动即启用，CLI 缺失致 deep/full 的
-    # ws_all（系统级全清）静默失效；管理员下 SeProfileSingleProcessPrivilege 必须
+    # ws_sweep（受保护全量清扫）所需权限；管理员下 SeProfileSingleProcessPrivilege 必须
     # 运行时启用，非管理员 AdjustTokenPrivileges 失败无害
     winapi.enable_reduct_privileges()
     if len(sys.argv) < 2:
