@@ -196,7 +196,7 @@ check("learning_rate 默认 0.5 且范围覆盖 0.1-0.9", PARAMS["learning_rate"
 # 注意口径：cycle_freed 按生产为 MB（L210 阈值 20/100 均为 MB 数值），repeat_fail=0 防 cooloff 反向冻结 pid_kp
 e=EfisController()
 for i in range(10):
-    e.tick({"mem_pct": 50 + (i % 2) * 30, "trimmed_cnt": 10, "failed_cnt": 2, "total_attempts": 12,
+    e.tick({"mem_pct": 40 + (i % 2) * 20, "trimmed_cnt": 10, "failed_cnt": 2, "total_attempts": 12,
             "cycle_freed": 500, "snaps": [], "fore_fullscreen": False,
             "cycle_duration": 60, "pf_delta": 0, "deepen_cnt": 0, "deepen_extra": 0,
             "layer3_ran": 0, "layer3_extra": 0, "cooldown_cnt": 0, "repeat_fail": 0,
@@ -806,10 +806,10 @@ check("托盘初始 tip 键", "MemWise — 智能内存看护" in _EN_A)
 set_language("zh_CN")
 
 print("\n[23] 模式×场景参数组隔离（2026-08-16 用户定稿）")
-from core.efis import MODE_DEFAULTS, MODE_TUNE_WHITELIST
+from core.efis import MODE_DEFAULTS, MODE_TUNE_WHITELIST, MODE_TARGET_MIN, PARAMS
 # ── 激进初始值与调参白名单 ──
-check("deep 初始 target_usage=45", MODE_DEFAULTS["deep"].get("target_usage") == 45)
-check("full 初始 target_usage=35", MODE_DEFAULTS["full"].get("target_usage") == 35)
+check("deep 初始 target_usage=40", MODE_DEFAULTS["deep"].get("target_usage") == 40)
+check("full 初始 target_usage=30", MODE_DEFAULTS["full"].get("target_usage") == 30)
 check("deep 初始 pid_kp=0.8", MODE_DEFAULTS["deep"].get("pid_kp") == 0.8)
 check("full 白名单 9 参数", MODE_TUNE_WHITELIST["full"] ==
       ["pid_kp", "pid_kd", "target_usage", "cooloff_base", "learning_rate", "composite_kalman_w",
@@ -817,10 +817,12 @@ check("full 白名单 9 参数", MODE_TUNE_WHITELIST["full"] ==
 check("deep 白名单排除 L3 门与锚点", "layer3_agg_gate" not in MODE_TUNE_WHITELIST["deep"]
       and "anchor_margin" not in MODE_TUNE_WHITELIST["deep"] and len(MODE_TUNE_WHITELIST["deep"]) == 10)
 check("extreme 白名单与 full 同维但独立组", MODE_TUNE_WHITELIST["extreme"] == MODE_TUNE_WHITELIST["full"])
+check("target 边界：全局30 / full20 / extreme15", PARAMS["target_usage"]["min"] == 30
+      and MODE_TARGET_MIN == {"full": 20, "extreme": 15})
 # ── 16 组隔离:normal 调参不污染 full、切回 normal 参数保持 ──
 _ef25 = EfisController(state_path=None)
 def _osc25(mode, i):
-    return {"mem_pct": 50 + (i % 2) * 30, "trimmed_cnt": 10, "failed_cnt": 2,
+    return {"mem_pct": 40 + (i % 2) * 20, "trimmed_cnt": 10, "failed_cnt": 2,
             "total_attempts": 12, "cycle_freed": 500, "snaps": [], "fore_fullscreen": False,
             "cycle_duration": 60, "pf_delta": 0, "deepen_cnt": 0, "deepen_extra": 0,
             "layer3_ran": 0, "layer3_extra": 0, "cooldown_cnt": 0, "repeat_fail": 0,
@@ -830,7 +832,7 @@ for i in range(10):
 _pid_n = _ef25.get_params("normal")["pid_kp"]
 check("normal 振荡后 pid_kp 下降", _pid_n < 0.6, f"pid_kp={_pid_n}")
 check("full 组初始 pid_kp 未被污染", _ef25.get_params("full")["pid_kp"] == 0.6, f"pid_kp={_ef25.get_params('full')['pid_kp']}")
-# full 低压振荡(30/40):只触发 pid_kp 症状,不与 full 组 target_usage=35 的反向调整冲突
+# full 低压振荡(30/40):只触发 pid_kp 症状,不与 full 组 target_usage=30 的反向调整冲突
 for i in range(10):
     s25 = _osc25("full", i)
     s25["mem_pct"] = 30 + (i % 2) * 10
@@ -852,7 +854,7 @@ with open(_tmp25e, "w", encoding="utf-8") as f:
 _efm25 = EfisController(_tmp25)
 check("v3 迁移:normal 组用旧全局参数", _efm25.get_params("normal")["pid_kp"] == 0.9
       and _efm25.get_params("normal")["target_usage"] == 55, str(_efm25.get_params("normal")))
-check("v3 迁移:deep 组用模式初始值", _efm25.get_params("deep")["target_usage"] == 45)
+check("v3 迁移:deep 组用模式初始值", _efm25.get_params("deep")["target_usage"] == 40)
 check("v3 迁移:落盘为 v5 扁平结构", json.load(open(_tmp25e, encoding="utf-8"))["efis"]["version"] == 5,
       str(json.load(open(_tmp25e, encoding="utf-8"))["efis"].get("version")))
 # ── v4 → v5 迁移：每模式保留"当前场景"那一组（重启后本应生效的组 ⇒ 行为零跳变），
@@ -1088,7 +1090,7 @@ check("GUI 死导入已清", "from core.eris import" not in _gui26_src
 print("\n[25] 游戏态调参冻结（2026-08-30）")
 _ef27 = EfisController(state_path=None)
 def _st27(i, game):
-    return {"mem_pct": 50 + (i % 2) * 30, "trimmed_cnt": 10, "failed_cnt": 2,
+    return {"mem_pct": 40 + (i % 2) * 20, "trimmed_cnt": 10, "failed_cnt": 2,
             "total_attempts": 12, "cycle_freed": 500, "snaps": [], "fore_fullscreen": False,
             "cycle_duration": 60, "pf_delta": 0, "deepen_cnt": 0, "deepen_extra": 0,
             "layer3_ran": 0, "layer3_extra": 0, "cooldown_cnt": 0, "repeat_fail": 0,
@@ -1107,7 +1109,7 @@ for _i in range(5):
     _ef27.tick(_st27(_i, False))
 check("游戏退出后干净恢复累积", len(_ef27._window) == 5 and len(_ef27._adjust_log) == _log27)
 check("参数组未被游戏期触碰", _ef27.get_params("normal")["pid_kp"] == _ef27.get_params("normal")["pid_kp"]
-      and _ef27.get_params("full")["target_usage"] == 35)
+      and _ef27.get_params("full")["target_usage"] == 30)
 _ef27q = EfisController(state_path=None)
 _ef27q.set_mode("quick")
 check("quick 模式游戏态双冻结", _ef27q.tick(_st27(0, True)) == "" and len(_ef27q._window) == 0)

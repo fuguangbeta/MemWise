@@ -29,8 +29,8 @@ PARAMS = {
     "io_gate":            {"min": 1.0,  "max": 16.0, "default": 4.0,   "step": 1.0},   # IO 活跃门（MB/s）
 }
 
-# target_usage 全局下限 30；extreme 允许下探到 20（仅该模式，防污染其他模式）
-MODE_TARGET_MIN = {"extreme": 20}
+# target_usage 全局下限 30；full 允许下探到 20、extreme 到 15（仅这两种模式）
+MODE_TARGET_MIN = {"full": 20, "extreme": 15}
 
 def _param_bounds(mode, param):
     cfg = PARAMS[param]
@@ -52,23 +52,22 @@ MIN_ADJUST_DWELL = 30
 #    模式切换互不污染。原有"模式×场景 16 组"那一层只切参数、不切清理深度（深度由模式本身
 #    与用户设置决定），实测本机 16 组里 development 从未出现、还留有旧版场景名遗留的孤儿组，
 #    收益小于复杂度，故整体移除；状态升级时每个模式保留当时生效的场景组，行为零跳变 ──
-# deep/full 科学激进初始值（依据：四模式理论压缩实验——中压 45% 场景 deep 稳态
-# 29-30%、full 22%，target 须低于稳态才持续施压；full 物理下限≈22%，35 为范围下限；
+# 四模式目标梯度：normal 50 / deep 40 / full 30 / extreme 20；
+# full 下限 20、extreme 下限 15，target 只是压力目标，不保证物理占用达到该值；
 # 激进模式冷却更短、对新观测更敏感、反馈适应更快；其余无消费方逻辑/实验依据的
 # 参数保持 PARAMS 默认，靠 EFIS 在各自组内自适应）
 MODE_DEFAULTS = {
-    "normal": {},
+    "normal": {"target_usage": 50},
     "deep": {
-        "target_usage": 45, "cooloff_base": 240, "kalman_r": 4.0,
+        "target_usage": 40, "cooloff_base": 240, "kalman_r": 4.0,
         "learning_rate": 0.60, "pid_kp": 0.80, "deepen_theta": 0.50,
     },
     "full": {
-        "target_usage": 35, "cooloff_base": 180, "kalman_r": 3.0,
+        "target_usage": 30, "cooloff_base": 180, "kalman_r": 3.0,
         "learning_rate": 0.70,
     },
     # Extreme 独立组：状态/调参桶完全独立；在安全边界内放开响应与活跃门。
-    # target_usage 仍取 35：本机实测保护后 floor 约 30%，压到 30 以下只会制造无效压力；
-    # 真正的额外释放来自全局 WS，不靠把 setpoint 压穿物理下限。
+    # target 20 已贴近本机 Extreme floor（19–26%）；再低只是提高攻击性，不代表更多释放。
     "extreme": {
         "target_usage": 20, "cooloff_base": 60, "kalman_r": 2.0,
         "learning_rate": 0.85, "pid_kp": 0.90, "pid_kd": 0.15,
