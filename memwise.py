@@ -99,10 +99,12 @@ def cmd_optimize(args):
     mode = CFG.get("clean_mode", "normal")
     i = 0
     while i < len(args):
-        if args[i] == "--quick": mode = "quick"
+        if args[i] == "--extreme":
+            print("Warning: Extreme mode trims system working sets and may cause stutter.", file=sys.stderr)
+            mode = "extreme"
         elif args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
         i += 1
-    if mode not in ("quick", "normal", "deep", "full"):
+    if mode not in ("normal", "deep", "full", "extreme"):
         print(tr_msg(f"未知模式 {mode}，回退 normal"))
         mode = "normal"
     print(f"{mode.title()}{tr(' 优化模式')}")
@@ -427,8 +429,8 @@ def main():
         print(tr("用法: py memwise.py <命令> [参数]"))
         print(tr("  status                    内存状态"))
         print(tr("  learn [分钟]              学习进程行为 (默认10分钟)"))
-        print(tr("  optimize [--mode q|n|d|f] 执行优化"))
-        print(tr("  daemon [--mode q|n|d|f] 守护模式"))
+        print(tr("  optimize [--mode n|d|f|e] 执行优化"))
+        print(tr("  daemon [--mode n|d|f|e] 守护模式"))
         print(tr("  profile <pid>             进程详情 (含 PARES 指标)"))
         print(tr("  export [--config-only]    导出配置包（可选不含学习数据）"))
         print(tr("  import <文件名>            从导入文件夹导入配置包"))

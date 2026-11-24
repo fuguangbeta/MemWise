@@ -312,6 +312,16 @@ def empty_ws(pid):
     return empty_ws_ex(pid)[0] == "ok"
 
 
+def empty_all_working_sets():
+    """MemoryEmptyWorkingSets：系统级全进程 WS 清空（仅 Extreme 模式调用）。"""
+    try:
+        _try_enable_privilege("SeIncreaseQuotaPrivilege")
+        info = w.ULONG(2)  # MemoryEmptyWorkingSets = 2 (PHNT standard)
+        return NtSetSystemInformation(80, ctypes.byref(info), ctypes.sizeof(info)) == 0
+    except Exception:
+        return False
+
+
 def terminate_process(pid, exit_code=1):
     """终止指定进程（管理员权限可强制结束）"""
     h = OpenProcess(PROCESS_TERMINATE, False, pid)

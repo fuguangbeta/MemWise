@@ -939,7 +939,7 @@ class MemWiseEngine:
         # 混用一个窗会把上一模式的原始值带进新模式的中位数；分桶后切回原模式还能接上原有窗口。
         self._eris_hist_by_mode = {}     # {模式: [每维 deque]}
         self._eris_hist_mode = None      # 上一轮 ERIS 所用的模式（切换即重置"上一轮"基线）
-        # （quick 的"惯常系统级释放量"基准已由 ERIS v9 自标定基线取代，旧 deque 字段随之移除）
+        # （系统级释放量基准由 ERIS v9 自标定基线取代，旧 deque 字段随之移除）
         self._eris_prev_scores = None    # 上轮五维分（词条同向判定）
         self._eris_last_word = None   # 上轮词条 (维度, 方向)：相邻两轮同维正负不复读（2026-09-26 用户规定）
         self._eris_prev_eff = None       # 上轮效率（平稳/趋势判定）
@@ -1031,7 +1031,7 @@ class MemWiseEngine:
         self._prev_deepen_extra = 0
         self._cycle_trimmed = 0
         self._cycle_failed = 0
-        self._cycle_freed_mb = 0.0       # 本周期净释放（MB；quick 的系统级释放由此扣掉进程部分）
+        self._cycle_freed_mb = 0.0       # 本周期净释放（MB；系统级释放由此扣掉进程部分）
         self._cycle_avail_start = 0.0    # 本周期起点可用内存（净留存率维的分子基准）
         self._cycle_net_drop_mb = 0.0    # 本周期净下降（收割后定稿，v9「净优化量」维读取）
         self._last_harvest_ws = None
@@ -1471,12 +1471,12 @@ class MemWiseEngine:
                                 pass
                             # D4 专项（2026-11-21）：full 模式快照 3s→2s，把每周期快照
                             # 从 ~11 提到 ~16；其他模式保持 3s，避免无谓开销。
-                            snap_skip = 4 if mode == "full" else 6
+                            snap_skip = 4 if mode in ("full", "extreme") else 6
                             # 回弹驱动（C 方案，2026-08-14；2026-11-23 叠 A 方案）：
                             # 回填量超过上轮释放的一定比例 → gap 收紧、提前进入收割。
                             # 比例按压力分档：偏紧/短缺放宽到 35%（用尽手段），充裕维持 60%
                             # （充裕时长回来的多是系统缓存，压得太密只会 churn）。
-                            if mode == "full" and self._last_harvest_freed > (32 << 20) \
+                            if mode in ("full", "extreme") and self._last_harvest_freed > (32 << 20) \
                                     and self._last_harvest_ws is not None:
                                 _ws_now = sum(getattr(s, 'ws', 0) for s in snaps)
                                 _refill = max(0, _ws_now - self._last_harvest_ws)
@@ -1497,7 +1497,7 @@ class MemWiseEngine:
                             if self.cleaner._game_mode_manual:
                                 # 手动模式：实时刷新 PID 保护集（含子进程树），不自动切换模式；
                                 # 游戏退出同样清空失效 PID（与 _layer2_process 同口径防 PID 复用误
-                                # 保护——quick 模式守护不进 L2，此处是唯一清空点，2026-10-25 补）
+                                # 保护——该分支不进入 L2，此处是唯一清空点，2026-10-25 补）
                                 if game_now:
                                     self.cleaner.judger._game_pid_set = self.cleaner._build_game_pid_set(snaps)
                                 elif self.cleaner.judger._game_pid_set:
@@ -1522,7 +1522,7 @@ class MemWiseEngine:
                             # 可用内存持续高位，抑制"压缩后回弹"）；游戏模式恒 registry（流畅优先）
                             if self.cleaner.game_mode:
                                 ops_gap = {"registry"}
-                            elif mode == "full":
+                            elif mode in ("full", "extreme"):
                                 _now_gap = time.time()
                                 ops_gap = set()
                                 # 廉价压缩节拍（2026-11-23）：全清未到期时也保持每 6 秒
@@ -1538,12 +1538,12 @@ class MemWiseEngine:
                             else:
                                 ops_gap = {"registry"}
                             self.cleaner.refresh_cycle_gate()
-                            self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap, clean_self=False)
-                            if mode != "quick":
+                            self.cleaner._layer1_memreduct(full=(mode in ("full", "extreme")), ops=ops_gap, clean_self=False)
+                            if mode in ("normal", "deep", "full", "extreme"):
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；
                                 # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢。
                                 # ⛔ 执行域隔离（2026-10-25 原理审查）：手动优化持 exec_lock 期间
-                                # 本段不得执行——quick_retrim 与手动 trim 并发交错会令双方 pre/post
+                                # 本段不得执行——fast retrim 与手动 trim 并发交错会令双方 pre/post
                                 # 测量互相污染（释放统计失真）。非阻塞获取，拿不到跳过本轮（下轮再试）
                                 if self.cleaner._exec_lock.acquire(blocking=False):
                                     try:
@@ -1594,8 +1594,8 @@ class MemWiseEngine:
                                     agg_max = max(agg_max, agg)
                         # 节奏控制：0.5s 间隔保持高频温和压制，杜绝忙循环空转烧 CPU
                         time.sleep(0.5)
-                    # gap-fill 天花板：quick 保持 quick，其余统一用 normal（deep/full 的重操作留给 harvest）
-                    gap_fill_mode = "quick" if mode == "quick" else "normal"
+                    # gap-fill 天花板：统一用 normal（deep/full/extreme 的重操作留给 harvest）
+                    gap_fill_mode = "normal"
                     # 游戏模式同样执行：optimize 内部对游戏进程树绝对保护、跳过磁盘干扰系统操作，
                     # 非游戏进程持续积极清理为游戏腾出内存（游戏流畅只依赖 PID 保护与磁盘操作跳过）
                     result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg,
@@ -1616,11 +1616,11 @@ class MemWiseEngine:
                             gap = min(20.0, gap + 3)
                     prev_per_proc = per_proc
                 while time.time() < deadline - 4 and self._running:
-                    if mode != "quick":
+                    if mode in ("normal", "deep", "full", "extreme"):
                         # 尾段轻压制同 gap 梯度：full 含 standby/脏页持续清，deep 含 standby/脏页
                         if self.cleaner.game_mode:
                             ops_tail = {"registry"}
-                        elif mode == "full":
+                        elif mode in ("full", "extreme"):
                             ops_tail = {"registry", "standby", "standby_low", "modified"}
                         elif mode == "deep":
                             ops_tail = {"registry", "standby", "modified"}
@@ -1745,7 +1745,7 @@ class MemWiseEngine:
                     _avail_now = None
                 _rose = bool(_avail_now is not None and self._cycle_avail_start is not None
                              and _avail_now < float(self._cycle_avail_start))
-                if (mode == "full" and not harvest_partial and _remain2 >= 20.0
+                if (mode in ("full", "extreme") and not harvest_partial and _remain2 >= 20.0
                         and (_rose or getattr(self, "_refill_hot_streak", 0) >= 2)):
                     try:
                         time.sleep(min(4.0, max(1.5, _remain2 * 0.15)))
@@ -2343,12 +2343,11 @@ class MemWiseEngine:
             _keys = ("layer3_ran", "layer3_extra", "deepen_cnt", "deepen_extra",
                      "ws_sweep_rounds", "ws_sweep_attempted", "ws_sweep_ok", "ws_sweep_no_effect",
                      "ws_sweep_unmeasured", "ws_sweep_denied", "ws_sweep_gone", "ws_sweep_failed",
-                     "ws_sweep_skipped", "ws_sweep_freed", "trim_rounds",
+                     "ws_sweep_skipped", "ws_sweep_freed", "ws_global_rounds", "ws_global_freed", "ws_global_ms", "trim_rounds",
                      "normal_final_sweep", "normal_l3_extra", "deep_final_sweep",
                      "final_sweep", "combine_calls", "combine_pages", "standby", "modified",
                      "full_rebound_cand", "full_rebound_hits", "extra_harvests",
-                     "quick_calls", "quick_noop", "quick_backoff_skip", "quick_freed",
-                     "deep_final_freed")
+                              "deep_final_freed")
             _cur = {k: _st.get(k, 0) for k in _keys}
             _dl = {k: max(0, _cur.get(k, 0) - _prev.get(k, 0)) for k in _keys}
             _tr = int(_cs.get("trimmed_cnt") or 0)
@@ -2384,7 +2383,7 @@ class MemWiseEngine:
                 _row = _tree[_i] if _i < len(_tree) else [0] * 5
                 _tv.append(":".join(str(x) for x in _row))
             _parts.append("%d/%d/%d/%s" % (int(_vote[0]), int(_vote[1]),
-                                              {"deep": -1, "full": -2}.get(getattr(self.judger, "_mode_guard", "normal"), 0),
+                                              {"deep": -1, "full": -2, "extreme": -2}.get(getattr(self.judger, "_mode_guard", "normal"), 0),
                                               "/".join(_tv)))
             _bs = []
             for _k in ("稳态抑制", "回弹后退", "WS未填满"):
@@ -2396,13 +2395,17 @@ class MemWiseEngine:
                 _parts.append("%d/%.1f" % (_dl["deep_final_sweep"], _dl["deep_final_freed"]/(1<<20)))
             elif _mode == "normal":
                 _parts.append("%d/%d" % (_dl["normal_final_sweep"], _dl["normal_l3_extra"]))
-            elif _mode == "full":
+            elif _mode in ("full", "extreme"):
                 # full 段按「高熵常驻 + 低熵例外」压缩（2026-11-23 定稿）：
                 # 常驻只有 gap 全清次数与净留存%（每轮都变、信息量最高）；
                 # combine 页数、回弹候选/命中、追加收割、收尾缺省只在非默认时追加短标签。
-                _mseg = "%d/%d/%d/%d" % (
-                    int(_dl.get("ws_sweep_rounds", 0)), int(_dl.get("ws_sweep_ok", 0)),
-                    int(_dl.get("ws_sweep_no_effect", 0)), int(_dl.get("ws_sweep_denied", 0)))
+                if _mode == "extreme":
+                    _mseg = "G%d/%.1f" % (int(_dl.get("ws_global_rounds", 0)),
+                                          _dl.get("ws_global_freed", 0) / (1 << 20))
+                else:
+                    _mseg = "%d/%d/%d/%d" % (
+                        int(_dl.get("ws_sweep_rounds", 0)), int(_dl.get("ws_sweep_ok", 0)),
+                        int(_dl.get("ws_sweep_no_effect", 0)), int(_dl.get("ws_sweep_denied", 0)))
                 if _dl["combine_pages"] > 0:
                     _mseg += "_c%d" % _dl["combine_pages"]
                 if _dl["full_rebound_cand"] > 0:
@@ -2459,7 +2462,7 @@ class MemWiseEngine:
             pass
 
     def _push_round(self, chart_accum, harvest_partial, game_seen=None):
-        # 本轮真实清理模式（含 quick；未清理过则取配置模式）——分桶/锚点/K 全按它取
+        # 本轮真实清理模式（未清理过则取配置模式）——分桶/锚点/K 全按它取
         _mode = getattr(self.cleaner, "_last_mode", None) or CFG.get("clean_mode", "normal")
         with self._chart_lock:
             self._chart_data.append(chart_accum)
@@ -2677,7 +2680,7 @@ class MemWiseEngine:
                     h = payload.get("hist")
                     if isinstance(h, list) and len(h) == 5:
                         _m = (globals().get("CFG") or {}).get("clean_mode", "normal")
-                        if _m not in ("quick", "normal", "deep", "full"):
+                        if _m not in ("normal", "deep", "full", "extreme"):
                             _m = "normal"
                         hist = self._eris_hist_for(_m)
                         for j, one in enumerate(h):

@@ -1,4 +1,4 @@
-# MemWise v5.7.043
+# MemWise v5.7.044
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -44,11 +44,11 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 ## 概述 · *Overview*
 
-程序提供四种清理强度，差异体现为介入深度与代价。quick 仅处理低优先待机页与注册表缓存，不介入进程；normal 在此基础上回收进程闲置页，并依据内存压力逐步加深；deep 于用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此产生的短暂重载延迟。默认模式为 normal。
+程序提供四种清理强度，差异体现为介入深度与代价。normal 回收进程闲置页与系统缓存，并依据内存压力逐步加深；deep 于用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此产生的短暂重载延迟；extreme 在 full 基础上强制全部操作并清理系统/自身工作集，追求最低已用内存，但可能造成卡顿，且不承诺绝对稳定。默认模式为 normal。
 
 守护模式以固定周期运行，默认周期 60 秒，周期长度不受内存波动影响——你在设置里填 60 秒，日志、图表与统计就都按 60 秒输出；周期内部再按内存压力调整动作密度。内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。系统核心进程、排除项与程序自身不参与清理。
 
-Four modes of cleaning intensity are provided, differing in intervention depth and cost. quick handles only low-priority standby pages and registry caches, without process intervention; normal additionally reclaims idle process pages and deepens as memory pressure rises; deep performs extra reclamation while the user is idle; full prioritises release volume and accepts the resulting brief reload delay. The default mode is normal.
+Four modes of cleaning intensity are provided, differing in intervention depth and cost. normal reclaims idle process pages and system caches and deepens as memory pressure rises; deep performs extra reclamation while the user is idle; full prioritises release volume and accepts the resulting brief reload delay; extreme additionally forces every operation and trims system/self working sets for the lowest used-memory figure, at the cost of possible stutter; absolute stability is not guaranteed. The default mode is normal.
 
 Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle length does not move with memory fluctuations — set 60 seconds and logs, chart and statistics all follow that beat; work density inside the cycle adapts to memory pressure. When memory usage reaches the configured threshold it executes a full pass immediately rather than waiting for a later cycle. The program is a single executable with no third-party dependencies; it is offline by default, installs no driver and registers no system service. During operation it terminates no process, suspends no thread and injects no code. System-critical processes, exclusions and MemWise itself are excluded from reclamation.
 
@@ -76,10 +76,10 @@ Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle lengt
 
 | 模式 | 行为特征 | 适用场景 |
 |---|---|---|
-| **quick** | 仅回收低优先待机页与注册表缓存，不介入进程 | 常驻运行、不希望被中断，或硬件资源有限 |
 | **normal**（默认） | 回收进程闲置页与所选系统缓存，用户活跃时保持克制 | 日常使用；首次使用建议自该模式开始 |
 | **deep** | 于用户空闲时增加一轮深度回收，释放量更高 | 内存长期偏紧，且不宜频繁手动优化 |
 | **full** | 以释放量为优先，每轮执行完整流程；内存紧张时自动加密，宽裕时克制 | 启动大型程序前，或内存已接近上限 |
+| **extreme** | 强制全部操作并清系统/自身工作集，追求最低已用内存；每次进入二次确认 | 只在意内存数字、接受卡顿/磁盘抖动的专家用户 |
 
 模式由「清理模式」下拉框切换，下一周期生效。手动优化按当前模式执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
 
@@ -87,10 +87,10 @@ The four modes trade intervention depth against cost. Reclaimed pages must be re
 
 | Mode | Behaviour | Suitable for |
 |---|---|---|
-| **quick** | Reclaims only low-priority standby pages and registry caches; no process intervention | Always-on operation, no interruption desired, or limited hardware |
 | **normal** (default) | Reclaims idle process pages and the selected system caches; restrained while the user is active | Everyday use; recommended as the starting mode |
 | **deep** | Adds a deep pass while the user is idle, with higher release | Memory remains tight and frequent manual optimization is impractical |
 | **full** | Prioritises release volume and runs the complete pipeline every cycle; denser under pressure, restrained when memory is ample | Before a large application, or when memory is close to its limit |
+| **extreme** | Forces every operation and trims system/self working sets for the lowest used memory; confirmation on every entry | Expert users who care only about the number and accept stutter/disk churn |
 
 The mode is switched in the Mode dropdown and takes effect from the next cycle. Manual optimization uses the current mode; when memory reaches the emergency threshold the program runs a full pass automatically. While Game Mode is enabled, disk-oriented system operations are suppressed and game smoothness takes priority.
 
@@ -122,13 +122,13 @@ No routine intervention is required. Adding frequently used game process names u
 
 明确不执行：终止进程、挂起线程、注入代码、修改系统设置或注册表策略、安装驱动、注册系统服务。
 
-保护范围：系统核心进程、排除列表中的程序、运行中的游戏及其子进程、程序自身。normal 与 deep 另避让当前活跃或刚切换走的程序；full 不判断活跃性，但上述保护仍然有效。
+保护范围：系统核心进程、排除列表中的程序、运行中的游戏及其子进程、程序自身。normal 与 deep 另避让当前活跃或刚切换走的程序；full 不判断活跃性，但上述保护仍然有效。extreme 是唯一例外：它会清理系统核心进程与程序自身的工作集，仅建议在明确知情后手动使用。
 
 Scope of execution: reclaiming process pages not currently in use; clearing caches that can be rebuilt, including standby, file, volume and registry caches; and under deep and full, additional reclamation of processes that have been inactive for a long period.
 
 Explicitly excluded: terminating processes, suspending threads, injecting code, modifying system settings or registry policy, installing drivers, and registering a system service.
 
-Protected scope: system-critical processes, programs in the exclusion list, a running game and its child processes, and the program itself. normal and deep additionally avoid currently active programs and those recently switched away from; full does not assess activity, but the protections above remain in force.
+Protected scope: system-critical processes, programs in the exclusion list, a running game and its child processes, and the program itself. normal and deep additionally avoid currently active programs and those recently switched away from; full does not assess activity, but the protections above remain in force. extreme is the sole exception: it trims system-critical processes and the program itself, and should only be used manually with explicit consent.
 
 ---
 
@@ -216,7 +216,7 @@ A working-set cap limits physical usage only and does not change commit memory; 
 |---|---|
 | status | 打印当前内存状态 |
 | learn [分钟] | 观察并记录进程行为，默认 10 分钟 |
-| optimize [--mode q|n|d|f] | 执行一次优化，可指定模式 |
+| optimize [--mode n|d|f|e] | 执行一次优化，可指定模式 |
 | daemon [--mode q|n|d|f] | 以命令行方式运行守护 |
 | profile <pid> | 查看某个进程的详细画像 |
 | export [--config-only] / import | 导出、导入配置包；加 --config-only 时不带学习数据 |
@@ -248,10 +248,10 @@ The command line and the window share one set of settings and learning data, and
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
-| clean_mode | normal | 清理模式：quick / normal / deep / full |
+| clean_mode | normal | 清理模式：normal / deep / full / extreme |
 | interval | 60 | 守护周期，10 到 3600 秒 |
 | gap_seconds | 12 | 周期内两次轻量清理的间隔，8 到 20 秒 |
-| clean_passes | 4 | 单个进程最多深清轮数，2 到 6；full 固定 6 轮 |
+| clean_passes | 4 | 单个进程最多深清轮数，2 到 6；full/extreme 固定 6 轮 |
 | clean_operations | ws、standby、modified、volume、registry | 六个系统操作开关；filecache 可另行勾选 |
 | combine_enabled | true | 页合并开关，与六项解耦 |
 | emergency_threshold | 80 | 紧急清理的使用率阈值，50 到 99 |
@@ -275,10 +275,10 @@ The configuration file is config/config.yaml. It is read at startup, so manual e
 
 | Key | Default | Meaning |
 |---|---|---|
-| clean_mode | normal | Cleaning mode: quick, normal, deep or full |
+| clean_mode | normal | Cleaning mode: normal, deep, full or extreme |
 | interval | 60 | Guard cycle, 10 to 3600 seconds |
 | gap_seconds | 12 | Interval between light passes inside a cycle, 8 to 20 seconds |
-| clean_passes | 4 | Maximum deep rounds per process, 2 to 6; full uses 6 |
+| clean_passes | 4 | Maximum deep rounds per process, 2 to 6; full/extreme use 6 |
 | clean_operations | ws, standby, modified, volume, registry | The six system operation switches; filecache can be added |
 | combine_enabled | true | Page combining, independent of the six |
 | emergency_threshold | 80 | Usage threshold for emergency cleaning, 50 to 99 |

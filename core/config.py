@@ -56,6 +56,7 @@ def _warn_once(key, msg):
 DEFAULT_CFG = {
     "kp": 1.0, "ki": 0.15, "kd": 0.1, "target_usage": 45,
     "interval": 60, "never": [], "clean_mode": "normal",
+    "extreme_warning_ack": False,
     # auto_start（普通权限快捷方式自启）已于 2026-08-15 移除，仅保留管理员权限自启
     "auto_start_daemon": False,
     # 更新检查（2026-10-16）：**默认不联网**——update_check 关闭时一行网络代码都不执行；
@@ -205,7 +206,7 @@ def load():
     # 枚举键归一（2026-11-24 2.1）：必须在异常路径之后执行；未知模式曾走
     # cleaner._run_fallback（normal 语义）而 ERIS/日志仍带原串，口径漂移。
     try:
-        for _k, _allowed, _dflt in (("clean_mode", {"quick", "normal", "deep", "full"}, "normal"),
+        for _k, _allowed, _dflt in (("clean_mode", {"normal", "deep", "full", "extreme"}, "normal"),
                                     ("close_action", {"ask", "minimize", "exit"}, "ask"),
                                     ("tray_left_action", {"show", "clean"}, "show")):
             if d.get(_k) not in _allowed:

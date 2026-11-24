@@ -1534,6 +1534,7 @@ class MemWiseGUI:
         self._anim = _motion.Animator(self.root.after, self.root.after_cancel, frame_ms=8)
 
         self._build_ui()
+        self.root.after(120, self._ensure_extreme_startup)
         _hook_button_hover(self.root)
         self._refresh_mem()
         self._start_mem_bar()   # 内存条独立 300ms 实时刷新（2026-11-20）
@@ -2234,32 +2235,47 @@ class MemWiseGUI:
         mode_lbl = ttk.Label(mf, text=tr("清理模式:")); mode_lbl.pack(side="left")
         self.mode_var = tk.StringVar(value=CFG.get("clean_mode", "normal"))
         self.mode_combo = ttk.Combobox(mf, textvariable=self.mode_var, width=12,
-                                        values=["quick","normal","deep","full"], state="readonly")
+                                        values=["normal","deep","full","extreme"], state="readonly")
         self.mode_combo.bind("<MouseWheel>", lambda e: "break")  # 禁用滚轮：只接受点击选择，防误改
         self.mode_combo.pack(side="left", padx=(4,0))
         self._add_tip(mode_lbl,
             "「清理模式选择」\n"
             "1. 四模式摘要：\n"
-            "  · quick — 仅系统级清理，几秒完成，几乎无感知\n"
-            "                   适合：随手一点，不想有任何感知\n"
             "  · normal — 进程级 + 系统级清理，对日常使用影响较小\n"
             "                      适合：日常使用，兼顾效果与流畅\n"
             "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n"
             "                  适合：内存偏紧，接受短暂变慢\n"
             "  · full — 极限释放，尽最大可能腾出内存空间，包括刚切走或正在工作的程序内存\n"
             "               适合：内存告急，需要立刻腾出最多空间\n"
+            "  · extreme — 强制全部操作并清系统工作集，追求最低已用内存\n"
+            "                  适合：只在意内存数字，接受卡顿/磁盘抖动的专家用户\n"
+            "⚠ extreme 每次进入都会二次确认（可勾选不再提示）\n"
             "⚠ 优化按钮和守护模式共用此设置\n"
             "⚠ 切换后清理模式将在下一轮生效，无需重启")
         # 自动持久化清理模式选择
         def _on_mode_change(*args):
             global CFG
             new_mode = self.mode_var.get()
+            self._mode_before_warn = CFG.get("clean_mode", "normal")
+            if getattr(self, "_mode_warn_guard", False):
+                return
+            if new_mode == "extreme" and not getattr(self, "_confirm_extreme", lambda: True)():
+                self._mode_warn_guard = True
+                try:
+                    self.mode_var.set(getattr(self, "_mode_before_warn", "normal"))
+                finally:
+                    self._mode_warn_guard = False
+                return
             last_mode = getattr(self, '_last_logged_mode', '')
             if new_mode != last_mode:
                 self._log(f"后续周期的清理模式调整为：{new_mode}")
                 self._last_logged_mode = new_mode
             CFG["clean_mode"] = new_mode
             _save_cfg()
+            try:
+                self._sync_ops_widgets()
+            except Exception:
+                pass
         self.mode_var.trace_add("write", _on_mode_change)
         self.mode_var.trace_add("write", lambda *a: self._sync_passes_widget())
         self.btn_game = ttk.Button(mf, text=tr("🎮 游戏模式"), command=self._on_toggle_game)
@@ -2611,6 +2627,8 @@ class MemWiseGUI:
         cf.pack(fill="x", padx=12, pady=8)
 
         def toggle_op(op_name, var):
+            if self.mode_var.get() == "extreme":
+                return
             if var.get():
                 if "clean_operations" not in CFG:
                     CFG["clean_operations"] = []
@@ -2629,8 +2647,13 @@ class MemWiseGUI:
         vl_var = tk.BooleanVar(value="volume" in ops)
         rg_var = tk.BooleanVar(value="registry" in ops)
         cb_var = tk.BooleanVar(value=CFG.get("combine_enabled", True))
+        self._op_vars = {"ws": ws_var, "standby": sb_var, "modified": mp_var,
+                         "filecache": fc_var, "volume": vl_var, "registry": rg_var}
+        self._op_cb_var = cb_var
 
         def toggle_combine():
+            if self.mode_var.get() == "extreme":
+                return
             CFG["combine_enabled"] = bool(cb_var.get())
             _save_cfg()
 
@@ -2679,26 +2702,23 @@ class MemWiseGUI:
         cb_cb = ttk.Checkbutton(ops_frame, text=tr("内存页合并"), variable=cb_var,
                                 command=toggle_combine)
         cb_cb.pack(anchor="w")
+        self._op_cbs = {"ws": cb_ews, "standby": cb_sb, "modified": cb_mp,
+                        "filecache": cb_fc, "volume": cb_vc, "registry": cb_rg,
+                        "combine": cb_cb}
         self._add_tip(cb_cb, "「合并系统中内容相同的内存页」\n"
                       "1. 仅在极限模式的全量收尾阶段执行\n"
                       "2. 可减少重复物理页占用，释放量由系统内容决定\n"
                       "⚠ 需要管理员权限，执行期间可能短暂占用 CPU")
-        # quick 模式：全量 WS/文件缓存/卷缓存/脏页写回均不执行（2026-10-20：quick
-        # 只保留低优先级待机 + 注册表，避免“勾选了却没有执行”）。
-        if CFG.get("clean_mode", "normal") == "quick":
-            for _cb in (cb_ews, cb_fc, cb_vc, cb_mp, cb_cb):
-                try:
-                    _cb.state(["disabled"])
-                except Exception:
-                    pass
-            ttk.Label(cf, text=tr("quick 模式下「释放进程闲置内存」「系统文件缓存」「卷缓存刷新」「脏页写回」「内存页合并」不执行"),
-                      foreground="#888", wraplength=470, justify="left").pack(anchor="w")
+        # extreme 模式：强制全操作并置灰；其他模式恢复用户原勾选（不改写配置）。
+        self._extreme_ops_hint = ttk.Label(
+            cf, text=tr("extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）"),
+            foreground="#888", wraplength=470, justify="left")
         # ─── 清理深度（2026-08-16 归类整理：清理强度归"清理"栏，原在触发与日志栏）───
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):
             global CFG
-            if self.mode_var.get() == "full":
-                return   # full 固定 6 轮，滑杆已灰置（防被改）
+            if self.mode_var.get() in ("full", "extreme"):
+                return   # full/extreme 固定 6 轮，滑杆已灰置（防被改）
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
             _push_runtime_cfg(self.judger)
@@ -2712,18 +2732,10 @@ class MemWiseGUI:
         ps_sl.bind("<ButtonRelease-1>", lambda e: set_passes(passes_val.get()))
         ps_sl.pack(fill="x", pady=(0,6))
         self._passes_val, self._ps_sl, self._ps_lbl = passes_val, ps_sl, ps_lbl
-        self._ps_hint = ttk.Label(cf, text=tr("full 模式下固定 6 轮（上限），切回其他模式后可调"),
+        self._ps_hint = ttk.Label(cf, text=tr("full/extreme 模式下固定 6 轮（上限），切回其他模式后可调"),
                                   foreground="#888", wraplength=470, justify="left")
         self._sync_passes_widget()
-        if CFG.get("clean_mode", "normal") == "quick":
-            # quick 模式零进程清理 ⇒ 深度无消费（2026-10-15 实测：quick 下 _trim_process
-            # 调用 0 次，滑杆可调但完全无作用）——与上面三个开关同款置灰 + 说明
-            try:
-                ps_sl.state(["disabled"])
-            except Exception:
-                pass
-            ttk.Label(cf, text=tr("quick 模式下「进程清理深度」不适用"), foreground="#888",
-                      wraplength=470, justify="left").pack(anchor="w")
+        self._sync_ops_widgets()
         # ─── 游戏模式 ───
         gmf = ttk.LabelFrame(inner_frame, text=tr("游戏模式"), padding=8)
         gmf.pack(fill="x", padx=12, pady=4)
@@ -4865,8 +4877,85 @@ class MemWiseGUI:
     def _upd_learned(self):
         self.lbl_lr.config(text=tr("已学习: ") + str(len(self.learner.profiles)))
 
+    def _sync_ops_widgets(self, *_a):
+        """extreme 强制全操作并置灰；其他模式恢复用户原勾选（不改写配置）。"""
+        try:
+            extreme = self.mode_var.get() == "extreme"
+            ops = set(CFG.get("clean_operations", []) or [])
+            for name, var in getattr(self, "_op_vars", {}).items():
+                var.set(True if extreme else (name in ops))
+            cbv = getattr(self, "_op_cb_var", None)
+            if cbv is not None:
+                cbv.set(True if extreme else bool(CFG.get("combine_enabled", True)))
+            for cb in getattr(self, "_op_cbs", {}).values():
+                try:
+                    cb.state(["disabled"] if extreme else ["!disabled"])
+                except Exception:
+                    pass
+            hint = getattr(self, "_extreme_ops_hint", None)
+            if hint is not None:
+                if extreme:
+                    hint.pack(anchor="w", pady=(6, 0))
+                else:
+                    hint.pack_forget()
+        except Exception:
+            pass
+
+    def _ensure_extreme_startup(self):
+        """配置恢复为 extreme 时也补一次确认；取消则回退 normal。"""
+        try:
+            if self.mode_var.get() != "extreme" or CFG.get("extreme_warning_ack", False):
+                return
+            self._mode_before_warn = "normal"
+            if not self._confirm_extreme():
+                self._mode_warn_guard = True
+                try:
+                    self.mode_var.set("normal")
+                finally:
+                    self._mode_warn_guard = False
+        except Exception:
+            pass
+
+    def _confirm_extreme(self):
+        """Extreme 二次确认；勾选“不再弹出”后持久化 ack。"""
+        if CFG.get("extreme_warning_ack", False):
+            return True
+        result = {"ok": False}
+        top = tk.Toplevel(self.root)
+        top.title(tr("极限模式确认"))
+        top.transient(self.root)
+        top.resizable(False, False)
+        top.grab_set()
+        body = ttk.Frame(top, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=tr("极限模式会强制全部清理操作，并清理 Windows 系统进程与自身工作集，以换取更低的已用内存。"),
+                  wraplength=460, justify="left").pack(anchor="w")
+        ttk.Label(body, text=tr("可能导致界面卡顿、游戏掉帧、磁盘活动增加；释放的内存会随使用逐步回填。本模式不承诺绝对稳定。"),
+                  wraplength=460, justify="left").pack(anchor="w", pady=(8, 0))
+        ack = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text=tr("我已知情，不再弹出"), variable=ack).pack(anchor="w", pady=(12, 8))
+        btns = ttk.Frame(body); btns.pack(fill="x")
+        def _ok():
+            result["ok"] = True
+            if ack.get():
+                CFG["extreme_warning_ack"] = True
+                _save_cfg()
+            top.destroy()
+        def _cancel():
+            top.destroy()
+        ttk.Button(btns, text=tr("取消"), command=_cancel).pack(side="right")
+        ttk.Button(btns, text=tr("继续"), command=_ok).pack(side="right", padx=(0, 8))
+        top.protocol("WM_DELETE_WINDOW", _cancel)
+        top.update_idletasks()
+        _w, _h = top.winfo_width(), top.winfo_height()
+        _x = max(0, (top.winfo_screenwidth() - _w) // 2)
+        _y = max(0, (top.winfo_screenheight() - _h) // 2)
+        top.geometry(f"+{_x}+{_y}")
+        top.wait_window()
+        return result["ok"]
+
     def _sync_passes_widget(self, *_a):
-        """full 模式下把"进程清理深度"滑杆锁到 6 并灰置（2026-11-20 用户要求）。"""
+        """full/extreme 模式下把"进程清理深度"滑杆锁到 6 并灰置。"""
         try:
             sl = getattr(self, "_ps_sl", None)
             if sl is None or not sl.winfo_exists():
@@ -4874,9 +4963,9 @@ class MemWiseGUI:
             val = getattr(self, "_passes_val", None)
             lbl = getattr(self, "_ps_lbl", None)
             hint = getattr(self, "_ps_hint", None)
-            if self.mode_var.get() == "full":
+            if self.mode_var.get() in ("full", "extreme"):
                 self._tween_scale(val, 6, on_done=lambda: sl.state(["disabled"]))
-                lbl.config(text=tr("进程清理深度: ") + "6 " + tr("轮（full 固定）"))
+                lbl.config(text=tr("进程清理深度: ") + "6 " + tr("轮（full/extreme 固定）"))
                 if hint is not None:
                     hint.pack(anchor="w", pady=(0, 4))
             else:

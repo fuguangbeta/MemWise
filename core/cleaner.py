@@ -43,7 +43,7 @@ COMPOSITE_WS_SCALE = int((500 << 20) * _S)      # 复合评分：WS 归一尺度
 # 旧规则（内存宽裕 <45% + 回涨快 → 轻量轮）会跳过 Layer3/回弹/final/combine，
 # 与 full“允许负面作用、尽最大能力”的初衷冲突。仅 `MEMWISE_FULL_LITE=1` 保留旧路径
 # ⚠ 仅排障/对照实验用，生产默认不生效（2026-11-20 审查 13.4：避免被误读为 full 有自适应降级）
-# 用于对照/排障：每进程一趟、跳 Layer3/回弹、候选前 K。quick/normal/deep 恒不降级。
+# 用于对照/排障：每进程一趟、跳 Layer3/回弹、候选前 K。normal/deep/full 恒不降级。
 LITE_TOP_K = 48            # 轻量轮候选上限（实测前 25%≈46 个进程占 96.7% 释放量）
 
 # full 专用收尾/页合并（不进入 normal/deep/gap/游戏）
@@ -94,7 +94,6 @@ class PareCleaner:
         self._heavy_defer = {}     # {op: 连续被跳过的轮数}（择时门，2026-11-11）
         self._heavy_last_ms = {}   # {op: 上次实测耗时 ms}（磁盘忙闲的代理信号）
         self._heavy_allow = {}     # {op: 本轮是否允许}（每轮判定一次，轮内复用——见 _decide_heavy）
-        self._quick_backoff = {}   # quick 空转退避：{op: 下次允许的 monotonic 时刻}
         self._lock = threading.Lock()
         self._exec_lock = threading.RLock()  # 整轮优化互斥锁：手动优化与守护周期串行执行（防 _manual_run 标志污染/双份 trim）
         self._max_workers = min(os.cpu_count() or 2, 8)
@@ -111,6 +110,7 @@ class PareCleaner:
             "ws_sweep_skipped": 0, "ws_sweep_skip_self": 0, "ws_sweep_skip_system": 0,
             "ws_sweep_skip_never": 0, "ws_sweep_skip_game": 0, "ws_sweep_skip_small": 0,
             "ws_sweep_ms": 0.0, "ws_sweep_freed": 0,
+            "ws_global_rounds": 0, "ws_global_ms": 0.0, "ws_global_freed": 0,
             "deepen_cnt": 0, "deepen_extra": 0,
             "trim_rounds": 0,   # 进程实际执行轮数累加（5.2：区分"名义趟数"与"实际趟数"）
             "layer3_ran": 0, "layer3_extra": 0,
@@ -118,9 +118,6 @@ class PareCleaner:
             "extra_harvests": 0, "final_sweep": 0, "full_rebound_cand": 0, "full_rebound_hits": 0, "combine_calls": 0, "combine_pages": 0, "combine_ms": 0,
             "deep_final_freed": 0, "deep_final_sweep": 0,
             "normal_final_sweep": 0, "normal_l3_extra": 0,
-            # quick 专项（2026-11-22）：零感知成本量化 + 空转退避
-            "quick_calls": 0, "quick_noop": 0, "quick_backoff_skip": 0,
-            "quick_ms": 0.0, "quick_freed": 0,
         }
         self._info_msgs = []
         self._last_mode = None   # 最近一次 optimize 的**真实模式**（ERIS 按模式分桶取真值）；None ⇒
@@ -316,7 +313,7 @@ class PareCleaner:
             return True
         if self._manual_run or self.game_mode:
             return True
-        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") in ("full", "extreme"):
             return True
         last = self._heavy_last_ms.get(kind, 0.0)
         if kind in _HEAVY_FAST_KINDS and 0 < last <= _HEAVY_FAST_MS:
@@ -355,7 +352,7 @@ class PareCleaner:
             self._heavy_defer[kind] = 0
             return True
         mode = getattr(self, "_last_mode", None) or "normal"
-        limit = _HEAVY_DEFER_FULL if mode == "full" else _HEAVY_DEFER_OTHER
+        limit = _HEAVY_DEFER_FULL if mode in ("full", "extreme") else _HEAVY_DEFER_OTHER
         defer = self._heavy_defer.get(kind, 0)
         if defer >= limit:
             self._heavy_defer[kind] = 0
@@ -370,7 +367,7 @@ class PareCleaner:
         if self._manual_run or self.game_mode:
             return True
         # full 的"必须尽全力"：light（standby）不择时、每轮必做；与 _decide_heavy 同口径
-        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") == "full":
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") in ("full", "extreme"):
             return True
         return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
 
@@ -378,7 +375,7 @@ class PareCleaner:
         """守护周期开头判定一次重操作放行（gap 与 harvest 共用同一结果，见 9.1）。"""
         # 周期内是否发生过进程裁剪（gap/harvest 合并计），供 normal 尾段判定
         self._cycle_any_trim = False
-        _mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
+        _mode = mode if mode in ("normal", "deep", "full", "extreme") else "normal"
         _prev = getattr(self, "_last_mode", None)
         self._last_mode = _mode
         if _prev != _mode:
@@ -478,7 +475,7 @@ class PareCleaner:
                         self._stats_inc("filecache")
             # 统计按 API 真实成功计数（权限不足时不再虚增）
             # 游戏模式：只跳"会写盘/迫使重读盘"的操作（全量待机/脏页写回/文件缓存/卷冲刷/WS 全清），
-            # 保留低优先待机（standby_low）与注册表——quick 模式已证明 standby_low 属低感知操作，
+            # 保留低优先待机（standby_low）与注册表——实测 standby_low 属低感知操作，
             # 游戏时清它只回收后台进程的低优先页，不会让游戏重新读盘（2026-11-09 复核）。
             # 顺序：先卷冲刷，再清 modified/standby——避免 FlushFileBuffers 产生的
             # 新脏页/待机页落在清扫之后（与 Mem Reduct 的系统级顺序对齐）。
@@ -627,7 +624,7 @@ class PareCleaner:
         #    2026-08-30 审查：原无条件拦截使 full 的 IO 豁免在最后一步失效、与
         #    "清理正在工作的程序"承诺矛盾）──
         try:
-            # 名单复核（与 quick_retrim 同款防御纵深，2026-09-26 审查 F10）：决策到执行
+            # 名单复核（与 fast retrim 同款防御纵深，2026-09-26 审查 F10）：决策到执行
             # 间隔数秒，用快照既有路径零成本复核，防期间名单变更后队列中的候选仍被执行
             _rt_path = getattr(snap, "path", None)
             if _rt_path:
@@ -1476,7 +1473,7 @@ class PareCleaner:
 
         2026-10-20 起 **full 默认永不降级**：full 的初衷是允许一定负面作用、尽最大能力
         持续压缩；旧的 `<45% + 回涨快 ⇒ 轻量轮` 会跳过 Layer3/回弹/final/combine，与初衷冲突。
-        仅保留 `MEMWISE_FULL_LITE=1` 作为排障/对比实验的显式回退；quick/normal/deep 恒 False。
+        仅保留 `MEMWISE_FULL_LITE=1` 作为排障/对比实验的显式回退；normal/deep/full 恒 False。
         """
         if os.environ.get("MEMWISE_FULL_LITE") != "1":
             return False
@@ -1535,7 +1532,7 @@ class PareCleaner:
         统一优化入口 —— 四模式行为矩阵与参数契约（2026-09-11 审查 F40 重写为与实现一致）
 
         mode 行为（各层按 operations 逐项授权执行；安全门全模式生效）：
-            quick  = 仅低优先级待机 + 注册表缓存（∩ 勾选），零进程清理/零全量待机/零脏页写回
+            normal = 进程清理 + 按勾选映射的系统级清理（不含全量 WS 清扫）
             normal = 系统级（按勾选映射，无全量清扫）+ 进程清理 + 深度聚合（agg ≥ EFIS 门控）
             deep   = 同上 + 全量受保护 WS 清扫（使用率 ≥ DEEP_WSSWEEP_PCT_GATE 时）+ 深度聚合恒触发
             full   = 同上 + 无条件受保护全量清扫 + agg 强制 ≥0.8 + 进程回弹二轮
@@ -1558,7 +1555,7 @@ class PareCleaner:
             finally:
                 # P1-8：full 轮留痕同轮重复系统操作的“末次释放量”，供后续判定是否去重
                 try:
-                    if mode == "full" and self._round_ops:
+                    if mode in ("full", "extreme") and self._round_ops:
                         from core.engine import _log_write as _lw
                         _parts = []
                         _code = {"_flush_volume_cache": "fv", "flush_volume_cache": "fv2",
@@ -1594,17 +1591,17 @@ class PareCleaner:
         self._round_time = {}        # 本轮各系统操作耗时（卡顿排查，2026-11-10）
         self._cycle_reasons = {}     # 本轮拦截原因（轮次入口重置，与模式无关；2026-11-20 审查 2.3）
         # 模式严格度同步：normal 标准 / deep 减半 / full 跳过时间等待守卫（极限=不等、立即清）
-        self.judger._mode_guard = mode if mode in ("normal", "deep", "full") else "normal"
-        # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式（**含 quick**）——
-        # 旧写法取 _mode_guard 会把 quick 折成 normal（严格度归一是给判定用的，不该污染模式标签）
+        self.judger._mode_guard = "full" if mode == "extreme" else (mode if mode in ("normal", "deep", "full") else "normal")
+        # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式——
+        # 旧写法取 _mode_guard 会把模式折成 normal（严格度归一是给判定用的，不该污染模式标签）
         _prev_mode = getattr(self, "_last_mode", None)
-        self._last_mode = mode if mode in ("quick", "normal", "deep", "full") else "normal"
+        self._last_mode = mode if mode in ("normal", "deep", "full", "extreme") else "normal"
         if _prev_mode != self._last_mode and not getattr(self, "_in_cycle", False):
             self._heavy_defer.clear()   # 切模式后旧的"连续跳过"计数不再有意义
         # 重操作放行：守护周期开头 begin_cycle() 已判定则整周期复用（gap/harvest 同源）；
         # 手动优化（守护未运行）或紧急 full 独立判定，不沿用别的模式/上一周期的结论。
         # 紧急 full 由 engine 在调用前后备份/恢复本字典，不污染本周期余下阶段。
-        if force_gate or (not getattr(self, "_in_cycle", False)) or (mode == "full" and _prev_mode != "full"):
+        if force_gate or (not getattr(self, "_in_cycle", False)) or (mode in ("full", "extreme") and _prev_mode != mode):
             self._heavy_allow = {_k: self._decide_heavy(_k)
                                  for _k in ("modified", "filecache", "standby", "combine")}
         mem_before_opt = winapi.get_memory_used_bytes()
@@ -1616,9 +1613,13 @@ class PareCleaner:
         # 开关语义（2026-09-11 审查 F1）：None = 内部调用（全量）；[] = 六项与 combine 全部关闭（什么都不做）。
         # combine 独立授权（2026-11-06 决策 A）：_ops_with_combine 在六项之外追加它，故"六项全空"不等于 []。
         # 旧实现用真值判断，使"全部取消"被折叠成"全量 8 项 + 进程清理照跑"——语义完全反转。
-        ops_filter = set(operations) if operations is not None else None
+        # Extreme：强制全操作，忽略用户勾选（UI 全灰）；其余模式保持原开关语义
+        if mode == "extreme":
+            ops_filter = None
+        else:
+            ops_filter = set(operations) if operations is not None else None
         run_ws = ops_filter is None or "ws" in ops_filter
-        # 每轮入口状态归零（2026-09-11 审查 F11）：未走 _layer2_process 的模式（ws 未勾选 / quick）
+        # 每轮入口状态归零（2026-09-11 审查 F11）：未走 _layer2_process 的模式（ws 未勾选）
         # 会让 _fast_track 与 _last_layer2_results 保留上一轮数据 ⇒ gap 重清陈旧 PID、
         # Layer3 误过滤本轮该清的进程。
         self._fast_track = {}
@@ -1635,11 +1636,8 @@ class PareCleaner:
         # P08：六项与 combine 全关 ⇒ 零动作（连自身 WS 也不清）；必须在 _mk_result 定义之后
         if ops_filter is not None and not ops_filter:
             return _mk_result([], [])
-        if mode == "quick":
-            self._run_quick(ops_filter, allow_layer3)
-            return _mk_result([], [])
         # full：agg 强制 ≥0.8 并同步 judger（提前到分派前；结果与回弹二轮同口径）
-        if mode == "full":
+        if mode in ("full", "extreme"):
             agg = max(agg, 0.8)
             self.judger.aggressiveness = max(self.judger.aggressiveness, agg)
         if mode == "normal":
@@ -1648,61 +1646,11 @@ class PareCleaner:
             l2_results, probe_results = self._run_deep(snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx)
         elif mode == "full":
             l2_results, probe_results = self._run_full(snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx)
+        elif mode == "extreme":
+            l2_results, probe_results = self._run_full(snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx, extreme=True)
         else:
             l2_results, probe_results = self._run_fallback(snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx)
         return _mk_result(l2_results, probe_results)
-
-    def _run_quick(self, ops_filter, allow_layer3):
-        """quick 模式主体：仅低优先级待机 + 注册表（∩ 勾选），零进程/零全量待机/零脏页。"""
-        # 仅低优先级待机 + 注册表：不碰进程、不碰全量待机/脏页，兑现“几乎无感知”
-        # （2026-10-20：quick 原先清全量 standby + modified，与零卡顿承诺冲突；
-        #  standby 开关仍作为授权键，但实际只执行 standby_low）。
-        _qkeys = {"standby", "registry"}
-        if ops_filter is not None:
-            _qkeys &= set(ops_filter)
-        use = set()
-        if "standby" in _qkeys:
-            use.add("standby_low")
-        if "registry" in _qkeys:
-            use.add("registry")
-        # P06：gap-fill（allow_layer3=False）只保留 registry；quick 的高速守护路径
-        # 不应反复清缓存（“几乎无感知”承诺）。
-        if not allow_layer3:
-            use = use & {"registry"}
-        if not use:
-            return
-        # ── 空转退避（2026-11-22 quick 专项）──
-        # 本机实测：注册表清缓存常返回 0MB/失败，quick 只剩这一条路时每 12–20s 空转一次。
-        # 失败或零释放 ⇒ 指数退避（30s→60s→…上限 300s）；有释放 ⇒ 立即复位。
-        # 手动优化（用户显式点击）不受退避限制。
-        _now = time.monotonic()
-        if self._manual_run:
-            _eff = set(use)
-        else:
-            _eff = {op for op in use if _now >= self._quick_backoff.get(op, 0.0)}
-            _skipped = len(use) - len(_eff)
-            if _skipped:
-                self._stats_inc("quick_backoff_skip", _skipped)
-        if not _eff:
-            return
-        _freed_before = int(self.stats.get("freed_bytes", 0) or 0)
-        _t0 = time.perf_counter()
-        self._layer1_memreduct(full=False, ops=_eff, game_mode=self.game_mode,
-                               clean_self=allow_layer3)   # gap-fill 不自清，harvest 才清
-        _el = (time.perf_counter() - _t0) * 1000.0
-        _freed = max(0, int(self.stats.get("freed_bytes", 0) or 0) - _freed_before)
-        self._stats_inc("quick_calls")
-        self._stats_inc("quick_ms", _el)
-        if _freed > 0:
-            self._stats_inc("quick_freed", _freed)
-            for _op in _eff:
-                self._quick_backoff.pop(_op, None)
-        else:
-            self._stats_inc("quick_noop")
-            for _op in _eff:
-                _prev = self._quick_backoff.get(_op, 0.0)
-                _wait = 30.0 if _prev <= _now else min(300.0, max(30.0, (_prev - _now) * 2.0))
-                self._quick_backoff[_op] = _now + _wait
 
     def _run_normal(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
         """normal 模式主体：进程 trim + 按开关映射的系统级清理 + EFIS 门控深度聚合。"""
@@ -1915,8 +1863,11 @@ class PareCleaner:
             self._deep_final_consolidation(ops_filter)
         return l2_results, probe_results
 
-    def _run_full(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx):
-        """full 模式主体：deep 基础 + 回弹二轮 + 强制深度聚合 + 系统压实/combine 收尾。"""
+    def _run_full(self, snaps, learner, ops_filter, agg, run_ws, allow_layer3, deadline, pipeline_ctx, extreme=False):
+        """full/extreme 主体：deep 基础 + 回弹二轮 + 强制深度聚合 + 系统压实/combine 收尾。
+
+        extreme=True 时唯一差异：用全局 MemoryEmptyWorkingSets 取代受保护 sweep。
+        """
         # deep 基础 + 进程回弹二轮 + 强制高 agg Layer3（各操作按用户开关）
         # full 极限模式：agg 强制 ≥0.8 并同步 judger——自动闭环前台门/活动确认/稳态豁免
         # （PID 默认参数高压峰值仅 0.38，达不到豁免阈值 0.8，稳态锁曾全局锁死压缩能力）
@@ -1927,9 +1878,24 @@ class PareCleaner:
         if pipeline_ctx["layer2_trimmed"]:
             self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
-        _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
-        if _do_sweep:
-            self._sweep_all_unprotected(snaps, "full")
+        if extreme:
+            _b = winapi.get_memory_status() or {}
+            _t0 = time.perf_counter()
+            _ok = winapi.empty_all_working_sets()
+            _el = (time.perf_counter() - _t0) * 1000.0
+            _a = winapi.get_memory_status() or {}
+            _freed = max(0, int(_a.get("avail", 0) or 0) - int(_b.get("avail", 0) or 0))
+            self._stats_inc("ws_global_rounds")
+            self._stats_inc("ws_global_ms", _el)
+            if _ok and _freed:
+                self._stats_inc("ws_global_freed", _freed)
+                self._stats_inc("freed_bytes", _freed)
+            self._round_time["ws_global"] = _el / 1000.0
+            self._round_ops["ws_global"] = [1, _freed, _freed]
+        else:
+            _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
+            if _do_sweep:
+                self._sweep_all_unprotected(snaps, "full")
         if l1_ops is not None:
             l1_ops = l1_ops - {"ws_sweep"}
         self._layer1_memreduct(full=True, game_mode=self.game_mode,

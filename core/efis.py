@@ -47,7 +47,6 @@ MIN_ADJUST_DWELL = 30
 # 激进模式冷却更短、对新观测更敏感、反馈适应更快；其余无消费方逻辑/实验依据的
 # 参数保持 PARAMS 默认，靠 EFIS 在各自组内自适应）
 MODE_DEFAULTS = {
-    "quick": {},
     "normal": {},
     "deep": {
         "target_usage": 45, "cooloff_base": 240, "kalman_r": 4.0,
@@ -57,18 +56,26 @@ MODE_DEFAULTS = {
         "target_usage": 35, "cooloff_base": 180, "kalman_r": 3.0,
         "learning_rate": 0.70,
     },
+    # Extreme 独立组：状态/调参桶完全独立；在安全边界内放开响应与活跃门。
+    # target_usage 仍取 35：本机实测保护后 floor 约 30%，压到 30 以下只会制造无效压力；
+    # 真正的额外释放来自全局 WS，不靠把 setpoint 压穿物理下限。
+    "extreme": {
+        "target_usage": 35, "cooloff_base": 60, "kalman_r": 2.0,
+        "learning_rate": 0.85, "pid_kp": 0.90, "pid_kd": 0.15,
+        "cpu_gate": 4.0, "io_gate": 2.0,
+    },
 }
 
 # 每模式参与调参的参数白名单（无消费方的参数不参与调参，防无效调参污染他模式）：
-# quick 无进程参数消费不调；normal 全调；deep/full 恒触发 L3（gate 无消费）且跳过稳态锚点
+# normal 全调；deep/full/extreme 恒触发 L3（gate 无消费）且跳过稳态锚点
 # 抑制（anchor_margin 无消费）；full 全档深清（deepen_theta 无消费）。
 # ⚠ 响应类参数（pid_kp/pid_kd/target_usage）在 gap 轻量阶段的 PID 输出真实生效
 # （agg 强制 ≥0.8 仅作用于收割 optimize 分支）——full 必须保留调参（2026-08-16 实验实证）
 MODE_TUNE_WHITELIST = {
-    "quick": [],
     "normal": list(PARAMS.keys()),
     "deep": [k for k in PARAMS if k not in ("layer3_agg_gate", "anchor_margin")],
     "full": [k for k in PARAMS if k not in ("layer3_agg_gate", "anchor_margin", "deepen_theta")],
+    "extreme": [k for k in PARAMS if k not in ("layer3_agg_gate", "anchor_margin", "deepen_theta")],
 }
 
 
@@ -261,7 +268,7 @@ class EfisController:
             self._window.clear()
             return ""
         if not MODE_TUNE_WHITELIST.get(self.current_mode):
-            return ""  # quick 模式无进程参数消费：不累积统计窗口、不做诊断（2026-08-16 审查 P11）
+            return ""  # 当前模式无进程参数消费：不累积统计窗口、不做诊断（2026-08-16 审查 P11）
         self._window.append(stats)
         self._cycle += 1
         if self._cycle % EVAL_INTERVAL != 0 or len(self._window) < WINDOW:

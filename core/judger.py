@@ -302,8 +302,8 @@ class PareJudger:
             _guard = getattr(self, "_mode_guard", "normal")
         else:
             # 与清理器的模式归一化同口径（cleaner.optimize：非三档模式一律按 normal）——
-            # 否则 quick 模式下预览用旧 guard、实际执行用 normal，两边又会不一致
-            _guard = guard if guard in ("normal", "deep", "full") else "normal"
+            # 否则预览用旧 guard、实际执行用另一 guard，两边又会不一致
+            _guard = "full" if guard == "extreme" else (guard if guard in ("normal", "deep", "full") else "normal")
 
         # ── 游戏模式：游戏进程绝对保护（按实际检测 PID，精确到实例）──
         if self.game_mode and snap.pid in self._game_pid_set:
@@ -478,7 +478,7 @@ class PareJudger:
         返回 (ok, reason)。"""
         if snap is None:
             return True, ""
-        _g = guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal")
+        _g = "full" if guard == "extreme" else (guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal"))
         _mm = self._manual_mode if manual is None else bool(manual)
         if check_cooldown:
             # 与 can_trim 的冷却门**同源无条件**（那里也不因手动而跳过）：冷却语义是
@@ -781,7 +781,7 @@ class PareJudger:
         """系统目录进程的额外 θ 底线（L2/L3 同源，2026-11-08；2026-11-20 full 放宽）。
         常规/deep 用 0.3；full 用 0.2（仍高于模式价值底线 0.06）——日志显示每轮有 50-60 个
         Program Files 应用被 0.3 拦掉，full 的压缩目标需要更多候选。path 缺失不拦截。"""
-        _g = guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal")
+        _g = "full" if guard == "extreme" else (guard if guard in ("normal", "deep", "full") else getattr(self, "_mode_guard", "normal"))
         _floor = SYS_DIR_MIN_THETA_FULL if _g == "full" else SYS_DIR_MIN_THETA
         return bool(path) and self._is_system_path(path) and theta < _floor
 

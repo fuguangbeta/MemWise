@@ -34,7 +34,7 @@ class PolicyVoter:
 
     def set_mode(self, mode):
         """切换当前模式（仅影响日志与阈值语义，无权重状态）"""
-        if mode not in ("quick", "normal", "deep", "full"):
+        if mode not in ("normal", "deep", "full", "extreme"):
             mode = "normal"
         self.current_mode = mode
 

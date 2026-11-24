@@ -248,7 +248,7 @@ j_tmp = PareJudger(l2, {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"never":[]
 j_tmp.update_pressure(55)
 check("judger 无 _prev_agg 死字段", not hasattr(j_tmp, "_prev_agg"))
 # 未知模式防御：optimize else 分支回退 normal 语义（不再无参全量 layer1）——走纯配置检查
-check("clean_mode 默认 normal", config_load().get("clean_mode", "normal") in ("quick","normal","deep","full"))
+check("clean_mode 默认 normal", config_load().get("clean_mode", "normal") in ("normal","deep","full","extreme"))
 
 print("\n[12] 稳定锚点与安全门（P0/P1 批次）")
 # ── 前台历史冷却：刚切走的进程拒绝；窗口过后放行 ──
@@ -655,13 +655,14 @@ _jl = PareJudger(PareLearner(), {"kp":0.6,"ki":0.15,"kd":0.1,"target_usage":60,"
 check("A3 judger._lock 存在", hasattr(_jl, "_lock"))
 # ── B1/B8/B9 双语键完备 ──
 from core.i18n import _EN as _EN_A
-for _k in ("  · quick — 仅系统级清理，几秒完成，几乎无感知\n",
+for _k in ("  · normal — 进程级 + 系统级清理，对日常使用影响较小\n",
            "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n",
            "  · full — 极限释放，尽最大可能腾出内存空间，包括刚切走或正在工作的程序内存\n",
-           "                   适合：随手一点，不想有任何感知\n",
            "                      适合：日常使用，兼顾效果与流畅\n",
            "                  适合：内存偏紧，接受短暂变慢\n",
-           "               适合：内存告急，需要立刻腾出最多空间\n"):
+           "               适合：内存告急，需要立刻腾出最多空间\n",
+           "  · extreme — 强制全部操作并清系统工作集，追求最低已用内存\n",
+           "                  适合：只在意内存数字，接受卡顿/磁盘抖动的专家用户\n"):
     check(f"B1 键存在:{_k.strip()[:18]}", _k in _EN_A or _k.rstrip("\n") in _EN_A)
 check("B8 是/否键", "是" in _EN_A and "否" in _EN_A)
 check("B9 守护异常键", "守护异常，详见下方错误信息" in _EN_A)
@@ -815,7 +816,7 @@ check("full 白名单 9 参数", MODE_TUNE_WHITELIST["full"] ==
        "kalman_r", "cpu_gate", "io_gate"])
 check("deep 白名单排除 L3 门与锚点", "layer3_agg_gate" not in MODE_TUNE_WHITELIST["deep"]
       and "anchor_margin" not in MODE_TUNE_WHITELIST["deep"] and len(MODE_TUNE_WHITELIST["deep"]) == 10)
-check("quick 白名单空", MODE_TUNE_WHITELIST["quick"] == [])
+check("extreme 白名单与 full 同维但独立组", MODE_TUNE_WHITELIST["extreme"] == MODE_TUNE_WHITELIST["full"])
 # ── 16 组隔离:normal 调参不污染 full、切回 normal 参数保持 ──
 _ef25 = EfisController(state_path=None)
 def _osc25(mode, i):
@@ -910,7 +911,7 @@ c_x._optimize_locked = _orig_ol
 check("optimize 壳转发 _optimize_locked", _called_modes == ["full"], str(_called_modes))
 # 锁内重入（RLock）不阻塞：手动 worker 持锁期间同一线程再次 optimize
 with c_x._exec_lock:
-    c_x.optimize([], lr_x, "quick", operations=["ws"])  # quick+ws 无真实系统清理，安全
+    c_x.optimize([], lr_x, "normal", operations=[])  # 锁内重入：零操作，安全
 check("exec_lock 锁内重入不阻塞", True)
 # _opt_worker_once：_manual_run 生命周期 + 事件输出（fake sniffer，临时状态文件）
 class _FakeSniffer:
@@ -1234,8 +1235,9 @@ check("F6 游戏退出即时化", "game_gone_count" not in _eng26_src and "game_
 check("F6 实时退出注释接线", "实时退出" in _eng26_src and "实时退出" in _cl26_src)
 # ── F7 双语残留清零 ──
 check("F7 CLI reason 翻译", "tr_msg(reason)" in _mw26_src)
-# ── F8 docstring 与实现一致（quick 零进程清理）──
-check("F8 quick 零进程清理描述", "零进程清理" in _cl26_src and "layer2(full probe+trim)" not in _cl26_src)
+# ── F8 docstring 与实现一致（extreme 全局 WS）──
+check("F8 extreme 全局 WS 路径描述", "MemoryEmptyWorkingSets" in _cl26_src
+      and "extreme" in _cl26_src and "layer2(full probe+trim)" not in _cl26_src)
 # ── F9 never 黑名单归一（临时文件，不碰真实配置）──
 _tc26n = os.path.join(tempfile.gettempdir(), "mw_cfg_never.yaml")
 with open(_tc26n, "w", encoding="utf-8") as f:
@@ -1494,26 +1496,17 @@ try:
         setattr(_w34, _n34, (lambda nm: (lambda *a, **k: (_calls34.append(nm), True)[1]))(_n34))
     try:
         _lr34q = PareLearner(); _c34q = PareCleaner(PareJudger(_lr34q, dict(_j34)))
-        _calls34.clear(); _c34q.optimize([], _lr34q, "quick", operations=["ws", "filecache", "volume"])
-        _q_inert = list(_calls34)
-        _calls34.clear(); _c34q.optimize([], _lr34q, "quick", operations=["standby", "modified", "registry"])
-        _q_act = sorted(_calls34)
     finally:
         for _n34, _f34 in _orig34.items():
             setattr(_w34, _n34, _f34)
-    check("F6 quick 只勾 ws/filecache/volume ⇒ 零系统调用", _q_inert == [], str(_q_inert))
-    check("F6 quick 勾 standby/modified/registry ⇒ 低优先待机+注册表",
-          _q_act == ["clear_registry_cache", "purge_low_priority_standby"], str(_q_act))
-    # quick 专项（2026-11-22）：空转退避 + 零感知成本统计 + T1 指标
     _qc_src = open(os.path.join(_ROOT34, "core", "cleaner.py"), encoding="utf-8").read()
     _qe_src = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read()
-    check("quick 空转退避：失败/零释放指数退避，手动优化不受限",
-          "_quick_backoff" in _qc_src and "self._manual_run" in _qc_src
-          and "quick_backoff_skip" in _qc_src)
-    check("quick 成本统计入 stats（调用/空转/耗时/释放）",
-          all(k in _qc_src for k in ("quick_calls", "quick_noop", "quick_ms", "quick_freed")))
-    check("T1 的 quick 段输出 调用/空转/退避/释放MB",
-          "quick_backoff_skip" in _qe_src and "quick_freed" in _qe_src)
+    check("quick 模式已从 cleaner 删除", "_run_quick" not in _qc_src
+          and "quick_calls" not in _qc_src and "quick_backoff" not in _qc_src)
+    check("extreme 强制全操作", 'if mode == "extreme":' in _qc_src
+          and "ops_filter = None" in _qc_src)
+    check("extreme 全局 WS 路径存在", "empty_all_working_sets" in _qc_src
+          and "ws_global_rounds" in _qe_src)
 
     _orig34b = {n: getattr(_w34, n) for n in _OPS34}
     _calls34b = []
@@ -1722,9 +1715,9 @@ check("S5 normal 深度聚合使用率路径（68% 触发 / 60% 不触发）",
 check("S5 使用率路径随用户阈值移动（阈值 90 ⇒ 77% 触发、70% 不触发）",
       _run_l3_5(77, 90) is True and _run_l3_5(70, 90) is False)
 check("S5 使用率判据存在（结构性）", "_l3_usage" in _cl34 and "_em_l3 * 0.85" in _cl34)
-check("F6 quick 开关置灰 + 说明已接线", 'CFG.get("clean_mode", "normal") == "quick"' in _gui34
-      and '_cb.state(["disabled"])' in _gui34 and "quick 模式下「释放进程闲置内存」" in _i18n34
-      and "cb_ews, cb_fc, cb_vc, cb_mp, cb_cb" in _gui34 and "内存页合并」不执行" in _i18n34)
+check("F6 extreme 全操作置灰 + 说明已接线", 'mode_var.get() == "extreme"' in _gui34
+      and '_extreme_ops_hint' in _gui34 and "extreme 模式强制勾选全部操作" in _gui34
+      and "extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）" in _i18n34)
 # ── F50 开关标题名不副实（2026-09-11 用户实测指出）──
 check("F50 开机自启开关标题不再歧义",
       '"以管理员权限开机自启动"' in _gui34 and "需搭配「以管理员权限开机自启动」" in _gui34
@@ -1990,8 +1983,8 @@ from core.eris import (widen as _wd9, score_of as _sc9, DIM_WORDS as _W9,
                        new_calib as _nc9, calib_valid as _cv9, calibrate_and_score as _cs9,
                        k_value as _kv9, baseline_of as _b9, calibrated as _cal9,
                        recalib_count as _rc9, seeds_for as _sd9)
-check("v9 词条/维度/声明维（5 维；quick 只声明「净优化量高 + 优化量可观」）",
-      len(_W9) == 5 and all(len(w) == 2 for w in _W9) and _MV9["quick"] == (0, 4)
+check("v9 词条/维度/声明维（5 维；extreme 与 full 同声明维）",
+      len(_W9) == 5 and all(len(w) == 2 for w in _W9) and _MV9["extreme"] == (0, 1, 2, 3, 4)
       and _MV9["full"] == (0, 1, 2, 3, 4) and len(_nh9()) == 5 and _CSV9 == 5)
 check("v9 五点映射：p05/p25/p50/p75/p90 恰为 20/35/50/65/80（单调）",
       [_sc9(v, [1.0, 2.0, 3.0, 4.0, 5.0]) for v in (1, 2, 3, 4, 5)] == [20.0, 35.0, 50.0, 65.0, 80.0])
@@ -2020,7 +2013,7 @@ check("v9 窄维展宽下限（实测「清理畅通」跨度仅 19% ⇒ 展宽�
 check("v9 宽维不被动（实测「释放规模」跨度 195% ⇒ 原样返回）",
       _wd9([358.0, 754.0, 1024.0, 1638.0, 2355.0]) == [358.0, 754.0, 1024.0, 1638.0, 2355.0])
 check("v9 无数据维中性 + 单维稀释（防单维独担 5 倍放大）",
-      abs(_tt9([50.0] * 5, valid=(0,), mode="quick") - 250.0) < 1e-9
+      abs(_tt9([50.0] * 5, valid=(0,), mode="extreme") - 250.0) < 1e-9
       and abs(_tt9([100.0] * 5, valid=(0, 1, 2, 3, 4), mode="full") - 500.0) < 1e-9)
 check("v9 效率合成（折算总分 ÷ K × 100）",
       abs(_ef9([100.0] * 5, K=500.0) - 100.0) < 1e-6
@@ -2164,7 +2157,7 @@ json.dump(_dump37, open(os.path.join(_d37, "memwise_eris_ewma.json"), "w", encod
 _E37._eris_hist_by_mode = {}
 _E37._load_eris_state()
 _m37 = (getattr(_eng_mod37, "CFG", None) or {}).get("clean_mode", "normal")
-_m37 = _m37 if _m37 in ("quick", "normal", "deep", "full") else "normal"
+_m37 = _m37 if _m37 in ("normal", "deep", "full", "extreme") else "normal"
 check("v7 旧状态迁移：单桶 hist 落进当前模式桶（≤3 样本）",
       len(_E37._eris_hist_by_mode.get(_m37, [[], ])[0]) == 3
       and len(_E37._eris_hist_by_mode) == 1, str(list(_E37._eris_hist_by_mode)))
@@ -2237,8 +2230,8 @@ _sh38.rmtree(_t38b, ignore_errors=True)
 print("\n[39] F1 压力自适应 + 注册表系统类修正（2026-09-26 用户定稿）")
 # F1 判据真值表（纯函数，逐条覆盖"既定范围"）
 check("F1 判据:full 默认永不降级", PareCleaner.is_lite_round("full", 20, True) is False)
-check("F1 判据:quick/normal/deep 恒不降级",
-      all(PareCleaner.is_lite_round(m, 20, True) is False for m in ("quick", "normal", "deep")))
+check("F1 判据:normal/deep/extreme 恒不降级",
+      all(PareCleaner.is_lite_round(m, 20, True) is False for m in ("normal", "deep", "extreme")))
 _oldlite39 = os.environ.get("MEMWISE_FULL_LITE")
 os.environ["MEMWISE_FULL_LITE"] = "1"
 try:
@@ -2909,12 +2902,12 @@ check("deep 回弹通道已删除（无残留方法与统计键）",
       "_deep_rebound" not in _cl45f and "deep_rebound_hits" not in _cl45f
       and "deep_rebound_cand" not in _cl45f)
 _eg45f = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read()
-check("四模式专项统计键齐备（quick/normal/deep）",
-      all(k in _cl45f for k in ("quick_calls", "quick_noop", "quick_backoff_skip",
-                                    "normal_final_sweep", "normal_l3_extra",
-                                    "deep_final_sweep", "deep_final_freed")))
-check("quick 退避上限 300s 且手动优化豁免",
-      "min(300.0" in _cl45f and "if self._manual_run:" in _cl45f)
+check("四模式专项统计键齐备（normal/deep/full/extreme）",
+      all(k in _cl45f for k in ("normal_final_sweep", "normal_l3_extra",
+                                    "deep_final_sweep", "deep_final_freed",
+                                    "ws_sweep_rounds", "ws_global_rounds")))
+check("extreme 全局 WS 统计键齐备",
+      "ws_global_freed" in _cl45f and "empty_all_working_sets" in _cl45f)
 check("日志时间戳按播报时刻固定（恢复/重渲染不重盖章）",
       "_panel_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
       and "_log_history_ts" in open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read())
@@ -3119,10 +3112,10 @@ check("P5 行为：强制同毫秒两次备份仍各留一份（顺延后缀）"
 # P6 首周期系统操作基线
 check("P6 首周期基线取自累计值（不再置 0）",
       'self._last_sys_ops = (s.get("standby", 0) + s.get("modified", 0) + s.get("filecache", 0)' in _eg47)
-# P7 quick 深度置灰
-check("P7 quick 下深度滑杆置灰并说明",
-      'ps_sl.state(["disabled"])' in _gui47 and "quick 模式下「进程清理深度」不适用" in _gui47
-      and "quick 模式下「进程清理深度」不适用" in _EN_A)
+# P7 extreme 深度置灰
+check("P7 extreme 下深度滑杆置灰并说明",
+      'sl.state(["disabled"])' in _gui47 and "full/extreme" in _gui47
+      and "Full/Extreme" in _EN_A.get("轮（full/extreme 固定）", ""))
 # P8 死分支
 check("P8 _TEMPLATE_PATH 死分支已删", "_TEMPLATE_PATH" not in _cf47)
 # P9 工作集下限统一
@@ -4303,9 +4296,6 @@ def _mk62(mode, agg):
     finally:
         _cm62x.winapi.get_memory_status = _orig_ms62
     return _calls62, _r62
-_cq62, _rq62 = _mk62("quick", 0.5)
-check("J24a quick 表征：仅 standby_low+registry，无进程/深度",
-      _cq62 == [("l1", False, ("registry", "standby_low"), True)] and _rq62["layer2"] == [], str(_cq62))
 _cn62, _rn62 = _mk62("normal", 0.9)
 check("J24b normal 表征：layer2 → layer1(full=False) → layer3",
       _cn62 == [("l2",), ("l1", False, ("registry",), True), ("l3",)], str(_cn62))
@@ -4901,7 +4891,7 @@ check("harvest 预算随 interval 收缩", "_harvest_budget = max(6, min(25" in 
 _g64 = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memwise_gui.py"), encoding="utf-8").read()
 check("full 模式锁定趟数滑杆（灰置 + 固定 6）",
       "_sync_passes_widget" in _g64 and 'sl.state(["disabled"])' in _g64
-      and "轮（full 固定）" in _g64)
+      and "轮（full/extreme 固定）" in _g64)
 _e64 = MemWiseEngine.__new__(MemWiseEngine)
 _e64._refill_hot_streak = 0
 check("动态周期：未回涨不变", _e64._effective_interval(60) == 60)
@@ -4922,7 +4912,7 @@ check("T1 full 段使用 ws_sweep_rounds，且无 gap ws_all 残留",
       and "_c%d" in _eg45f and "_r%dh%d" in _eg45f and "_e%d" in _eg45f)
 check("gap 段不再执行全局 WS（sweep 只在 deep/full 周期层）",
       "_gap_wsall_due" not in _eg45f and "_gap_wsall_hits" not in _eg45f)
-check("gap 调用 full 标志随模式", 'self.cleaner._layer1_memreduct(full=(mode == "full"), ops=ops_gap' in _en64)
+check("gap 调用 full 标志随模式", 'self.cleaner._layer1_memreduct(full=(mode in ("full", "extreme")), ops=ops_gap' in _en64)
 check("内存条 300ms 独立刷新 + 退出停链",
       "self.root.after(300, self._tick_mem_bar)" in _g64 and "self._stop_mem_bar()" in _g64
       and "def _render_mem_bar" in _g64)
@@ -4999,8 +4989,18 @@ check("ws_sweep 保护硬边界（系统/自身/never/游戏）",
 check("ws_sweep 六态分类（ok/no_effect/unmeasured/denied/gone/failed）",
       "empty_ws_ex" in _cl65s and all(k in _cl65s for k in
       ("ws_sweep_no_effect", "ws_sweep_unmeasured", "ws_sweep_denied", "ws_sweep_gone", "ws_sweep_failed")))
-check("全局 MemoryEmptyWorkingSets 已移除",
-      "empty_all_working_sets" not in _cl65s and "empty_all_working_sets" not in _w65s)
+check("全局 MemoryEmptyWorkingSets 仅 extreme 路径",
+      "empty_all_working_sets" in _cl65s and "if extreme:" in _cl65s
+      and "empty_all_working_sets" in _w65s)
+check("extreme 强制全操作并走全局 WS",
+      'if mode == "extreme":' in _cl65s and "extreme=True" in _cl65s
+      and "empty_all_working_sets" in _cl65s)
+check("extreme 警告每次进入 + ack 持久化",
+      "_confirm_extreme" in _g65 and "extreme_warning_ack" in _g65
+      and "extreme_warning_ack" in open(os.path.join(_ROOT34, "core", "config.py"), encoding="utf-8").read())
+check("extreme 独立 EFIS/ERIS 池",
+      '"extreme"' in _src47("core/efis.py") and '"extreme"' in _src47("core/eris.py")
+      and '"extreme"' in _src47("core/policy.py"))
 check("14.1 IO 判定 1s 缓存", "now - prev[1] < 1.0" in _j65s and "len(prev) >= 3" in _j65s)
 check("1.4 运行时数据目录同源", "def _runtime_data_dir" in _e65 and "_LOG_DIR = os.environ.get(\"MEMWISE_LOG_DIR\") or _runtime_data_dir()" in _e65)
 check("1.2 ws_cap 失败按次累加", "fail += 1" in _e65 and "self._ws_cap_fail[path] = fail" in _e65)
