@@ -67,6 +67,8 @@ def _normalize_proc_name(raw):
 # 运行时显示用标题（含 .beta 本地构建标识；正式版显示 APP_VERSION）——见 core/backup.display_version
 _APP_TITLE = "MemWise v" + _display_version()
 MAIN_W, MAIN_H = 1060, 700   # 主窗默认尺寸（每次重开恢复默认；仅超屏时夹取）
+APP_BG = "#f0f0f0"           # 主窗/宿主默认浅色（2026-11-24 黑底根因）
+CHART_BG = "#1e1e1e"         # 图表保持原深色（用户定稿：不改原设计）
 
 PANEL_MAX_LINES = 7  # 日志面板组间刷新阈值（行）
 
@@ -1440,9 +1442,9 @@ class MemWiseGUI:
         self._minimized_to_tray = False  # 显式初始化（--minimized 分支下方覆盖为 True）
 
         self.root = tk.Tk()
-        # 18.9：暗色底兜底——任何首帧/露底都不出现浅色闪屏
+        # 2026-11-24：统一浅色根背景；窗口已 withdraw，不会出现首帧闪屏
         try:
-            self.root.configure(bg="#1c1c1c")
+            self.root.configure(bg=APP_BG)
         except Exception:
             pass
         # P13：Tk 回调异常默认只写 sys.stderr（windowed 下为 devnull）⇒ 不进 sys.excepthook。
@@ -2323,7 +2325,7 @@ class MemWiseGUI:
         lf.pack(fill="both", expand=True, padx=12, pady=(4,12))
 
         # 下半：柱图 Canvas（守护模式下显示实时优化柱图）
-        self.chart_canvas = tk.Canvas(lf, height=200, bg="#1e1e1e", highlightthickness=0)
+        self.chart_canvas = tk.Canvas(lf, height=200, bg=CHART_BG, highlightthickness=0)
         self.chart_canvas.pack(side="bottom", fill="x")
         self._chart_redraw_id = None  # debounce ID
         self._chart_intro_pending = True   # 首次/恢复显示时整图错峰动画
@@ -2406,13 +2408,16 @@ class MemWiseGUI:
                 try:
                     for _c in list(_h.winfo_children()):
                         _c.destroy()
-                    # 宿主会被不同子界面复用：必须把背景恢复为默认浅色，
-                    # 否则上一个暗色弹窗（确认框/设置）的 #1c1c1c 会残留成黑底。
-                    _h.configure(bg=self.root.cget("background"))
+                    # 宿主会被不同子界面复用：恢复统一浅色，避免继承暗色弹窗残留
+                    _h.configure(bg=APP_BG)
                 except Exception:
                     pass
                 return _h
         _h = _HostToplevel(self.root)
+        try:
+            _h.configure(bg=APP_BG)
+        except Exception:
+            pass
         _h._mw_busy = True
         self._hosts.append(_h)
         self._host_gen = getattr(self, "_host_gen", 0) + 1
@@ -4133,12 +4138,20 @@ class MemWiseGUI:
             if not msgs:
                 return
             _tsl = list(getattr(self, "_panel_ts", None) or [])
+            # 5.4（2026-11-24）：先记住已经播过动画的条数；不能清零，否则每次
+            # 托盘重开都会把整栏重新打一遍。只对未播尾部补一次。
+            _done = min(int(getattr(self, "_animated_count", 0) or 0), len(msgs))
             self._present_log_pending = []
             self._finish_typewriter()
-            self._animated_count = 0
             self.log.configure(state="normal")
             self.log.delete("1.0", "end")
+            _tail_start = "1.0"
             for _i, m in enumerate(msgs):
+                if _i == _done:
+                    try:
+                        _tail_start = self.log.index("end-1c")
+                    except Exception:
+                        _tail_start = "1.0"
                 _ts = _tsl[_i] if _i < len(_tsl) else time.strftime('%H:%M:%S')
                 _insert_log_lines(self.log, _ts,
                                   _align_log_line(self._log_display(m)), _LOG_TAG)
@@ -4149,8 +4162,9 @@ class MemWiseGUI:
             except Exception:
                 _chars = 0
             # 800ms 上限：约 600 字符以内逐字；超过则整组静态显示，避免 7 行×百字拖 3 秒
-            if _chars and _chars <= 600:
-                self._typewriter("1.0", "end-1c", len(msgs))
+            if _chars and _chars <= 600 and _done < len(msgs):
+                self._animated_count = _done
+                self._typewriter(_tail_start, "end-1c", len(msgs) - _done)
             else:
                 self._animated_count = len(msgs)
         except Exception:

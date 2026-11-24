@@ -4996,7 +4996,7 @@ check("15.1 ws_cap 回收退出 PID", "_ws_cap_applied.items()" in _e65 and "_li
 check("18.1 主窗默认尺寸常量/夹取", "MAIN_W, MAIN_H = 1060, 700" in _g65 and "fit=True" in _g65)
 check("18.3 图表自愈已实现", "def _ensure_chart_drawn" in _g65 and 'find_withtag("chart_bar")' in _g65)
 check("18.4 呈现令牌与载荷校验", "_chart_present_lock" in _g65 and "not self.chart_canvas.type" in _g65)
-check("18.5 日志整组重播", "_animated_count = 0" in _g65 and "_chars <= 600" in _g65)
+check("18.5 日志只补未播尾部", "_done = min(" in _g65 and "_typewriter(_tail_start" in _g65)
 check("18.6 入场固定预算", "_MAX_BARS, _TARGET_MS = 32, 1100" in _g65)
 check("18.7 图标应用缓存", "_icon_applied" in _g65 and "if getattr(self, \"_icon_applied\"" in _g65)
 check("18.8 托盘状态缓存", "_tray_state" in _g65)
