@@ -5326,6 +5326,10 @@ class MemWiseGUI:
         # 同一回调内完成 ⇒ Tk 只在 idle 绘制一次，用户看不到"清空"帧。
         old_ids = c.find_all()
         data, meta_list, eff_data_view, eff_factors_view = self.engine.chart_snapshot()
+        try:
+            _chart_rev = self.engine.chart_revision()
+        except Exception:
+            _chart_rev = None
         if not data:
             # 呈现/入场期间的空快照不得清空**已有**图表；但画布本来就是空的时候，
             # 必须画占位文字，否则开屏会留一块纯黑区域（2026-11-23 用户实测）。
@@ -5466,12 +5470,21 @@ class MemWiseGUI:
 
         _anim_intro = getattr(self, "_anim_chart_intro", None)
         _anim_bar = getattr(self, "_anim_chart_bar", None)
-        if _bars and ANIM_ENABLED and not prepare_only:
+        _prev_rev = getattr(self, "_chart_animated_rev", None)
+        _rev_is_new = (_chart_rev is None or _chart_rev != _prev_rev)
+        if prepare_only:
+            # prepare 的 bars 会在 _present_start 统一播整组入场；记下修订号，
+            # 后续 Configure/自愈对同一快照重绘时不得再播单柱。
+            if _bars and _intro:
+                self._chart_animated_rev = _chart_rev
+        elif _bars and ANIM_ENABLED:
             if _intro and _anim_intro:
                 _anim_intro(c, _bars, _lines, _dots, py1, _DUR, _STAG)
-            elif _anim_bar:
+                self._chart_animated_rev = _chart_rev
+            elif _anim_bar and _rev_is_new:
                 _rid, _x0, _x1, _py1, _y0, _color = _bars[-1][:6]
                 _anim_bar(c, _rid, _x0, _x1, _py1, _y0, _color)
+                self._chart_animated_rev = _chart_rev
 
         # ── 鼠标悬浮提示（单一 Motion 命中，无需逐柱命中区对象）──
 

@@ -920,6 +920,7 @@ class MemWiseEngine:
         self._last_snap_t = 0.0
         self._snap_n = 0
         self._chart_last_freed = 0.0
+        self._chart_rev = 0  # 图表快照修订号：每次轮次/清空递增，供 UI 判断“新柱”
         self._prev_trim_count = 0
         self._prev_fail_count = 0
         self._eff_data = deque(maxlen=60)          # 效率折线数据
@@ -1019,10 +1020,12 @@ class MemWiseEngine:
         self._prev_trim_rounds = s.get('trim_rounds', 0)
         self._prev_sys_detail = None      # 新守护=新基线（2026-11-20 审查 2.4）
         self._last_logged_mode = None
-        self._chart_data.clear()
-        self._eff_data.clear()
-        self._eff_factors.clear()
-        self._chart_cycle_meta.clear()
+        with self._chart_lock:
+            self._chart_data.clear()
+            self._eff_data.clear()
+            self._eff_factors.clear()
+            self._chart_cycle_meta.clear()
+            self._chart_rev += 1
         self._load_eris_state()  # 恢复 ERIS 状态
         # 系统操作计数基线：与 trim/fail 两行同口径（2026-10-15 订正）——原先置 0，使启动守护后的
         # 首个周期把「进程启动以来（含此前手动优化）」的累计系统操作全算进本轮，播报虚高。
@@ -1111,6 +1114,11 @@ class MemWiseEngine:
         with self._chart_lock:
             return (list(self._chart_data), list(self._chart_cycle_meta),
                     list(self._eff_data), list(self._eff_factors))
+
+    def chart_revision(self):
+        """当前图表快照修订号；每次新轮次/清空递增，UI 用它区分“同一快照重绘”与“新柱”。"""
+        with self._chart_lock:
+            return self._chart_rev
 
     def _snap(self):
         """快照 + 喂学习器 + 缓存共享快照（守护/手动路径统一入口；
@@ -2514,6 +2522,7 @@ class MemWiseEngine:
         with self._chart_lock:
             self._chart_data.append(chart_accum)
             self._chart_cycle_meta.append(bool(harvest_partial))
+            self._chart_rev += 1
         # ERIS：数据产生时逐点计算（原逻辑在图表渲染时按 seq 增量处理——等价：每轮一点一次计算）
         try:
             _pk, _pt = getattr(self, "_cycle_probe", (0, 0))
