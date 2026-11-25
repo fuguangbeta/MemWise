@@ -1778,13 +1778,16 @@ class PareCleaner:
             self._stats_inc("deep_final_freed", _fa - _fb)
 
     def _extreme_global_ws(self):
-        """Extreme 专用全局 WS：harvest/gap/final 共用；统计独立于 ws_sweep。"""
-        _b = winapi.get_memory_status() or {}
+        """Extreme 专用全局 WS：harvest/gap/final 共用；统计独立于 ws_sweep。
+        freed 用 used 差（与 T1 netMB 同口径），不用 avail 差：全局 WS 的页大量进入
+        standby，avail 不会同步上升，旧口径会系统性低估。
+        """
+        _b = int(winapi.get_memory_used_bytes() or 0)
         _t0 = time.perf_counter()
         _ok = winapi.empty_all_working_sets()
         _el = (time.perf_counter() - _t0) * 1000.0
-        _a = winapi.get_memory_status() or {}
-        _freed = max(0, int(_a.get("avail", 0) or 0) - int(_b.get("avail", 0) or 0))
+        _a = int(winapi.get_memory_used_bytes() or 0)
+        _freed = max(0, _b - _a)
         self._stats_inc("ws_global_rounds")
         self._stats_inc("ws_global_ms", _el)
         if _ok and _freed:
