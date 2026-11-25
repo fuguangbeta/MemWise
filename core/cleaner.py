@@ -429,6 +429,8 @@ class PareCleaner:
         if use:
             self._layer1_memreduct(full=True, ops=use, clean_self=False)
             self._stats_inc("final_sweep")
+        if getattr(self, "_last_mode", None) == "extreme" and not self.game_mode:
+            self._extreme_global_ws()
         if ((ops_filter is None or "combine" in ops_filter)
                 and self._combine_eligible() and self._heavy_allowed("combine")):
             ok, pages, ms, _status = winapi.combine_physical_memory()
@@ -1767,6 +1769,23 @@ class PareCleaner:
         if _fa > _fb:
             self._stats_inc("deep_final_freed", _fa - _fb)
 
+    def _extreme_global_ws(self):
+        """Extreme 专用全局 WS：harvest/gap/final 共用；统计独立于 ws_sweep。"""
+        _b = winapi.get_memory_status() or {}
+        _t0 = time.perf_counter()
+        _ok = winapi.empty_all_working_sets()
+        _el = (time.perf_counter() - _t0) * 1000.0
+        _a = winapi.get_memory_status() or {}
+        _freed = max(0, int(_a.get("avail", 0) or 0) - int(_b.get("avail", 0) or 0))
+        self._stats_inc("ws_global_rounds")
+        self._stats_inc("ws_global_ms", _el)
+        if _ok and _freed:
+            self._stats_inc("ws_global_freed", _freed)
+            self._stats_inc("freed_bytes", _freed)
+        self._round_time["ws_global"] = self._round_time.get("ws_global", 0.0) + _el / 1000.0
+        self._round_ops["ws_global"] = [1, _freed, _freed]
+        return _ok, _freed
+
     def _sweep_all_unprotected(self, snaps, mode="full"):
         """受保护感知的全量工作集清扫（替代全局 MemoryEmptyWorkingSets）。
         只清硬保护之外、WS>1MB 的进程；denied/gone 不计失败；sweep 统计与 ws_trim 分离。"""
@@ -1879,19 +1898,7 @@ class PareCleaner:
             self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
         if extreme:
-            _b = winapi.get_memory_status() or {}
-            _t0 = time.perf_counter()
-            _ok = winapi.empty_all_working_sets()
-            _el = (time.perf_counter() - _t0) * 1000.0
-            _a = winapi.get_memory_status() or {}
-            _freed = max(0, int(_a.get("avail", 0) or 0) - int(_b.get("avail", 0) or 0))
-            self._stats_inc("ws_global_rounds")
-            self._stats_inc("ws_global_ms", _el)
-            if _ok and _freed:
-                self._stats_inc("ws_global_freed", _freed)
-                self._stats_inc("freed_bytes", _freed)
-            self._round_time["ws_global"] = _el / 1000.0
-            self._round_ops["ws_global"] = [1, _freed, _freed]
+            self._extreme_global_ws()
         else:
             _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
             if _do_sweep:

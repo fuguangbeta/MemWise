@@ -1539,6 +1539,8 @@ class MemWiseEngine:
                                 ops_gap = {"registry"}
                             self.cleaner.refresh_cycle_gate()
                             self.cleaner._layer1_memreduct(full=(mode in ("full", "extreme")), ops=ops_gap, clean_self=False)
+                            if mode == "extreme" and not self.cleaner.game_mode:
+                                self.cleaner._extreme_global_ws()
                             if mode in ("normal", "deep", "full", "extreme"):
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；
                                 # 成功者移队尾轮转覆盖全池）——full 池扩大后防循环拖慢。
