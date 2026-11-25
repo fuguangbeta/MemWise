@@ -157,7 +157,7 @@ _EN = {
     "对于更彻底的优化需求可设 5~6": "Use 5–6 for a more thorough optimization",
     "内存页合并": "Memory page combining",
     "「合并系统中内容相同的内存页」\n1. 仅在极限模式的全量收尾阶段执行\n2. 可减少重复物理页占用，释放量由系统内容决定\n⚠ 需要管理员权限，执行期间可能短暂占用 CPU": "“Combine identical memory pages”\n1. Runs only in the final stage of Full mode\n2. Reduces duplicate physical pages; the amount freed depends on system contents\n⚠ Requires administrator rights; may briefly use CPU while running",
-    "extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）": "Extreme mode forces all operations (the switches above are ignored; your settings return when you switch back)",
+    "extreme 模式强制勾选全部操作\n（切回其他模式后恢复原设置）": "Extreme mode forces all operations\n(your settings return when you switch back)",
     "极限模式确认": "Extreme mode confirmation",
     "Extreme 模式不避让游戏，也不允许进入游戏模式；请先切换到其他模式。": "Extreme mode does not avoid games and cannot enter Game Mode. Switch to another mode first.",
     "极限模式会强制全部清理操作，并清理 Windows 系统进程与自身工作集，以换取更低的已用内存。": "Extreme mode forces all cleanup operations and trims Windows system processes and this app's working set to reach a lower used-memory figure.",

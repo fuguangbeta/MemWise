@@ -4908,7 +4908,7 @@ class MemWiseGUI:
             note = getattr(self, "_ops_note", None)
             if note is not None:
                 if extreme:
-                    note.config(text=tr("extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）"))
+                    note.config(text=tr("extreme 模式强制勾选全部操作\n（切回其他模式后恢复原设置）"))
                     if not note.winfo_ismapped():
                         _before = getattr(self, "_ps_lbl", None)
                         if _before is not None and _before.winfo_exists():
