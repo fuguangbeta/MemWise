@@ -1,4 +1,4 @@
-# MemWise v5.7.050
+# MemWise v5.7.051
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -178,11 +178,15 @@ It normally requires no attention; consult it to confirm what executed or when r
 
 启用期间：游戏进程树不参与清理；磁盘类系统操作跳过，以避免磁盘竞争；游戏之外的进程仍按当前模式回收闲置页；守护节奏放慢，以降低干扰。
 
+**Extreme 是例外**：Extreme 不避让游戏，也不允许进入游戏模式；主界面游戏模式按钮点击只弹提示，自动检测不会启用游戏模式。
+
 识别以进程名为准，同名进程全部覆盖，配置一次即可；游戏启动与退出实时识别，无需等待周期。
 
 Adding a game's process name under Settings, Game Mode enables the mode automatically; it may also be enabled manually from the main window, and manual activation persists until disabled.
 
 While enabled: the game process tree is not trimmed; disk-oriented system operations are skipped to avoid disk contention; processes outside the game still have their idle pages reclaimed in the current mode; and the guard rhythm slows to reduce interference.
+
+**Extreme is the exception**: it does not avoid games and cannot enter Game Mode; clicking the Game Mode button only shows a notice, and automatic detection never enables it.
 
 Detection is by process name and covers every process of the same name, so configuration is performed once. Game start and exit are recognised in real time, without waiting for a cycle.
 
@@ -190,17 +194,17 @@ Detection is by process name and covers every process of the same name, so confi
 
 ## 安全边界 · *Safety Boundaries*
 
-以下边界不随模式改变。
+以下边界在 normal/deep/full 不随模式改变；Extreme 是唯一例外。
 
-系统核心进程不参与清理，无论是否出现在排除列表中。排除列表中的程序及其同名进程不参与清理。游戏运行期间，游戏进程树完全保护。程序不清理自身。
+系统核心进程不参与清理，无论是否出现在排除列表中。排除列表中的程序及其同名进程不参与清理。游戏运行期间，游戏进程树完全保护（Extreme 除外）。程序不清理自身（Extreme 除外）。
 
 normal 与 deep 避让当前活跃的程序：刚切换走的程序在一段时间内不处理，存在可见窗口时延长，内存压力升高时放宽；正在占用 CPU 或磁盘的程序同样避让。full 不判断活跃性，但硬保护仍然有效。
 
 工作集上限仅限制物理占用，不改变提交内存；系统目录下的进程不允许设置。连续失败的任务进入递增冷却，成功后逐步恢复。
 
-The following boundaries do not change with the mode.
+The following boundaries are stable across normal/deep/full; Extreme is the sole exception.
 
-System-critical processes are excluded from reclamation, whether or not they appear in the exclusion list. Programs in the exclusion list, together with processes of the same name, are excluded. While a game runs, its process tree is fully protected. The program does not trim itself.
+System-critical processes are excluded from reclamation, whether or not they appear in the exclusion list. Programs in the exclusion list, together with processes of the same name, are excluded. While a game runs, its process tree is fully protected (except in Extreme). The program does not trim itself (except in Extreme).
 
 normal and deep avoid currently active programs: a program recently switched away from is left unprocessed for a period, extended while it has a visible window and relaxed under memory pressure; programs actively using CPU or disk are likewise avoided. full does not assess activity, but the hard protections remain in force.
 
