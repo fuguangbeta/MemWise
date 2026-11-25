@@ -2071,7 +2071,12 @@ class MemWiseGUI:
         self._on_optimize()
 
     def _on_toggle_game(self):
-        """Ctrl+Shift+G → 手动切换游戏模式"""
+        """Ctrl+Shift+G → 手动切换游戏模式；Extreme 下仅提示，不切换。"""
+        if self.mode_var.get() == "extreme":
+            self._dark_message(tr("游戏模式"),
+                               tr("Extreme 模式不避让游戏，也不允许进入游戏模式；请先切换到其他模式。"),
+                               kind="warning")
+            return
         game = not self.cleaner.game_mode
         action = "启用" if game else "关闭"
         # 自定义确认弹窗
@@ -2280,6 +2285,8 @@ class MemWiseGUI:
                 self._last_logged_mode = new_mode
             CFG["clean_mode"] = new_mode
             _save_cfg()
+            if new_mode == "extreme":
+                self._force_extreme_game_off()
             try:
                 self._sync_ops_widgets()
             except Exception:
@@ -4909,10 +4916,24 @@ class MemWiseGUI:
         except Exception:
             pass
 
+    def _force_extreme_game_off(self):
+        """切到 Extreme / 启动恢复 Extreme 时，游戏模式必须关闭。"""
+        try:
+            self.cleaner.game_mode = False
+            self.cleaner.judger.game_mode = False
+            self.cleaner.judger._game_pid_set.clear()
+            self.cleaner._game_mode_manual = False
+            self.cleaner._game_tree_mem = {}
+        except Exception:
+            pass
+
     def _ensure_extreme_startup(self):
         """配置恢复为 extreme 时也补一次确认；取消则回退 normal。"""
         try:
-            if self.mode_var.get() != "extreme" or CFG.get("extreme_warning_ack", False):
+            if self.mode_var.get() != "extreme":
+                return
+            self._force_extreme_game_off()
+            if CFG.get("extreme_warning_ack", False):
                 return
             self._mode_before_warn = "normal"
             if not self._confirm_extreme():

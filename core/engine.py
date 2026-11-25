@@ -1491,7 +1491,15 @@ class MemWiseEngine:
                                     self._refill_total = _refill  # 最新回涨量
                             # 游戏模式：快照后实时检测启动/退出（检测零开销），
                             # 周期内启动又退出时，两条日志按序进入周期末打包通道
-                            game_now = self.cleaner._is_user_game_running(snaps)
+                            if mode == "extreme":
+                                game_now = False
+                                if self.cleaner.game_mode:
+                                    self.cleaner.game_mode = False
+                                    self.cleaner.judger.game_mode = False
+                                    self.cleaner.judger._game_pid_set.clear()
+                                    self.cleaner._game_mode_manual = False
+                            else:
+                                game_now = self.cleaner._is_user_game_running(snaps)
                             if game_now:
                                 game_seen = True  # 本周期游戏曾开启（冻结判定）
                             if self.cleaner._game_mode_manual:
@@ -1539,7 +1547,7 @@ class MemWiseEngine:
                                 ops_gap = {"registry"}
                             self.cleaner.refresh_cycle_gate()
                             self.cleaner._layer1_memreduct(full=(mode in ("full", "extreme")), ops=ops_gap, clean_self=False)
-                            if mode == "extreme" and not self.cleaner.game_mode:
+                            if mode == "extreme":
                                 self.cleaner._extreme_global_ws()
                             if mode in ("normal", "deep", "full", "extreme"):
                                 # fast_track 重清限流：每循环最多 5 个（0.1s 测速 × 5 ≈ 循环间隔；

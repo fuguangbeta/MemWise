@@ -419,7 +419,7 @@ class PareCleaner:
         combine 与六项开关解耦，默认五项（filecache 关闭）同样执行。
         不新增 UI/播报；仅累加内部统计。
         """
-        if self.game_mode or self._lite:
+        if (self.game_mode and getattr(self, "_last_mode", None) != "extreme") or self._lite:
             return
         # 收尾跑在周期末段，deadline 通常已耗尽；旧实现在此直接 return，
         # 使收尾与 combine 实际从不执行（2026-11-23 实测）。改为按当前状态补判门控。
@@ -429,7 +429,7 @@ class PareCleaner:
         if use:
             self._layer1_memreduct(full=True, ops=use, clean_self=False)
             self._stats_inc("final_sweep")
-        if getattr(self, "_last_mode", None) == "extreme" and not self.game_mode:
+        if getattr(self, "_last_mode", None) == "extreme":
             self._extreme_global_ws()
         if ((ops_filter is None or "combine" in ops_filter)
                 and self._combine_eligible() and self._heavy_allowed("combine")):
@@ -931,6 +931,14 @@ class PareCleaner:
         self.judger.update_activity(snaps)
         self.judger.update_anchors(snaps)
         # ── 检测游戏模式 ──
+        # Extreme 模式哲学：不避让游戏，也不允许游戏模式；此处强制归零。
+        if getattr(self, "_last_mode", None) == "extreme":
+            self.game_mode = False
+            self.judger.game_mode = False
+            self.judger._game_pid_set.clear()
+            self._game_tree_mem = {}
+            self._game_mode_manual = False
+            return
         game_on = self._is_user_game_running(snaps)
         if self._game_mode_manual:
             # 手动模式：模式开关由用户持有，自动检测只做数据维护
@@ -1897,15 +1905,15 @@ class PareCleaner:
         if pipeline_ctx["layer2_trimmed"]:
             self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
-        if extreme and not self.game_mode:
+        if extreme:
             self._extreme_global_ws()
-        elif not extreme:
+        else:
             _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
             if _do_sweep:
                 self._sweep_all_unprotected(snaps, "full")
         if l1_ops is not None:
             l1_ops = l1_ops - {"ws_sweep"}
-        self._layer1_memreduct(full=True, game_mode=self.game_mode,
+        self._layer1_memreduct(full=True, game_mode=(self.game_mode and not extreme),
                                ops=l1_ops)
         if self._lite:
             # F1 轻量轮：跳过 Layer3 深度整理（实测 churn 主源之一），原因计入日志
