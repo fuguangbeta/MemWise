@@ -2725,10 +2725,7 @@ class MemWiseGUI:
                       "1. 仅在极限模式的全量收尾阶段执行\n"
                       "2. 可减少重复物理页占用，释放量由系统内容决定\n"
                       "⚠ 需要管理员权限，执行期间可能短暂占用 CPU")
-        # extreme 模式：强制全操作并置灰；其他模式恢复用户原勾选（不改写配置）。
-        self._extreme_ops_hint = ttk.Label(
-            cf, text=tr("extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）"),
-            foreground="#888", wraplength=470, justify="left")
+        # 模式说明复用同一条注释：extreme 替换文案，其他模式恢复原句（不再新增淡色 hint）。
         # ─── 清理深度（2026-08-16 归类整理：清理强度归"清理"栏，原在触发与日志栏）───
         passes_val = tk.IntVar(value=CFG.get("clean_passes", 4))
         def set_passes(v):
@@ -2738,8 +2735,9 @@ class MemWiseGUI:
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
             _push_runtime_cfg(self.judger)
-        ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
-                  foreground="#888").pack(anchor="w", pady=(6, 0))
+        self._ops_note = ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
+                                   foreground="#888", wraplength=470, justify="left")
+        self._ops_note.pack(anchor="w", pady=(6, 0))
         ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
         self._add_tip(ps_lbl, "「每个进程反复清理的轮数」\n1. 可设置为 2~6 轮，默认 4 轮\n2. 越高持续释放能力越高，但耗时更长\n⚠ 欲降低本程序性能占用建议 2~3\n⚠ 对于更彻底的优化需求可设 5~6\n⚠ 程序会在进程已无更多可释放内存时提前结束；单轮收割另有 30 秒预算，深度设高时可能被截断")
@@ -4908,12 +4906,10 @@ class MemWiseGUI:
                     cb.state(["disabled"] if extreme else ["!disabled"])
                 except Exception:
                     pass
-            hint = getattr(self, "_extreme_ops_hint", None)
-            if hint is not None:
-                if extreme:
-                    hint.pack(anchor="w", pady=(6, 0))
-                else:
-                    hint.pack_forget()
+            note = getattr(self, "_ops_note", None)
+            if note is not None:
+                note.config(text=tr("extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）")
+                            if extreme else tr("（未勾选 = 不执行对应系统清理）"))
         except Exception:
             pass
 

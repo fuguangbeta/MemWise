@@ -1718,7 +1718,7 @@ check("S5 使用率路径随用户阈值移动（阈值 90 ⇒ 77% 触发、70% 
       _run_l3_5(77, 90) is True and _run_l3_5(70, 90) is False)
 check("S5 使用率判据存在（结构性）", "_l3_usage" in _cl34 and "_em_l3 * 0.85" in _cl34)
 check("F6 extreme 全操作置灰 + 说明已接线", 'mode_var.get() == "extreme"' in _gui34
-      and '_extreme_ops_hint' in _gui34 and "extreme 模式强制勾选全部操作" in _gui34
+      and '_ops_note' in _gui34 and "extreme 模式强制勾选全部操作" in _gui34
       and "extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）" in _i18n34)
 # ── F50 开关标题名不副实（2026-09-11 用户实测指出）──
 check("F50 开机自启开关标题不再歧义",
