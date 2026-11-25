@@ -104,6 +104,49 @@ GetSystemMetrics = u32.GetSystemMetrics; GetSystemMetrics.argtypes=[w.INT]; GetS
 GetWindowThreadProcessId = u32.GetWindowThreadProcessId; GetWindowThreadProcessId.argtypes=[w.HANDLE,ctypes.POINTER(w.DWORD)]; GetWindowThreadProcessId.restype=w.DWORD
 IsWindowVisible = u32.IsWindowVisible; IsWindowVisible.argtypes=[w.HANDLE]; IsWindowVisible.restype=w.BOOL
 SetWindowLongPtrW = u32.SetWindowLongPtrW; SetWindowLongPtrW.argtypes=[w.HANDLE, w.INT, ctypes.c_void_p]; SetWindowLongPtrW.restype=ctypes.c_void_p
+GetWindowLongPtrW = u32.GetWindowLongPtrW; GetWindowLongPtrW.argtypes=[w.HANDLE, w.INT]; GetWindowLongPtrW.restype=ctypes.c_void_p
+GetParent = u32.GetParent; GetParent.argtypes=[w.HANDLE]; GetParent.restype=w.HANDLE
+SetWindowPos = u32.SetWindowPos; SetWindowPos.argtypes=[w.HANDLE, w.HANDLE, w.INT, w.INT, w.INT, w.INT, w.UINT]; SetWindowPos.restype=w.BOOL
+
+# 2026-11-25 用户定稿：全界面固定大小、不能全屏、不能拖边框拉伸
+GWL_STYLE = -16
+WS_MAXIMIZEBOX = 0x00010000
+WS_THICKFRAME = 0x00040000
+WS_MAXIMIZE = 0x01000000
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_FRAMECHANGED = 0x0020
+
+
+def parent_hwnd(hwnd):
+    """Tk 的 winfo_id 是 client 窗口；标题栏/边框样式要发给 wrapper 顶层窗口。"""
+    try:
+        p = GetParent(w.HANDLE(int(hwnd)))
+        return int(p) if p else int(hwnd)
+    except Exception:
+        return int(hwnd)
+
+
+def get_window_style(hwnd):
+    try:
+        return int(GetWindowLongPtrW(w.HANDLE(int(hwnd)), GWL_STYLE) or 0)
+    except Exception:
+        return 0
+
+
+def disable_maximize_resize(hwnd):
+    """去掉最大化框与可拉伸边框（幂等）。返回 True=已应用。"""
+    try:
+        h = w.HANDLE(parent_hwnd(hwnd))
+        st = get_window_style(h)
+        st &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME | WS_MAXIMIZE)
+        SetWindowLongPtrW(h, GWL_STYLE, ctypes.c_void_p(st))
+        SetWindowPos(h, None, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+        return True
+    except Exception:
+        return False
 CallWindowProcW = u32.CallWindowProcW; CallWindowProcW.argtypes=[ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p]; CallWindowProcW.restype=ctypes.c_void_p
 # K32 官方通道（跨机器保留：本机 Win11 26100 实测全失效 87，但其他系统可能正常——
 # 双通道策略：K32 优先（可反复设置/恢复），失败回退 Nt 直通兜底）
@@ -900,6 +943,7 @@ def combine_physical_memory():
 
 
 LAST_FILE_CACHE_NOOP = False   # 上次 filecache 调用是否"缓存≤32MB 未执行"（2026-11-20 审查 4.1）
+LAST_FILE_CACHE_RESTORE_FAILED = False   # 上次钳制后"恢复失败"（2026-11-25 审查 D6-L4.1；启动自检会补救）
 
 
 def clear_system_file_cache_ex():
@@ -914,8 +958,9 @@ def clear_system_file_cache_ex():
             ④ SetSystemFileCacheSize 恢复①的字节值 + 回读校验（≤3 次）
     返回值：仅当"上限已确认恢复"且"确实回收了缓存（或缓存本就不足 32 MB 无需回收）"时为 True
             —— 与 Layer1/Layer3 的"按 API 真实成功计数"口径一致，不虚增统计。"""
-    global LAST_FILE_CACHE_NOOP
+    global LAST_FILE_CACHE_NOOP, LAST_FILE_CACHE_RESTORE_FAILED
     LAST_FILE_CACHE_NOOP = False
+    LAST_FILE_CACHE_RESTORE_FAILED = False
     if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
         return False
     orig = get_system_file_cache_limits()
@@ -932,31 +977,71 @@ def clear_system_file_cache_ex():
     ret_len = w.ULONG()
     if NtQuerySystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(ret_len)) != 0:
         return False
-    # ② 保留 CurrentSize/PeakSize/PageFaultCount 等真实字段，只改页口径的上下限
-    info.MinimumWorkingSet = _SFCI_CACHE_TARGET_PAGES
-    info.MaximumWorkingSet = _SFCI_CACHE_TARGET_PAGES
-    ret = NtSetSystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info))
-    ok_set = ret == 0 or (ret & 0xFFFFFFFF) == 0x40000002
-    # ③ 驻留 + 轮询观察裁剪是否落实（实测：钳制后立刻恢复会被合并/忽略 ⇒ 回收 0；驻留
-    #    ~0.4 s 时曾实测回收 99.7%。上限 0.8 s，多数情况提前命中）
+    ok_set = False
     low = before
-    if ok_set:
-        for _ in range(10):
-            time.sleep(0.08)
-            pi = get_performance_info()
-            if pi:
-                low = min(low, pi["system_cache"])
-                if low < max(1 << 20, before // 10):
-                    break
-    # ④ 恢复原始字节上下限 + 回读校验
     restored = False
-    for _ in range(3):
-        SetSystemFileCacheSize(orig[0], orig[1], 0)
-        if get_system_file_cache_limits() == orig:
-            restored = True
-            break
+    try:
+        # ② 保留 CurrentSize/PeakSize/PageFaultCount 等真实字段，只改页口径的上下限
+        info.MinimumWorkingSet = _SFCI_CACHE_TARGET_PAGES
+        info.MaximumWorkingSet = _SFCI_CACHE_TARGET_PAGES
+        ret = NtSetSystemInformation(0x15, ctypes.byref(info), ctypes.sizeof(info))
+        ok_set = ret == 0 or (ret & 0xFFFFFFFF) == 0x40000002
+        # ③ 驻留 + 轮询观察裁剪是否落实（实测：钳制后立刻恢复会被合并/忽略 ⇒ 回收 0；驻留
+        #    ~0.4 s 时曾实测回收 99.7%。上限 0.8 s，多数情况提前命中）
+        if ok_set:
+            for _ in range(10):
+                time.sleep(0.08)
+                pi = get_performance_info()
+                if pi:
+                    low = min(low, pi["system_cache"])
+                    if low < max(1 << 20, before // 10):
+                        break
+    finally:
+        # ④ 恢复原始字节上下限 + 回读校验（2026-11-25 审查 D6-L4.1：必须在 finally 里，
+        #    否则中途异常/进程被杀会把全系统文件缓存上限永久钳在 4096 页）
+        for _ in range(5):
+            try:
+                SetSystemFileCacheSize(orig[0], orig[1], 0)
+                if get_system_file_cache_limits() == orig:
+                    restored = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.12)
+        if not restored:
+            LAST_FILE_CACHE_RESTORE_FAILED = True
     released = max(0, before - low)
     return bool(restored and ok_set and (released > (1 << 20) or before <= (32 << 20)))
+
+
+def fix_file_cache_clamp_on_startup():
+    """启动自检（2026-11-25 审查 D6-L4.1）：修复"上一次清理进程被杀/恢复失败"留下的
+    全系统文件缓存上限钳制（签名 = 上限恰为 _SFCI_CACHE_TARGET_PAGES 页）。
+
+    只在签名命中时动作（其余情况零副作用，不触碰系统设置）。返回 (hit, ok)：
+      hit=True 表示确实发现残留钳制（已尝试恢复），ok 表示恢复成功。
+    """
+    try:
+        lim = get_system_file_cache_limits()
+    except Exception:
+        return False, True
+    if not lim:
+        return False, True
+    if int(lim[1]) != _SFCI_CACHE_TARGET_PAGES * 4096:
+        return False, True
+    if not _try_enable_privilege("SeIncreaseQuotaPrivilege"):
+        return True, False
+    try:
+        # 无上限（历史实测：返回 0x40000002 警告级、最终状态正确）
+        SetSystemFileCacheSize(0, (1 << 64) - 1, 0)
+    except Exception:
+        pass
+    for _ in range(3):
+        lim2 = get_system_file_cache_limits()
+        if lim2 and int(lim2[1]) != _SFCI_CACHE_TARGET_PAGES * 4096:
+            return True, True
+        time.sleep(0.1)
+    return True, False
 
 
 # ============================================================

@@ -95,13 +95,22 @@ def cmd_learn(args):
         ws = _mb(p.ws_deque[-1]) if p.ws_deque else 0
         print(f"{name:<24} {theta:>4.2f} {ws:>6.0f}MB {getattr(p, 'samples_total', p.total_samples):>5} {roi:>6.1f}")
 
+_MODE_ABBR = {"n": "normal", "d": "deep", "f": "full", "e": "extreme"}
+
+
+def _norm_mode(m):
+    """2026-11-25 审查 D2-L1.1：帮助里的缩写 n|d|f|e 与全名都要认（此前缩写静默落回 normal）。"""
+    m = str(m or "").strip().lower()
+    return _MODE_ABBR.get(m, m)
+
+
 def cmd_optimize(args):
     mode = CFG.get("clean_mode", "normal")
     i = 0
     while i < len(args):
         if args[i] == "--extreme":
             mode = "extreme"
-        elif args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
+        elif args[i] == "--mode" and i+1 < len(args): mode = _norm_mode(args[i+1]); i += 1
         i += 1
     if mode not in ("normal", "deep", "full", "extreme"):
         print(tr_msg(f"未知模式 {mode}，回退 normal"))
@@ -194,10 +203,15 @@ def cmd_daemon(args):
     i = 0
     while i < len(args):
         if args[i] == "--mode" and i + 1 < len(args):
-            mode = args[i + 1]; i += 1
+            mode = _norm_mode(args[i + 1]); i += 1
         elif args[i] == "--minimized":
             pass  # 自启兼容参数（CLI 无窗口，忽略）
         i += 1
+    # 2026-11-25 审查 D2-L1.1：daemon 的 --mode 也必须过白名单（原实现不校验，
+    # 非法值会直接写进 _eng.CFG["clean_mode"] 并被引擎每周期读走）
+    if mode not in ("normal", "deep", "full", "extreme"):
+        print(tr_msg(f"未知模式 {mode}，回退 normal"))
+        mode = "normal"
     _cli_mode_override = mode != CFG.get("clean_mode", "normal")
     if _cli_mode_override:
         _eng.CFG["clean_mode"] = mode

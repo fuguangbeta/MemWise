@@ -246,7 +246,9 @@ class PareCleaner:
                 if _is_self_process(snap) or _is_system_core(_nl) or _nl in self.judger.cfg.get("never", []):
                     return 0
         except Exception:
-            pass
+            # 2026-11-25 审查 D5-L4.1：安全门异常必须 fail-closed（原 pass 后会继续 EWS，
+            # 可能清到系统核心/黑名单/游戏/硬上限进程）。异常本身由调用方诊断统计体现。
+            return 0
         # P10：fast-track 重清此前绕过了 CPU/IO/活动/锚点/回弹——决策可能已过数十秒，补统一复检
         if snap is not None:
             _okx, _whyx = self.judger.execution_allowed(snap)
@@ -301,7 +303,7 @@ class PareCleaner:
 
     def _heavy_need(self, kind):
         """该操作当前需要的最短停手时长（秒）：full 按实测耗时自适应，非 full 固定 5s。"""
-        mode = getattr(self, "_last_mode", None) or "normal"
+        mode = getattr(self, "_cur_mode", None) or getattr(self, "_last_mode", None) or "normal"
         if mode != "full":
             return _HEAVY_IDLE_OTHER
         last = self._heavy_last_ms.get(kind, 0.0)
@@ -313,7 +315,7 @@ class PareCleaner:
             return True
         if self._manual_run or self.game_mode:
             return True
-        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") in ("full", "extreme"):
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_cur_mode", None) or getattr(self, "_last_mode", None) or "normal") in ("full", "extreme"):
             return True
         last = self._heavy_last_ms.get(kind, 0.0)
         if kind in _HEAVY_FAST_KINDS and 0 < last <= _HEAVY_FAST_MS:
@@ -351,7 +353,7 @@ class PareCleaner:
         if self._gate_would_allow(kind):
             self._heavy_defer[kind] = 0
             return True
-        mode = getattr(self, "_last_mode", None) or "normal"
+        mode = getattr(self, "_cur_mode", None) or getattr(self, "_last_mode", None) or "normal"
         limit = _HEAVY_DEFER_FULL if mode in ("full", "extreme") else _HEAVY_DEFER_OTHER
         defer = self._heavy_defer.get(kind, 0)
         if defer >= limit:
@@ -367,7 +369,7 @@ class PareCleaner:
         if self._manual_run or self.game_mode:
             return True
         # full 的"必须尽全力"：light（standby）不择时、每轮必做；与 _decide_heavy 同口径
-        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_last_mode", None) or "normal") in ("full", "extreme"):
+        if kind in _HEAVY_LIGHT_OPS and (getattr(self, "_cur_mode", None) or getattr(self, "_last_mode", None) or "normal") in ("full", "extreme"):
             return True
         return bool(getattr(self, "_heavy_allow", {}).get(kind, True))
 
@@ -378,6 +380,7 @@ class PareCleaner:
         _mode = mode if mode in ("normal", "deep", "full", "extreme") else "normal"
         _prev = getattr(self, "_last_mode", None)
         self._last_mode = _mode
+        self._cur_mode = _mode
         if _prev != _mode:
             self._heavy_defer.clear()
         self._heavy_allow = {_k: self._decide_heavy(_k)
@@ -661,7 +664,8 @@ class PareCleaner:
             if not _okx:
                 return False, "执行前" + _whyx
         except Exception:
-            pass
+            # 2026-11-25 审查 D5-L4.1：复检层异常必须 fail-closed（原 pass 后放行 EWS）
+            return False, "执行前复检异常"
         return True, ""
 
     def _trim_execute(self, pid, name, learner, ws_before, passes, t_wait, total_wait, create=None):
@@ -1537,7 +1541,7 @@ class PareCleaner:
             rec[0] += 1; rec[1] += f; rec[2] = f
         return True, f
 
-    def optimize(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None, force_gate=False):
+    def optimize(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None, force_gate=False, internal_gap=False):
         """
         统一优化入口 —— 四模式行为矩阵与参数契约（2026-09-11 审查 F40 重写为与实现一致）
 
@@ -1561,7 +1565,7 @@ class PareCleaner:
         # 串行执行——守护的 optimize 等待手动完成，杜绝 _manual_run 被守护轮误读/双份 trim 叠加
         with self._exec_lock:
             try:
-                return self._optimize_locked(snaps, learner, mode, operations, aggressiveness, allow_layer3, lite, deadline, force_gate)
+                return self._optimize_locked(snaps, learner, mode, operations, aggressiveness, allow_layer3, lite, deadline, force_gate, internal_gap)
             finally:
                 # P1-8：full 轮留痕同轮重复系统操作的“末次释放量”，供后续判定是否去重
                 try:
@@ -1588,7 +1592,7 @@ class PareCleaner:
                 # optimize 之前会以手动口径（跳过活动确认/锚点/回弹）放行。收尾统一归位 False。
                 self.judger._manual_mode = False
 
-    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None, force_gate=False):
+    def _optimize_locked(self, snaps, learner, mode="normal", operations=None, aggressiveness=None, allow_layer3=True, lite=False, deadline=None, force_gate=False, internal_gap=False):
         """optimize 加锁后的主体：准备轮次上下文 → 按模式分派到 _run_*（C12，2026-11-06）。
 
         拆分只移动代码、不改语义；四模式调用顺序由回归 J24a–d 表征锁定。
@@ -1605,7 +1609,11 @@ class PareCleaner:
         # ERIS 按模式分桶取真值（2026-09-11）：必须是用户实际选择的模式——
         # 旧写法取 _mode_guard 会把模式折成 normal（严格度归一是给判定用的，不该污染模式标签）
         _prev_mode = getattr(self, "_last_mode", None)
-        self._last_mode = mode if mode in ("normal", "deep", "full", "extreme") else "normal"
+        # 2026-11-25 审查 D5-L4.3：gap 段（高频轻量）不得改写"用户当前模式"——原实现恒传 normal
+        # 覆盖 _last_mode，导致随后 harvest 以真实模式进入时重判重操作门并二次累加 defer。
+        self._cur_mode = mode if mode in ("normal", "deep", "full", "extreme") else "normal"
+        if not internal_gap:
+            self._last_mode = self._cur_mode
         if _prev_mode != self._last_mode and not getattr(self, "_in_cycle", False):
             self._heavy_defer.clear()   # 切模式后旧的"连续跳过"计数不再有意义
         # 重操作放行：守护周期开头 begin_cycle() 已判定则整周期复用（gap/harvest 同源）；

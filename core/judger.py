@@ -486,6 +486,19 @@ class PareJudger:
             # 进程立刻再清一遍。试探通道由调用方传 check_cooldown=False 保留探索语义。
             if time.time() < self.cooldown.get(str(getattr(snap, "name", "") or "").lower(), 0):
                 return False, "失败冷却中"
+        # 2026-11-25 审查 D4-L2.1：执行闸门补齐五类硬保护——此前只有 can_trim 有，
+        # 各执行通道（L3 阶段 D / fast retrim / 回弹二轮 / 执行前复检）靠各自补门，新增通道极易漏。
+        _nm = str(getattr(snap, "name", "") or "").lower()
+        if self.game_mode and snap.pid in self._game_pid_set:
+            return False, "游戏进程(保护)"
+        if _is_self_process(snap) or snap.pid in self._self_pids:
+            return False, "程序自身"
+        if _nm and _is_system_core(_nm):
+            return False, "系统核心进程"
+        if _nm and _nm in (self.cfg.get("never", []) or []):
+            return False, "用户黑名单"
+        if self.ws_cap_blocked(getattr(snap, "path", None)):
+            return False, "已设硬上限"
         if _g == "full":
             return True, ""
         _hp = self._high_pressure()

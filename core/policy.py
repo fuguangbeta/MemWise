@@ -79,7 +79,8 @@ class PolicyVoter:
         elif mem_pct >= _em * 0.8:
             scores[1] += 1
         elif mem_pct < 30:
-            scores[1] -= 1
+            # 2026-11-25 审查 D4-L1.2：原为 -1，与 deep 阈值 -1 等号叠加 ⇒ 无画像进程单票放行。
+            # 改记 0 分（中性）："充足"表达为不赞成不反对，阈值梯度不动。
             reasons.append("内存充足")
         if mem_trend > 0.03:
             scores[1] += 1

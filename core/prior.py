@@ -50,13 +50,23 @@ class HierarchicalPrior:
                     return cat
         return None
     
+    # 2026-11-25 审查 D4-L3.1：原实现每次调用都复制全池并对每个画像跑一次类目匹配
+    # （O(P×~70 子串)）。先验是慢变量，按类目缓存 60s 足够，且把"每次新进程"摊成"每分钟一次"。
+    _cat_cache = {}
+    _CACHE_TTL = 60.0
+
     @classmethod
     def initial_theta(cls, name, profiles):
-        """返回该类进程的平均θ作为新进程的先验"""
+        """返回该类进程的平均θ作为新进程的先验（按类目缓存 60s）"""
         cat = cls.classify(name)
         if not cat:
             return 0.35  # 未知类别 → 默认
-        
+        import time as _t
+        _now = _t.time()
+        _hit = cls._cat_cache.get(cat)
+        if _hit and _now - _hit[0] < cls._CACHE_TTL:
+            return _hit[1]
+
         # 同类进程中至少有 5 样本的
         # dict() 快照迭代（2026-09-06 审查 F2）：调用方传入的是 learner.profiles 活引用，
         # 手动优化线程可并发增键，直接迭代会 RuntimeError（与 pop_info/_compute_eris 同款防护）
@@ -64,11 +74,13 @@ class HierarchicalPrior:
         for n, p in dict(profiles).items():
             if cls.classify(n) == cat and p.total_samples >= 5:
                 peers.append(p.thompson_theta)
-        
-        if len(peers) < 3:
-            return 0.35  # 同类样本不足 → 默认
 
-        return sum(peers) / len(peers)
+        _val = (sum(peers) / len(peers)) if len(peers) >= 3 else 0.35
+        try:
+            cls._cat_cache[cat] = (_now, _val)
+        except Exception:
+            pass
+        return _val
 
 
 # 分类表常量排序（长名优先；供 classify 直接迭代，避免每次调用重建+排序）

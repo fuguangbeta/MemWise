@@ -146,6 +146,8 @@ def load():
         _wl = set(DEFAULT_CFG.keys()) | {"efis_params"}
         for _k in list(d.keys()):
             if _k not in _wl:
+                # 2026-11-25 审查 D2-L2.1：未知键不再静默丢弃（手改/外部工具写入时无线索）
+                _warn_once("unknown_key_" + str(_k), f"配置含未知键 {_k!r}，已忽略（不会写入下次保存）")
                 del d[_k]
         # 列表键类型归一：yaml 空值（never: / null）解析为 None，消费方 `in` 判断会 TypeError
         # （曾致守护线程崩溃）；统一归一为空列表（clean_operations 保留默认集合并走白名单清洗）
@@ -200,6 +202,10 @@ def load():
         if not isinstance(d.get("clean_operations"), list):
             d["clean_operations"] = [k for k in DEFAULT_CFG["clean_operations"] if k in CLEAN_OPS_WHITELIST]
         else:
+            _bad_ops = [k for k in d["clean_operations"] if k not in CLEAN_OPS_WHITELIST]
+            if _bad_ops:
+                # 2026-11-25 审查 D2-L1.2：写错的清理项此前静默变"未勾选"，用户无从排查
+                _warn_once("bad_ops", f"清理操作含未知项 {_bad_ops!r}，已忽略")
             d["clean_operations"] = [k for k in d["clean_operations"] if k in CLEAN_OPS_WHITELIST]
     except Exception as e:
         _warn_once("load_fail", f"配置加载失败，本次使用默认配置：{e!r}")

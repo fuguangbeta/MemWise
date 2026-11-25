@@ -24,14 +24,17 @@ FLAT_48_PNG = base64.b64decode(
 
 def decode_png(png):
     """解码 PNG → (width, height, BGRA bytes)。支持 color type 2(RGB)/6(RGBA)、8bit、filter 0-4"""
-    assert png[:8] == b"\x89PNG\r\n\x1a\n", "非 PNG 数据"
+    # 2026-11-25 审查 D13-L1.1：构建 optimize=2 会剥 assert ⇒ 输入校验改显式异常
+    if png[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("非 PNG 数据")
     pos, w, h, bit, ctype, idat = 8, 0, 0, 8, 0, b""
     while pos < len(png):
         ln, typ = struct.unpack(">I4s", png[pos:pos + 8])
         data = png[pos + 8:pos + 8 + ln]
         if typ == b"IHDR":
             w, h, bit, ctype, comp, filt, interlace = struct.unpack(">IIBBBBB", data)
-            assert comp == 0 and filt == 0 and interlace == 0 and bit == 8 and ctype in (2, 6)
+            if not (comp == 0 and filt == 0 and interlace == 0 and bit == 8 and ctype in (2, 6)):
+                raise ValueError("仅支持 8bit 非隔行 RGB/RGBA")   # 2026-11-25 审查 D13-L1.1
         elif typ == b"IDAT":
             idat += data
         elif typ == b"IEND":

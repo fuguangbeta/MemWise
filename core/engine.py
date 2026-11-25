@@ -87,6 +87,13 @@ def init_runtime():
     _migrate_runtime_data()
     _migrate_state_location()   # 3.1：旧分叉位置 → <base>/data（失败自动回退旧目录）
     _cleanup_stale_tmp()
+    # 2026-11-25 审查 D6-L4.1：上次清理若在"钳制全系统文件缓存上限"期间被杀，这里补救
+    try:
+        _fc_hit, _fc_ok = winapi.fix_file_cache_clamp_on_startup()
+        if _fc_hit:
+            _event_log("系统文件缓存上限残留已" + ("恢复" if _fc_ok else "发现但恢复失败"))
+    except Exception:
+        pass
     # P18：上次导入若在四文件落位途中中断，先恢复再继续（有 journal 才动作）
     try:
         from core import backup as _bk
@@ -115,8 +122,10 @@ def _cleanup_stale_tmp():
         # *.import-tmp 是旧版命名在升级用户机器上的残留——三者同属一份清理契约
         for f in (_glob.glob(os.path.join(base, "data", "*.tmp"))
                   + _glob.glob(os.path.join(base, "data", "*.import-tmp"))
+                  + _glob.glob(os.path.join(base, "data", "*.importing"))
                   + _glob.glob(os.path.join(base, "config", "*.tmp"))
-                  + _glob.glob(os.path.join(base, "config", "*.import-tmp"))):
+                  + _glob.glob(os.path.join(base, "config", "*.import-tmp"))
+                  + _glob.glob(os.path.join(base, "config", "*.importing"))):
             try:
                 if _time.time() - os.path.getmtime(f) > 600:
                     os.remove(f)
@@ -1233,7 +1242,6 @@ class MemWiseEngine:
     def _opt_worker(self, mode, ops):
         with self.cleaner._exec_lock:
             ops = _ops_with_combine(ops)
-            self.cleaner._manual_run = True  # 手动优化：跳过自动化保守门（前台冷却/连续确认/锚点抑制），保留实时安全门（CPU/IO 活跃）
             _push_runtime_cfg(self.judger)   # 手动路径没有 5s 热加载：入口必推（never/深度/紧急阈值）
             # 按调用时模式取参（2026-08-16 模式参数组）：手动优化用该模式自己的参数，
             # 不受守护周期末同步的"当前模式"影响；策略树权重同步同一模式（审查 P6）
@@ -1241,6 +1249,8 @@ class MemWiseEngine:
             self.judger.sync_pid_from_cfg()  # 手动优化按本次模式参数驱动 PID
             self.learner.policy.set_mode(mode)
             try:
+                # 2026-11-25 审查 D5-L1.1：标志置真必须在 try 内（原在 try 外，前几步抛错则永不复位）
+                self.cleaner._manual_run = True  # 手动优化：跳过自动化保守门（前台冷却/连续确认/锚点抑制），保留实时安全门（CPU/IO 活跃）
                 snaps = []
                 for i in range(3):
                     snaps = self._snap()
@@ -1297,12 +1307,13 @@ class MemWiseEngine:
         """守护运行中即时优化的执行体：单轮快照+单轮 optimize（守护周期互斥见调用方注释）"""
         with self.cleaner._exec_lock:
             ops = _ops_with_combine(ops)
-            self.cleaner._manual_run = True
             _push_runtime_cfg(self.judger)   # 手动路径没有 5s 热加载：入口必推（never/深度/紧急阈值）
             self.judger.cfg["efis_params"] = self.efis.get_params(mode)  # 按调用时模式取参
             self.judger.sync_pid_from_cfg()  # 手动优化按本次模式参数驱动 PID
             self.learner.policy.set_mode(mode)  # 树权重同模式（审查 P6）
             try:
+                # 2026-11-25 审查 D5-L1.1：同 _opt_worker（标志置真移入 try）
+                self.cleaner._manual_run = True
                 snaps = self._snap()
                 # 候选预览（2026-08-30 与三轮版对齐）：点击后告知将清理范围
                 try:
@@ -1608,7 +1619,7 @@ class MemWiseEngine:
                     gap_fill_mode = "normal"
                     # 游戏模式同样执行：optimize 内部对游戏进程树绝对保护、跳过磁盘干扰系统操作，
                     # 非游戏进程持续积极清理为游戏腾出内存（游戏流畅只依赖 PID 保护与磁盘操作跳过）
-                    result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg,
+                    result = self.cleaner.optimize(snaps, self.learner, gap_fill_mode, operations=ops, aggressiveness=agg, internal_gap=True,
                                                    allow_layer3=False, deadline=time.time() + 5)
                     agg = result.get("aggressiveness", agg)
                     l2_all.extend(result.get("layer2", []))
@@ -2621,25 +2632,47 @@ class MemWiseEngine:
             try:
                 import json, os
                 from core.eris import ERIS_STATE_V as _SV
+                # 2026-11-25 审查 D3-L4.1：迭代共享 dict 必须在内存锁内取快照（守护线程可能新增模式桶，
+                # 跨锁迭代会抛 "dict changed size" 并被外层吞掉 ⇒ 整轮 ERIS 不落盘）
+                # D3-L2.2：落盘只保留四种现行模式——已删模式的"幽灵桶"在此被清除（旧文件下次保存即收敛）
+                _valid_modes = ("normal", "deep", "full", "extreme")
+                with self._eris_lock:
+                    _hist_snap = {m: [list(h) for h in hs]
+                                  for m, hs in getattr(self, "_eris_hist_by_mode", {}).items()
+                                  if m in _valid_modes}
+                    _prev_scores = getattr(self, "_eris_prev_scores", None)
+                    _prev_eff = getattr(self, "_eris_prev_eff", None)
+                    _trend_snap = list(getattr(self, "_eris_trend", []))
                 payload = {"v": _SV,
                            # 平滑窗按清理模式分桶（v8）：模式间量级不同，混窗会互相带偏
-                           "hist_by_mode": {m: [list(h) for h in hs]
-                                            for m, hs in getattr(self, "_eris_hist_by_mode", {}).items()},
-                           "prev_scores": getattr(self, "_eris_prev_scores", None),
-                           "prev_eff": getattr(self, "_eris_prev_eff", None),
-                           "trend": list(getattr(self, "_eris_trend", []))}
+                           "hist_by_mode": _hist_snap,
+                           "prev_scores": _prev_scores,
+                           "prev_eff": _prev_eff,
+                           "trend": _trend_snap}
                 root = os.path.dirname(self._state_file)
                 path = os.path.join(root, "memwise_eris_ewma.json")
                 tmp = f"{path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(payload, f)
+                    f.flush()
+                    os.fsync(f.fileno())   # 2026-11-25 审查 D3-L4.2：与 learner/efis 落盘同口径
                 os.replace(tmp, path)
                 # ② 校准数据独立成文件（不进配置包、恢复默认单独清除，见记忆 §B5）
                 try:
                     cpath = os.path.join(root, "memwise_eris_calib.json")
                     ctmp = f"{cpath}.{os.getpid()}.tmp"
+                    _cal_out = getattr(self, "_eris_calib", {}) or {}
+                    try:
+                        # D3-L2.2：同样清掉已删模式的桶，避免旧标定数据长期滞留
+                        _cal_out = dict(_cal_out)
+                        _cal_out["modes"] = {k: v for k, v in (_cal_out.get("modes") or {}).items()
+                                             if k in _valid_modes}
+                    except Exception:
+                        pass
                     with open(ctmp, "w", encoding="utf-8") as f:
-                        json.dump(getattr(self, "_eris_calib", {}), f)
+                        json.dump(_cal_out, f)
+                        f.flush()
+                        os.fsync(f.fileno())   # 2026-11-25 审查 D3-L4.2
                     os.replace(ctmp, cpath)
                 except Exception:
                     pass

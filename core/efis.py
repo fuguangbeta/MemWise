@@ -11,6 +11,16 @@ from collections import deque
 DEEPEN_WASTE_BYTES = 10 << 20   # 深清额外释放均值低于此值 ⇒ 判定「深清无收益」
 L3_GAIN_BYTES = 50 << 20        # L3 单次额外释放均值低于此值 ⇒ 判定「L3 收益不足」
 
+
+def _scale():
+    """本机规模系数（2026-11-25 审查 D4-L5.1：这两个诊断阈值此前未随内存规模缩放，
+    大内存机上"收益不足"更易成立、把参数往激进推）。S=1 时逐位不变。"""
+    try:
+        from .winapi import memory_scale
+        return float(memory_scale())
+    except Exception:
+        return 1.0
+
 PARAMS = {
     "deepen_theta":       {"min": 0.30, "max": 0.80, "default": 0.60, "step": 0.05},
     "layer3_agg_gate":    {"min": 0.30, "max": 0.70, "default": 0.60, "step": 0.05},
@@ -309,7 +319,7 @@ class EfisController:
         cycles_sec = sum(s.get("cycle_duration", 30) for s in w)
         deepen_cnt = sum(s.get("deepen_cnt", 0) for s in w)
         deepen_extra = sum(s.get("deepen_extra", 0) for s in w)
-        deepen_waste = (deepen_cnt > 0 and deepen_extra / max(deepen_cnt, 1) < DEEPEN_WASTE_BYTES)
+        deepen_waste = (deepen_cnt > 0 and deepen_extra / max(deepen_cnt, 1) < DEEPEN_WASTE_BYTES * _scale())
         layer3_ran = sum(1 for s in w if s.get("layer3_ran"))
         layer3_extra = sum(s.get("layer3_extra", 0) for s in w)
         cool_cnt = sum(s.get("cooldown_cnt", 0) for s in w)
@@ -329,7 +339,7 @@ class EfisController:
             # 仅 normal 模式寻优（deep/full 无条件执行 Layer3，调 gate 无消费方会空转）
             if layer3_ran < n * 0.1 and mem_avg > target:
                 results["layer3_agg_gate"] = -1
-            elif layer3_ran >= n * 0.9 and layer3_extra / max(layer3_ran, 1) < L3_GAIN_BYTES:
+            elif layer3_ran >= n * 0.9 and layer3_extra / max(layer3_ran, 1) < L3_GAIN_BYTES * _scale():
                 results["layer3_agg_gate"] = +1
         if mem_amp > 0.10 or (agg_change > 0.2 and pf_total / max(cycles_sec, 1) > 80):
             results["pid_kp"] = -1

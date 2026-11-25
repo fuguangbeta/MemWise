@@ -174,88 +174,20 @@ def _make_log_icon(slot=None):
         return None
 
 
-def _log_fill_image(text_widget, width):
-    """透明占位图（宽=给定像素，高=图标高）：把保留字形的图标补足到整个图标位宽。
-    按宽度缓存在控件上——Tk 图像随 Python 对象回收，必须持续持有引用（否则文字会跳到图前）。"""
-    if width <= 0:
-        return None
-    cache = getattr(text_widget, "_log_fill_cache", None)
-    if cache is None:
-        cache = {}
-        text_widget._log_fill_cache = cache
-    img = cache.get(width)
-    if img is None:
-        try:
-            img = tk.PhotoImage(width=int(width), height=len(_LOG_ICON_ROWS))
-        except Exception:
-            return None
-        cache[width] = img
-    return img
-
-
-def _log_advances(text_widget, measure=False):
-    """保留字形图标的**真实排版推进宽**（像素）缓存 —— 占位图宽度必须精确，否则该行文字偏移。
-
-    Tk 的 font.measure 对回退字形会偏大（2026-09-11 实测：✓ 报 12、实际排版 9；✗ 报 12、实际 10），
-    故离屏实测：插「图标 ×2」，两次墨迹起点之差 ÷2（两次同一字形的左留白抵消 ⇒ 恰为推进宽）。
-
-    measure=False（插入路径）：只读缓存，未测到就返回空 ⇒ 调用方用制表符/默认图标兜底，
-      绝不在插入过程中驱动事件循环（否则会与面板刷新重入交错）。
-    measure=True（启动后的预热回调）：真正实测一次（需窗口已映射），成功后全程复用。"""
-    cache = getattr(text_widget, "_log_adv_cache", None)
-    if not measure or (cache is not None and cache.get("ok")):
-        return (cache or {}).get("adv") or {}
-    try:
-        font = text_widget.cget("font")
-    except Exception:
-        return {}
-    adv, ok = {}, False
-    top = None
-    try:
-        top = tk.Toplevel(text_widget)
-        top.geometry("160x40+4000+4000")          # 屏幕外：需要已映射才量得到 bbox，但不闪窗
-        t = tk.Text(top, font=font, height=1, width=20)
-        t.pack()
-        t.update_idletasks()
-        top.update()                              # 新窗口要跑一次完整事件循环才映射（否则 bbox 全 None）
-        for c in sorted(_LOG_ICON_KEEP):
-            t.delete("1.0", "end")
-            t.insert("1.0", c + c)
-            t.update_idletasks()
-            b0, b2 = t.bbox("1.0"), t.bbox("1.0 + 2c")
-            if b0 and b2:
-                adv[c] = int(round((b2[0] - b0[0]) / 2.0))
-        ok = bool(adv)
-    except Exception:
-        ok = False
-    finally:
-        if top is not None:
-            try:
-                top.destroy()
-            except Exception:
-                pass
-    if not ok:
-        adv = {}      # 量不到就返回空 —— 调用方退回制表符跳位；**不用 measure 值**（它对回退字形偏大，
-                      # 用它算占位图反而会把该行文字左移 2~3px），下次调用会重测
-    text_widget._log_adv_cache = {"ok": ok, "adv": adv}
-    return adv
 
 
 def _insert_log_lines(text_widget, ts, msg, tag):
-    """按物理行插入：图标位恒占满固定像素宽（默认图标，或保留字形的勾叉/箭头 + 透明占位补足），
+    """按物理行插入：图标位恒占满固定像素宽（一律默认「圈+M」图标），
     正文严格从图标位末端起列；首行带时间戳前缀，续行不带（续行用 lmargin2 悬挂缩进对齐文字列）。
 
     不靠制表符定位文字列——实测制表符在距制表位不足约 5px 时会退化成一个空格宽（2026-09-11
     日志实测：⚡⚠❌⚙ 这类 16px 宽图标正踩此边界，该行文字右移 7px）；改用「图标 + 精确宽度的
     透明占位图」，像素级精确，与字体/DPI/图标宽窄无关。"""
     img = getattr(text_widget, "_log_icon_img", None)
-    slot = getattr(text_widget, "_log_slot", None) or _log_slot_px(text_widget)
-    adv = _log_advances(text_widget)
     for k, line in enumerate(str(msg).split(chr(10))):
         head = ("[%s] " % ts) if k == 0 else ""
         _head = line.lstrip()
         _has_icon = bool(_head) and _log_is_icon(_head[0])
-        icon = ""   # 统一使用默认图标（2026-11-20 用户定稿：所有行首图标一律圈+M）
         rest = _head[1:] if _has_icon else _head
         # 吃掉图标后的 VS16/ZWJ/肤色/组合符，避免残留半个字形
         while rest and (ord(rest[0]) in (0xFE0E, 0xFE0F, 0x200D)
@@ -264,27 +196,10 @@ def _insert_log_lines(text_widget, ts, msg, tag):
             rest = rest[1:]
         rest = rest[1:] if rest.startswith(chr(9)) else rest.lstrip()
         text_widget.insert("end", head, tag)
-        if not icon:
-            if img is not None:
-                text_widget.image_create("end", image=img, align="center")    # 整位宽的默认图标
-        elif icon in adv:
-            text_widget.insert("end", icon, tag)
-            fill = _log_fill_image(text_widget, slot - adv[icon])             # 精确占位图补足整位宽
-            if fill is not None:
-                text_widget.image_create("end", image=fill, align="center")
-            else:
-                text_widget.insert("end", chr(9), tag)
-        else:
-            # 窗口尚未映射、量不到真实推进宽：窄字形（勾叉/箭头）用制表符跳位；
-            # 宽到跳不过去的（✅❌ 16px）宁可退化为默认图标，也不让该行文字错位
-            try:
-                _w = tkfont.Font(font=text_widget.cget("font")).measure(icon)
-            except Exception:
-                _w = 0
-            if img is not None and _w > slot - 5:
-                text_widget.image_create("end", image=img, align="center")
-            else:
-                text_widget.insert("end", icon + chr(9), tag)
+        # 2026-11-25 审查 D8-L5.1：字形图标体系已整体下线（所有行首一律默认「圈+M」）。
+        # 原「保留字形 / 占位图补宽 / 制表符跳位」三个分支因 icon 恒为空而不可达，已整块删除。
+        if img is not None:
+            text_widget.image_create("end", image=img, align="center")    # 整位宽的默认图标
         text_widget.insert("end", rest + chr(10), tag)
 
 
@@ -849,6 +764,15 @@ class _SafeToplevel(tk.Toplevel):
             self.attributes("-alpha", 0.0)
         except Exception:
             pass
+        # 2026-11-25 用户定稿：子窗口一律不可拉伸、无最大化框（构造期设定一次，幂等）
+        try:
+            self.resizable(False, False)
+        except Exception:
+            pass
+        try:
+            winapi.disable_maximize_resize(int(self.winfo_id()))
+        except Exception:
+            pass
 
     def geometry(self, spec=None):
         if spec is None:
@@ -1078,7 +1002,10 @@ _gui_ref = None
 _orig_wndproc = None
 
 # 托盘事件标志 — wndproc 仅设置此标志，由 Tkinter 轮询器安全处理
-_tray_action = None  # 'left' | 'right' | 'hotkey' | None
+# 2026-11-25 审查 D8-L4.2：托盘/热键动作原为单槽标志（250ms 泵窗口内两次事件必丢一个）。
+# 改为有界队列：wndproc 只 append（零 Tk 调用），由 Tk 轮询器逐个消费。
+import collections as _collections
+_tray_queue = _collections.deque(maxlen=16)
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_void_p, w.HANDLE, w.UINT, ctypes.c_void_p, ctypes.c_void_p)
 
@@ -1132,8 +1059,8 @@ def _relaunch_elevated():
 
 @WNDPROC
 def _wnd_proc(hwnd, msg, wp, lp):
-    """Win32 窗口过程回调 — 零 Tkinter 调用，仅设置 _tray_action 标志"""
-    global _gui_ref, _tray_action
+    """Win32 窗口过程回调 — 零 Tkinter 调用，仅把动作压入 _tray_queue"""
+    global _gui_ref
     try:
         # 系统关机确认阶段（WM_ENDSESSION）：立即删除 watchdog.json，防止看门狗误判并报错弹窗。
         # 不在询问阶段（WM_QUERYENDSESSION）删除——关机可能被其他程序取消，删早会使看门狗失效
@@ -1146,7 +1073,7 @@ def _wnd_proc(hwnd, msg, wp, lp):
                 pass
             return winapi.CallWindowProcW(_orig_wndproc, hwnd, msg, wp, lp)
         if msg == _TASKBAR_CREATED and _gui_ref is not None:
-            _tray_action = 'readd'   # 资源管理器重启 → 由 Tk 轮询器安全重挂托盘图标
+            _tray_queue.append('readd')   # 资源管理器重启 → 由 Tk 轮询器安全重挂托盘图标
             return 0
         if msg == winapi.WM_TRAYICON and _gui_ref is not None:
             # LOWORD 解析（2026-08-30 审查）：legacy 格式 lParam=事件原值、v4 格式
@@ -1155,15 +1082,15 @@ def _wnd_proc(hwnd, msg, wp, lp):
             ev = lp & 0xFFFF
             # 只认抬起（WM_LBUTTONUP/NIN_SELECT）与双击：按下事件也映射会概率性产生两次恢复
             if ev in (0x202, 0x203):
-                _tray_action = 'left'
+                _tray_queue.append('left')
             elif ev in (0x205, 0x007B):
-                _tray_action = 'right'
+                _tray_queue.append('right')
             return 0
         if msg == WM_HOTKEY and wp == HOTKEY_ID and _gui_ref is not None:
-            _tray_action = 'hotkey'
+            _tray_queue.append('hotkey')
             return 0
         if msg == WM_HOTKEY and wp == GAME_HOTKEY_ID and _gui_ref is not None:
-            _tray_action = 'game'
+            _tray_queue.append('game')
             return 0
     except Exception:
         pass
@@ -1459,7 +1386,12 @@ class MemWiseGUI:
         # --minimized 参数（仅开机自启携带）：保持隐藏；手动启动不最小化到托盘
         if "--minimized" in sys.argv:
             self._minimized_to_tray = True
-        self.root.resizable(True, False)
+        # 2026-11-25 用户定稿：主界面固定大小、去最大化框（不能全屏、不能拖边框拉伸）
+        try:
+            self.root.resizable(False, False)
+            winapi.disable_maximize_resize(int(self.root.winfo_id()))
+        except Exception:
+            pass
         _center_geometry(self.root, MAIN_W, MAIN_H, fit=True)
 
         # 窗口图标 — 用 MemWise 自定义 HICON（直接内存创建，不走 .ico 文件）
@@ -1963,8 +1895,10 @@ class MemWiseGUI:
         msgs = list(getattr(self, "_present_log_pending", None) or [])
         if not msgs:
             return
-        self._present_log_pending = []
         _tsl = list(getattr(self, "_present_ts", None) or [])
+        # 2026-11-25 审查 D8-L4.1：先清空再插入，插入异常会整批丢失（只留在历史里、面板永久缺行）。
+        # 改为事务式：失败即按原顺序回填，下一轮仍能补画。
+        self._present_log_pending = []
         self._present_ts = []
         try:
             self.log.configure(state="normal")
@@ -1977,7 +1911,11 @@ class MemWiseGUI:
             self.log.configure(state="disabled")
             self._typewriter(start, "end-1c", len(msgs))
         except Exception:
-            pass
+            try:
+                self._present_log_pending = msgs + list(getattr(self, "_present_log_pending", None) or [])
+                self._present_ts = _tsl + list(getattr(self, "_present_ts", None) or [])
+            except Exception:
+                pass
 
     def _schedule_present_flush(self):
         """呈现期间收到日志/图表时挂一次延迟补齐（幂等）：淡入结束后若仍有暂存，写出并补画。"""
@@ -2373,8 +2311,6 @@ class MemWiseGUI:
         _setup_log_widget(self.log)  # 图标位对齐 + 默认图标：固定像素图标位/制表位 + 续行悬挂缩进（F52）
         # 图标推进宽预热（窗口映射后实测一次；未测到前插入路径用制表符/默认图标兜底，不会错列）
         # ⚠ 必须经 self.root.after（MemWiseGUI 是 Tk 包装类，自身没有 after/after_idle —— 2026-09-11 启动即崩）
-        self.root.after(150, lambda: _log_advances(self.log, measure=True))
-        self.root.after(1200, lambda: _log_advances(self.log, measure=True))
         sc = ttk.Scrollbar(lf, command=self.log.yview); self.log.configure(yscrollcommand=sc.set)
         sc.pack(side="right", fill="y"); self.log.pack(fill="both", expand=True)
 
@@ -2463,7 +2399,7 @@ class MemWiseGUI:
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("MemWise 设置"))
-        win.resizable(False, True)
+        win.resizable(False, False)
         win.transient(self.root)
         win.focus_set()
         win.lift()
@@ -3368,7 +3304,7 @@ class MemWiseGUI:
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("进程排除列表"))
-        win.resizable(False, True)
+        win.resizable(False, False)
         win.transient(self.root)
         win.focus_set()
         win.lift()
@@ -3507,7 +3443,7 @@ class MemWiseGUI:
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("游戏进程管理"))
-        win.resizable(True, True)
+        win.resizable(False, False)
         win.transient(self.root)
         win.focus_set()
         win.lift()
@@ -3601,7 +3537,7 @@ class MemWiseGUI:
         win.withdraw()  # 先隐藏，构建完成居中后一次显示
         self._apply_icon(win)
         win.title(tr("进程内存排行"))
-        win.resizable(True, True)
+        win.resizable(False, False)
         win.transient(self.root)
         win.focus_set()
         win.lift()
@@ -4831,11 +4767,9 @@ class MemWiseGUI:
 
     def _poll_msg_queue(self):
         # ── 托盘事件 — 从 wndproc 标志安全分发（零 Tkinter 调用于 wndproc）──
-        global _tray_action
         try:
-            action = _tray_action
+            action = _tray_queue.popleft() if _tray_queue else None
             if action is not None:
-                _tray_action = None
                 if action == 'left':
                     self._on_tray_left_click()
                 elif action == 'right':
@@ -5859,7 +5793,9 @@ class MemWiseGUI:
         ttk.Button(bf, text=tr("退出程序"), width=20, command=pick_exit).pack(side="left", padx=10)
         choice.protocol("WM_DELETE_WINDOW", pick_minimize)
         choice.deiconify()  # 全部控件就绪，居中后一次显示
-        self.root.wait_window(choice)
+        # 2026-11-25 审查 D5-L4.2：宿主窗口"永不销毁"，用 Tk 原生 tkwait 等不到销毁事件
+        # ⇒ 关窗流程会卡在嵌套事件循环（默认 close_action=ask 时必现）。改走宿主覆写的等待（关闭信号）。
+        choice.wait_window()
         if result[0] == "minimize":
             self._minimized_to_tray = True
             try:

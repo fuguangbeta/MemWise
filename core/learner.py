@@ -213,7 +213,9 @@ class Profile:
         # Beta 探索噪声
         beta_sample = random.betavariate(max(self.alpha, 0.5), max(self.beta, 0.5))
         # 混合: 样本越多越依赖 Kalman
-        mix = min(1.0, self.total_samples / 20.0)
+        # 2026-11-25 审查 D4-L1.1：原 mix 上限 1.0 ⇒ 20 样本后 Beta 探索彻底消失、θ 完全
+        # 由 Kalman ROI 决定。保留 15% 探索分量，使长期行为变化仍能被抽样感知。
+        mix = min(0.85, self.total_samples / 20.0)
         base = (1 - mix) * beta_sample + mix * kalman_base
         # 缓存并钳制到 [0.01, 0.99]（上下文修正在 PareLearner.thompson_score 层）
         self._theta_cache = max(0.01, min(0.99, base))
