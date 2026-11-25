@@ -2735,9 +2735,8 @@ class MemWiseGUI:
             CFG["clean_passes"] = int(float(v))
             _save_cfg()
             _push_runtime_cfg(self.judger)
-        self._ops_note = ttk.Label(cf, text=tr("（未勾选 = 不执行对应系统清理）"),
-                                   foreground="#888", wraplength=470, justify="left")
-        self._ops_note.pack(anchor="w", pady=(6, 0))
+        # 通用“未勾选”注释不再显示；仅 Extreme 在相同位置显示强制操作说明。
+        self._ops_note = ttk.Label(cf, text="", foreground="#888", wraplength=470, justify="left")
         ps_lbl = ttk.Label(cf, text=tr("进程清理深度: ") + f"{passes_val.get()} " + tr("轮"), foreground="#555")
         ps_lbl.pack(anchor="w", pady=(6,0))
         self._add_tip(ps_lbl, "「每个进程反复清理的轮数」\n1. 可设置为 2~6 轮，默认 4 轮\n2. 越高持续释放能力越高，但耗时更长\n⚠ 欲降低本程序性能占用建议 2~3\n⚠ 对于更彻底的优化需求可设 5~6\n⚠ 程序会在进程已无更多可释放内存时提前结束；单轮收割另有 30 秒预算，深度设高时可能被截断")
@@ -4908,8 +4907,16 @@ class MemWiseGUI:
                     pass
             note = getattr(self, "_ops_note", None)
             if note is not None:
-                note.config(text=tr("extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）")
-                            if extreme else tr("（未勾选 = 不执行对应系统清理）"))
+                if extreme:
+                    note.config(text=tr("extreme 模式强制勾选全部操作（不读取上方开关；切回其他模式后恢复原设置）"))
+                    if not note.winfo_ismapped():
+                        _before = getattr(self, "_ps_lbl", None)
+                        if _before is not None and _before.winfo_exists():
+                            note.pack(anchor="w", pady=(6, 0), before=_before)
+                        else:
+                            note.pack(anchor="w", pady=(6, 0))
+                else:
+                    note.pack_forget()
         except Exception:
             pass
 

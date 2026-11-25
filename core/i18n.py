@@ -193,7 +193,6 @@ _EN = {
         "守护运行中": "Guarding",
         "🟢 守护中": "🟢 Guarding",
     "守护运行一轮后显示实时图表": "The live chart appears after one guard cycle",
-    "（未勾选 = 不执行对应系统清理）": "(unchecked = skip the corresponding system cleanup)",
 
     # ── 主界面 tooltip（27 个，按原文全文）──
     "  · deep — 追加系统级深度清扫与深层回收，清理更彻底\n": "  · Deep — adds system-level deep sweep and reclamation, more thorough\n",
