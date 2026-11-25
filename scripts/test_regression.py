@@ -1917,7 +1917,7 @@ _msgs52 = [("📈 内存 70%（偏高）· 清理强度：维持高", "内存 70
 _stub52._write_group([m for m, _b in _msgs52])
 _stub52.log.update_idletasks()
 _root52.update()                                        # 映射窗口
-_mg29._log_advances(_stub52.log, measure=True)          # 与应用启动后的预热同款：实测图标推进宽
+# 2026-11-25 审查 D8-L5.1：字形图标体系整体下线（_log_advances 已删除），此处不再预热推进宽
 _stub52._write_group([m for m, _b in _msgs52])          # 第二批走「实测推进宽 + 占位图」路径
 _stub52.log.update_idletasks(); _root52.update()
 # 索引一律走 Tk 自身（非 BMP emoji 在 Tk 里占 2 个字符，Python 下标会错位）
@@ -1949,9 +1949,8 @@ check("F52 真实面板：图标列像素一致 + 文字列一致且恰在图标
 check("F52 图标位宽 = max(下限, 最宽图标 + 间隙)（跳位与占位图都够用）",
       _f52_room >= _f52_wide and _slot52 == _f52_room and _slot52 >= _mg29._LOG_SLOT_PX,
       f"图标位={_slot52} 最宽图标={_f52_wide}")
-check("F52 实测图标推进宽覆盖保留字形集（占位图按它精确补足）",
-      set(_adv52) == set(_mg29._LOG_ICON_KEEP)
-      and all(isinstance(v, int) and 4 <= v <= 24 for v in _adv52.values()), str(_adv52))
+check("F52 字形图标体系已下线（推进宽实测与占位图补足已整块删除）",
+      "_log_advances" not in _gui34 and "_log_fill_image" not in _gui34)
 check("F52 默认图标：整位宽画布 + 图样居中（两侧留白透明）",
       _ic52_px == (20, 14, True, True, False), str(_ic52_px))
 check("F22 两个活跃门已入 i18n 参数名", "CPU活跃门" in _i18n34 and "IO活跃门" in _i18n34)
@@ -2117,9 +2116,8 @@ check("默认图标：插入后行数正确（无图标行仍占一行，末尾�
 check("统一日志开启失败留痕（开关即闸门，失败后须有线索）",
       "统一日志开启失败" in _eng32_src and "_event_log(" in _eng32_src)
 _gui34_main = _gui34.split("class MemWiseGUI", 1)[1] if "class MemWiseGUI" in _gui34 else _gui34
-check("推进宽预热走 self.root.after（包装类无 after —— 2026-09-11 启动即崩教训）",
-      "self.after(" not in _gui34_main
-      and "self.root.after(150, lambda: _log_advances" in _gui34)
+check("推进宽预热已随字形图标下线删除（包装类无 after 的教训仍守）",
+      "self.after(" not in _gui34_main and "_log_advances" not in _gui34)
 
 print("\n[37] ERIS 四模式隔离（平滑窗按模式分桶 + 切换重置基线；2026-09-11 用户要求）")
 import core.engine as _eng_mod37
@@ -2215,19 +2213,25 @@ for _rel in ("config/config.yaml", "data/memwise_state.json", "data/memwise_efis
         os.makedirs(os.path.dirname(_dst38), exist_ok=True)
         _sh38.copy2(_src38, _dst38)
 _lr38 = PareLearner.load(os.path.join(_t38b, "data", "memwise_state.json"))
-check("兼容：真实旧 state（画像/锚点/回弹/策略）可加载",
-      _lr38 is not None and len(_lr38.profiles) > 200
-      and len(getattr(_lr38.stable_anchors, "anchors", {})) > 50)
-_ef38 = EfisController(state_path=os.path.join(_t38b, "data", "memwise_efis_state.json"))
-check("兼容：真实旧 efis_state 可加载且参数可取",
-      isinstance(_ef38.get_params("full"), dict) and len(_ef38.get_params("full")) >= 8)
-_eng38 = MemWiseEngine(_lr38, _j_x2, c_x2, _ef38, _FakeSniffer(), os.path.join(_t38b, "data", "state.json"))
-_modes38 = sorted(getattr(_eng38, "_eris_hist_by_mode", {}) or {})
-_cal38 = getattr(_eng38, "_eris_calib", {}) or {}
-check("兼容：真实 ERIS 状态（平滑窗按模式分桶沿用；校准结构为 v5 且校验通过——旧版 v4 会按新语义重建）",
-      bool(_modes38) and _cal38.get("v") == 5 and _eris9.calib_valid(_cal38),
-      "桶=%s calib v=%s 模式桶=%s" % (_modes38, _cal38.get("v"), list((_cal38.get("modes") or {}).keys())))
-_eng38.shutdown()
+_lr38_n = len(_lr38.profiles) if _lr38 is not None else 0
+_lr38_a = len(getattr(_lr38.stable_anchors, "anchors", {})) if _lr38 is not None else 0
+if _lr38_n > 200 and _lr38_a > 50:
+    check("兼容：真实旧 state（画像/锚点/回弹/策略）可加载", True,
+          "profiles=%d anchors=%d" % (_lr38_n, _lr38_a))
+    _ef38 = EfisController(state_path=os.path.join(_t38b, "data", "memwise_efis_state.json"))
+    check("兼容：真实旧 efis_state 可加载且参数可取",
+          isinstance(_ef38.get_params("full"), dict) and len(_ef38.get_params("full")) >= 8)
+    _eng38 = MemWiseEngine(_lr38, _j_x2, c_x2, _ef38, _FakeSniffer(), os.path.join(_t38b, "data", "state.json"))
+    _modes38 = sorted(getattr(_eng38, "_eris_hist_by_mode", {}) or {})
+    _cal38 = getattr(_eng38, "_eris_calib", {}) or {}
+    check("兼容：真实 ERIS 状态（平滑窗按模式分桶沿用；校准结构为 v5 且校验通过）",
+          bool(_modes38) and _cal38.get("v") == 5 and _eris9.calib_valid(_cal38),
+          "桶=%s calib v=%s" % (_modes38, _cal38.get("v")))
+    _eng38.shutdown()
+else:
+    # 2026-11-25 审查 D10-L4.1：干净环境（无真实画像）不是缺陷——显式跳过并留痕，不伪装通过
+    print("[38] SKIP：本机无真实画像/锚点（profiles=%d anchors=%d），真实数据兼容性未在本机验证"
+          % (_lr38_n, _lr38_a))
 _sh38.rmtree(_t38b, ignore_errors=True)
 
 print("\n[39] F1 压力自适应 + 注册表系统类修正（2026-09-26 用户定稿）")
@@ -2936,8 +2940,8 @@ check("T1 deep 段为两字段（收尾次数/释放MB）",
 check("deep 尾段闸门只看停手/游戏/轻量，不看 deadline",
       "winapi.get_idle_seconds() >= _HEAVY_IDLE_OTHER" in _cl45f
       and "def _deep_tail_gate(self):" in _cl45f)
-check("W4 第八道门统一判定（cleaner 5 处 / judger 3 处）",
-      _cl45f.count("ws_cap_blocked(") == 5 and _jd45f.count("ws_cap_blocked(") == 3
+check("W4 第八道门统一判定（cleaner ≥5 处 / judger ≥4 处；存在性断言，2026-11-25 D10-L5.1）",
+      _cl45f.count("ws_cap_blocked(") >= 5 and _jd45f.count("ws_cap_blocked(") >= 4
       and "def ws_cap_blocked(self, path):" in _jd45f
       and "if not self._capped_paths or not path:" in _jd45f)
 # W5 引擎接线：施加/簿记/守卫（mock syscall；FakeSniffer 桩）
@@ -3066,12 +3070,16 @@ _egm47._event_log = lambda *a, **k: None
 try:
     # 确定性不可写路径（2026-10-15 修正）：原用 Z: 盘，若该盘存在且可写则断言失效；
     # 改为"在某文件之下创建目录"——任何 Windows 上都必然失败（NotADirectoryError）。
+    # 2026-11-25 审查 D10-L4.2：可写分支必须在**临时** base 下求值——原写法在 finally 复原之后
+    # 才调，等于在真实程序目录里建删探针文件（违反"验证用临时路径"红线）
+    _egm47.base = tempfile.mkdtemp(prefix="mw_w47_")
+    _rw47 = _egm47._check_writable()
     _egm47.base = os.path.join(_ROOT34, "README.md", "no_such_dir")
     _ro47 = _egm47._check_writable()
 finally:
     _egm47.base = _base47; _egm47._event_log = _ev47
-check("P4 哨兵：可写返回 True / 不可写返回 False", _egm47._check_writable() is True and _ro47 is False,
-      "ro=%s" % _ro47)
+check("P4 哨兵：可写返回 True / 不可写返回 False", _rw47 is True and _ro47 is False,
+      "rw=%s ro=%s" % (_rw47, _ro47))
 check("P4 接线：三入口（GUI 捕获/CLI 提示/init_runtime 返回）",
       "self._writable = init_runtime()" in _gui47 and "if not init_runtime():" in _mw47
       and "return _check_writable()" in _eg47 and "def _check_writable():" in _eg47)
@@ -3158,7 +3166,7 @@ check("README 永久免费声明 + MIT 许可文件齐备",
 check("README 只放事实徽章（无奖牌/自造奖项）",
       "奖牌" not in _readme52 and "Repository Of The" not in _readme52)
 
-print("\n[51] CLI 服务模式任务改走 XML + 守护自愈（2026-10-16 收口）")
+print("\n[47a] CLI 服务模式任务改走 XML + 守护自愈（2026-10-16 收口）")
 _wa51 = _src47("core/winapi.py"); _mw51 = _src47("memwise.py")
 check("两个任务模板共用同一份 Settings 单一权威源（字面量全文件仅一份）",
       "_TASK_SETTINGS_XML" in _wa51
@@ -3180,7 +3188,7 @@ check("建任务失败可诊断（last_task_detail 留痕，CLI 失败时打印�
       "def last_task_detail():" in _wa51 and "_LAST_TASK_DETAIL" in _wa51
       and "winapi.last_task_detail()" in _mw51)
 
-print("\n[52] 调参器最小停留（2026-10-16：cooloff_base/cpu_gate/io_gate 实测每 10~15 轮翻转）")
+print("\n[47b] 调参器最小停留（2026-10-16：cooloff_base/cpu_gate/io_gate 实测每 10~15 轮翻转）")
 _ef52 = _src47("core/efis.py")
 check("常量与字段就位（MIN_ADJUST_DWELL / _last_change / _dwell_skipped）",
       "MIN_ADJUST_DWELL = 30" in _ef52 and "self._last_change = {}" in _ef52
@@ -3211,7 +3219,7 @@ try:
 finally:
     _sh52.rmtree(_d52, ignore_errors=True)
 
-print("\n[53] S 缩放：尺寸类阈值按机器内存规模缩放（本机 S=1 逐位不变）")
+print("\n[47c] S 缩放：尺寸类阈值按机器内存规模缩放（本机 S=1 逐位不变）")
 _wa53 = _src47("core/winapi.py"); _cl53 = _src47("core/cleaner.py"); _st53 = _src47("core/stable.py")
 check("winapi 提供 memory_scale（量化 + 夹取 + 回退）",
       "def memory_scale():" in _wa53 and "round(s * 4) / 4.0" in _wa53
@@ -3225,13 +3233,16 @@ check("代价/收益量级类阈值不缩放（语义=划不划算，与机器�
       and "L3_RETRIM_GROWTH_FLOOR = 8 << 20" in _cl53
       and "WS_CAP_MIN_BYTES = 256 << 20" in _wa53)
 import core.winapi as _W53, core.cleaner as _C53, core.stable as _S53
-check("本机 S=1.0 ⇒ 缩放阈值与原字面量逐位一致（行为零变化）",
-      _W53.memory_scale() == 1.0
-      and _W53.WS_CAP_MIN_BYTES == 256 << 20 and _C53.TIER_WS_DEEP == 200 << 20
-      and _C53.TIER_WS_MID == 50 << 20 and _C53.MP_WS_NORMAL == 100 << 20
-      and _C53.MP_WS_FULL == 50 << 20 and _C53.COMPOSITE_FREED_SCALE == 200 << 20
-      and _C53.COMPOSITE_WS_SCALE == 500 << 20 and _S53.ABSOLUTE_MARGIN == 32 << 20,
-      "S=%s" % _W53.memory_scale())
+if _W53.memory_scale() == 1.0:
+    check("本机 S=1.0 ⇒ 缩放阈值与原字面量逐位一致（行为零变化）",
+          _W53.WS_CAP_MIN_BYTES == 256 << 20 and _C53.TIER_WS_DEEP == 200 << 20
+          and _C53.TIER_WS_MID == 50 << 20 and _C53.MP_WS_NORMAL == 100 << 20
+          and _C53.MP_WS_FULL == 50 << 20 and _C53.COMPOSITE_FREED_SCALE == 200 << 20
+          and _C53.COMPOSITE_WS_SCALE == 500 << 20 and _S53.ABSOLUTE_MARGIN == 32 << 20,
+          "S=1.0")
+else:
+    # 2026-11-25 审查 D6-L5.1：非 16GB 机器上原断言必红（环境差异≠缺陷）——跳过并留痕
+    print("[53] SKIP：本机 S=%s ≠ 1.0，逐位一致断言不适用" % _W53.memory_scale())
 _orig53 = _W53.get_memory_status
 try:
     _W53.get_memory_status = lambda: {"total": 8 << 30}
@@ -3479,11 +3490,11 @@ def _par_test54():
                                     sha256=_sha, size=len(_pay))
             finally:
                 _srv.shutdown()
-        _d1 = _os.path.join(_os.environ.get("TEMP", "."), "mw_par_r.exe")
-        _d2 = _os.path.join(_os.environ.get("TEMP", "."), "mw_par_p.exe")
-        for _d in (_d1, _d2):
-            try: _os.remove(_d)
-            except Exception: pass
+        # 2026-11-25 审查 D6-L2.1：改用唯一临时子目录（原固定名 exe 会堆积在 %TEMP%，
+        # 多人/CI 机器上还会按名误删他人文件；mkdtemp 已由脚本的追踪清理器接管）
+        _pdir = tempfile.mkdtemp(prefix="mw_par_")
+        _d1 = _os.path.join(_pdir, "r.exe")
+        _d2 = _os.path.join(_pdir, "p.exe")
         _ok1, _ = _run(_RH, _d1)
         _n1 = _seen["n"]
         _seen["n"] = 0
@@ -3720,7 +3731,7 @@ try:
     check("离线端到端：API 通道解析出版本/大小/SHA-256（回环，不联网）",
           bool(_res54.get("ok")) and _res54.get("tag") == "v9.9.9" and _res54.get("size") == len(_payload)
           and _res54.get("sha256") == _digest, str(_res54.get("reason")))
-    check("离线端到端：版本比较（v9.9.9 > 本地 4.7.23）", _U54.is_newer(_res54.get("tag"), "4.7.23"))
+    check("离线端到端：版本比较（v9.9.9 > 本地 5.9.007）", _U54.is_newer(_res54.get("tag"), "5.9.007"))
     _dst54 = os.path.join(_t54, "dl.exe")
     _ok54, _why54 = _U54.download(_res54["url"], _dst54, sha256=_res54["sha256"], size=_res54["size"])
     check("离线端到端：下载 + 哈希校验通过（逐字节一致）",
@@ -4914,8 +4925,9 @@ check("动效：GUI 接线（且无已停用的打印/闪烁死代码）",
       and "_mw_fast_print" not in _g64)
 check("UI 呈现：恢复时重播整组图表入场",
       "_present_window" in _g64 and "_chart_intro_pending = True" in _g64)
-check("日志图标：所有行首统一默认圈+M（不再渲染任何字形）",
-      'icon = ""   # 统一使用默认图标' in _g64 and "_make_glyph_icon" not in _g64)
+check("日志图标：所有行首统一默认圈+M（字形分支与占位图已整块删除）",
+      'text_widget.image_create("end", image=img, align="center")    # 整位宽的默认图标' in _g64
+      and "elif icon in adv:" not in _g64 and "_make_glyph_icon" not in _g64)
 check("子窗口呈现：先构建后淡入（不再 1x1 生长）",
       "_mw_fade_in" in _g64 and "super().geometry(target)" in _g64
       and '"1x1+%d+%d"' not in _g64)
@@ -4995,6 +5007,31 @@ check("8.3 release token 仅环境变量", "或项目根 .gh_token" not in _src4
       and "不再读取 .gh_token" in _src47("scripts/release_common.py"))
 _bad_tr = _cjk_static_tr_scan()
 check("英文界面静态 tr 字面量零中文残留（CLI/backup/GUI 全量）", _bad_tr == [], str(_bad_tr[:5]))
+
+# ── 2026-11-25 审查 D5-L5.1：三条并发/UI 行为守护（此前该面为零覆盖）──
+_e66 = _src47("core/engine.py")
+_j66 = _src47("core/judger.py")
+_u66 = open(os.path.join(_ROOT34, "memwise_gui.py"), encoding="utf-8").read()
+check("D5-L1.1 手动标志：两处置真 / 两处 finally 复位（异常也复位）",
+      _e66.count("_manual_run = True") == 2 and _e66.count("_manual_run = False") == 2)
+check("D4-L2.1 执行闸门含五类硬保护（游戏/自身/核心/黑名单/硬上限）",
+      all(k in _j66 for k in ("游戏进程(保护)", "程序自身", "系统核心进程", "用户黑名单", "已设硬上限")))
+check("D5-L4.2 关窗询问走宿主等待（不再用 Tk 原生 tkwait 等永不销毁的宿主）",
+      "choice.wait_window()" in _u66 and "self.root.wait_window(choice)" not in _u66)
+
+# ── 2026-11-25 审查 D10-L2.1 / D10-L5.1：段号与断言形态守卫 ──
+# 段号不重排（61 处标签的改名 churn 无行为收益）：改为「唯一性 + 已知缺号表 + 计数断言棘轮」。
+import re as _re66
+_src66 = open(__file__, encoding='utf-8').read()
+_sec66 = _re66.findall(r'print\("\\n\[(\d+[a-c]?)\]', _src66)
+_dup66 = sorted({x for x in _sec66 if _sec66.count(x) > 1})
+check("D10-L2.1 段号唯一（无重复标签；乱序段已用 47a/47b/47c 归位）", _dup66 == [], str(_dup66))
+_KNOWN_GAP66 = {"34"}   # 历史缺号：原 [34] 整段已并入 [33]/[35]，编号不复用也不补假段
+check("D10-L2.1 已知缺号表与实现一致（不得新增缺号）",
+      _KNOWN_GAP66 == {"34"} and "34" not in set(_sec66))
+_CNT_BASE66 = 19   # 2026-11-25 实测基线：count(x)==N 形态 19 处（存量保留，新增一律用行为断言/≥）
+_n_eq66 = len(_re66.findall(r'count\([^)]*\)\s*==\s*\d+', _src66))
+check("D10-L5.1 文本计数断言不增长（棘轮 ≤ %d）" % _CNT_BASE66, _n_eq66 <= _CNT_BASE66, str(_n_eq66))
 
 with open(__file__, encoding='utf-8') as fh: cnt=len(re.findall(r'^\s*check\(',fh.read(),re.MULTILINE))
 print(f"\n{'='*40}")

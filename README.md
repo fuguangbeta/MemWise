@@ -1,4 +1,4 @@
-# MemWise v5.8.036
+# MemWise v5.9.007
 
 [![版本](https://img.shields.io/github/v/release/fuguangbeta/MemWise?label=%E7%89%88%E6%9C%AC&color=blue)](https://github.com/fuguangbeta/MemWise/releases) ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%7C%2011-0078D4) ![依赖](https://img.shields.io/badge/%E4%BE%9D%E8%B5%96-%E9%9B%B6%E7%AC%AC%E4%B8%89%E6%96%B9-4CAF50) [![许可](https://img.shields.io/github/license/fuguangbeta/MemWise?label=%E8%AE%B8%E5%8F%AF)](https://github.com/fuguangbeta/MemWise/blob/main/LICENSE) [![Star](https://img.shields.io/github/stars/fuguangbeta/MemWise?label=Star&color=yellow)](https://github.com/fuguangbeta/MemWise/stargazers) [![总下载](https://img.shields.io/github/downloads/fuguangbeta/MemWise/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD&color=2ea44f)](https://github.com/fuguangbeta/MemWise/releases)
 
@@ -134,7 +134,7 @@ Protected scope: system-critical processes, programs in the exclusion list, a ru
 
 ## 界面导览 · *Interface Tour*
 
-主窗口由四个区域构成。
+主窗口由四个区域构成。窗口尺寸固定，不支持最大化与拖拽缩放。
 
 顶部为内存状态条，显示当前占用百分比，颜色随占用水平变化，右侧为对应数值。
 
@@ -235,7 +235,7 @@ The same executable also offers a command-line entry point:
 |---|---|
 | status | Print the current memory state |
 | learn [minutes] | Observe and record process behaviour, 10 minutes by default |
-| optimize [--mode q|n|d|f] | Run one optimization, optionally in a given mode |
+| optimize [--mode n|d|f|e] | Run one optimization, optionally in a given mode |
 | daemon [--mode n|d|f|e] | Run Guard from the command line |
 | profile <pid> | Show the detailed profile of one process |
 | export [--config-only] / import | Export or import a configuration package; --config-only leaves learning data out |
