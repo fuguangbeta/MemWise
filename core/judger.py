@@ -201,8 +201,8 @@ class PareJudger:
         """第八道门统一判定：该路径是否处于工作集硬上限生效中。
 
         ⛔ 必须在全部清理通道调用（判定层 can_trim/can_probe、执行层 _trim_process、
-        fast-track quick_retrim、试探 _probe_process、Layer3 阶段 D、full 回弹二轮）。
-        2026-10-15 桩实验实测：只补 2 处的旧实现下 quick_retrim 与 _trim_process 仍会对被钉
+        fast-track 重清、试探 _probe_process、Layer3 阶段 D、full 回弹二轮）。
+        2026-10-15 桩实验实测：只补 2 处的旧实现下 fast retrim 与 _trim_process 仍会对被钉
         进程执行 EmptyWorkingSet（实测调用发生），正是 v2.2 B2 要防的硬缺页回填抖动。
         _capped_paths 为空时短路返回 False，未设规则的用户零开销、零行为变化。
         """
@@ -730,7 +730,7 @@ class PareJudger:
         """IO 活跃判定（按需采样：读一次累计计数与缓存差分速率；首轮无基线不拦截）。
         实时安全门：与 CPU 活跃门一致，高压同样尊重——活跃进程清理无效且加剧卡顿。
         2026-11-24（14.1）：1s TTL 缓存判定结果，同一轮/同一秒内 can_trim、_trim_precheck、
-        quick_retrim 不再对同一 PID 重复 OpenProcess+GetProcessIoCounters。"""
+        fast retrim 不再对同一 PID 重复 OpenProcess+GetProcessIoCounters。"""
         now = time.time()
         prev = self._io_cache.get(pid)
         # 命中：已有有效判定且未过期 ⇒ 直接复用（IO 速率是秒级量，1s 内不改变语义）

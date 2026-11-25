@@ -4992,7 +4992,7 @@ check("ws_sweep 六态分类（ok/no_effect/unmeasured/denied/gone/failed）",
       "empty_ws_ex" in _cl65s and all(k in _cl65s for k in
       ("ws_sweep_no_effect", "ws_sweep_unmeasured", "ws_sweep_denied", "ws_sweep_gone", "ws_sweep_failed")))
 check("全局 MemoryEmptyWorkingSets 仅 extreme 路径",
-      "empty_all_working_sets" in _cl65s and "if extreme:" in _cl65s
+      "empty_all_working_sets" in _cl65s and "if extreme" in _cl65s
       and "empty_all_working_sets" in _w65s)
 check("extreme 强制全操作并走全局 WS",
       'if mode == "extreme":' in _cl65s and "extreme=True" in _cl65s

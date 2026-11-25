@@ -100,13 +100,14 @@ def cmd_optimize(args):
     i = 0
     while i < len(args):
         if args[i] == "--extreme":
-            print("Warning: Extreme mode trims system working sets and may cause stutter.", file=sys.stderr)
             mode = "extreme"
         elif args[i] == "--mode" and i+1 < len(args): mode = args[i+1]; i += 1
         i += 1
     if mode not in ("normal", "deep", "full", "extreme"):
         print(tr_msg(f"未知模式 {mode}，回退 normal"))
         mode = "normal"
+    if mode == "extreme":
+        print("Warning: Extreme mode trims system working sets and may cause stutter.", file=sys.stderr)
     print(f"{mode.title()}{tr(' 优化模式')}")
     m0 = _mem_or_none()
     if not m0: return

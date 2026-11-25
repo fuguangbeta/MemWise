@@ -443,7 +443,7 @@ class PareCleaner:
     def _layer1_memreduct(self, full=True, game_mode=False, ops=None, clean_self=True):
         """系统级内核清理 — 无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）
         
-        full=True  : 全量（含系统级 WS 全清）
+        full=True  : 全量系统级操作（不含全局 WS；Extreme 单独调用 empty_all_working_sets）
         full=False : 轻量（跳过 WS 全清）
         ops        : 启用的操作集合，None=全部。内核键: ws_sweep, filecache_ex, modified,
                      standby, standby_low, volume, registry（"filecache" 是用户键，
@@ -1897,9 +1897,9 @@ class PareCleaner:
         if pipeline_ctx["layer2_trimmed"]:
             self._cycle_any_trim = True
         l1_ops = self._layer1_ops(ops_filter)
-        if extreme:
+        if extreme and not self.game_mode:
             self._extreme_global_ws()
-        else:
+        elif not extreme:
             _do_sweep = (l1_ops is None or "ws_sweep" in l1_ops) and not self.game_mode
             if _do_sweep:
                 self._sweep_all_unprotected(snaps, "full")

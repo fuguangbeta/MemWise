@@ -2058,9 +2058,9 @@ class MemWiseGUI:
         self._finish_present()
         # 启动确认必须晚于主界面淡入；只检查一次，恢复窗口/设置重建不重复弹。
         if not getattr(self, "_extreme_startup_checked", False):
-            self._extreme_startup_checked = True
             try:
                 if not getattr(self, "_minimized_to_tray", False):
+                    self._extreme_startup_checked = True
                     self.root.after(80, self._ensure_extreme_startup)
             except Exception:
                 pass
