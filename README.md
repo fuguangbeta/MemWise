@@ -12,7 +12,7 @@ MemWise 是一个运行在 Windows 用户态的内存整理工具。它的工作
 
 MemWise 释放的是"暂时用不到的内存"，它不能让物理内存凭空变多。如果一台机器的内存确实不够用，最根本的解决办法仍然是增加内存。本工具的意义在于，在无法立即升级硬件、或运行大型程序前需要快速腾出空间的时候，提供一个立即可用的选择。内存长期充裕的机器，其实并不需要这类工具——保持系统的默认管理，往往就是最好的状态。
 
-回收的页面在被程序再次使用时需要重新加载，这通常表现为一瞬间的轻微延迟；清理系统缓存后，首次访问大文件也可能稍有变慢。这是内存管理本身的性质，并非工具的缺陷，也不会影响数据安全与程序稳定性。所有操作都可以在设置中单独关闭，你可以根据自己对流畅度的要求自行取舍。
+回收的页面在被程序再次使用时需要重新加载，这通常表现为一瞬间的轻微延迟；清理系统缓存后，首次访问大文件也可能稍有变慢。这是内存管理本身的性质，并非工具的缺陷，也不会影响数据安全与程序稳定性。normal/deep/full 下所有操作都可以在设置中单独关闭，你可以根据自己对流畅度的要求自行取舍；extreme 会强制全部操作。
 
 MemWise 不随意终止进程、不挂起线程、不注入代码，也默认不访问网络。它仅使用 Windows 公开的 API，代码以 MIT 许可完全开源。
 
@@ -30,7 +30,7 @@ A few things are worth saying plainly.
 
 What MemWise frees is memory that is not being used right now. It cannot make physical memory larger than it is. If a machine genuinely does not have enough RAM, adding memory remains the fundamental solution. The value of this tool lies in the moments when an upgrade is not immediately possible, or when you want to make room quickly before running something large. Machines with abundant memory rarely need such tools — leaving the system's defaults alone is often the best state.
 
-Reclaimed pages are reloaded the next time a program needs them, usually as a momentary, barely noticeable delay; the first access to a large file after cache clearing may also be slightly slower. This follows from the nature of memory management itself — it is not a flaw of the tool, and it affects neither data safety nor program stability. Every operation can be disabled individually in Settings, so you can decide for yourself how it balances with your need for smoothness.
+Reclaimed pages are reloaded the next time a program needs them, usually as a momentary, barely noticeable delay; the first access to a large file after cache clearing may also be slightly slower. This follows from the nature of memory management itself — it is not a flaw of the tool, and it affects neither data safety nor program stability. Under normal/deep/full every operation can be disabled individually in Settings, so you can decide for yourself how it balances with your need for smoothness; extreme forces every operation.
 
 MemWise terminates no processes, suspends no threads, and injects no code, and by default it does not touch the network either. It uses only public Windows APIs, and the source is fully open under the MIT license.
 
@@ -46,11 +46,11 @@ If memory pressure has been troubling you, I hope this tool helps a little; and 
 
 程序提供四种清理强度，差异体现为介入深度与代价。normal 回收进程闲置页与系统缓存，并依据内存压力逐步加深；deep 于用户空闲时执行额外的深度回收；full 以释放量为优先，接受由此产生的短暂重载延迟；extreme 在 full 基础上强制全部操作并清理系统/自身工作集，追求最低已用内存，但可能造成卡顿，且不承诺绝对稳定。默认模式为 normal。
 
-守护模式以固定周期运行，默认周期 60 秒，周期长度不受内存波动影响——你在设置里填 60 秒，日志、图表与统计就都按 60 秒输出；周期内部再按内存压力调整动作密度。内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。系统核心进程、排除项与程序自身不参与清理。
+守护模式以固定周期运行，默认周期 60 秒，周期长度不受内存波动影响——你在设置里填 60 秒，日志、图表与统计就都按 60 秒输出；周期内部再按内存压力调整动作密度。内存占用达到预设阈值时立即执行一次 full，不等待后续周期。程序为单一可执行文件，无第三方依赖，默认不联网、不安装驱动、不注册系统服务；运行期间不终止进程、不挂起线程、不注入代码。normal/deep/full 下系统核心进程、排除项与程序自身不参与清理；extreme 是唯一例外。
 
 Four modes of cleaning intensity are provided, differing in intervention depth and cost. normal reclaims idle process pages and system caches and deepens as memory pressure rises; deep performs extra reclamation while the user is idle; full prioritises release volume and accepts the resulting brief reload delay; extreme additionally forces every operation and trims system/self working sets for the lowest used-memory figure, at the cost of possible stutter; absolute stability is not guaranteed. The default mode is normal.
 
-Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle length does not move with memory fluctuations — set 60 seconds and logs, chart and statistics all follow that beat; work density inside the cycle adapts to memory pressure. When memory usage reaches the configured threshold it executes a full pass immediately rather than waiting for a later cycle. The program is a single executable with no third-party dependencies; it is offline by default, installs no driver and registers no system service. During operation it terminates no process, suspends no thread and injects no code. System-critical processes, exclusions and MemWise itself are excluded from reclamation.
+Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle length does not move with memory fluctuations — set 60 seconds and logs, chart and statistics all follow that beat; work density inside the cycle adapts to memory pressure. When memory usage reaches the configured threshold it executes a full pass immediately rather than waiting for a later cycle. The program is a single executable with no third-party dependencies; it is offline by default, installs no driver and registers no system service. During operation it terminates no process, suspends no thread and injects no code. Under normal/deep/full, system-critical processes, exclusions and MemWise itself are excluded from reclamation; extreme is the sole exception.
 
 ---
 
@@ -59,13 +59,13 @@ Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle lengt
 1. 自 [Releases](https://github.com/fuguangbeta/MemWise/releases) 获取 MemWise.exe，体积约 9.9 MB。
 2. 将其置于可写目录（例如 D:/MemWise/）。目录不可写时，程序将提示配置与学习数据无法持久化。
 3. 以管理员权限运行。待机缓存、脏页写回、文件缓存、卷缓存与注册表缓存等系统级操作需要管理员权限；标准权限下程序仍可运行，但上述能力不可用。
-4. 托盘图标出现后程序进入常驻状态。需立即释放内存时，点击「优化」或使用全局热键（默认 Ctrl+Shift+M），程序按当前模式执行一次完整优化（三轮深度执行）；需持续维护时，点击「守护」。
+4. 托盘图标出现后程序进入常驻状态。需立即释放内存时，点击「优化」或使用全局热键（默认 Ctrl+Shift+M），程序按当前模式执行一次完整优化（清理深度随当前模式）；需持续维护时，点击「守护」。
 5. 其余参数于「设置」中调整：清理模式、守护周期、紧急阈值、开机自启、托盘行为、语言、日志与更新。
 
 1. Obtain MemWise.exe from Releases; the binary is about 9.9 MB.
 2. Place it in a writable directory, for example D:/MemWise/. If the directory is read-only, the program reports that settings and learning data cannot be persisted.
 3. Run it with administrator rights. System-level operations such as standby purging, dirty-page write-back, file-cache clamping, volume flushing and registry cache clearing require administrator privileges; under standard privileges the program still runs, with those capabilities unavailable.
-4. Once the tray icon appears the program is resident. To release memory immediately, select Optimize or use the global hotkey (Ctrl+Shift+M by default), and the program performs one complete optimization in the current mode, three deep rounds. For continuous maintenance, select Guard.
+4. Once the tray icon appears the program is resident. To release memory immediately, select Optimize or use the global hotkey (Ctrl+Shift+M by default), and the program performs one complete optimization in the current mode, with the cleaning depth following that mode. For continuous maintenance, select Guard.
 5. All remaining parameters are adjusted in Settings: cleaning mode, guard cycle, emergency threshold, autostart, tray behaviour, language, logging and updates.
 
 ---
@@ -81,7 +81,7 @@ Guard mode operates on a fixed cycle, 60 seconds by default, and the cycle lengt
 | **full** | 以释放量为优先，每轮执行完整流程；内存紧张时自动加密，宽裕时克制 | 启动大型程序前，或内存已接近上限 |
 | **extreme** | 强制全部操作并清系统/自身工作集，追求最低已用内存；每次进入二次确认 | 只在意内存数字、接受卡顿/磁盘抖动的专家用户 |
 
-模式由「清理模式」下拉框切换，下一周期生效。手动优化按当前模式执行；内存达到紧急阈值时，程序自动执行一次 full。游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度。
+模式由「清理模式」下拉框切换，下一周期生效。手动优化按当前模式执行；内存达到紧急阈值时，程序自动执行一次 full。normal/deep/full 的游戏模式启用期间，磁盘类系统操作受到抑制，优先保障游戏流畅度；extreme 不启用游戏模式。
 
 The four modes trade intervention depth against cost. Reclaimed pages must be read back on their next access, which is the inherent cost; the mode determines how often and how deeply it is paid.
 
@@ -92,7 +92,7 @@ The four modes trade intervention depth against cost. Reclaimed pages must be re
 | **full** | Prioritises release volume and runs the complete pipeline every cycle; denser under pressure, restrained when memory is ample | Before a large application, or when memory is close to its limit |
 | **extreme** | Forces every operation and trims system/self working sets for the lowest used memory; confirmation on every entry | Expert users who care only about the number and accept stutter/disk churn |
 
-The mode is switched in the Mode dropdown and takes effect from the next cycle. Manual optimization uses the current mode; when memory reaches the emergency threshold the program runs a full pass automatically. While Game Mode is enabled, disk-oriented system operations are suppressed and game smoothness takes priority.
+The mode is switched in the Mode dropdown and takes effect from the next cycle. Manual optimization uses the current mode; when memory reaches the emergency threshold the program runs a full pass automatically. In normal/deep/full, while Game Mode is enabled, disk-oriented system operations are suppressed and game smoothness takes priority; extreme never enables Game Mode.
 
 ---
 
@@ -118,13 +118,13 @@ No routine intervention is required. Adding frequently used game process names u
 
 ## 清理范围与保护边界 · *Scope and Protections*
 
-执行范围：回收暂未使用的进程页面；清理可重建的系统缓存，包括待机缓存、文件缓存、卷缓存与注册表缓存；在 deep 与 full 下，对长期无活动的进程执行额外回收。
+执行范围：回收暂未使用的进程页面；清理可重建的系统缓存，包括待机缓存、文件缓存、卷缓存与注册表缓存；在 deep、full 与 extreme 下，对长期无活动的进程执行额外回收。
 
 明确不执行：终止进程、挂起线程、注入代码、修改系统设置或注册表策略、安装驱动、注册系统服务。
 
 保护范围：系统核心进程、排除列表中的程序、运行中的游戏及其子进程、程序自身。normal 与 deep 另避让当前活跃或刚切换走的程序；full 不判断活跃性，但上述保护仍然有效。extreme 是唯一例外：它会清理系统核心进程与程序自身的工作集，仅建议在明确知情后手动使用。
 
-Scope of execution: reclaiming process pages not currently in use; clearing caches that can be rebuilt, including standby, file, volume and registry caches; and under deep and full, additional reclamation of processes that have been inactive for a long period.
+Scope of execution: reclaiming process pages not currently in use; clearing caches that can be rebuilt, including standby, file, volume and registry caches; and under deep, full and extreme, additional reclamation of processes that have been inactive for a long period.
 
 Explicitly excluded: terminating processes, suspending threads, injecting code, modifying system settings or registry policy, installing drivers, and registering a system service.
 
