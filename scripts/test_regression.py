@@ -1111,8 +1111,8 @@ check("游戏退出后干净恢复累积", len(_ef27._window) == 5 and len(_ef27
 check("参数组未被游戏期触碰", _ef27.get_params("normal")["pid_kp"] == _ef27.get_params("normal")["pid_kp"]
       and _ef27.get_params("full")["target_usage"] == 30)
 _ef27q = EfisController(state_path=None)
-_ef27q.set_mode("quick")
-check("quick 模式游戏态双冻结", _ef27q.tick(_st27(0, True)) == "" and len(_ef27q._window) == 0)
+_ef27q.set_mode("extreme")
+check("extreme 模式游戏态双冻结", _ef27q.tick(_st27(0, True)) == "" and len(_ef27q._window) == 0)
 check("引擎游戏态接线", "'game': game_seen" in _eng26_src
       and "game_seen = self.cleaner.game_mode" in _eng26_src
       and "detect_scene" not in _eng26_src,
@@ -1474,7 +1474,7 @@ if _bulk34.get(_pid34) and _sd34 > 0:
 else:
     check("F42/F43 批量路径可用性", False, "bulk 空或 sys_delta=0")
 
-# ── F1 开关语义 / F6 quick 开关面 / F2 Layer3 开关契约 / F11 每轮归零 ──
+# ── F1 开关语义 / F2 Layer3 开关契约 / F11 每轮归零 ──
 check("F1 空集不再折叠为全量", "set(operations) if operations is not None else None" in _cl34)
 _j34 = {"kp": 0.6, "ki": 0.15, "kd": 0.1, "target_usage": 60, "never": [], "efis_params": {}}
 _ms34, _mu34 = _w34.get_memory_status, _w34.get_memory_used_bytes
@@ -1503,6 +1503,7 @@ try:
             setattr(_w34, _n34, _f34)
     _qc_src = open(os.path.join(_ROOT34, "core", "cleaner.py"), encoding="utf-8").read()
     _qe_src = open(os.path.join(_ROOT34, "core", "engine.py"), encoding="utf-8").read()
+    check("旧 quick 命名已清（fast_retrim）", "quick_retrim" not in _qc_src and "fast_retrim" in _qc_src)
     check("quick 模式已从 cleaner 删除", "_run_quick" not in _qc_src
           and "quick_calls" not in _qc_src and "quick_backoff" not in _qc_src)
     check("extreme 强制全操作", 'if mode == "extreme":' in _qc_src
@@ -1547,8 +1548,8 @@ _e34.CFG["emergency_abs_pct"] = _old_ap34
 
 # ── F12/F48 身份复检与自身排除 ──
 _lr34s = PareLearner(); _j34s = PareJudger(_lr34s, dict(_j34)); _c34s = PareCleaner(_j34s)
-check("F12 quick_retrim 创建时间不符即放弃", _c34s.quick_retrim(_os34.getpid(), 1) == 0)
-check("F48 自身可执行路径被重清拒绝", _c34s.quick_retrim(_os34.getpid(), None) == 0)
+check("F12 fast_retrim 创建时间不符即放弃", _c34s.fast_retrim(_os34.getpid(), 1) == 0)
+check("F48 自身可执行路径被重清拒绝", _c34s.fast_retrim(_os34.getpid(), None) == 0)
 check("F48 自身进程判据（按完整路径）",
       _is_self_path(sys.executable) is True and _is_self_path(r"D:\other\python.exe") is False)
 class _S48: pass
@@ -1834,8 +1835,8 @@ check("F53 保守门（活动确认中）守护口径拦截、预览口径放行
 check("F53 模式门按本次模式评估（CPU 活跃门：normal 拦 / full 放行）",
       _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="normal")[0] is False
       and _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="full")[0] is True)
-check("F53 非三档模式（quick）按 normal 归一，与清理器同口径",
-      _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="quick")[0] is False)
+check("F53 非四模式按 normal 归一，与清理器同口径",
+      _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0), manual=True, guard="legacy")[0] is False)
 _j53._mode_guard = "full"
 _ok53_def = _j53.can_trim(_snap53("cpu53.exe", 4355, cpu=50.0))[0]
 _j53._mode_guard = "normal"
@@ -2395,24 +2396,6 @@ check("F4 退化基线 p05==p25 不触底", abs(_sc9(0.9, _b41a) - 19.5) < 1e-9
 check("F4 退化基线 p75==p90 不顶格", abs(_sc9(5.0, _b41b) - 85.0) < 1e-9
       and abs(_sc9(4.9, _b41b) - 84.5) < 1e-9, str(_sc9(5.0, _b41b)))
 
-# F5 quick + operations=None = 契约全量三项（与其他模式 None=内部全量一致）
-_lr41c = PareLearner(); _c41c = _PC41(PareJudger(_lr41c, dict(_J41)))
-_calls41 = []
-_ops41 = ("purge_low_priority_standby", "clear_registry_cache")
-_og41b = {n: getattr(_wa41, n) for n in _ops41}
-_om41 = _wa41.get_memory_used_bytes
-for _n in _ops41:
-    setattr(_wa41, _n, (lambda nm: lambda *a, **k: (_calls41.append(nm), True)[1])(_n))
-_wa41.get_memory_used_bytes = lambda: 7 << 30
-try:
-    _c41c.optimize([], _lr41c, "quick", operations=None)
-finally:
-    for _n, _f in _og41b.items():
-        setattr(_wa41, _n, _f)
-    _wa41.get_memory_used_bytes = _om41
-check("F5 quick+None=低优先待机+注册表",
-      sorted(_calls41) == ["clear_registry_cache", "purge_low_priority_standby"], str(_calls41))
-
 # F6/F7/F9/F10/F11/F13/F14/F15/F16 静态接线与口径
 check("F6 eris K 分位口径 p92", "K = 自标定期总分 p92" in _er41 and _er41.count("p95") == 1)
 check("F7 layer1 docstring 口径订正", "无固定 sleep（filecache 驻留轮询 ≤0.8s 除外）" in _cl41)
@@ -2485,20 +2468,20 @@ from core.sniffer import Sniffer
 import core.winapi as _wa42
 _jd42 = _src26("core", "judger.py")
 
-# G1 quick+游戏：game_mode 透传（引擎 gap 循环对全模式检测游戏，quick 分支此前漏传
+# G1 normal+游戏：game_mode 透传（引擎 gap 循环对全模式检测游戏）
 # ⇒ 游戏运行中每个压制周期都对待机/脏页做磁盘操作——游戏保护唯一漏网分支）
 _lr42 = PareLearner()
 _c42 = _PC41(PareJudger(_lr42, dict(_J41)))
 _cap42 = {}
 _c42._layer1_memreduct = lambda **kw: _cap42.update(kw)
 _c42.game_mode = True
-_c42._optimize_locked([], _lr42, "quick", ["standby", "modified", "registry"])
-check("G1 quick 分支透传 game_mode", _cap42.get("game_mode") is True, str(_cap42))
+_c42._optimize_locked([], _lr42, "normal", ["standby", "modified", "registry"])
+check("G1 normal 分支透传 game_mode", _cap42.get("game_mode") is True, str(_cap42))
 _c42b = _PC41(PareJudger(PareLearner(), dict(_J41)))
 _cap42b = {}
 _c42b._layer1_memreduct = lambda **kw: _cap42b.update(kw)
-_c42b._optimize_locked([], PareLearner(), "quick", ["standby", "modified", "registry"])
-check("G1b 非游戏 quick 行为不变（game_mode=False 透传）", _cap42b.get("game_mode") is False, str(_cap42b))
+_c42b._optimize_locked([], PareLearner(), "normal", ["standby", "modified", "registry"])
+check("G1b 非游戏 normal 行为不变（game_mode=False 透传）", _cap42b.get("game_mode") is False, str(_cap42b))
 # 真实 layer1 全链：游戏期磁盘类被跳过、registry 照常（与 normal 梯度同口径）
 _ops42 = ("empty_standby", "flush_modified_pages", "clear_registry_cache")
 _og42 = {n: getattr(_wa42, n) for n in _ops42}
@@ -2510,8 +2493,8 @@ try:
     _wa42.get_memory_status = lambda: {"pct": 40, "total": 16 << 30, "avail": 9 << 30, "used": 7 << 30}
     _c42c = _PC41(PareJudger(PareLearner(), dict(_J41)))
     _c42c.game_mode = True
-    _c42c._optimize_locked([], PareLearner(), "quick", ["standby", "modified", "registry"])
-    check("G1c 游戏中 quick 只执行 registry（真实 layer1 全链）",
+    _c42c._optimize_locked([], PareLearner(), "normal", ["standby", "modified", "registry"])
+    check("G1c 游戏中 normal 只执行 registry（真实 layer1 全链）",
           sorted(_calls42) == ["clear_registry_cache"], str(_calls42))
 finally:
     for n, f in _og42.items():
@@ -2893,7 +2876,7 @@ _s45b.pid = 4601; _s45b.pf = 0; _s45b.priv = 0; _s45b.fg = False
 _j45g._low_activity[4601] = (2, time.time(), None)
 _ok45b, _r45b = _j45g.can_trim(_s45b)
 check("W3 未钉路径不触发第八道门（对照）", "已设硬上限" not in _r45b, _r45b)
-# W4 绕行通道补齐（2026-10-15 强化）：旧实现只补 2 处，桩实验实测 quick_retrim 与 _trim_process
+# W4 绕行通道补齐（2026-10-15 强化）：旧实现只补 2 处，桩实验实测 fast_retrim 与 _trim_process
 # 仍会对被钉进程执行 EmptyWorkingSet ⇒ 现改为统一判定方法 ws_cap_blocked，清理侧全部入口都走它
 
 check("deep 尾段：仅系统收尾且 _run_deep 真的调用（回弹已按数据删除）",
@@ -3044,14 +3027,14 @@ _sn47 = _S47(); _sn47.pid = 4747; _sn47.name = "cap47.exe"; _sn47.ws = 200 << 20
 _sn47.path = r"D:\App\Cap47.exe"; _sn47.pf = 0; _sn47.priv = 0; _sn47.fg = False
 _sn47.cpu = 0.0; _sn47.parent = 0; _sn47.create = 7; _sn47.has_visible = False
 try:
-    _r47a = _cb47.quick_retrim(4747, 7)
+    _r47a = _cb47.fast_retrim(4747, 7)
     _cb47._lite = True; _cb47.judger._mode_guard = "full"
     _r47b = _cb47._trim_process(_sn47, PareLearner())[3]
     _r47c = _cb47._probe_process(_sn47, PareLearner())
 finally:
     (_w47.get_foreground_pid, _w47.get_process_path, _w47.get_process_times,
      _w47.get_process_memory, _w47.empty_ws) = _saved47
-check("P1 行为：quick_retrim 拒绝被钉进程且零系统调用", _r47a == 0 and _calls47 == [],
+check("P1 行为：fast_retrim 拒绝被钉进程且零系统调用", _r47a == 0 and _calls47 == [],
       "%s %s" % (_r47a, _calls47))
 check("P1 行为：_trim_process 执行前拒绝", _r47b == "已设硬上限", _r47b)
 check("P1 行为：_probe_process 拒绝", _r47c == (False, 0, 0), str(_r47c))
@@ -4028,8 +4011,8 @@ check("T3 卫生死代码清理（get_process_ws_quota / eris.new_state 已删�
 
 print("\n[58] 2026-10-25 原理审查批次（守护 gap 循环与手动/收割的执行域隔离）")
 _eg58 = _src47("core/engine.py"); _cl58 = _src47("core/cleaner.py")
-# ── D1 fast-track 重清与手动优化的并发域隔离（gap 循环侧非阻塞锁；quick_retrim 本体不拿锁——
-#    实证：exec_lock 被占时 quick_retrim 照常执行 EWS，与手动 trim 并发交错致双方测量互相污染）──
+# ── D1 fast-track 重清与手动优化的并发域隔离（gap 循环侧非阻塞锁；fast_retrim 本体不拿锁——
+#    实证：exec_lock 被占时 fast_retrim 照常执行 EWS，与手动 trim 并发交错致双方测量互相污染）──
 check("D1 gap fast-track 段受 exec_lock 非阻塞保护（拿不到跳过本轮）",
       "_exec_lock.acquire(blocking=False)" in _eg58
       and _eg58.index("_exec_lock.acquire(blocking=False)") < _eg58.index("for ft_pid in list(self.cleaner._fast_track)")
@@ -4054,7 +4037,7 @@ finally:
 check("D2 行为：手动优化整轮后 judger._manual_mode 复位 False（不再泄漏到守护路径）",
       _j58._manual_mode is False)
 check("D2 源码：optimize 壳 finally 收尾复位", "self.judger._manual_mode = False" in _cl58)
-# ── D3 gap 手动游戏分支补退出清空（quick 模式守护不进 L2，该分支是唯一清空点；
+# ── D3 gap 手动游戏分支补退出清空（守护不进 L2 时该分支是唯一清空点；
 #    与 _layer2_process 同口径防 PID 复用误保护）──
 check("D3 gap 手动游戏分支含退出清空（与 _layer2_process 同口径）",
       "elif self.cleaner.judger._game_pid_set:" in _eg58
@@ -4659,7 +4642,7 @@ import re as _re61
 _t1_ok = bool(_re61.match(r"T1\|\d{8}T\d{6}\|[QNDF]\|[^|]*\|", "T1|20261121T213004|D|-|80|65.0|16|8/17|0.0|2|2|56|D1:1/0/1,0,0,0,0,0,0|S:17/3.1/8.7/255|V:34/34/-1/0:0:30:0:0/0:0:30:0:0|B:0/0,0/0,0/0|M:0/0.0/0|K:|I:12|P:"))
 check("D 埋点·T1 单行可被解析（模式/内存/耗时/采样/投票/回涨）", _t1_ok)
 check("D 埋点·D4 每轮清空快照间隔（防 deque 跨轮累计失真）", "self._snap_dts.clear()" in _eg61)
-check("游戏模式·保留低优先待机（quick 同级低感知），仅跳磁盘类",
+check("游戏模式·保留低优先待机（低感知），仅跳磁盘类",
       'if "standby_low" in use and _capture(winapi.purge_low_priority_standby)' in _cl61
       and 'not game_mode and "standby_low"' not in _cl61)
 check("游戏轮摘要不再追加额外标注（行宽回到单排）+ 明细改本轮增量口径",

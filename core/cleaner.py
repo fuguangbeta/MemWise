@@ -121,8 +121,8 @@ class PareCleaner:
         }
         self._info_msgs = []
         self._last_mode = None   # 最近一次 optimize 的**真实模式**（ERIS 按模式分桶取真值）；None ⇒
-                                 # 尚未清理，ERIS 回退取配置模式（固定 "normal" 会把 quick 轮次错记成
-                                 # normal：模式标签不符、quick 的"有效维"规则也从未生效——日志实测）
+                                 # 尚未清理，ERIS 回退取配置模式（固定 "normal" 会把实际模式错记成
+                                 # 模式标签与对应有效维规则都会失真——日志实测）
         self._round_ops = {}        # 本轮各系统操作累计调用次数/释放量（P1-8 去重决策的数据来源）
         self._round_time = {}       # 本轮各系统操作累计耗时（秒，2026-11-10 卡顿排查埋点）
         self._lite = False          # F1 轻量轮（仅 _optimize_locked 内按本轮赋真；默认值兜底，
@@ -215,7 +215,7 @@ class PareCleaner:
             self._stats_inc("standby", 2)  # 多轮，计数加2
         return ok
 
-    def quick_retrim(self, pid, create=None, snap=None):
+    def fast_retrim(self, pid, create=None, snap=None):
         """Fast trim for gap-fill; tracks release into freed_bytes.
         执行前复检（与 _trim_process 同款）：gap 期间用户可能切到该进程——低压前台拦截。
         身份与名单复检（2026-09-11 审查 F12）：PID 会被复用 ⇒ 创建时间不符即放弃，防止清到
@@ -493,8 +493,8 @@ class PareCleaner:
             if "standby_low" in use and _capture(winapi.purge_low_priority_standby):
                 self._stats_inc("standby")
             # registry **不**纳入择时门（2026-11-19 审核结论）：它是零磁盘的内核态操作，
-            # 偶发 0.83s 只阻塞本程序线程、不产生 IO 也不清用户工作集；且 quick 模式仅靠它与
-            # standby_low 兑现"零感知"，门控会让 quick 在用户活跃时几乎什么都不做。
+            # 偶发 0.83s 只阻塞本程序线程、不产生 IO 也不清用户工作集；门控在用户活跃时
+            # 会显著降低此类操作密度。
             if "registry" in use:
                 if _capture(winapi.clear_registry_cache):
                     self._stats_inc("registry")
@@ -1707,7 +1707,7 @@ class PareCleaner:
             if (not _l3_done and getattr(self, "_cycle_any_trim", False)
                     and self._normal_tail_ok(deadline)):
                 try:
-                    _target = float(self.judger.cfg.get("efis_params", {}).get("target_usage", 45))
+                    _target = float(self.judger.cfg.get("efis_params", {}).get("target_usage", 60))
                 except Exception:
                     _target = 45.0
                 if _mp_l3 and (_target + 8.0) <= _mp_l3["pct"] < _em_l3 * 0.85:

@@ -34,7 +34,7 @@ def _mem_or_none():
 def _build_pipeline():
     learner = Learner.load(STATE_PATH)
     jcfg = {"kp": CFG.get("kp", 1.0), "ki": CFG.get("ki", 0.15),
-            "kd": CFG.get("kd", 0.1), "target_usage": CFG.get("target_usage", 45),
+            "kd": CFG.get("kd", 0.1), "target_usage": 60,
             "never": CFG.get("never",[]),
             "game_processes": CFG.get("game_processes",[]),
             "clean_passes": CFG.get("clean_passes", 4),

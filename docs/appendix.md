@@ -103,7 +103,7 @@ EFIS 是参数自适应层，按本轮结果微调九个阈值类参数，并受
 | deepen_theta | 0.60 | 0.30 到 0.80 | 进程深清档位的价值门槛 |
 | layer3_agg_gate | 0.60 | 0.30 到 0.70 | normal 触发深度聚合的压力门槛 |
 | pid_kp / pid_kd | 0.60 / 0.10 | 0.45 到 2.00 / 0.05 到 0.35 | 压力调节器的比例与微分系数 |
-| target_usage | 60 | 35 到 65 | 调节器的目标占用 |
+| target_usage | 60 | 30 到 65 | 调节器目标；模式默认 normal 50 / deep 40 / full 30 / extreme 20，full 下限 20 / extreme 15 |
 | cooloff_base | 360 | 60 到 360 | 失败冷却基准秒数 |
 | learning_rate | 0.50 | 0.10 到 0.90 | 反馈学习率 |
 | composite_kalman_w | 0.30 | 0.10 到 0.50 | 预测与实测的合成权重 |
@@ -124,7 +124,7 @@ EFIS adjusts nine threshold-type parameters from each cycle's outcome, within fi
 | deepen_theta | 0.60 | 0.30 to 0.80 | Value floor for deep per-process passes |
 | layer3_agg_gate | 0.60 | 0.30 to 0.70 | Pressure gate for deep aggregation in normal |
 | pid_kp / pid_kd | 0.60 / 0.10 | 0.45 to 2.00 / 0.05 to 0.35 | Proportional and derivative gains |
-| target_usage | 60 | 35 to 65 | Controller target usage |
+| target_usage | 60 | 30 to 65 | Controller target; mode defaults normal 50 / deep 40 / full 30 / extreme 20, with full floor 20 / extreme 15 |
 | cooloff_base | 360 | 60 to 360 | Base failure cooldown, seconds |
 | learning_rate | 0.50 | 0.10 to 0.90 | Feedback learning rate |
 | composite_kalman_w | 0.30 | 0.10 to 0.50 | Blend of prediction and measurement |

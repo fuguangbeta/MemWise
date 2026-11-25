@@ -1567,7 +1567,7 @@ class MemWiseEngine:
                                                 # 快照里没有它（已退出/PID 复用）：无法确认身份，不重清
                                                 self.cleaner._fast_track.pop(ft_pid, None)
                                                 continue
-                                            if not self.cleaner.quick_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid),
+                                            if not self.cleaner.fast_retrim(ft_pid, self.cleaner._fast_track.get(ft_pid),
                                                                             snap=_ft_snap):
                                                 self.cleaner._fast_track.pop(ft_pid, None)
                                             else:

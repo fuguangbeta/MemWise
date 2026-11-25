@@ -1476,7 +1476,7 @@ class MemWiseGUI:
 
         self.learner = Learner.load(self._state_file)
         jcfg = {"kp":CFG.get("kp",0.6),"ki":CFG.get("ki",0.15),"kd":CFG.get("kd",0.1),
-                "target_usage":CFG.get("target_usage",60),"never":CFG.get("never",[]),
+                "target_usage":60,"never":CFG.get("never",[]),
                 "game_processes":CFG.get("game_processes",[]),
                 "emergency_threshold":CFG.get("emergency_threshold",80),  # 高压让路/树阈值同口径（2026-09-11 S5）
                 "efis_params":CFG.get("efis_params",{})}

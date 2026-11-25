@@ -260,7 +260,6 @@ The command line and the window share one set of settings and learning data, and
 | combine_enabled | true | 页合并开关，与六项解耦 |
 | emergency_threshold | 80 | 紧急清理的使用率阈值，50 到 99 |
 | emergency_abs_pct | 0 | 可用内存兜底阈值，0 表示关闭 |
-| target_usage | 45（旧回退） | 仅 EFIS 缺失时回退；实际按模式：normal 50 / deep 40 / full 30 / extreme 20，EFIS 会自适应并保留已有状态 |
 | hotkey / game_hotkey | ctrl+shift+m / ctrl+shift+g | 全局热键 |
 | game_processes | 空 | 游戏进程名列表，同名进程全部保护 |
 | close_action | ask | 关窗行为：ask / minimize / exit |
@@ -287,7 +286,6 @@ The configuration file is config/config.yaml. It is read at startup, so manual e
 | combine_enabled | true | Page combining, independent of the six |
 | emergency_threshold | 80 | Usage threshold for emergency cleaning, 50 to 99 |
 | emergency_abs_pct | 0 | Available-memory floor, 0 disables it |
-| target_usage | 45 (legacy fallback) | Used only if EFIS is absent; actual mode targets are normal 50 / deep 40 / full 30 / extreme 20, with EFIS adaptation and persisted state |
 | hotkey / game_hotkey | ctrl+shift+m / ctrl+shift+g | Global hotkeys |
 | game_processes | empty | Game process names; every process with the same name is protected |
 | close_action | ask | Close behaviour: ask, minimize or exit |

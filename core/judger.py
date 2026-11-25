@@ -18,7 +18,7 @@ def _mb(b):
 DEFAULT_KP = 1.0    # 比例系数 — 响应当前压力 (更积极)
 DEFAULT_KI = 0.15   # 积分系数 — 消除稳态误差
 DEFAULT_KD = 0.1    # 微分系数 — 抑制震荡 (快速升压时提前响应)
-TARGET_USAGE = 30.0  # 目标内存使用率 (%) — PidController 签名默认与 judger 构造兜底
+TARGET_USAGE = 60.0  # 目标内存使用率 (%) — 仅 EFIS 缺失时的兜底；生产路径由 EFIS 模式参数覆盖
                      # （实际始终被 efis_params.target_usage 覆盖；2026-09-06 审查 F12 检测：
                      # 2 处真实消费，保留）
 # 进程工作集下限（全模式统一）：低于 1MB 的进程即便清到极限也只释放几百 KB，却要付出一次
@@ -117,7 +117,7 @@ class PareJudger:
             kp=efis_cfg.get("pid_kp", config.get("kp", DEFAULT_KP)),
             ki=config.get("ki", DEFAULT_KI),
             kd=efis_cfg.get("pid_kd", config.get("kd", DEFAULT_KD)),
-            target=efis_cfg.get("target_usage", config.get("target_usage", TARGET_USAGE)),
+            target=efis_cfg.get("target_usage", TARGET_USAGE),
         )
         self.aggressiveness = 0.0
         self._last_mem_pct = 50

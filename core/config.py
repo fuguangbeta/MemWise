@@ -54,7 +54,7 @@ def _warn_once(key, msg):
         pass
 
 DEFAULT_CFG = {
-    "kp": 1.0, "ki": 0.15, "kd": 0.1, "target_usage": 45,
+    "kp": 1.0, "ki": 0.15, "kd": 0.1,
     "interval": 60, "never": [], "clean_mode": "normal",
     "extreme_warning_ack": False,
     # auto_start（普通权限快捷方式自启）已于 2026-08-15 移除，仅保留管理员权限自启
@@ -186,12 +186,12 @@ def load():
         # 数值键范围钳制（2026-08-30 审查；2026-09-11 扩充）：GUI 滑块范围是唯一合法面，手改
         # 越界值会绕过全部门槛——已实证两例：emergency_threshold:0 → 每周期固定紧急 full；
         # emergency_abs_pct ≥100 → "可用率 ≤ ap" 恒真 → 同样每周期恒紧急 full（本次新增钳制）。
-        # target_usage 是 EFIS 同名参数的兜底（EFIS 恒提供该键），按其边界 35-65 钳制。
+        # EFIS 恒提供 target_usage；顶层不再保存旧回退键。
         # P20：emergency_abs_pct 是“可用率 ≤ ap”的兜底；ap=90/99 在可用率常态 20-60% 下恒真
         # ⇒ 每周期紧急 full。上限收到 50（仍足够激进），0=禁用。
         for _k, _lo, _hi in (("emergency_threshold", 50, 99), ("emergency_abs_pct", 0, 50),
                              ("clean_passes", 2, 6), ("interval", 10, 3600),
-                             ("gap_seconds", 8, 20), ("target_usage", 35, 65)):
+                             ("gap_seconds", 8, 20)):
             try:
                 _v = int(float(d.get(_k, DEFAULT_CFG[_k])))
             except (TypeError, ValueError):
