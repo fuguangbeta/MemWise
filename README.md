@@ -221,7 +221,7 @@ A working-set cap limits physical usage only and does not change commit memory; 
 | status | 打印当前内存状态 |
 | learn [分钟] | 观察并记录进程行为，默认 10 分钟 |
 | optimize [--mode n|d|f|e] | 执行一次优化，可指定模式 |
-| daemon [--mode q|n|d|f] | 以命令行方式运行守护 |
+| daemon [--mode n|d|f|e] | 以命令行方式运行守护 |
 | profile <pid> | 查看某个进程的详细画像 |
 | export [--config-only] / import | 导出、导入配置包；加 --config-only 时不带学习数据 |
 | service | 安装或移除管理员权限的登录计划任务 |
@@ -236,7 +236,7 @@ The same executable also offers a command-line entry point:
 | status | Print the current memory state |
 | learn [minutes] | Observe and record process behaviour, 10 minutes by default |
 | optimize [--mode q|n|d|f] | Run one optimization, optionally in a given mode |
-| daemon [--mode q|n|d|f] | Run Guard from the command line |
+| daemon [--mode n|d|f|e] | Run Guard from the command line |
 | profile <pid> | Show the detailed profile of one process |
 | export [--config-only] / import | Export or import a configuration package; --config-only leaves learning data out |
 | service | Install or remove the administrator logon scheduled task |
