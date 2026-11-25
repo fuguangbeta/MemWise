@@ -39,6 +39,7 @@
 - 修复 Extreme 只在 harvest 清全局 WS、gap/final 未清导致压缩率不如旧 full 的问题
 - 修复 Extreme 最小化启动不弹确认、CLI --mode extreme 无警告、游戏模式全局 WS 不一致
 - Extreme 不避让游戏，禁止进入游戏模式（按钮仅提示；自动检测不启用；文档/tooltip 同步）
+- 更新了 Extreme 游戏模式的提示与帮助说明
 
 ### 清理与调度
 
